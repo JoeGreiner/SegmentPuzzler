@@ -1,0 +1,3 @@
+build project with deploy on, e.g. with QtCreator
+run 'cpack <build-dir> -G NSIS'
+or 'cpack .' for both zip and NSIS

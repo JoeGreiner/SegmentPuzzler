@@ -1,0 +1,2 @@
+# run this command to build the package
+cpack -G DragNDrop <build directory>
