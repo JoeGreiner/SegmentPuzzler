@@ -10,7 +10,8 @@
 * ITK 5 or 6 with ITKModuleReview enabled
 * Qt 5
 
-### Windows
+<details>
+<summary>Windows</summary>
 
 1. **Clone the repository:**
     ```bash
@@ -27,7 +28,10 @@
     - This will generate both ZIP and NSIS installers.
 6. **Run the installer to install SegmentPuzzler.**
 
-### Linux
+</details>
+
+<details>
+<summary>Linux</summary>
 
 1. **Clone the repository:**
     ```bash
@@ -51,7 +55,10 @@
     ```
 6. **Run the generated AppImage located in the build directory.**
 
-### macOS
+</details>
+
+<details>
+<summary>macOS</summary>
 
 1. **Clone the repository:**
     ```bash
@@ -73,12 +80,14 @@
     ```bash
     cpack -G DragNDrop <build-dir>
     ```
+</details>
+
 
 ## Dependencies and Acknowledgments
 
 A big thank you to the developers and contributors to:
 
-* [ITK](https://github.com/InsightSoftwareConsortium): Used extensively for image handling and processing.
+* [ITK](https://github.com/InsightSoftwareConsortium/ITK): Used extensively for image handling and processing.
 * [CMake](https://cmake.org/): Used to build the application.
 * [Qt](https://www.qt.io/): Used for the GUI, licensed under the [LGPLv3](https://www.gnu.org/licenses/lgpl-3.0.en.html).
     - A copy of the license is included in the `licenses` directory.
