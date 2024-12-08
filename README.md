@@ -9,6 +9,7 @@
 * CMake
 * ITK 5 or 6 with ITKModuleReview enabled
 * Qt 5
+* Optional: OpenSSL (matching to the version Qt was built against). Only needed to download sample volumes.
 
 <details>
 <summary>Windows</summary>
