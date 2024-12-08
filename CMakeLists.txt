@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.10.0)
 project(SegmentPuzzler LANGUAGES CXX VERSION 0.2.0)
 string(TOLOWER "${PROJECT_NAME}" PROJECT_NAME_LOWER)
 set(CMAKE_CXX_STANDARD 14)
+set(BUILD_SHARED_LIBS ON)
 
 message(STATUS "Building SegmentPuzzler Version ${PROJECT_VERSION}")
 
@@ -128,10 +129,47 @@ if (NOT ITK_FOUND)
 endif ()
 include(${ITK_USE_FILE})
 
+if (MSVC) # not needed for Mac
+    find_package(OpenSSL QUIET)
+    if (NOT OpenSSL_FOUND)
+        # look for ssl installation in qt, can be installed with build tools -> openssl -> binaries
+#            set(OPENSSL_ROOT_DIR "${Qt5_DIR}/../../../../../Tools/OpenSSLv3/Win_x64")
+#            set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+#            set(OPENSSL_BIN_DIR "${OPENSSL_ROOT_DIR}/bin")
+#            set(OPENSSL_LIBRARIES "${OPENSSL_ROOT_DIR}/lib/libssl.lib;${OPENSSL_ROOT_DIR}/lib/libcrypto.lib")
+
+
+            # for https://slproweb.com/download/Win32OpenSSL-1_1_1w.exe installer
+            set(OPENSSL_ROOT_DIR "C:/Program Files (x86)/OpenSSL-Win32")
+            set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+            set(OPENSSL_LIBRARIES "${OPENSSL_ROOT_DIR}/lib/libssl.lib;${OPENSSL_ROOT_DIR}/lib/libcrypto.lib")
+            set(OPENSSL_BIN_DIR "${OPENSSL_ROOT_DIR}/bin")
+
+            message(STATUS "  Includes Guess: ${OPENSSL_INCLUDE_DIR}")
+            message(STATUS "  Libraries Guess: ${OPENSSL_LIBRARIES}")
+            message(STATUS "  Binaries Guess: ${OPENSSL_BIN_DIR}")
+
+
+        # Locate OpenSSL again
+        find_package(OpenSSL)
+
+        if (NOT OpenSSL_FOUND)
+            message(STATUS "OpenSSL not found! SSL/TLS support is required for downloading sample files")
+        else()
+            message(STATUS "OpenSSL found:")
+            message(STATUS "  Includes: ${OPENSSL_INCLUDE_DIR}")
+            message(STATUS "  Libraries: ${OPENSSL_LIBRARIES}")
+            message(STATUS "  Binaries: ${OPENSSL_BIN_DIR}")
+        endif ()
+    endif ()
+endif()
+
 
 MESSAGE(STATUS "Qt5_DIR: " ${Qt5_DIR})
 MESSAGE(STATUS "ITK_USE_FILE: " ${ITK_USE_FILE})
 MESSAGE(STATUS "Qt5Widgets_INCLUDE_DIRS:" ${Qt5Widgets_INCLUDE_DIRS})
+
+
 
 # print compile options
 MESSAGE(STATUS "CMAKE_CXX_FLAGS: " ${CMAKE_CXX_FLAGS})
@@ -197,7 +235,23 @@ else ()
     add_executable(SegmentPuzzler main.cpp mainWindow.cpp ${SRC_CORRECT_ORDER})
 endif ()
 
+
 target_link_libraries(SegmentPuzzler ${ITK_LIBRARIES} Qt5::Widgets Qt5::Network ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+
+if (MSVC)
+    file(GLOB OPENSSL_DLLS "${OPENSSL_BIN_DIR}/*.dll")
+    if (OPENSSL_DLLS)
+        message(STATUS "Copying OpenSSL DLLs from ${OPENSSL_BIN_DIR} to target directory.")
+        foreach(DLL ${OPENSSL_DLLS})
+            add_custom_command(TARGET SegmentPuzzler POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${DLL} $<TARGET_FILE_DIR:SegmentPuzzler>)
+        endforeach()
+    else()
+        message(WARNING "No OpenSSL DLLs found in ${OPENSSL_BIN_DIR}. Ensure OpenSSL is installed and the path is correct.")
+    endif()
+endif()
+
 
 # copy the sample data to the build directory
 # now done on the fly in the code

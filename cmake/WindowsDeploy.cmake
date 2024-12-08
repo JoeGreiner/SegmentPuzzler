@@ -102,6 +102,15 @@ set(CPACK_NSIS_CREATE_ICONS_EXTRA
 
 include(InstallRequiredSystemLibraries)
 install(TARGETS SegmentPuzzler DESTINATION bin)
+install(FILES
+    $<TARGET_FILE_DIR:SegmentPuzzler>/libssl-1_1-x64.dll
+    $<TARGET_FILE_DIR:SegmentPuzzler>/libcrypto-1_1-x64.dll
+    DESTINATION bin
+)
+
+install(CODE "
+    file(WRITE \"\${CMAKE_INSTALL_PREFIX}/run_SegmentPuzzler.bat\" \"@echo off\\nstart bin\\\\SegmentPuzzler.exe\\nexit\\n\")
+")
 
 # now done on the fly in the code
 #install(FILES "sampleData/Stack.nrrd" DESTINATION "sampleData")
@@ -113,5 +122,9 @@ set(CPACK_PACKAGE_NAME "SegmentPuzzler")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}")
 set(CPACK_PACKAGE_CONTACT "joe@joegreiner.de")
+
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+set(CPACK_NSIS_LICENSE_FILE "${CMAKE_SOURCE_DIR}/LICENSE")
+install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION "licenses")
 
 include(CPack)

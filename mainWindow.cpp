@@ -116,7 +116,27 @@ MainWindow::MainWindow() {
 #include <QStandardPaths>
 #include <QDir>
 
+
+#include <QSslSocket>
+#include <QLoggingCategory>
 QString downloadFile() {
+
+    QLoggingCategory::setFilterRules(QStringLiteral("qt.network.ssl.warning=true\n"
+                                                    "qt.network.ssl.debug=true\n"));
+
+    std::cout << "QSslSocket supports SSL: "
+              << (QSslSocket::supportsSsl() ? "true" : "false") << std::endl;
+
+
+    std::cout << "QSslSocket library build version: "
+              << QSslSocket::sslLibraryBuildVersionString().toStdString()
+              << std::endl;
+
+    std::cout << "QSslSocket library runtime version: "
+              << QSslSocket::sslLibraryVersionString().toStdString()
+              << std::endl;
+
+
     QString url = "https://drive.google.com/uc?export=download&id=1FW592Qge47SjoVQupk83LSwkhs-70nh2";
     QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     if (tempDir.isEmpty()) {
