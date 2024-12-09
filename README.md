@@ -1,5 +1,3 @@
-# SegmentPuzzler
-
 Tool to manipulate (merge, unmerge, regenerate, paint, select, ...) and proofread supervoxel-based segmentations. Under construction, more to come.
 
 <video src="https://github.com/user-attachments/assets/44012456-4d42-4e00-93a5-8bacb68d5d3b" autoplay muted loop playsinline style="width:100%; max-width:800px; display:block; margin:0 auto;">
@@ -7,19 +5,17 @@ Tool to manipulate (merge, unmerge, regenerate, paint, select, ...) and proofrea
 </video>
 
 
-
-
 ## Executables
+| Windows | MacOSX | Linux |
+|---------|---------|-------|
+| <div align="center"><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases"><img src="https://github.com/user-attachments/assets/78670603-900a-48f2-a857-6a0cc01cda93" width="100" alt="Windows"></a></div><br><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases" style="text-decoration:none;color:inherit;">Installer, Portable</a> | <div align="center"><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases"><img src="https://github.com/user-attachments/assets/975288b5-5e57-4e2e-9b41-17d38e590fbd" width="100" alt="MacOS"></a></div><br><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases" style="text-decoration:none;color:inherit;">M1, Intel</a> | <div align="center"><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases"><img src="https://github.com/user-attachments/assets/cb89df5c-52e2-4ca2-a388-f9c6ecdd0ef5" width="100" alt="Linux"></a></div><br><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases" style="text-decoration:none;color:inherit;">AppImage (cross-distribution)</a> |
 
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--!Font Awesome Free 6.7.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2024 Fonticons, Inc.--><path d="M0 93.7l183.6-25.3v177.4H0V93.7zm0 324.6l183.6 25.3V268.4H0v149.9zm203.8 28L448 480V268.4H203.8v177.9zm0-380.6v180.1H448V32L203.8 65.7z"/></svg>
-
-
-
-Currently available: Windows (Installer; Portable version), MacOSX (M1; Intel), and as an AppImage (Ubuntu 22.04; CentOS9) [here](https://github.com/JoeGreiner/SegmentPuzzler/releases). AppImages should be compatible across different Linux distributions, as long as the libstdc++ isn't super old. Please reach out if you encounter issues.
+Please reach out if you encounter issues!
 
 <details>
 <summary>How to run an AppImage</summary>
-    
+
+AppImages should be compatible across different Linux distributions, as long as the libstdc++ isn't super old.     
 * Download file, e.g. SegmentPuzzler.AppImage
 * Terminal - set permissions to execute:
   ``` bash
@@ -126,6 +122,7 @@ A big thank you to the developers and contributors to:
 * [qdarkstyle](https://github.com/ColinDuquesnoy/QDarkStyleSheet): Provides fantastic stylesheets for the application. Licensed under the MIT License, with a copy included in the `qdarkstyle` directory.
 * [nitroshare](https://github.com/nitroshare/nitroshare-desktop): Inspiration for the `Windeployqt.cmake` script, which is licensed under the MIT License. A copy of the license can be found on top of the script.
 * [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy), [linuxdeploy-plugin-qt](https://github.com/linuxdeploy/linuxdeploy-plugin-qt), and [AppImageKit](https://github.com/AppImage/AppImageKit): Tools used to create a Linux AppImage.
+* OS Icons are provided by [Iconoir](https://iconoir.com/), licensed under the MIT License.
 
 ## License
 
