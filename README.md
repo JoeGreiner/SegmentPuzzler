@@ -2,6 +2,22 @@
 
 ## Executables
 
+Currently available: Windows (Installer; Portable version), MacOSX (M1; Intel), and as an AppImage (Ubuntu 22.04) [here](https://github.com/JoeGreiner/SegmentPuzzler/releases).
+
+<details>
+<summary>How to run an AppImage</summary>
+    
+* Download file, e.g. SegmentPuzzler.AppImage
+* Terminal - set permissions to execute:
+  ``` bash
+  chmod u+x SegmentPuzzler.AppImage
+  ```
+* Terminal - execute: ./SegmentPuzzler.AppImage
+  ``` bash
+  ./SegmentPuzzler.AppImage
+  ```
+</details>
+
 ## Build from source
 
 ### Prerequisites
