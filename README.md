@@ -1,6 +1,19 @@
 # SegmentPuzzler
 
+Tool to manipulate (merge, unmerge, regenerate, paint, select, ...) and proofread supervoxel-based segmentations. Under construction, more to come.
+
+<video src="https://github.com/user-attachments/assets/44012456-4d42-4e00-93a5-8bacb68d5d3b" autoplay muted loop playsinline style="width:100%; max-width:800px; display:block; margin:0 auto;">
+  Your browser does not support the video tag.
+</video>
+
+
+
+
 ## Executables
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--!Font Awesome Free 6.7.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2024 Fonticons, Inc.--><path d="M0 93.7l183.6-25.3v177.4H0V93.7zm0 324.6l183.6 25.3V268.4H0v149.9zm203.8 28L448 480V268.4H203.8v177.9zm0-380.6v180.1H448V32L203.8 65.7z"/></svg>
+
+
 
 Currently available: Windows (Installer; Portable version), MacOSX (M1; Intel), and as an AppImage (Ubuntu 22.04; CentOS9) [here](https://github.com/JoeGreiner/SegmentPuzzler/releases). AppImages should be compatible across different Linux distributions, as long as the libstdc++ isn't super old. Please reach out if you encounter issues.
 
