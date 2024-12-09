@@ -12,7 +12,7 @@ Currently available: Windows (Installer; Portable version), MacOSX (M1; Intel), 
   ``` bash
   chmod u+x SegmentPuzzler.AppImage
   ```
-* Terminal - execute: ./SegmentPuzzler.AppImage
+* Terminal - execute AppImage:
   ``` bash
   ./SegmentPuzzler.AppImage
   ```
