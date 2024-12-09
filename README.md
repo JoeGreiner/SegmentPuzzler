@@ -2,7 +2,7 @@
 
 ## Executables
 
-Currently available: Windows (Installer; Portable version), MacOSX (M1; Intel), and as an AppImage (Ubuntu 22.04) [here](https://github.com/JoeGreiner/SegmentPuzzler/releases).
+Currently available: Windows (Installer; Portable version), MacOSX (M1; Intel), and as an AppImage (Ubuntu 22.04; CentOS9) [here](https://github.com/JoeGreiner/SegmentPuzzler/releases). AppImages should be compatible across different Linux distributions, as long as the libstdc++ isn't super old. Please reach out if you encounter issues.
 
 <details>
 <summary>How to run an AppImage</summary>
