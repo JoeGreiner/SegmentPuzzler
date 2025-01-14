@@ -4,11 +4,13 @@
 # then it should run on newer versions as well. if you build on a newer version, it might not run on older versions,
 # e.g. because of libc version mismatch
 
+setopt nullglob
 list=(_CPack_Packages build CMakeFiles ITKFactoryRegistration SegmentPuzzler.app SegmentPuzzler_autogen *.cmake CMakeCache.txt Makefile qt.conf install_manifest*.txt)
+unsetopt nullglob
 for i in "${list[@]}"; do
     if [[ -d $i ]]; then
         echo "$i directory found, deleting..."
-        rm -r "$i"
+        rm -rf "$i"
     elif [[ -f $i ]]; then
         echo "$i file found, deleting..."
         rm "$i"
@@ -38,6 +40,9 @@ fi
 
 cmake .. -B build/ -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 make -C build/ -j 12
+
+cd build/
+cpack -G DragNDrop .
 
 # rename appimage with version and os
 mv SegmentPuzzler-*.dmg SegmentPuzzler-${project_version}-${os_info_string}.dmg
