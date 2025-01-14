@@ -90,7 +90,7 @@ bool InitialNode::isIgnoredId(SegmentIdType idToCheck,
     return (std::find(ignoredSegmentIds->begin(), ignoredSegmentIds->end(), idToCheck) != ignoredSegmentIds->end());
 }
 
-inline bool isValidIndex(size_t index, size_t dimX, size_t dimY, size_t dimZ) {
+inline bool isValidIndex(int index, size_t dimX, size_t dimY, size_t dimZ) {
     return index >= 0 && index < (dimX * dimY * dimZ);
 }
 
@@ -118,20 +118,41 @@ void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdTy
             1, -1, static_cast<int>(dimX), static_cast<int>(-dimX), static_cast<int>(sliceStride), static_cast<int>(-sliceStride)
     };
 
+    static const int offsetsCoords[6][3] = {
+            {  1,  0,  0 },
+            { -1,  0,  0 },
+            {  0,  1,  0 },
+            {  0, -1,  0 },
+            {  0,  0,  1 },
+            {  0,  0, -1 }
+    };
+
     Voxel voxelToAdd;
     std::unordered_set<SegmentIdType> addedToLabelAlready;
     addedToLabelAlready.reserve(6); // 6 neighbors
 
+    // for all voxels in the roi of the initial node
     for (size_t z = roi.minZ; z <= roi.maxZ; ++z) {
         for (size_t y = roi.minY; y <= roi.maxY; ++y) {
             for (size_t x = roi.minX; x <= roi.maxX; ++x) {
                 size_t centerIndex = x + y * rowStride + z * sliceStride;
                 SegmentIdType itLabel = buffer[centerIndex];
+
                 if (itLabel == label) {
                     addedToLabelAlready.clear();
                     bool isSurface = false;
+
                     for (unsigned int i = 0; i < 6; ++i) {
+                        long nx = static_cast<long>(x) + offsetsCoords[i][0];
+                        long ny = static_cast<long>(y) + offsetsCoords[i][1];
+                        long nz = static_cast<long>(z) + offsetsCoords[i][2];
+
+                        if (nx < 0 || nx >= dimX || ny < 0 || ny >= dimY || nz < 0 || nz >= dimZ) {
+                            continue;
+                        }
+
                         size_t neighborIndex = centerIndex + offsets[i];
+//                        could skip this check, but better safe than sorry
                         if (isValidIndex(neighborIndex, dimX, dimY, dimZ)) {
                             SegmentIdType newLabel = buffer[neighborIndex];
                             if (newLabel != label && !isIgnoredId(newLabel, ignoredSegmentIds)) {

@@ -872,6 +872,12 @@ void AnnotationSliceViewer::drawPoint(QPoint point) {
 
     point.setX(point.x() / zoomFactor);
     point.setY(point.y() / zoomFactor);
+    std::cout << "Drawing point: " << point.x() << " " << point.y() << "\n";
+
+    if ((point.x() < 0) | (point.y() < 0) | (point.x() >= annotationImage.width()) | (point.y() >= annotationImage.height())) {
+        return;
+    }
+
 
     QPainter painter(&annotationImage);
     if (paintModeIsActive | paintBoundaryModeIsActive) {
@@ -898,6 +904,12 @@ void AnnotationSliceViewer::drawLineTo(QPoint endPoint) {
 
     endPoint.setX(endPoint.x() / zoomFactor);
     endPoint.setY(endPoint.y() / zoomFactor);
+    std::cout << "Drawing line to: " << endPoint.x() << " " << endPoint.y() << "\n";
+
+    if ((endPoint.x() < 0) | (endPoint.y() < 0) | (endPoint.x() >= annotationImage.width()) | (endPoint.y() >= annotationImage.height())) {
+        std::cout << "Point outside image\n";
+        return;
+    }
 
     QPainter painter(&annotationImage);
     if (paintModeIsActive | paintBoundaryModeIsActive) {
@@ -931,7 +943,7 @@ void AnnotationSliceViewer::setPenWidth(int newPenWidth) {
 
 
 void AnnotationSliceViewer::processAnnotationImage(QImage image) {
-    if ((graphBase->pEdgesInitialSegmentsImage != nullptr) | (pThresholdedBoundaries != nullptr)) {
+    if ((graphBase->pEdgesInitialSegmentsImage != nullptr) || (pThresholdedBoundaries != nullptr)) {
         //TODO: Separate function into smaller parts, make sliceblabla general
 
         int bytesPerPixel = 4;
@@ -974,12 +986,14 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
                             getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
                             int edgeNumId = graphBase->pEdgesInitialSegmentsImage->GetPixel({worldX, worldY, worldZ});;
                             if (edgeNumId != 0) {
+                                //std::cout << "Unmerge: EdgeNumId: " << edgeNumId << " at position: " << worldX << " " << worldY << " " << worldZ << "\n";
                                 annotatedEdgeNumIdsToUnmerge.insert(edgeNumId);
                             }
                         } else if (annotationImageGreen[x + image.width() * y] == 255) {
                             getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
                             int edgeNumId = graphBase->pEdgesInitialSegmentsImage->GetPixel({worldX, worldY, worldZ});;
                             if (edgeNumId != 0) {
+                                //std::cout << "Merge: EdgeNumId: " << edgeNumId << " at position: " << worldX << " " << worldY << " " << worldZ << "\n";
                                 annotatedEdgeNumIdsToMerge.insert(edgeNumId);
                             }
                         }
