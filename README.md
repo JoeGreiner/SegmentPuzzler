@@ -116,7 +116,7 @@ Video tutorials and more documentation are (hopefully) coming soon!
 <summary>Walk-Through</summary>
 
 * Please click **`Sample Data -> Load Sample Data`** in the menu bar. You can load real data by simply dragging and dropping the volume files into the top-left tree viewer.
-* You'll see that the viewer and the tree viewer in the top-left corner are populated with the sample data.
+* You'll see that the viewer and the tree viewer (top-left corner) are populated with the sample data.
 * **TreeViewer**: Here you can interact with the viewer options:
     * Clicking on the small box toggles the visibility of a segment.
     * Double-clicking on the segment name allows you to rename the segment.
@@ -140,15 +140,15 @@ Video tutorials and more documentation are (hopefully) coming soon!
     * Paint with the **Right Mouse Button** to unmerge.
     * Change brush size with number keys **`0-9`**.
 * **Reverting and Cutting Segments**:
-    * Press **`X`** and click a segment to revert it to the initial segment.
-    * Press **`C`** and click a segment to cut/isolate it.
+    * Press **`X`** and click a segment in the **Working Set** to split it in all its **Initial Segments**
+    * Press **`C`** and click a segment in the **Working Set** to isolate/cut out only the **Initial Segment** directly underneath the cursor.
 * **Running Watershed (in `Probability` Tab)**:
     * Use the **`Run Watershed`** button to run a watershed algorithm on a probability map.
     * Run watershed only in a Region of Interest (ROI) by pressing the **`Turn ROI-Selection WS On`** button and drawing a rectangle in the viewer.
     * Note: Within the watershed dialog, you can paint boundaries and pre-merge the resulting watershed (recommended).
     * The resulting watershed is saved as a **Refinement** in the main viewer.
 * **Refinements (in `Refinements` Tab)**:
-    * Refinements are supervoxels that allow injecting smaller segments into your current segmentation.
+    * Refinements are supervoxels that allow injecting segments into your current segmentation. This is helpful in case your **Initial Segments** are overmerged/too large.
     * Refinements can be loaded from a file or generated (e.g., from watershed).
     * Multiple refinements are supported. The currently active refinement is the one last clicked in the TreeViewer.
     * To inject segments:
@@ -167,7 +167,9 @@ Video tutorials and more documentation are (hopefully) coming soon!
         * Paint with the **Right Mouse Button** to remove voxels.
     * **Morphological Operations**:
         * Press **`F`** and click a segment to apply morphological closing (helpful for filling gaps).
+          * For simple topologies, this may allow you to draw every N-th slice and then run morphological closing to fill the gaps.
         * Press **`G`** and click a segment to apply morphological opening (helpful for smoothing).
+          * For simple topologies, this may allow you to erase every N-th slice and then run morphological opening to open the intermediately slices similarly.
 </details>
 
 
