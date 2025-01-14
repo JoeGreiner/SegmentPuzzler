@@ -4,6 +4,35 @@
 # then it should run on newer versions as well. if you build on a newer version, it might not run on older versions,
 # e.g. because of libc version mismatch
 
+if [[ -d build ]]; then
+    echo "build directory found, deleting..."
+    rm -r build
+fi
+
+if [[ -d export_linux ]]; then
+    echo "export_linux directory found, deleting..."
+    rm -r export_linux
+fi
+
+if [[ -f /etc/os-release ]]; then
+    os_name=$(grep ^NAME= /etc/os-release | cut -d '=' -f2 | tr -d '"')
+    os_version=$(grep ^VERSION_ID= /etc/os-release | cut -d '=' -f2 | tr -d '"')
+    os_info_string="${os_name}_${os_version}"
+    echo "OS: $os_info_string"
+fi
+
+if [[ -f ../CMakeLists.txt ]]; then
+    project_version=$(grep -E "project\(.*VERSION [0-9]+\.[0-9]+\.[0-9]+\)" ../CMakeLists.txt | \
+        sed -E 's/.*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+    if [[ -n $project_version ]]; then
+        echo "Project Version: $project_version"
+    else
+        echo "Project version not found in CMakeLists.txt."
+    fi
+else
+    echo "CMakeLists.txt not found. Cannot determine project version."
+fi
+
 ## get linuxdeploy and linuxdeploy-plugin-qt
 # get linux deploy if it does not exist
 if [[ ! -f linuxdeploy-x86_64.AppImage ]]; then
@@ -121,5 +150,8 @@ cp "$desktopPath" "$desktopPath2"
 wget "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
 chmod +x appimagetool
 ./appimagetool export_linux --verbose
+
+# rename appimage with version and os
+mv SegmentPuzzler-x86_64.AppImage SegmentPuzzler-"${project_version}"-"${os_info_string}"-x86_64.AppImage
 
 #gio set -t 'string' "${APPIMAGE}" 'metadata::custom-icon' "file://${iconPath}"
