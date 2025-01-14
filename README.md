@@ -108,6 +108,68 @@ AppImages should be compatible across different Linux distributions, as long as 
     ```
 </details>
 
+## Usage
+
+Video tutorials and more documentation are (hopefully) coming soon!
+
+<details>
+<summary>Walk-Through</summary>
+
+* Please click **`Sample Data -> Load Sample Data`** in the menu bar. You can load real data by simply dragging and dropping the volume files into the top-left tree viewer.
+* You'll see that the viewer and the tree viewer in the top-left corner are populated with the sample data.
+* **TreeViewer**: Here you can interact with the viewer options:
+    * Clicking on the small box toggles the visibility of a segment.
+    * Double-clicking on the segment name allows you to rename the segment.
+    * Double-clicking on the **Color**, **Norm**, or **Alpha** values allows you to change them.
+* You can find hotkeys in the **`Help`** menu.
+* **Main Interactions**:
+  SegmentPuzzler handles three kinds of partitions: **Initial Segments**, a **Working Set**, and **Final Segmentations**:
+    * When you start segmenting, the **Working Set** is initialized with the initial segments, and the **Final Segmentations** are empty.
+    * Merging or unmerging updates the **Working Set**, allowing you to return to the **Initial Segments**.
+    * Once satisfied with the **Working Set**, transfer individual segments to the **Final Segmentations**, which can be saved and loaded.
+* **Viewer Navigation**:
+    * Scrolling with the mouse wheel moves through slices. You can also use the arrow keys (`↑` / `↓`) or the slider.
+    * Pressing and holding the **Middle Mouse Button** while moving pans the view.
+    * **`CTRL + Left Click`** centers all orthogonal views on the clicked point.
+    * Pressing **`R`** recalculates LUTs (reshuffling the colors).
+    * In an active viewer:
+        * Press **`+`** to zoom in to the cursor.
+        * Press **`-`** to zoom out.
+* **Merging and Unmerging Segments**:
+    * Paint with the **Left Mouse Button** to merge.
+    * Paint with the **Right Mouse Button** to unmerge.
+    * Change brush size with number keys **`0-9`**.
+* **Reverting and Cutting Segments**:
+    * Press **`X`** and click a segment to revert it to the initial segment.
+    * Press **`C`** and click a segment to cut/isolate it.
+* **Running Watershed (in `Probability` Tab)**:
+    * Use the **`Run Watershed`** button to run a watershed algorithm on a probability map.
+    * Run watershed only in a Region of Interest (ROI) by pressing the **`Turn ROI-Selection WS On`** button and drawing a rectangle in the viewer.
+    * Note: Within the watershed dialog, you can paint boundaries and pre-merge the resulting watershed (recommended).
+    * The resulting watershed is saved as a **Refinement** in the main viewer.
+* **Refinements (in `Refinements` Tab)**:
+    * Refinements are supervoxels that allow injecting smaller segments into your current segmentation.
+    * Refinements can be loaded from a file or generated (e.g., from watershed).
+    * Multiple refinements are supported. The currently active refinement is the one last clicked in the TreeViewer.
+    * To inject segments:
+        * Press **`P`**, then click a segment in the viewer to inject segments from the refinement.
+        * This unmerges the clicked segment and injects the refinement's segments, updating the underlying graph.
+* **Final Segmentations**:
+    * **Transfer Segments**:
+        * Press **`S`** and click on a segment in the viewer to transfer it to the **Final Segmentations**.
+        * Delete segments from the **Final Segmentations** by pressing **`D`** and clicking the segment.
+    * **Transfer by Volume**:
+        * Use the buttons in the **`Segmentations`** tab to transfer by volume or transfer all segments.
+    * **Painting in Final Segmentations**:
+        * Activate Paintmode via the **`Turn on Paintmode`** button in the **`Segmentations`** tab.
+        * Select a paint color by holding **`Q`** and clicking on a segment.
+        * Paint with the **Left Mouse Button** to assign voxels to the selected segment.
+        * Paint with the **Right Mouse Button** to remove voxels.
+    * **Morphological Operations**:
+        * Press **`F`** and click a segment to apply morphological closing (helpful for filling gaps).
+        * Press **`G`** and click a segment to apply morphological opening (helpful for smoothing).
+</details>
+
 
 ## Dependencies and Acknowledgments
 
