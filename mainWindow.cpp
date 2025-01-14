@@ -119,6 +119,7 @@ MainWindow::MainWindow() {
 
 #include <QSslSocket>
 #include <QLoggingCategory>
+#include <QProgressDialog>
 
 QString downloadFile(QString url_to_download, QString outputFilePath) {
     QNetworkAccessManager manager;
@@ -272,12 +273,27 @@ void MainWindow::loadSegmentationSample() {
 //    }
 
 //     message informing of download
-    QMessageBox msgBox;
-    msgBox.setText("Downloading sample data (100MB). This may take a while.");
-    msgBox.exec();
+//    QMessageBox msgBox;
+//    msgBox.setText("Downloading sample data (100MB). This may take a while.");
+//    msgBox.exec();
+
+    QProgressDialog progressDialog("Downloading sample data, please wait...",
+                                   QString(),
+                                   0,
+                                   0,
+                                   this);
+    progressDialog.setWindowModality(Qt::NonModal);
+    progressDialog.setCancelButton(nullptr);
+    progressDialog.setMinimumDuration(0);
+    progressDialog.setWindowTitle("Please Wait");
+    progressDialog.show();
+
+    QCoreApplication::processEvents();
 
     QString downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd;
     std::tie(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd) = downloadFiles();
+
+    progressDialog.close();
 
     if (utils::check_if_file_exists(downloadedFilePathMC)){
         graph->receiveBackgroundIdStrategy("backgroundIsLowestId");
