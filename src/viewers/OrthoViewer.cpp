@@ -7,6 +7,8 @@
 #include <QThread>
 #include <mutex>
 
+#define CHECK_IF_MAIN_THREAD True
+
 OrthoViewer::~OrthoViewer() {
 //    clean up e.g. the added signals
 }
@@ -247,7 +249,9 @@ void OrthoViewer::initialize() {
 }
 
 void OrthoViewer::setViewToMiddleOfStack() {
+#if CHECK_IF_MAIN_THREAD
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
+#endif
     //calculate zoom in a way that the whole stack is visible
     //TODO: calculate zoom better. multiple of twos? actually consider x,y, and z?
 //    QRect rec =    QGuiApplication::primaryScreen()->geometry();

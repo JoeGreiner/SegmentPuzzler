@@ -885,18 +885,22 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
 
 
 void WatershedControl::thresholdBoundariesPressed() {
-    QProgressDialog dialog;
-    dialog.setCancelButton(0);
-    dialog.setLabelText(QString("Thresholding ..."));
-    dialog.setRange(0, 0);
+//    QProgressDialog dialog;
+//    dialog.setCancelButton(0);
+//    dialog.setLabelText(QString("Thresholding ..."));
+//    dialog.setRange(0, 0);
+//
+//    graphBase->currentlyCalculating = true;
+//    QFutureWatcher<void> futureWatcher;
+//    QFuture<void> future = QtConcurrent::run(this, &WatershedControl::thresholdBoundaries);
+//    futureWatcher.setFuture(future);
+//    QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//    dialog.exec();
+//    future.waitForFinished();
 
+//    should be called from the main thread, is updating UI -- better (for later) -- separate the calculation from the UI update
     graphBase->currentlyCalculating = true;
-    QFutureWatcher<void> futureWatcher;
-    QFuture<void> future = QtConcurrent::run(this, &WatershedControl::thresholdBoundaries);
-    futureWatcher.setFuture(future);
-    QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-    dialog.exec();
-    future.waitForFinished();
+    thresholdBoundaries();
     graphBase->currentlyCalculating = false;
 
 }
@@ -988,19 +992,22 @@ void WatershedControl::extractSeeds() {
 
 void WatershedControl::watershedPressed() {
     if (pSeeds != nullptr) {
-        QProgressDialog dialog;
-        dialog.setCancelButton(0);
-        dialog.setLabelText(QString("Watershedding ..."));
-        dialog.setRange(0, 0);
-
-        graphBase->currentlyCalculating = true;
-        QFutureWatcher<void> futureWatcher;
-        QFuture<void> future = QtConcurrent::run(this, &WatershedControl::watershed);
-        futureWatcher.setFuture(future);
-        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-        dialog.exec();
-        future.waitForFinished();
-        graphBase->currentlyCalculating = false;
+//        QProgressDialog dialog;
+//        dialog.setCancelButton(0);
+//        dialog.setLabelText(QString("Watershedding ..."));
+//        dialog.setRange(0, 0);
+//
+//        graphBase->currentlyCalculating = true;
+//        QFutureWatcher<void> futureWatcher;
+//        QFuture<void> future = QtConcurrent::run(this, &WatershedControl::watershed);
+//        futureWatcher.setFuture(future);
+//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//        dialog.exec();
+//        future.waitForFinished();
+//        graphBase->currentlyCalculating = false;
+            graphBase->currentlyCalculating = true;
+            watershed();
+            graphBase->currentlyCalculating = false;
 
     } else {
         QMessageBox msgBox;
@@ -1038,18 +1045,22 @@ void WatershedControl::watershed() {
 void WatershedControl::exportSegmentsPressed() {
     if (graphBase->pWorkingSegmentsImage != nullptr) {
 
-        QProgressDialog dialog;
-        dialog.setCancelButton(0);
-        dialog.setLabelText(QString("Exporting Segments ..."));
-        dialog.setRange(0, 0);
+//        QProgressDialog dialog;
+//        dialog.setCancelButton(0);
+//        dialog.setLabelText(QString("Exporting Segments ..."));
+//        dialog.setRange(0, 0);
+//
+//        graphBase->currentlyCalculating = true;
+//        QFutureWatcher<void> futureWatcher;
+//        QFuture<void> future = QtConcurrent::run(this, &WatershedControl::exportSegments);
+//        futureWatcher.setFuture(future);
+//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//        dialog.exec();
+//        future.waitForFinished();
+//        graphBase->currentlyCalculating = false;
 
         graphBase->currentlyCalculating = true;
-        QFutureWatcher<void> futureWatcher;
-        QFuture<void> future = QtConcurrent::run(this, &WatershedControl::exportSegments);
-        futureWatcher.setFuture(future);
-        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-        dialog.exec();
-        future.waitForFinished();
+        exportSegments();
         graphBase->currentlyCalculating = false;
 
     } else {
@@ -1101,18 +1112,22 @@ void WatershedControl::exportSegments() {
 
 void WatershedControl::calculateDistanceMapPressed() {
     if (pThresholdedMembrane != nullptr) {
-        QProgressDialog dialog;
-        dialog.setCancelButton(0);
-        dialog.setLabelText(QString("Calculating Distance Map ..."));
-        dialog.setRange(0, 0);
+//        QProgressDialog dialog;
+//        dialog.setCancelButton(0);
+//        dialog.setLabelText(QString("Calculating Distance Map ..."));
+//        dialog.setRange(0, 0);
+//
+//        graphBase->currentlyCalculating = true;
+//        QFutureWatcher<void> futureWatcher;
+//        QFuture<void> future = QtConcurrent::run(this, &WatershedControl::calculateDistanceMap);
+//        futureWatcher.setFuture(future);
+//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//        dialog.exec();
+//        future.waitForFinished();
+//        graphBase->currentlyCalculating = false;
 
         graphBase->currentlyCalculating = true;
-        QFutureWatcher<void> futureWatcher;
-        QFuture<void> future = QtConcurrent::run(this, &WatershedControl::calculateDistanceMap);
-        futureWatcher.setFuture(future);
-        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-        dialog.exec();
-        future.waitForFinished();
+        calculateDistanceMap();
         graphBase->currentlyCalculating = false;
     } else {
         QMessageBox msgBox;

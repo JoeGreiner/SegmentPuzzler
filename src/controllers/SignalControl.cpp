@@ -717,6 +717,7 @@ void SignalControl::initializeGraph(size_t signalIndexLocal, size_t signalIndexG
 //    graphBase->pOrthoViewer->setViewToMiddleOfStack();
     QMetaObject::invokeMethod(graphBase->pOrthoViewer, "setViewToMiddleOfStack", Qt::QueuedConnection);
 
+
     createNewSegmentationVolume();
 }
 
