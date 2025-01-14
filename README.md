@@ -236,7 +236,7 @@ if __name__ == "__main__":
       pool.starmap(run_segmentpuzzler, joblist_with_delay)
 
 ```
-</details
+</details>
 
 ## Dependencies and Acknowledgments
 
