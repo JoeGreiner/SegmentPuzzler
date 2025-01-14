@@ -340,6 +340,12 @@ void MainWindow::showHotkeys() {
 <h3>C + Click</h3>
 <p>[C]ut initial label under cursor from working node under the cursor.</p>
 
+<h3>F + Click</h3>
+<p>[F]ill holes in segmentation label with initial label under cursor.</p>
+
+<h3>G + Click</h3>
+<p>[O]pening operation on segmentation label under cursor.</p>
+
 <h3>E</h3>
 <p>[E]xport debug information.</p>
 
