@@ -83,10 +83,16 @@ public:
 
     std::vector<itkSignalBase *> allSignalList;
 
-
     std::vector<itkSignal<dataType::SegmentIdType>> refinementWatershedList;
 
     itkSignal<GraphSegmentType> *segmentsGraph;
+
+    QTreeWidgetWithDragAndDrop *signalTreeWidget;
+    QTreeWidget *probabilityTreeWidget;
+    QTreeWidget *segmentationTreeWidget;
+    QTreeWidgetWithDragAndDrop *refinementWatershedTreeWidget;
+
+
 
     bool loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
                    size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
@@ -151,7 +157,6 @@ public slots:
     bool forceShapeOfSegments = true);
 
 
-
 private:
     unsigned int getSignalIndex(QTreeWidgetItem *item);
 
@@ -163,8 +168,6 @@ private:
 
     bool getIsSegments(QTreeWidgetItem *item);
 
-    void exportSelectedSegmentationSurface();
-
     void getSignalPropsFromItem(QTreeWidgetItem *item, bool &isShort, bool &isUChar, bool &isSegments, bool &isEdge,
                                 unsigned int &signalIndex);
 
@@ -173,30 +176,24 @@ private:
     QVBoxLayout *signalControlLayout;
 
     // overlay tree widget
-    QTreeWidgetWithDragAndDrop *signalTreeWidget;
     QWidget *signalInputButtonsWidget;
     QGridLayout *signalInputButtonsLayout;
     QPushButton *addSignalButton;
     QPushButton *addSegmentsButton;
 
     // refinement watershed tree
-    QTreeWidgetWithDragAndDrop *refinementWatershedTreeWidget;
     QWidget *refinementWatershedInputButtonsWidget;
     QGridLayout *refinementWatershedButtonLayout;
     QPushButton *addRefinementWatershedButton;
     QPushButton *mergeWithRefinementWatershedButton;
-    QPushButton *replaceSegmentByPositionButton;
-    QPushButton *replaceSegmentBySegmentButton;
     QPushButton *setIdToTransparentInRefinementWSButton;
 
     // segmentation tree widget
-    QTreeWidget *segmentationTreeWidget;
     QWidget *segmentationButtonWidget;
     QGridLayout *segmentationButtonWidgetGridLayout;
     QPushButton *addSegmentationButton;
     QPushButton *exportSegmentationButton;
     QPushButton *loadSegmentationButton;
-    QPushButton *exportSegmentationSurfaceButton;
     QPushButton *togglePaintBrushButton;
     QPushButton *transferSegmentsWithVolumeButton;
     QPushButton *transferSegmentsWithRefinementButton;
@@ -204,7 +201,6 @@ private:
 
 
     // probabilities tree widget
-    QTreeWidget *probabilityTreeWidget;
     QWidget *probabilityButtonWidget;
     QGridLayout *probabilityButtonWidgetLayout;
     QPushButton *addMembraneProbabilityButton;

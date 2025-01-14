@@ -90,7 +90,7 @@ MainWindow::MainWindow() {
     this->showMaximized();
 
     sampleDataMenu = menuBar()->addMenu(tr("&Sample Data"));
-    loadSampleSegmentationAction = new QAction(tr("&Load Sample Segmentation"), this);
+    loadSampleSegmentationAction = new QAction(tr("&Load Sample Data (100MB)"), this);
     sampleDataMenu->addAction(loadSampleSegmentationAction);
 //    connect(loadSampleSegmentationAction, &QAction::triggered, this, &MainWindow::loadSegmentationSample);
     connect(loadSampleSegmentationAction, &QAction::triggered, this, [this]() {
@@ -119,44 +119,16 @@ MainWindow::MainWindow() {
 
 #include <QSslSocket>
 #include <QLoggingCategory>
-QString downloadFile() {
 
-    QLoggingCategory::setFilterRules(QStringLiteral("qt.network.ssl.warning=true\n"
-                                                    "qt.network.ssl.debug=true\n"));
-
-    std::cout << "QSslSocket supports SSL: "
-              << (QSslSocket::supportsSsl() ? "true" : "false") << std::endl;
-
-
-    std::cout << "QSslSocket library build version: "
-              << QSslSocket::sslLibraryBuildVersionString().toStdString()
-              << std::endl;
-
-    std::cout << "QSslSocket library runtime version: "
-              << QSslSocket::sslLibraryVersionString().toStdString()
-              << std::endl;
-
-
-    QString url = "https://drive.google.com/uc?export=download&id=1FW592Qge47SjoVQupk83LSwkhs-70nh2";
-    QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    if (tempDir.isEmpty()) {
-        std::cout << "Failed to retrieve the temporary directory path.\n";
-        return "";
-    }
-
-    QString outputFilePath = QDir(tempDir).filePath("Stack.nrrd");
-
-    QDir dir(tempDir);
-    if (!dir.exists()) {
-        if (!dir.mkpath(".")) {
-            std::cout << "Failed to create the temporary directory.\n";
-            return "";
-        }
-    }
-
+QString downloadFile(QString url_to_download, QString outputFilePath) {
     QNetworkAccessManager manager;
-    QUrl qurl(url);
+    QUrl qurl(url_to_download);
     QNetworkRequest request(qurl);
+
+    if (QFile::exists(outputFilePath)) {
+        std::cout << "File already exists: " << outputFilePath.toStdString() << std::endl;
+        return outputFilePath;
+    }
 
     int redirectCount = 0;
     const int maxRedirects = 5;
@@ -210,6 +182,60 @@ QString downloadFile() {
 
     std::cout << "Too many redirects.\n";
     return "";
+};
+
+
+
+std::tuple<QString, QString, QString, QString> downloadFiles() {
+
+    QLoggingCategory::setFilterRules(QStringLiteral("qt.network.ssl.warning=true\n"
+                                                    "qt.network.ssl.debug=true\n"));
+
+    std::cout << "QSslSocket supports SSL: "
+              << (QSslSocket::supportsSsl() ? "true" : "false") << std::endl;
+
+
+    std::cout << "QSslSocket library build version: "
+              << QSslSocket::sslLibraryBuildVersionString().toStdString()
+              << std::endl;
+
+    std::cout << "QSslSocket library runtime version: "
+              << QSslSocket::sslLibraryVersionString().toStdString()
+              << std::endl;
+
+
+    QString url = "https://drive.google.com/uc?export=download&id=1FW592Qge47SjoVQupk83LSwkhs-70nh2";
+    QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    if (tempDir.isEmpty()) {
+        std::cout << "Failed to retrieve the temporary directory path.\n";
+        return std::make_tuple("", "", "", "");
+    }
+
+
+    QDir dir(tempDir);
+    if (!dir.exists()) {
+        if (!dir.mkpath(".")) {
+            std::cout << "Failed to create the temporary directory.\n";
+            return std::make_tuple("", "", "", "");
+        }
+    }
+
+    QString outputFilePathMC = QDir(tempDir).filePath("Watershed_MC.tif");
+    QString outputFilePathWGA = QDir(tempDir).filePath("WGA.nrrd");
+    QString outputFilePathWS = QDir(tempDir).filePath("Watershed.nrrd");
+    QString outputFilePathBnd = QDir(tempDir).filePath("BoundaryPrediction.tif");
+
+    QString url_segments_mc = "https://drive.google.com/uc?export=download&id=18VtLYTFA0EVa_JLOVoSmXPjDJrW0Ievr";
+    QString url_segments_wga = "https://drive.google.com/uc?export=download&id=1pd6ybdzrQFdgpANKweNG7hB7i1diOgxC";
+    QString url_segments_ws = "https://drive.google.com/uc?export=download&id=1x_QYEfPRNrTWlwHRUMI9jFKh1xyWw39Y";
+    QString url_segments_bnd = "https://drive.google.com/uc?export=download&id=1YMFz84x8_E4OVh74ABn8j2pcpGXKtu8r";
+
+    QString downloadedFilePathMC = downloadFile(url_segments_mc, outputFilePathMC);
+    QString downloadedFilePathWGA = downloadFile(url_segments_wga, outputFilePathWGA);
+    QString downloadedFilePathWS = downloadFile(url_segments_ws, outputFilePathWS);
+    QString downloadedFilePathBnd = downloadFile(url_segments_bnd, outputFilePathBnd);
+
+    return std::make_tuple(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd);
 }
 
 
@@ -221,28 +247,51 @@ void MainWindow::loadSegmentationSample() {
         msgBox.exec();
         return;
     }
+//
+//    QString appDirPath = QCoreApplication::applicationDirPath();
+//    QString pathToSampleSegmentation = appDirPath + "/../../sampleData/Stack.nrrd";
+//    QString alternativePathToSampleSegmentation = appDirPath + "/sampleData/Stack.nrrd";
+//    QString alternativePathToSampleSegmentation_2 = appDirPath + "/../Resources/sampleData/Stack.nrrd";
+////    pathToSampleSegmentation = downloadFiles();
+//
+//
+//    std::cout << appDirPath.toStdString() << std::endl;
+//    if (utils::check_if_file_exists(pathToSampleSegmentation)){
+//        graph->receiveBackgroundIdStrategy("backgroundIsHighestId");
+//        mySignalControl->addSegmentsGraph(pathToSampleSegmentation);
+//    } else if (utils::check_if_file_exists(alternativePathToSampleSegmentation)){
+//        graph->receiveBackgroundIdStrategy("backgroundIsHighestId");
+//        mySignalControl->addSegmentsGraph(alternativePathToSampleSegmentation);
+//    } else if (utils::check_if_file_exists(alternativePathToSampleSegmentation_2)){
+//        graph->receiveBackgroundIdStrategy("backgroundIsHighestId");
+//        mySignalControl->addSegmentsGraph(alternativePathToSampleSegmentation_2);
+//    } else {
+//        std::cout << "Couldn't find sample data at: " << pathToSampleSegmentation.toStdString() << std::endl;
+//        std::cout << "Couldn't find sample data at: " << alternativePathToSampleSegmentation.toStdString() << std::endl;
+//        std::cout << "Couldn't find sample data at: " << alternativePathToSampleSegmentation_2.toStdString() << std::endl;
+//    }
 
-    QString appDirPath = QCoreApplication::applicationDirPath();
-    QString pathToSampleSegmentation = appDirPath + "/../../sampleData/Stack.nrrd";
-    QString alternativePathToSampleSegmentation = appDirPath + "/sampleData/Stack.nrrd";
-    QString alternativePathToSampleSegmentation_2 = appDirPath + "/../Resources/sampleData/Stack.nrrd";
+//     message informing of download
+    QMessageBox msgBox;
+    msgBox.setText("Downloading sample data (100MB). This may take a while.");
+    msgBox.exec();
 
-    pathToSampleSegmentation = downloadFile();
+    QString downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd;
+    std::tie(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd) = downloadFiles();
 
-    std::cout << appDirPath.toStdString() << std::endl;
-    if (utils::check_if_file_exists(pathToSampleSegmentation)){
-        graph->receiveBackgroundIdStrategy("backgroundIsHighestId");
-        mySignalControl->addSegmentsGraph(pathToSampleSegmentation);
-    } else if (utils::check_if_file_exists(alternativePathToSampleSegmentation)){
-        graph->receiveBackgroundIdStrategy("backgroundIsHighestId");
-        mySignalControl->addSegmentsGraph(alternativePathToSampleSegmentation);
-    } else if (utils::check_if_file_exists(alternativePathToSampleSegmentation_2)){
-        graph->receiveBackgroundIdStrategy("backgroundIsHighestId");
-        mySignalControl->addSegmentsGraph(alternativePathToSampleSegmentation_2);
+    if (utils::check_if_file_exists(downloadedFilePathMC)){
+        graph->receiveBackgroundIdStrategy("backgroundIsLowestId");
+        mySignalControl->addSegmentsGraph(downloadedFilePathMC);
+        mySignalControl->addRefinementWatershed(downloadedFilePathWS);
+        mySignalControl->addImage(downloadedFilePathWGA);
+        mySignalControl->loadMembraneProbability(downloadedFilePathBnd);
+        QTreeWidgetItem *probability_item = mySignalControl->probabilityTreeWidget->topLevelItem(0);
+        mySignalControl->setIsActive(probability_item, false);
+        mySignalControl->allSignalList[4]->setNorm(0, 100);
+
+
     } else {
-        std::cout << "Couldn't find sample data at: " << pathToSampleSegmentation.toStdString() << std::endl;
-        std::cout << "Couldn't find sample data at: " << alternativePathToSampleSegmentation.toStdString() << std::endl;
-        std::cout << "Couldn't find sample data at: " << alternativePathToSampleSegmentation_2.toStdString() << std::endl;
+        std::cout << "Couldn't find sample data at: " << downloadedFilePathMC.toStdString() << std::endl;
     }
 }
 
@@ -253,7 +302,7 @@ void MainWindow::showHotkeys() {
 <style>
   body {
     font-family: Arial, sans-serif;
-    font-size: 11pt;
+    font-size: 10pt;
   }
   h3 {
     margin-bottom: 0.3em;
