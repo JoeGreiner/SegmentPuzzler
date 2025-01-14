@@ -248,7 +248,7 @@ void itkSignal<dType>::computeExtrema() {
 
 
     utils::toc(tic, "duration MinimumMaximumImageCalculator computeExtrema: ");
-    std::cout << name.toStdString() << ": min: " << std::to_string(minimumValue) << " " << "max: " << std::to_string(maximumValue) << "\n";
+    std::cout << "min: " << std::to_string(minimumValue) << " " << "max: " << std::to_string(maximumValue) << "\n";
 //
 //    tic = omp_get_wtime();
 //    typedef itk::Statistics::ImageToHistogramFilter<SignalImageType> ImageToHistogramFilterType;
@@ -452,28 +452,30 @@ void itkSignal<dType>::calculateLUT() {
         dTypeMax = maximumValue;
     } else {
         isFloatingPoint = false;
+//         dtype is normally chart short or int, so long long and 10* should be fine
         long long upperLimitLUT = 10 * maximumValue; // limit number of maximum LUT values
+        dTypeMax = std::min<long long>(upperLimitLUT, std::numeric_limits<dType>::max());
         // TODO: Automatically resize if requested LUTvalue is not in the array. This may cause errors downstream ...
-
-        if (std::numeric_limits<dType>::max() < std::numeric_limits<int>::max()) {
-            dTypeMax = std::min<unsigned long long>(upperLimitLUT, std::numeric_limits<dType>::max()); // issue: cant add +1 because it would result in overflow for long longs ...
-        } else
-            dTypeMax = std::min<long long>(upperLimitLUT, std::numeric_limits<dType>::max());
     }
 
-    std::cout << "Calculating LUTs for " << dTypeMax << " values.\n";
+    long long int LUTSizeWanted = dTypeMax;
+//        if max is e.g. 255, LUT size has to be 256!
+    LUTSizeWanted = dTypeMax + 1;
 
-    if (size_t(dTypeMax) > LUT.size()) {
-        LUT.resize(dTypeMax);
+    std::cout << "Calculating LUTs for " << LUTSizeWanted << " values.\n";
+
+    std::cout << "Current LUT size: " << LUT.size() << std::endl;
+    if (size_t(LUTSizeWanted) > LUT.size()) {
+        std::cout << "Resizing LUT to fit index " << LUTSizeWanted << ". New size: " << LUTSizeWanted << "\n";
+        LUT.resize(LUTSizeWanted);
     }
 
-    if (verbose) { std::cout << "LUT Max Val.: " << dTypeMax << std::endl; }
     if (isCategorical) {
-        calculateLUTCategorical(dTypeMax);
+        calculateLUTCategorical(LUTSizeWanted);
     } else if (isEdge) {
-        calculateLUTEdge(dTypeMax);
+        calculateLUTEdge(LUTSizeWanted);
     } else {
-        calculateLUTContinuous(dTypeMax);
+        calculateLUTContinuous(LUTSizeWanted);
     }
 }
 
