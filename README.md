@@ -136,7 +136,7 @@ Video tutorials and more documentation are (hopefully) coming soon!
         * Press **`+`** to zoom in to the cursor.
         * Press **`-`** to zoom out.
 * **Merging and Unmerging Segments**:
-    * Paint with the **Left Mouse Button** to merge.
+    * Paint with the **Left Mouse Button** to merge. Segments are only merged if they are directly touching where the 'merge'-paint is. Note that we usually insert the thresholded boundary estimates as backgrounds into our watersheds.
     * Paint with the **Right Mouse Button** to unmerge.
     * Change brush size with number keys **`0-9`**.
 * **Reverting and Cutting Segments**:
