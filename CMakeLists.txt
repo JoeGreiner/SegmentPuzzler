@@ -44,7 +44,7 @@ MESSAGE(STATUS "USE_OMP: " ${USE_OMP})
 
 ### Apple compile options
 if (APPLE AND DEPLOY)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum OS X deployment version" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.7" CACHE STRING "Minimum OS X deployment version" FORCE)
     set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR})
     set(prefix "${PROJECT_NAME}.app/Contents")
     set(INSTALL_RUNTIME_DIR "${prefix}/MacOS")
