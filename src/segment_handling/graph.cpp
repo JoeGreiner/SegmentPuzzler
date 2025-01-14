@@ -170,6 +170,8 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
     graphBase->pEdgesInitialSegmentsImage = GraphBase::EdgeImageType::New();
     graphBase->pEdgesInitialSegmentsImage->SetRegions(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
     graphBase->pEdgesInitialSegmentsImage->Allocate(true);
+    graphBase->pEdgesInitialSegmentsImage->FillBuffer(0);
+
 
     graphBase->colorLookUpEdgesStatus.insert(
             std::pair<char, std::vector<unsigned char>>(0, {255, 255, 255, 255}));
@@ -1526,6 +1528,7 @@ void Graph::transferWorkingNodeToSegmentation(SegmentIdType labelOfNodeToTransfe
             }
         }
     }
+    graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
 }
 
 

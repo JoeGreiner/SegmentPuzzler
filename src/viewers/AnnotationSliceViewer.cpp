@@ -136,6 +136,7 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             graphBase->pWorkingSegments->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
         }
         if (graphBase->pSelectedSegmentationSignal != nullptr) {
+            graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
             graphBase->pSelectedSegmentationSignal->calculateLUT();
         }
         if (graphBase->pRefinementWatershedSignal != nullptr) {

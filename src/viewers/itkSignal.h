@@ -13,6 +13,8 @@
 #include "src/utils/utils.h"
 //#include "graphBase.h"
 
+#define LUT_SAVE_ACCESS 1
+
 #ifdef USE_OMP
 #include <omp.h>
 #endif
@@ -203,40 +205,50 @@ template<typename dType>
 void itkSignal<dType>::computeExtrema() {
     double tic = utils::tic();
 
-    typename itk::MinimumMaximumImageCalculator<SignalImageType>::Pointer minMaxCalc = itk::MinimumMaximumImageCalculator<SignalImageType>::New();
+//    typename itk::MinimumMaximumImageCalculator<SignalImageType>::Pointer minMaxCalc = itk::MinimumMaximumImageCalculator<SignalImageType>::New();
+//    // calculate xy
+//    unsigned int z_half = dimZ / 2;
+//    typename SignalImageType::IndexType startIndexXY = {0, 0, z_half};
+//    typename SignalImageType::SizeType sizeXY = {dimX, dimY, 1};
+//    typename SignalImageType::RegionType regionXY = {startIndexXY, sizeXY};
+//    minMaxCalc->SetImage(pImage);
+//    minMaxCalc->SetRegion(regionXY);
+//    minMaxCalc->Compute();
+//    minimumValue = minMaxCalc->GetMinimum();
+//    maximumValue = minMaxCalc->GetMaximum();
+//
+//    unsigned int y_half = dimY / 2;
+//    typename SignalImageType::IndexType startIndexXZ = {0, y_half, 0};
+//    typename SignalImageType::SizeType sizeXZ = {dimX, 1, dimZ};
+//    typename SignalImageType::RegionType regionXZ = {startIndexXZ, sizeXZ};
+//    minMaxCalc->SetRegion(regionXZ);
+//    minMaxCalc->Compute();
+//    minimumValue = std::min<dType>(minimumValue, minMaxCalc->GetMinimum());
+//    maximumValue = std::max<dType>(maximumValue, minMaxCalc->GetMaximum());
+//
+//    unsigned int x_half = dimX / 2;
+//    typename SignalImageType::IndexType startIndexYZ = {x_half, 0, 0};
+//    typename SignalImageType::SizeType sizeYZ = {1, dimY, dimZ};
+//    typename SignalImageType::RegionType regionYZ = {startIndexYZ, sizeYZ};
+//    minMaxCalc->SetRegion(regionYZ);
+//    minMaxCalc->Compute();
+//    minimumValue = std::min<dType>(minimumValue, minMaxCalc->GetMinimum());
+//    maximumValue = std::max<dType>(maximumValue, minMaxCalc->GetMaximum());
 
-    // calculate xy
-    unsigned int z_half = dimZ / 2;
-    typename SignalImageType::IndexType startIndexXY = {0, 0, z_half};
-    typename SignalImageType::SizeType sizeXY = {dimX, dimY, 1};
-    typename SignalImageType::RegionType regionXY = {startIndexXY, sizeXY};
+//    calculate for whole image
+    typename itk::MinimumMaximumImageCalculator<SignalImageType>::Pointer minMaxCalc = itk::MinimumMaximumImageCalculator<SignalImageType>::New();
     minMaxCalc->SetImage(pImage);
-    minMaxCalc->SetRegion(regionXY);
+    minMaxCalc->SetRegion(pImage->GetLargestPossibleRegion());
     minMaxCalc->Compute();
+
+//    minimumValue = std::max<dType>(minimumValue, minMaxCalc->GetMinimum());
+//    maximumValue = std::min<dType>(maximumValue, minMaxCalc->GetMaximum());
     minimumValue = minMaxCalc->GetMinimum();
     maximumValue = minMaxCalc->GetMaximum();
 
-    unsigned int y_half = dimY / 2;
-    typename SignalImageType::IndexType startIndexXZ = {0, y_half, 0};
-    typename SignalImageType::SizeType sizeXZ = {dimX, 1, dimZ};
-    typename SignalImageType::RegionType regionXZ = {startIndexXZ, sizeXZ};
-    minMaxCalc->SetRegion(regionXZ);
-    minMaxCalc->Compute();
-    minimumValue = std::min<dType>(minimumValue, minMaxCalc->GetMinimum());
-    maximumValue = std::max<dType>(maximumValue, minMaxCalc->GetMaximum());
-
-    unsigned int x_half = dimX / 2;
-    typename SignalImageType::IndexType startIndexYZ = {x_half, 0, 0};
-    typename SignalImageType::SizeType sizeYZ = {1, dimY, dimZ};
-    typename SignalImageType::RegionType regionYZ = {startIndexYZ, sizeYZ};
-    minMaxCalc->SetRegion(regionYZ);
-    minMaxCalc->Compute();
-    minimumValue = std::min<dType>(minimumValue, minMaxCalc->GetMinimum());
-    maximumValue = std::max<dType>(maximumValue, minMaxCalc->GetMaximum());
-
 
     utils::toc(tic, "duration MinimumMaximumImageCalculator computeExtrema: ");
-//    std::cout << "min: " << std::to_string(minimumValue) << " " << "max: " << std::to_string(maximumValue) << "\n";
+    std::cout << name.toStdString() << ": min: " << std::to_string(minimumValue) << " " << "max: " << std::to_string(maximumValue) << "\n";
 //
 //    tic = omp_get_wtime();
 //    typedef itk::Statistics::ImageToHistogramFilter<SignalImageType> ImageToHistogramFilterType;
@@ -685,6 +697,7 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
     it.GoToBegin();
 //    TODO: is checkAndResizeLut needed?
 
+
     const dType* imageBuffer = pImage->GetBufferPointer();
     quint32* sliceBufferPtr = sliceBuffer->data();
     if (!isFloatingPoint) {
@@ -700,7 +713,11 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
 
                     // Write to the sliceBuffer at (z, y)
                     unsigned long sliceBufferIndex = z + (y * dimZ);
+#if LUT_SAVE_ACCESS
+                    sliceBufferPtr[sliceBufferIndex] = LUT.at(value);
+#else
                     sliceBufferPtr[sliceBufferIndex] = LUT[value];
+#endif
                 }
             }
 
@@ -721,7 +738,11 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
                 for (unsigned long x = 0; x < dimX; ++x) {
                     unsigned long imageOffset = x + yOffset + zOffset;
                     dType value = imageBuffer[imageOffset];
+#if LUT_SAVE_ACCESS
+                    sliceBufferPtr[bufferIndex++] = LUT.at(value);
+#else
                     sliceBufferPtr[bufferIndex++] = LUT[value];
+#endif
                 }
             }
 //            while (!it.IsAtEnd()) {
@@ -738,7 +759,11 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
             const dType* sliceData = imageBuffer + imageOffset;
             for (unsigned long idx = 0; idx < sliceSize; ++idx) {
                 dType value = sliceData[idx];
+#if LUT_SAVE_ACCESS
+                sliceBufferPtr[idx] = LUT.at(value);
+#else
                 sliceBufferPtr[idx] = LUT[value];
+#endif
             }
 //
 //            while (!it.IsAtEnd()) {
