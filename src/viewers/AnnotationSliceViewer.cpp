@@ -214,6 +214,10 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
 //            std::cout << "Setting gClicked to true\n";
             viewer->gClicked = true;
         }
+    } else if (event->key() == Qt::Key_H) {
+        for (auto &viewer: graphBase->viewerList) {
+            viewer->hClicked = true;
+        }
     } else if (event->key() == Qt::Key_E) {
         exportDebugInformation();
 //        graphBase->pGraph->printMergeTreeToFile("mergeTree.txt");
@@ -279,6 +283,10 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
             std::cout << "Setting gClicked to false\n";
             viewer->gClicked = false;
         }
+    } else if (event->key() == Qt::Key_H) {
+        for (auto &viewer : graphBase->viewerList) {
+            viewer->hClicked = false;
+        }
     }
 }
 
@@ -289,7 +297,7 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         return;
     }
     if (!cmdClicked && !sClicked && !pClicked && !dClicked && !xClicked && !cClicked && !qClicked &&
-    !ROISelectionModeIsActive && !fClicked && !gClicked) {
+    !ROISelectionModeIsActive && !fClicked && !gClicked && !hClicked) {
         if (event->button() == Qt::LeftButton) {
             lastPoint = QPoint(event->pos().x() / zoomFactor, event->pos().y() / zoomFactor);
             scribbling = true;
@@ -352,8 +360,43 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         for (auto &viewer : graphBase->viewerList) {
             viewer->gClicked = false;
         }
+    } else if (hClicked){
+        runInsertSegmentationSegmentIntoInitialSegments(event->pos().x(), event->pos().y());
+        for (auto &viewer : graphBase->viewerList) {
+            viewer->hClicked = false;
+        }
     }
 
+}
+
+void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int posX, int posY){
+    std::cout << "Running InsertSegmentationSegmentIntoInitialSegments\n";
+    std::cout << "AnnotationSliceViewer::InsertSegmentationSegmentIntoInitialSegments called" << std::endl;
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    printf("Insert segment at position: %d %d %d\n", x, y, z);
+
+    QMetaObject::invokeMethod(this, [this, x, y, z]() {
+        QDialogProgressbarPassthrough *dialog = new QDialogProgressbarPassthrough(this);
+        dialog->setCancelButton(0);
+        dialog->setLabelText(QString("Insert Segment by Position ..."));
+        dialog->setMinimumWidth(QFontMetrics(dialog->font()).horizontalAdvance(dialog->labelText()) + 50);
+        dialog->setRange(0, 0);
+
+        QFutureWatcher<void> *futureWatcher = new QFutureWatcher<void>(this);
+        QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::transferSegmentationSegmentToInitialSegment, x, y, z);
+        futureWatcher->setFuture(future);
+        QObject::connect(futureWatcher, &QFutureWatcher<void>::finished, dialog, &QDialog::accept);
+        QObject::connect(dialog, &QDialog::finished, futureWatcher, &QObject::deleteLater);
+        QObject::connect(dialog, &QDialog::finished, dialog, &QObject::deleteLater);
+
+
+        dialog->exec();
+    }, Qt::QueuedConnection);
+
+    for (auto &viewer : graphBase->viewerList) {
+        viewer->recalculateQImages();
+    }
 }
 
 void AnnotationSliceViewer::runOpenSegmentationLabel(int posX, int posY){

@@ -40,6 +40,7 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent
     qClicked = false;
     fClicked = false;
     gClicked = false;
+    hClicked = false;
     shiftClicked = false;
     numberSignals = 0;
 

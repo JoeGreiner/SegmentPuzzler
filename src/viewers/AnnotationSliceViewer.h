@@ -34,6 +34,8 @@ public slots:
     void turnROISelectonModeActive();
 
     void refineSegmentByPosition(int posX, int posY);
+    void runInsertSegmentationSegmentIntoInitialSegments(int posX, int posY);
+
 
     void runOpenSegmentationLabel(int posX, int posY);
 

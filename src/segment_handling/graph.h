@@ -77,6 +77,7 @@ class Graph : public QWidget{
 public slots:
             // get the segment of the refinement watershed and put into the current segmentation map
     void refineSegmentByPosition(int x, int y, int z);
+    void transferSegmentationSegmentToInitialSegment(int x, int y, int z);
     void receiveBackgroundIdStrategy(QString backgroundIdStrategyIn);
 
 public:

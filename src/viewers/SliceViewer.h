@@ -102,6 +102,7 @@ public:
     // fill holes due to closing
     bool fClicked;
     bool gClicked;
+    bool hClicked;
 
     std::shared_ptr<GraphBase> graphBase;
 

@@ -391,6 +391,9 @@ void MainWindow::showHotkeys() {
 <h3>G + Click</h3>
 <p>[O]pening operation on segmentation label under cursor.</p>
 
+<h3>H + Click</h3>
+<p>Insert Segment from Segmentation into initial nodes.</p>
+
 <h3>E</h3>
 <p>[E]xport debug information.</p>
 

@@ -1259,12 +1259,40 @@ void Graph::exportDebugInformation(){
 }
 
 
+void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
+// high level workflow: create volume with just the one segment in background
+// treat that new segment as a normal refinement segmentation call
+
+    auto label = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+//    create temporary refinement watershed
+    auto pRefinementWatershed = SegmentsImageType::New();
+    pRefinementWatershed->SetRegions(graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
+    pRefinementWatershed->Allocate();
+    pRefinementWatershed->FillBuffer(0);
+
+//    just transfer the whole image and only copy if label matches
+    itk::ImageRegionConstIterator<SegmentsImageType> it(graphBase->pSelectedSegmentation,
+                                                        graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
+    itk::ImageRegionIterator<SegmentsImageType> itRefinement(pRefinementWatershed,
+                                                             pRefinementWatershed->GetLargestPossibleRegion());
+    std::cout << "Label: " << label << "\n";
+    for (it.GoToBegin(), itRefinement.GoToBegin(); !it.IsAtEnd(); ++it, ++itRefinement) {
+        if (it.Get() == label) {
+            itRefinement.Set(label);
+        }
+    }
+    std::cout << "Label: " << label << "\n";
+    auto oldRefinement = graphBase->pRefinementWatershed;
+    graphBase->pRefinementWatershed = pRefinementWatershed;
+    refineSegmentByPosition(x, y, z);
+    graphBase->pRefinementWatershed = oldRefinement;
+}
+
 
 // highlevel workflow:
 // * get the background id of the refinement ws (highest label)<
 // * check if the clicked label is not background
 // * do a floodfill on the clicked pixel to get the refined segments voxels
-
 void Graph::refineSegmentByPosition(int x, int y, int z) {
     double t = 0, t1 = 0, t2 = 0;
     if (verbose) { t = utils::tic("Graph::refineSegmentByPosition called"); }
