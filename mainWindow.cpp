@@ -4,6 +4,10 @@
 #include <QStatusBar>
 #include <QScreen>
 #include <QDialogButtonBox>
+#include <QLineEdit>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QFormLayout>
 #include "src/utils/utils.h"
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
@@ -103,6 +107,47 @@ MainWindow::MainWindow() {
     helpMenu->addAction(openHotkeysAction);
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
+
+    viewerMenu = menuBar()->addMenu(tr("&Views"));
+    QAction *openOrthoAction = new QAction(tr("&Go to Coordinates"), this);
+    viewerMenu->addAction(openOrthoAction);
+    connect(openOrthoAction, &QAction::triggered, this, [this]() {
+//        open q box for three integers
+        QDialog dialog(this);
+        dialog.setWindowTitle("Go to Coordinates");
+        QFormLayout form(&dialog);
+        form.addRow(new QLabel("X:"));
+        QLineEdit xEdit;
+        form.addRow(&xEdit);
+        form.addRow(new QLabel("Y:"));
+        QLineEdit yEdit;
+        form.addRow(&yEdit);
+        form.addRow(new QLabel("Z:"));
+        QLineEdit zEdit;
+        form.addRow(&zEdit);
+
+        QDialogButtonBox buttonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+        form.addRow(&buttonBox);
+        QObject::connect(&buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        QObject::connect(&buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        QObject::connect(&dialog, &QDialog::accepted, &dialog, &QDialog::deleteLater);
+
+        if (dialog.exec() == QDialog::Accepted) {
+            int x = xEdit.text().toInt();
+            int y = yEdit.text().toInt();
+            int z = zEdit.text().toInt();
+            std::cout << "Go to coordinates: " << x << " " << y << " " << z << std::endl;
+            if(myOrthowindow->xy->isSliceIndexValid(z)) {
+                myOrthowindow->xy->setSliceIndex(z);
+            }
+            if (myOrthowindow->xz->isSliceIndexValid(y)) {
+                myOrthowindow->xz->setSliceIndex(y);
+            }
+            if (myOrthowindow->zy->isSliceIndexValid(x)) {
+                myOrthowindow->zy->setSliceIndex(x);
+            }
+        }
+    });
 
 
 }
