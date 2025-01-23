@@ -27,6 +27,7 @@ private slots:
 private:
     OrthoViewer *myOrthowindow;
     QMenu *helpMenu;
+    QMenu *viewerMenu;
     QMenu *sampleDataMenu;
 
     QAction *openHotkeysAction;

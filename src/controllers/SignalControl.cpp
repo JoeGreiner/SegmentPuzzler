@@ -345,6 +345,7 @@ void SignalControl::setupSegmentationTreeWidget() {
     exportSegmentationButton = new QPushButton("Export Selected Segmentation");
     loadSegmentationButton = new QPushButton("Load Segmentation");
     togglePaintBrushButton = new QPushButton("Turn Paintmode On");
+    setPaintIdButton = new QPushButton("Set Paint Id");
     transferSegmentsWithVolumeButton = new QPushButton("Transfer Segments with Volume");
     transferSegmentsWithRefinementButton = new QPushButton("Transfer Segments with RefinementWS Overlap");
     transferAllSegmentsButton = new QPushButton("Transfer all Segments");
@@ -354,9 +355,10 @@ void SignalControl::setupSegmentationTreeWidget() {
     segmentationButtonWidgetGridLayout->addWidget(exportSegmentationButton, 1, 0);
     segmentationButtonWidgetGridLayout->addWidget(loadSegmentationButton, 2, 0);
     segmentationButtonWidgetGridLayout->addWidget(togglePaintBrushButton, 3, 0);
-    segmentationButtonWidgetGridLayout->addWidget(transferSegmentsWithVolumeButton, 4, 0);
-    segmentationButtonWidgetGridLayout->addWidget(transferAllSegmentsButton, 5, 0);
-    segmentationButtonWidgetGridLayout->addWidget(transferSegmentsWithRefinementButton, 6, 0);
+    segmentationButtonWidgetGridLayout->addWidget(setPaintIdButton, 4, 0);
+    segmentationButtonWidgetGridLayout->addWidget(transferSegmentsWithVolumeButton, 5, 0);
+    segmentationButtonWidgetGridLayout->addWidget(transferAllSegmentsButton, 6, 0);
+    segmentationButtonWidgetGridLayout->addWidget(transferSegmentsWithRefinementButton, 7, 0);
 
     segmentationWidgetLayout->addWidget(segmentationButtonWidget);
 
@@ -364,6 +366,7 @@ void SignalControl::setupSegmentationTreeWidget() {
     connect(loadSegmentationButton, SIGNAL(clicked()), this, SLOT(loadSegmentationVolumePressed()));
     connect(exportSegmentationButton, SIGNAL(clicked()), this, SLOT(exportSelectedSegmentation()));
     connect(togglePaintBrushButton, SIGNAL(clicked()), this, SLOT(togglePaintMode()));
+    connect(setPaintIdButton, SIGNAL(clicked()), this, SLOT(setPaintId()));
     connect(transferSegmentsWithVolumeButton, SIGNAL(clicked()), this, SLOT(transferSegmentsWithVolume()));
     connect(transferSegmentsWithRefinementButton, SIGNAL(clicked()), this, SLOT(transferSegmentsWithRefinementWS()));
     connect(transferAllSegmentsButton, SIGNAL(clicked()), this, SLOT(transferAllSegments()));
@@ -516,6 +519,34 @@ void SignalControl::exportSelectedSegmentation() {
         }
 
     }
+}
+
+void SignalControl::setPaintId(){
+    if (graphBase->pWorkingSegmentsImage == nullptr) {
+        QMessageBox msgBox;
+        msgBox.setText("OrthoViewer not initialised yet. Returning.");
+        msgBox.exec();
+        return;
+    }
+    auto maxId = std::numeric_limits<dataType::SegmentIdType>::max();
+    //    cast to int max
+    if (maxId > std::numeric_limits<int>::max()) {
+        maxId = std::numeric_limits<int>::max();
+    }
+    bool ok;
+    int paintId = QInputDialog::getInt(this, "Set Paint Id", "Set Paint Id",
+                                       graphBase->pGraph->getNextFreeId(graphBase->pSelectedSegmentation),
+                                       0, static_cast<int>(maxId), 1, &ok);
+    if (!ok) {
+        return;
+    }
+    std::cout << "Setting paint id to: " << paintId << std::endl;
+    graphBase->pOrthoViewer->xy->labelOfClickedSegmentation = paintId;
+    graphBase->pOrthoViewer->zy->labelOfClickedSegmentation = paintId;
+    graphBase->pOrthoViewer->xz->labelOfClickedSegmentation = paintId;
+    graphBase->pOrthoViewer->xy->setPaintId(paintId);
+    graphBase->pOrthoViewer->zy->setPaintId(paintId);
+    graphBase->pOrthoViewer->xz->setPaintId(paintId);
 }
 
 void SignalControl::togglePaintMode() {

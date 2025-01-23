@@ -225,6 +225,8 @@ public:
     // set pointer to ignoredSegments vector
     void setPointerToIgnoredSegmentLabels(std::vector<SegmentIdType> *pIgnoredSegmentLabels);
 
+    SegmentIdType getNextFreeId(itk::Image<SegmentIdType, 3>::Pointer pImage);
+
 
 private:
     void constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage);
@@ -234,7 +236,6 @@ private:
     SegmentIdType getLargestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage);
     SegmentIdType getSmallestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage);
 
-    SegmentIdType getNextFreeId(itk::Image<SegmentIdType, 3>::Pointer pImage);
 
     void mergeOneSidedEdgesIntoTwosidedEdges();
 

@@ -156,6 +156,9 @@ public slots:
     size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut,
     bool forceShapeOfSegments = true);
 
+    void setPaintId();
+
+
 
 private:
     unsigned int getSignalIndex(QTreeWidgetItem *item);
@@ -195,6 +198,7 @@ private:
     QPushButton *exportSegmentationButton;
     QPushButton *loadSegmentationButton;
     QPushButton *togglePaintBrushButton;
+    QPushButton *setPaintIdButton;
     QPushButton *transferSegmentsWithVolumeButton;
     QPushButton *transferSegmentsWithRefinementButton;
     QPushButton *transferAllSegmentsButton;
@@ -221,6 +225,8 @@ private:
     void setupSegmentationTreeWidget();
 
     void setupProbabilityTreeWidget();
+
+
 
 
 

@@ -22,6 +22,10 @@ public:
     itk::Image<unsigned char, 3>::Pointer pThresholdedBoundaries;
     itkSignalBase * pThresholdedBoundariesSignal;
 
+//   this is also used to process annotations in paintmode!!
+    dataType::SegmentIdType labelOfClickedSegmentation;
+
+
 public slots:
     void toggleROISelectonModeIsActive();
 
@@ -41,6 +45,7 @@ public slots:
 
     void exportDebugInformation();
 
+    void setPaintId(dataType::SegmentIdType);
 
 
 protected:
@@ -74,13 +79,14 @@ protected:
 
     void updatePenWidthInAllViewers(int newPenWidth);
 
+
+
 private:
     std::vector<quint32> tmpImageEdge;
     QImage annotationImage, edgeImage;
 
     bool paintModeIsActive;
     bool paintBoundaryModeIsActive;
-    dataType::SegmentIdType labelOfClickedSegmentation;
 
     bool scribbling, rightClicked;
 

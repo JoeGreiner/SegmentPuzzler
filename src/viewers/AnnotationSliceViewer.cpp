@@ -210,8 +210,8 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             viewer->fClicked = true;
         }
     } else if (event->key() == Qt::Key_G) {
-        for (auto &viewer : graphBase->viewerList) {
-            std::cout << "Setting gClicked to true\n";
+        for (auto &viewer: graphBase->viewerList) {
+//            std::cout << "Setting gClicked to true\n";
             viewer->gClicked = true;
         }
     } else if (event->key() == Qt::Key_E) {
@@ -1110,6 +1110,16 @@ void AnnotationSliceViewer::togglePaintMode() {
 
 void AnnotationSliceViewer::togglePaintBoundaryMode() {
     paintBoundaryModeIsActive = !paintBoundaryModeIsActive;
+}
+
+void AnnotationSliceViewer::setPaintId(dataType::SegmentIdType){
+    quint32 colorOfClickedSegment = graphBase->pSelectedSegmentationSignal->LUT[labelOfClickedSegmentation];
+    unsigned char red, green, blue;
+    red = (unsigned char) (colorOfClickedSegment >> 16);
+    green = (unsigned char) (colorOfClickedSegment >> 8);
+    blue = (unsigned char) (colorOfClickedSegment >> 0);
+    cursorColor = QColor(red, green, blue);
+    setUpCustomCursor();
 }
 
 void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
