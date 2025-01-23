@@ -1264,6 +1264,12 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
 // treat that new segment as a normal refinement segmentation call
 
     auto label = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+
+    if (label == 0){
+        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: Label is 0, not transferring\n";
+        return;
+    }
+
 //    create temporary refinement watershed
     auto pRefinementWatershed = SegmentsImageType::New();
     pRefinementWatershed->SetRegions(graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
@@ -1281,11 +1287,23 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
             itRefinement.Set(label);
         }
     }
-    std::cout << "Label: " << label << "\n";
+
+//    std::unique_ptr<itkSignal<unsigned char>> pSignal2(new itkSignal<unsigned char>(pImage));
+
+//    auto pRefinementWatershedSignal = itkSignal<dataType::SegmentIdType>(pRefinementWatershed);
+    auto pRefinementWatershedSignal = std::make_shared<itkSignal<dataType::SegmentIdType>>(pRefinementWatershed);
+
+
     auto oldRefinement = graphBase->pRefinementWatershed;
+    auto oldRefinementSignal = graphBase->pRefinementWatershedSignal;
+
     graphBase->pRefinementWatershed = pRefinementWatershed;
+    graphBase->pRefinementWatershedSignal = pRefinementWatershedSignal.get();
+
+
     refineSegmentByPosition(x, y, z);
     graphBase->pRefinementWatershed = oldRefinement;
+    graphBase->pRefinementWatershedSignal = oldRefinementSignal;
 }
 
 

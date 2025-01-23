@@ -376,23 +376,16 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
     getXYZfromPixmapPos(posX, posY, x, y, z);
     printf("Insert segment at position: %d %d %d\n", x, y, z);
 
-    QMetaObject::invokeMethod(this, [this, x, y, z]() {
-        QDialogProgressbarPassthrough *dialog = new QDialogProgressbarPassthrough(this);
-        dialog->setCancelButton(0);
-        dialog->setLabelText(QString("Insert Segment by Position ..."));
-        dialog->setMinimumWidth(QFontMetrics(dialog->font()).horizontalAdvance(dialog->labelText()) + 50);
-        dialog->setRange(0, 0);
+    QDialogProgressbarPassthrough dialog(this);
+    dialog.setCancelButton(0);
+    dialog.setLabelText(QString("Insert Segment by Position ..."));
+    dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
+    dialog.setRange(0, 0);
 
-        QFutureWatcher<void> *futureWatcher = new QFutureWatcher<void>(this);
-        QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::transferSegmentationSegmentToInitialSegment, x, y, z);
-        futureWatcher->setFuture(future);
-        QObject::connect(futureWatcher, &QFutureWatcher<void>::finished, dialog, &QDialog::accept);
-        QObject::connect(dialog, &QDialog::finished, futureWatcher, &QObject::deleteLater);
-        QObject::connect(dialog, &QDialog::finished, dialog, &QObject::deleteLater);
-
-
-        dialog->exec();
-    }, Qt::QueuedConnection);
+    QFutureWatcher<void> futureWatcher;
+    QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::transferSegmentationSegmentToInitialSegment, x, y, z);
+    futureWatcher.setFuture(future);
+    futureWatcher.waitForFinished();
 
     for (auto &viewer : graphBase->viewerList) {
         viewer->recalculateQImages();
