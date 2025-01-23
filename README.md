@@ -172,6 +172,71 @@ Video tutorials and more documentation are (hopefully) coming soon!
           * For simple topologies, this may allow you to erase every N-th slice and then run morphological opening to open the intermediately slices similarly.
 </details>
 
+<details>
+<summary>Command-Line Usage</summary>
+  
+In some cases, calling SegmentPuzzler from commandline can be useful. We often use it to go through stacks for proofreading (can also be sorted by a metric, e.g. segmentation error). One can also use it to quickly select objects of interest from a oversegmentation. 
+```bash
+SegmentPuzzler
+    [--segments $path_to_segments [$display_name_segments]]
+    [--image $path_to_image [$display_name_image]]
+    [--segmentation $path_to_segmentation [$display_name_segmentation]]
+    [--boundary $path_to_boundary [$display_name_boundary]]
+    [--refinement $path_to_refinement [$display_name_refinement]]
+```
+</details>
+
+<details>
+<summary>Call from Python</summary>
+To reduce wait times, it is helpful to run it from Python with multiple processes, so that at least one SegmentPuzzler instance is always ready to use, see the basic example attached.
+
+```python
+import os
+import glob
+from multiprocessing import Pool
+import subprocess
+import time
+
+number_of_processes = 2
+
+def create_job_list():
+    base_path = "/path/to/your/data"
+    segmentations_path = glob.glob(os.path.join(base_path, "*.nrrd"))
+    joblist = []
+
+    for seg_path in segmentations_path:
+        img_path = seg_path.replace(".nrrd", "_img.nrrd")  # Example matching logic
+        if os.path.exists(img_path):
+            joblist.append((seg_path, img_path))
+        else:
+            print(f"Image not found for {seg_path}, skipping.")
+
+    return joblist
+
+def run_segmentpuzzler(seg_path, img_path, delay=0):
+    if delay > 0:
+        time.sleep(delay)
+
+    cmd = [
+        "/path/to/SegmentPuzzler",  # Path to SegmentPuzzler binary
+        "--segments", seg_path,
+        "--image", img_path
+    ]
+    print(f"Running: {' '.join(cmd)}")
+    subprocess.run(cmd)
+
+if __name__ == "__main__":
+    joblist = create_job_list()
+
+    joblist_with_delay = [
+        (*job, 20 if i == 1 else 0) for i, job in enumerate(joblist)
+    ]
+
+    with Pool(processes=number_of_processes) as pool:
+      pool.starmap(run_segmentpuzzler, joblist_with_delay)
+
+```
+</details>
 
 ## Dependencies and Acknowledgments
 
