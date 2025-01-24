@@ -381,11 +381,14 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
     dialog.setLabelText(QString("Insert Segment by Position ..."));
     dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
     dialog.setRange(0, 0);
+    dialog.show();
 
     QFutureWatcher<void> futureWatcher;
     QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::transferSegmentationSegmentToInitialSegment, x, y, z);
     futureWatcher.setFuture(future);
-    futureWatcher.waitForFinished();
+    QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+    dialog.show();
+    future.waitForFinished();
 
     for (auto &viewer : graphBase->viewerList) {
         viewer->recalculateQImages();
@@ -427,6 +430,7 @@ void AnnotationSliceViewer::runFillSegmentationLabel(int posX, int posY){
 void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     double tic = utils::tic();
 
+    double time_first_part = utils::tic("OpenSegmentationLabel first part started: ");
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
     printf("Open segment at position: %d %d %d\n", x, y, z);
@@ -447,22 +451,7 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
         return void();
     }
 
-    using LabelGeometryImageFilterType = itk::LabelGeometryImageFilter<dataType::SegmentsImageType>;
-    LabelGeometryImageFilterType::Pointer labelGeometryImageFilter = LabelGeometryImageFilterType::New();
-    labelGeometryImageFilter->SetInput(graphBase->pSelectedSegmentation);
-    labelGeometryImageFilter->Update();
-
-    std::cout << "Number of labels: " << labelGeometryImageFilter->GetNumberOfLabels() << std::endl;
-
-    auto boundingBox = labelGeometryImageFilter->GetBoundingBox(labelAtClickPosition);
-    long fx = boundingBox[0];
-    long tx = boundingBox[1];
-    long fy = boundingBox[2];
-    long ty = boundingBox[3];
-    long fz = boundingBox[4];
-    long tz = boundingBox[5];
-
-    std::cout << "\n";
+    auto [fx, fy, fz, tx, ty, tz] = utils::calculateBoundingBoxForLabel(graphBase->pSelectedSegmentation, labelAtClickPosition);
 
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     ROIExtractionFilterType::Pointer ROIExtractionFilter = ROIExtractionFilterType::New();
@@ -483,7 +472,9 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
 
     dataType::SegmentsImageType ::Pointer pExtractedCell = ROIExtractionFilter->GetOutput();
     ROIExtractionFilter->Update();
+    utils::toc(time_first_part, "OpenSegmentationLabel first part finished: ");
 
+    double time_second_part = utils::tic("OpenSegmentationLabel second part started: ");
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType , dataType::Dimension>;
     StructuringElementType structuringElement;
     structuringElement.SetRadius(3);
@@ -497,8 +488,11 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     openingFilter->SetForegroundValue(labelAtClickPosition);
     openingFilter->Update();
 //    std::cout << "Safe border: " << openingFilter->GetSafeBorder() << "\n";
+    utils::toc(time_second_part, "OpenSegmentationLabel second part finished: ");
 
     auto pExtractedCellClosed = openingFilter->GetOutput();
+
+
 
 //    graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(pExtractedCellClosed,
 //                                                                  "/home/greinerj/testClosed.nrrd");
@@ -565,23 +559,7 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
     }
 
 
-
-    using LabelGeometryImageFilterType = itk::LabelGeometryImageFilter<dataType::SegmentsImageType>;
-    LabelGeometryImageFilterType::Pointer labelGeometryImageFilter = LabelGeometryImageFilterType::New();
-    labelGeometryImageFilter->SetInput(graphBase->pSelectedSegmentation);
-    labelGeometryImageFilter->Update();
-
-    std::cout << "Number of labels: " << labelGeometryImageFilter->GetNumberOfLabels() << std::endl;
-
-    auto boundingBox = labelGeometryImageFilter->GetBoundingBox(labelAtClickPosition);
-    long fx = boundingBox[0];
-    long tx = boundingBox[1];
-    long fy = boundingBox[2];
-    long ty = boundingBox[3];
-    long fz = boundingBox[4];
-    long tz = boundingBox[5];
-
-    std::cout << "\n";
+    auto [fx, fy, fz, tx, ty, tz] = utils::calculateBoundingBoxForLabel(graphBase->pSelectedSegmentation, labelAtClickPosition);
 
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     ROIExtractionFilterType::Pointer ROIExtractionFilter = ROIExtractionFilterType::New();

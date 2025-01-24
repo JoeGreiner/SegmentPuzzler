@@ -8,6 +8,8 @@
 #include <omp.h>
 #else
 #include <chrono>
+#include <itkImageRegionConstIterator.h>
+
 #endif
 
 
@@ -58,4 +60,35 @@ utils::SegmentIdType utils::getOtherLabelOfPair(EdgePairIdType pair, SegmentIdTy
     SegmentIdType labelA = pair.first;
     SegmentIdType labelB = pair.second;
     return (ownLabel == labelA) ? labelB : labelA;
+}
+
+
+std::tuple<long, long, long, long, long, long> utils::calculateBoundingBoxForLabel(
+        typename dataType::SegmentsImageType::Pointer segmentationImage,
+        dataType::SegmentIdType labelValue
+) {
+    const auto &fullRegion = segmentationImage->GetBufferedRegion();
+    itk::ImageRegionConstIterator<dataType::SegmentsImageType> itBB(segmentationImage, fullRegion);
+
+    long fx = std::numeric_limits<long>::max();
+    long fy = std::numeric_limits<long>::max();
+    long fz = std::numeric_limits<long>::max();
+    long tx = std::numeric_limits<long>::lowest();
+    long ty = std::numeric_limits<long>::lowest();
+    long tz = std::numeric_limits<long>::lowest();
+
+    for (itBB.GoToBegin(); !itBB.IsAtEnd(); ++itBB) {
+        if (itBB.Get() == labelValue) {
+            auto idx = itBB.GetIndex();
+            long xI = idx[0], yI = idx[1], zI = idx[2];
+            if (xI < fx) fx = xI;
+            if (yI < fy) fy = yI;
+            if (zI < fz) fz = zI;
+            if (xI > tx) tx = xI;
+            if (yI > ty) ty = yI;
+            if (zI > tz) tz = zI;
+        }
+    }
+
+    return std::make_tuple(fx, fy, fz, tx, ty, tz);
 }

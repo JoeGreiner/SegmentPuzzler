@@ -20,6 +20,11 @@ namespace utils {
 
     EdgePairIdType switchOrderOfPair(EdgePairIdType pairIn);
 
+    std::tuple<long, long, long, long, long, long> calculateBoundingBoxForLabel(
+            typename dataType::SegmentsImageType::Pointer segmentationImage,
+            dataType::SegmentIdType labelValue);
+
+
     template<typename keyType, typename targetType>
     std::vector<keyType> getKeyVecOfSharedPtrMap(
             std::unordered_map<keyType, std::shared_ptr<targetType>> &map) {
