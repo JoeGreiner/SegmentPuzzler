@@ -102,16 +102,10 @@ MainWindow::MainWindow() {
     });
 
 
-    helpMenu = menuBar()->addMenu(tr("&Help"));
-    openHotkeysAction = new QAction(tr("&Show HotKeys"), this);
-    helpMenu->addAction(openHotkeysAction);
-    connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
-    connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
-
     viewerMenu = menuBar()->addMenu(tr("&Views"));
-    QAction *openOrthoAction = new QAction(tr("&Go to Coordinates"), this);
-    viewerMenu->addAction(openOrthoAction);
-    connect(openOrthoAction, &QAction::triggered, this, [this]() {
+    QAction *openGoToCoordinatesAction = new QAction(tr("&Go to Coordinates"), this);
+    viewerMenu->addAction(openGoToCoordinatesAction);
+    connect(openGoToCoordinatesAction, &QAction::triggered, this, [this]() {
 //        open q box for three integers
         QDialog dialog(this);
         dialog.setWindowTitle("Go to Coordinates");
@@ -149,7 +143,63 @@ MainWindow::MainWindow() {
         }
     });
 
+    QAction *openGoToLabelAction = new QAction(tr("&Go to Label"), this);
+    viewerMenu->addAction(openGoToLabelAction);
+    connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
+        if (graphBase->pSelectedSegmentation == nullptr) {
+            std::cout << "No segmentation loaded.\n";
+            return;
+        }
+        QDialog dialog(this);
+        dialog.setWindowTitle("Go to Label");
+        QFormLayout form(&dialog);
+        form.addRow(new QLabel("Label:"));
+        QLineEdit labelEdit;
+        form.addRow(&labelEdit);
 
+        QDialogButtonBox buttonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+        form.addRow(&buttonBox);
+        QObject::connect(&buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        QObject::connect(&buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        QObject::connect(&dialog, &QDialog::accepted, &dialog, &QDialog::deleteLater);
+
+        if (dialog.exec() == QDialog::Accepted) {
+            int label = labelEdit.text().toInt();
+            std::cout << "Go to label: " << label << std::endl;
+            itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(graphBase->pSelectedSegmentation, graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
+            bool found = false;
+            while (!it.IsAtEnd()) {
+                if (it.Get() == label) {
+                    auto index = it.GetIndex();
+                    std::cout << "Found label at: " << index[0] << " " << index[1] << " " << index[2] << std::endl;
+                    if(myOrthowindow->xy->isSliceIndexValid(index[2])) {
+                        myOrthowindow->xy->setSliceIndex(index[2]);
+                    }
+                    if (myOrthowindow->xz->isSliceIndexValid(index[1])) {
+                        myOrthowindow->xz->setSliceIndex(index[1]);
+                    }
+                    if (myOrthowindow->zy->isSliceIndexValid(index[0])) {
+                        myOrthowindow->zy->setSliceIndex(index[0]);
+                    }
+                    found = true;
+                    break;
+                }
+                ++it;
+            }
+            if (!found) {
+                std::cout << "Label not found.\n";
+            }
+        }
+
+    }
+    );
+
+
+    helpMenu = menuBar()->addMenu(tr("&Help"));
+    openHotkeysAction = new QAction(tr("&Show HotKeys"), this);
+    helpMenu->addAction(openHotkeysAction);
+    connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
+    connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
 }
 
 
