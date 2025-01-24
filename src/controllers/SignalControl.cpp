@@ -291,9 +291,14 @@ void SignalControl::selectROIRefinementPressed() {
 }
 
 void SignalControl::transferSegmentsWithVolume() {
+    bool ok;
     double volumeThreshold = QInputDialog::getDouble(this, tr("Transfer with volume"),
                                                      tr("Transfer all Segments with a volume greater than:"),
-                                                     50000, 0, 1000000, 0);
+                                                     50000, 0, 1000000, 0, &ok);
+    if (!ok) {
+        return;
+    }
+
     graphBase->pGraph->transferSegmentsWithVolumeCriterion(volumeThreshold);
     for (auto &viewer: graphBase->viewerList) {
         viewer->recalculateQImages();
