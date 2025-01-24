@@ -487,10 +487,34 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     openingFilter->SetKernel(structuringElement);
     openingFilter->SetForegroundValue(labelAtClickPosition);
     openingFilter->Update();
+    auto pExtractedCellClosed = openingFilter->GetOutput();
+
 //    std::cout << "Safe border: " << openingFilter->GetSafeBorder() << "\n";
     utils::toc(time_second_part, "OpenSegmentationLabel second part finished: ");
+//
+////     try the same thing with a fast binary dil and erode
+////    this is not faster!
+//    auto start_manual_open = utils::tic("Manual Open started: ");
+////    BinaryDilateImageFilter
+//    using BinaryDilateImageFilterType = itk::BinaryDilateImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType, StructuringElementType>;
+//    BinaryDilateImageFilterType::Pointer dilateFilter = BinaryDilateImageFilterType::New();
+//    dilateFilter->SetInput(pExtractedCell);
+//    dilateFilter->SetKernel(structuringElement);
+//    dilateFilter->SetForegroundValue(labelAtClickPosition);
+//    dilateFilter->Update();
+//
+//    using BinaryErodeImageFilterType = itk::BinaryErodeImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType, StructuringElementType>;
+//    BinaryErodeImageFilterType::Pointer erodeFilter = BinaryErodeImageFilterType::New();
+//    erodeFilter->SetInput(dilateFilter->GetOutput());
+//    erodeFilter->SetKernel(structuringElement);
+//    erodeFilter->SetForegroundValue(labelAtClickPosition);
+//    erodeFilter->Update();
+//
+//    auto pExtractedCellClosedManual = erodeFilter->GetOutput();
+//    utils::toc(start_manual_open, "Manual Open finished: ");
 
-    auto pExtractedCellClosed = openingFilter->GetOutput();
+
+
 
 
 
