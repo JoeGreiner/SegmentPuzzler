@@ -169,28 +169,56 @@ MainWindow::MainWindow() {
             int label = labelEdit.text().toInt();
             std::cout << "Go to label: " << label << std::endl;
             itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(graphBase->pSelectedSegmentation, graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-            bool found = false;
+            std::vector<itk::Index<3>> indices;
             while (!it.IsAtEnd()) {
                 if (it.Get() == label) {
                     auto index = it.GetIndex();
-                    std::cout << "Found label at: " << index[0] << " " << index[1] << " " << index[2] << std::endl;
-                    if(myOrthowindow->xy->isSliceIndexValid(index[2])) {
-                        myOrthowindow->xy->setSliceIndex(index[2]);
-                    }
-                    if (myOrthowindow->xz->isSliceIndexValid(index[1])) {
-                        myOrthowindow->xz->setSliceIndex(index[1]);
-                    }
-                    if (myOrthowindow->zy->isSliceIndexValid(index[0])) {
-                        myOrthowindow->zy->setSliceIndex(index[0]);
-                    }
-                    found = true;
-                    break;
+                    indices.push_back(index);
                 }
                 ++it;
             }
-            if (!found) {
+
+            if (indices.empty()) {
                 std::cout << "Label not found.\n";
+                return;
             }
+
+//           calculate center of gravity
+            itk::Index<3> index = {0, 0, 0};
+            for (auto idx : indices) {
+                index[0] += idx[0];
+                index[1] += idx[1];
+                index[2] += idx[2];
+            }
+            index[0] /= indices.size();
+            index[1] /= indices.size();
+            index[2] /= indices.size();
+            std::cout << "Center of gravity: " << index[0] << " " << index[1] << " " << index[2] << std::endl;
+
+//           go to index that is closest
+            auto closest_index = indices[0];
+            double min_dist = std::numeric_limits<double>::max();
+            for (auto idx : indices) {
+                double dist = std::sqrt(std::pow(idx[0] - index[0], 2) + std::pow(idx[1] - index[1], 2) + std::pow(idx[2] - index[2], 2));
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    closest_index = idx;
+                }
+            }
+
+            index = closest_index;
+
+            std::cout << "Found label at: " << index[0] << " " << index[1] << " " << index[2] << std::endl;
+            if(myOrthowindow->xy->isSliceIndexValid(index[2])) {
+                myOrthowindow->xy->setSliceIndex(index[2]);
+            }
+            if (myOrthowindow->xz->isSliceIndexValid(index[1])) {
+                myOrthowindow->xz->setSliceIndex(index[1]);
+            }
+            if (myOrthowindow->zy->isSliceIndexValid(index[0])) {
+                myOrthowindow->zy->setSliceIndex(index[0]);
+            }
+            myOrthowindow->centerViewportsToXYZImageSpace(index[0], index[1], index[2]);
         }
 
     }
