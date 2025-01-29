@@ -104,6 +104,7 @@ MainWindow::MainWindow() {
 
     viewerMenu = menuBar()->addMenu(tr("&Views"));
     QAction *openGoToCoordinatesAction = new QAction(tr("&Go to Coordinates"), this);
+    openGoToCoordinatesAction->setShortcut(Qt::Key_F9);
     viewerMenu->addAction(openGoToCoordinatesAction);
     connect(openGoToCoordinatesAction, &QAction::triggered, this, [this]() {
 //        open q box for three integers
@@ -144,6 +145,7 @@ MainWindow::MainWindow() {
     });
 
     QAction *openGoToLabelAction = new QAction(tr("&Go to Label"), this);
+    openGoToLabelAction->setShortcut(Qt::Key_F10);
     viewerMenu->addAction(openGoToLabelAction);
     connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
         if (graphBase->pSelectedSegmentation == nullptr) {
@@ -197,6 +199,7 @@ MainWindow::MainWindow() {
 
     helpMenu = menuBar()->addMenu(tr("&Help"));
     openHotkeysAction = new QAction(tr("&Show HotKeys"), this);
+    openHotkeysAction->setShortcut(Qt::Key_F1);
     helpMenu->addAction(openHotkeysAction);
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
@@ -413,71 +416,74 @@ void MainWindow::showHotkeys() {
 <style>
   body {
     font-family: Arial, sans-serif;
-    font-size: 10pt;
   }
-  h3 {
-    margin-bottom: 0.3em;
+  .bold_header {
+    font-weight: bold;
+    font-size: 10pt ;
+    margin-top: 0pt;
+    margin-bottom: 0pt;
   }
   p {
-    margin-top: 0;
+    font-size: 10pt;
+    margin-top: 0pt;
     margin-bottom: 1em;
   }
 </style>
 </head>
 <body>
 
-<h3>S + Click</h3>
+<p class="bold_header">S + Click</p>
 <p>Transfer working [S]egment under cursor to currently active segmentation.</p>
 
-<h3>D + Click</h3>
+<p class="bold_header">D + Click</p>
 <p>[D]elete label under cursor in currently active segmentation.</p>
 
-<h3>C + Click</h3>
+<p class="bold_header">C + Click</p>
 <p>[C]ut initial label under cursor from working node under the cursor.</p>
 
-<h3>F + Click</h3>
+<p class="bold_header">F + Click</p>
 <p>[F]ill holes in segmentation label with initial label under cursor.</p>
 
-<h3>G + Click</h3>
+<p class="bold_header">G + Click</p>
 <p>[O]pening operation on segmentation label under cursor.</p>
 
-<h3>H + Click</h3>
+<p class="bold_header">H + Click</p>
 <p>Insert Segment from Segmentation into initial nodes.</p>
 
-<h3>E</h3>
+<p class="bold_header">E</p>
 <p>[E]xport debug information.</p>
 
-<h3>X + Click</h3>
+<p class="bold_header">X + Click</p>
 <p>Split working node into its initial nodes.</p>
 
-<h3>Q + Click</h3>
+<p class="bold_header">Q + Click</p>
 <p>(For Paintmode) Set the brush to the color/id of the SEGMENTATION under the cursor.</p>
 
-<h3>Left/Right Click in Paintmode</h3>
+<p class="bold_header">Left/Right Click in Paintmode</p>
 <p>Left: Add to color/id. Right: Remove from color/id.</p>
 
-<h3>+/-</h3>
+<p class="bold_header">+/-</p>
 <p>Zoom to/away from cursor.</p>
 
-<h3>Arrow Up/Down</h3>
+<p class="bold_header">Arrow Up/Down</p>
 <p>Increase/Decrease slice index (go up/down in stack).</p>
 
-<h3>V</h3>
+<p class="bold_header">V</p>
 <p>Export Image Series for generation of [V]ideos.</p>
 
-<h3>U</h3>
+<p class="bold_header">U</p>
 <p>Export Screenshot of current views.</p>
 
-<h3>0-9</h3>
+<p class="bold_header">0-9</p>
 <p>Change brush size (1 smallest, 10 biggest).</p>
 
-<h3>R</h3>
+<p class="bold_header">R</p>
 <p>[R]andom color scheme for working Segments.</p>
 
-<h3>P + Click</h3>
+<p class="bold_header">P + Click</p>
 <p>Refine by [P]osition of the cursor with currently active refinement watershed.</p>
 
-<h3>CMD + Click</h3>
+<p class="bold_header">CMD + Click</p>
 <p>Set other orthogonal views to slice through the point under the cursor.</p>
 
 </body>
@@ -486,7 +492,7 @@ void MainWindow::showHotkeys() {
 
     QDialog dialog(this);
     dialog.setWindowTitle("HotKeys");
-    dialog.resize(600, 400);
+    dialog.resize(800, 400);
 
     auto *layout = new QVBoxLayout(&dialog);
 
