@@ -77,7 +77,11 @@ public slots:
     void receiveStatusMessage(QString string);
     void printVal(int val);
     void setViewToMiddleOfStack();
-
+    void centerViewportsToXYZImageSpace(int x, int y, int z);
+    void centerViewportsToXYViewportSpace(QScrollArea* scrollArea,
+                                                       double xWanted,
+                                                       double yWanted,
+                                                       double zoomFactor);
 
 private:
     void initialize();

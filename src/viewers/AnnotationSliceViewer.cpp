@@ -314,6 +314,23 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         }
     } else if (cmdClicked) {
         setAllViewersToXYZCoordinates(event->pos().x(), event->pos().y());
+        int x, y, z;
+        getXYZfromPixmapPos(event->pos().x(), event->pos().y(), x, y, z);
+
+        if (sliceAxis == 0) {
+// current axis slices through x, i.e. is a yz-view, update other views to center
+            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXY, x, y, zoomFactor);
+            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXZ, x, z, zoomFactor);
+        } else if (sliceAxis == 1) {
+//            slice is xz
+            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXY, x, y, zoomFactor);
+            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaZY, z, y, zoomFactor);
+        } else if (sliceAxis == 2) {
+//            slice is xy
+            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXZ, x, z, zoomFactor);
+            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaZY, z, y, zoomFactor);
+        }
+
     } else if (xClicked) {
         splitWorkingNodeIntoInitialNodes(event->pos().x(), event->pos().y());
     } else if (pClicked) {

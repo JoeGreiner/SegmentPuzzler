@@ -152,7 +152,7 @@ void SliceViewer::setSliceIndex(int proposedSliceIndex) {
 //        logMessage.sprintf("x: %01.0d y: %01.0d z: %01.0d", lastMouseY, lastMouseY, lastMouseZ);
         sendStatusMessage(logMessage);
 
-        // Protect access to signalList with a mutex
+// Protect access to signalList with a mutex
 //        std::lock_guard<std::mutex> lock(signalListMutex);
 //#pragma omp parallel for schedule(dynamic) default(none) shared(proposedSliceIndex)
         for (long long i = 0; i < static_cast<long long>(signalList.size()); ++i) { // this loops update the signals attached to this view
@@ -581,22 +581,24 @@ void SliceViewer::modifyZoom(double factor) {
 
     // update only xy view, it linked sliders will update other views
     if (sliceAxis == 2) {
-        printf("Ensuring that x0: %.1d x1:%.1d is visible!\n", lastMouseX, lastMouseY);
+        std::cout << "Ensuring that x0: " << lastMouseX << " x1:" << lastMouseY << " is visible!" << std::endl;
         auto rect = graphBase->pOrthoViewer->scrollAreaXY->viewport()->rect();
-        printf("%d %d %d %d\n", rect.x(), rect.y(), rect.width(), rect.height());
+        std::cout << "Rect x: " << rect.x() << " y:" << rect.y() << " w:" << rect.width() << " h:" << rect.height() << std::endl;
 //            GraphBase::pOrthoViewer->scrollAreaXY->scroll()
         int horizontal_before = graphBase->pOrthoViewer->scrollAreaXY->horizontalScrollBar()->value();
         int horizontal_before_max = graphBase->pOrthoViewer->scrollAreaXY->horizontalScrollBar()->maximum();
         int verical_before = graphBase->pOrthoViewer->scrollAreaXY->verticalScrollBar()->value();
         int verical_before_max = graphBase->pOrthoViewer->scrollAreaXY->verticalScrollBar()->maximum();
-        printf("Scrollbars horizonal: %d/%d vertical: %d/%d\n",
-               horizontal_before, horizontal_before_max,
-               verical_before, verical_before_max);
+        std::cout << "Scrollbars horizonal: " << horizontal_before << "/" << horizontal_before_max << " vertical: "
+                  << verical_before << "/" << verical_before_max << std::endl;
+//        printf("Scrollbars horizonal: %d/%d vertical: %d/%d\n",
+//               horizontal_before, horizontal_before_max,
+//               verical_before, verical_before_max);
         int offX;
         int offY;
         double centerXWanted = lastMouseX * zoomFactor;
         double centerYWanted = lastMouseY * zoomFactor;
-        printf("Scaled Point: x0: %.1f x1:%.1f! (factor: %.1f)\n", centerXWanted, centerYWanted, zoomFactor);
+        std::cout << "CenterXWanted: " << centerXWanted << " centerYWanted: " << centerYWanted << std::endl;
 
         // centerX = off + (recW/2)
 
@@ -606,9 +608,8 @@ void SliceViewer::modifyZoom(double factor) {
         offY = offY > verical_before_max ? verical_before_max : offY;
         offX = offX < 0 ? 0 : offX;
         offY = offY < 0 ? 0 : offY;
-        printf("New scrollbars horizonal: %d/%d vertical: %d/%d\n",
-               offX, horizontal_before_max,
-               offX, verical_before_max);
+        std::cout << "New scrollbars horizonal: " << offX << "/" << horizontal_before_max << " vertical: " << offY << "/"
+                  << verical_before_max << std::endl;
         graphBase->pOrthoViewer->scrollAreaXY->horizontalScrollBar()->setValue(offX);
         graphBase->pOrthoViewer->scrollAreaXY->verticalScrollBar()->setValue(offY);
     }

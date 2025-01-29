@@ -269,3 +269,61 @@ void OrthoViewer::setViewToMiddleOfStack() {
     zy->setSliceIndex(xy->getDimX() / 2);
 }
 
+void OrthoViewer::centerViewportsToXYZImageSpace(int x, int y, int z) {
+    centerViewportsToXYViewportSpace(scrollAreaXY,
+                                     static_cast<double>(x),
+                                     static_cast<double>(y),
+                                     xy->zoomFactor);
+    centerViewportsToXYViewportSpace(scrollAreaXZ,
+                                     static_cast<double>(x),
+                                     static_cast<double>(z),
+                                     xz->zoomFactor);
+    centerViewportsToXYViewportSpace(scrollAreaZY,
+                                     static_cast<double>(z),
+                                     static_cast<double>(y),
+                                     zy->zoomFactor);
+}
+
+
+void OrthoViewer::centerViewportsToXYViewportSpace(QScrollArea* scrollArea,
+                                                   double xWanted,
+                                                   double yWanted,
+                                                   double zoomFactor)
+{
+    if (!scrollArea)
+        return;
+
+    double centerXWanted = xWanted * zoomFactor;
+    double centerYWanted = yWanted * zoomFactor;
+
+    QRect visibleRect = scrollArea->viewport()->rect();
+
+    QScrollBar* hBar = scrollArea->horizontalScrollBar();
+    QScrollBar* vBar = scrollArea->verticalScrollBar();
+    if (!hBar || !vBar)
+        return;
+
+    int leftInView   = hBar->value();
+    int rightInView  = hBar->value() + visibleRect.width();
+    int topInView    = vBar->value();
+    int bottomInView = vBar->value() + visibleRect.height();
+
+    bool xIsVisible = (centerXWanted >= leftInView && centerXWanted <= rightInView);
+    bool yIsVisible = (centerYWanted >= topInView  && centerYWanted <= bottomInView);
+
+//  its already visible, no need to scroll
+    if (xIsVisible && yIsVisible) {
+        return;
+    }
+
+    int desiredHScroll = static_cast<int>(centerXWanted - visibleRect.width() / 2.0);
+    int desiredVScroll = static_cast<int>(centerYWanted - visibleRect.height() / 2.0);
+
+    desiredHScroll = std::max(desiredHScroll, hBar->minimum());
+    desiredHScroll = std::min(desiredHScroll, hBar->maximum());
+    desiredVScroll = std::max(desiredVScroll, vBar->minimum());
+    desiredVScroll = std::min(desiredVScroll, vBar->maximum());
+
+    hBar->setValue(desiredHScroll);
+    vBar->setValue(desiredVScroll);
+}
