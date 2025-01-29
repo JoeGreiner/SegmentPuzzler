@@ -3,21 +3,18 @@
 #include "src/viewers/fileIO.h"
 #include "MainWindowWatershedControl.h"
 #include <itkImage.h>
-
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
 #include <QColorDialog>
-#include <src/segment_handling/graph.h>
-#include <src/viewers/OrthoViewer.h>
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QAbstractItemView>
-#include <src/viewers/fileIO.h>
-#include <QtCore>
-#include <QtConcurrent/QtConcurrent>
 #include <QtWidgets/QProgressDialog>
 #include <QStandardPaths>
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
+#include <QSettings>
+#include <QThread>
+#include <QApplication>
 
 SignalControl::~SignalControl() {
 
@@ -228,11 +225,15 @@ void SignalControl::loadFileFromDragAndDropTriggered(QString fileName) {
 
 void SignalControl::loadFileFromDragAndDrop(QString fileName, QString choiceOfImage) {
     imageSelectionButtonWidget->close();
-    QProgressDialog dialog;
-    dialog.setCancelButton(0);
-    dialog.setRange(0, 0);
-    QFutureWatcher<void> futureWatcher;
-    QFuture<void> future;
+    QMessageBox dialog;
+//    QProgressDialog dialog;
+//    dialog.setCancelButton(0);
+//    dialog.setRange(0, 0);
+    dialog.setWindowTitle("Loading");
+    dialog.setText(QString("Loading file ..."));
+    dialog.show();
+//    QFutureWatcher<void> futureWatcher;
+//    QFuture<void> future;
     bool validChoice = true;
     bool skipDialog = false; //TODO: unknown-to-me bug that appears when adding boundaries before graph. this should not be necessary?
     if (((choiceOfImage != "Segments") && (choiceOfImage != "Boundary")) &&
@@ -247,34 +248,41 @@ void SignalControl::loadFileFromDragAndDrop(QString fileName, QString choiceOfIm
         // run this from main thread
         addSegmentsGraph(fileName);
     } else if (choiceOfImage == "Image") {
-        dialog.setLabelText(QString("Loading image ..."));
-        future = QtConcurrent::run(this, &SignalControl::addImage, fileName, QString(""));
+//        dialog.setLabelText(QString("Loading image ..."));
+//        future = QtConcurrent::run(this, &SignalControl::addImage, fileName, QString(""));
+        addImage(fileName, QString(""));
     } else if (choiceOfImage == "Boundary") {
-        dialog.setLabelText(QString("Loading boundary ..."));
+//        dialog.setLabelText(QString("Loading boundary ..."));
         if (graphBase->pWorkingSegmentsImage == nullptr) {
             // in this case user has option to construct empty graph from boundary image files
             loadMembraneProbability(fileName);
             skipDialog = true;
         } else {
-            future = QtConcurrent::run(this, &SignalControl::loadMembraneProbability, fileName, QString(""));
+//            future = QtConcurrent::run(this, &SignalControl::loadMembraneProbability, fileName, QString(""));
+            loadMembraneProbability(fileName, QString(""));
         }
     } else if (choiceOfImage == "Refinement Watershed") {
-        dialog.setLabelText(QString("Loading refinement watershed ..."));
-        future = QtConcurrent::run(this, &SignalControl::addRefinementWatershed, fileName, QString(""));
+//        dialog.setLabelText(QString("Loading refinement watershed ..."));
+//        future = QtConcurrent::run(this, &SignalControl::addRefinementWatershed, fileName, QString(""));
+        addRefinementWatershed(fileName, QString(""));
     } else if (choiceOfImage == "Segmentation") {
-        dialog.setLabelText(QString("Loading segmentation ..."));
-        future = QtConcurrent::run(this, &SignalControl::loadSegmentationVolume, fileName, QString(""));
+//        dialog.setLabelText(QString("Loading segmentation ..."));
+//        future = QtConcurrent::run(this, &SignalControl::loadSegmentationVolume, fileName, QString(""));
+        SignalControl::loadSegmentationVolume(fileName, QString(""));
     } else {
         validChoice = false;
         std::cout << "Unknown choice of image: " << choiceOfImage.toStdString() << "\n";
     }
 
-    if (validChoice && !skipDialog) {
-        futureWatcher.setFuture(future);
-        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-        dialog.exec();
-        future.waitForFinished();
-    }
+    dialog.close();
+
+
+//    if (validChoice && !skipDialog) {
+//        futureWatcher.setFuture(future);
+//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//        dialog.exec();
+//        future.waitForFinished();
+//    }
 }
 
 
@@ -651,7 +659,7 @@ void SignalControl::addSegmentsGraph(QString &fileName) {
     try {
         loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal, false, true);
     } catch (const std::exception &e) {
-        qDebug() << "Exception in loadImage:" << e.what();
+        std::cout << "Exception in loadImage: " << e.what() << std::endl;
     }
 
     if (loadSuccessFull) {
@@ -1014,22 +1022,30 @@ void SignalControl::addRefinementWatershedPressed() {
     if (!fileName.isEmpty()) {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        QProgressDialog dialog;
-        dialog.setCancelButton(0);
-        dialog.setLabelText(QString("Adding Refinement Watershed ..."));
-        dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
-        dialog.setRange(0, 0);
+//        QProgressDialog dialog;
+//        dialog.setCancelButton(0);
+//        dialog.setLabelText(QString("Adding Refinement Watershed ..."));
+//        dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
+//        dialog.setRange(0, 0);
+//        dialog.exec();
+        QMessageBox dialog;
+        dialog.setText("Adding Refinement Watershed ...");
+        dialog.show();
 
-        QFutureWatcher<void> futureWatcher;
-        QFuture<void> future = QtConcurrent::run(this, &SignalControl::addRefinementWatershed, fileName, QString(""));
-        futureWatcher.setFuture(future);
-        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-        dialog.exec();
 
-        future.waitForFinished();
+//        QFutureWatcher<void> futureWatcher;
+//        QFuture<void> future = QtConcurrent::run(this, &SignalControl::addRefinementWatershed, fileName, QString(""));
+//        futureWatcher.setFuture(future);
+//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//        future.waitForFinished();
+
+        addRefinementWatershed(fileName);
+        dialog.close();
+    }
+
+
 
 //        addRefinementWatershed(fileName);
-    }
 }
 
 void SignalControl::mergeSegmentsWithRefinementWatershedClicked() {
@@ -1400,18 +1416,25 @@ void SignalControl::addImagePressed() {
         if (!fileName.isEmpty()) {
             QDir CurrentDir;
             MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-            QProgressDialog dialog;
-            dialog.setCancelButton(0);
-            dialog.setLabelText(QString("Loading Image ..."));
-            dialog.setRange(0, 0);
+//            QProgressDialog dialog;
+//            dialog.setCancelButton(0);
+//            dialog.setLabelText(QString("Loading Image ..."));
+//            dialog.setRange(0, 0);
+//            dialog.exec();
+            QMessageBox dialog;
+            dialog.setText("Loading Image ...");
+            dialog.show();
 
-            QFutureWatcher<void> futureWatcher;
-            QFuture<void> future = QtConcurrent::run(this, &SignalControl::addImage, fileName, QString(""));
-            futureWatcher.setFuture(future);
-            QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-            dialog.exec();
 
-            future.waitForFinished();
+//            QFutureWatcher<void> futureWatcher;
+//            QFuture<void> future = QtConcurrent::run(this, &SignalControl::addImage, fileName, QString(""));
+//            futureWatcher.setFuture(future);
+//            QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//            future.waitForFinished();
+
+            addImage(fileName);
+            dialog.close();
+
         }
     }
 }
@@ -1430,18 +1453,24 @@ void SignalControl::loadMembraneProbabilityPressed() {
             //TODO: this doesnt run with the progressbar for some unknown-to-me reason. fix that i guess ...
             loadMembraneProbability(fileName);
         } else {
-            QProgressDialog dialog;
-            dialog.setCancelButton(0);
-            dialog.setLabelText(QString("Loading Boundaries ..."));
-            dialog.setRange(0, 0);
+//            QProgressDialog dialog;
+//            dialog.setCancelButton(0);
+//            dialog.setLabelText(QString("Loading Boundaries ..."));
+//            dialog.setRange(0, 0);
+//            dialog.exec();
+            QMessageBox dialog;
+            dialog.setText("Loading Boundaries ...");
+            dialog.show();
 
-            QFutureWatcher<void> futureWatcher;
-            QFuture<void> future = QtConcurrent::run(this, &SignalControl::loadMembraneProbability, fileName,
-                                                     QString(""));
-            futureWatcher.setFuture(future);
-            QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-            dialog.exec();
-            future.waitForFinished();
+//            QFutureWatcher<void> futureWatcher;
+//            QFuture<void> future = QtConcurrent::run(this, &SignalControl::loadMembraneProbability, fileName,
+//                                                     QString(""));
+//            futureWatcher.setFuture(future);
+//            QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//            future.waitForFinished();
+
+            loadMembraneProbability(fileName);
+            dialog.close();
         }
     }
 }
