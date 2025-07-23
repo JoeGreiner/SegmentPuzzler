@@ -759,8 +759,14 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
             unsigned long imageOffset = sliceIndex * dimX * dimY;
 
             const dType* sliceData = imageBuffer + imageOffset;
+            // for now, rescale manually every time and check, there is a logic error when refining the segments
+            // LUT is not increased automatically it seems, so we have to check every time
+
             for (unsigned long idx = 0; idx < sliceSize; ++idx) {
                 dType value = sliceData[idx];
+                if (value >= LUT.size()) {
+                    checkAndResizeLUT(value);
+                }
 #if LUT_SAVE_ACCESS
                 sliceBufferPtr[idx] = LUT.at(value);
 #else
