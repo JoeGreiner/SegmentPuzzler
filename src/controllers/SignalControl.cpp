@@ -644,7 +644,7 @@ void SignalControl::setUserAlpha(QTreeWidgetItem *item) {
 }
 
 
-void SignalControl::addSegmentsGraph(QString &fileName) {
+void SignalControl::addSegmentsGraph(QString fileName) {
     std::cout << "SignalControl created in thread: "
               << QThread::currentThread()->objectName().toStdString()
               << " (ID: " << QThread::currentThreadId()
@@ -1015,7 +1015,7 @@ void SignalControl::addSegmentsPressed() {
 
 void SignalControl::addRefinementWatershedPressed() {
     QSettings MySettings;
-    const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
+    const QString DEFAULT_LOAD_DIR_KEY("default_save_dir");
     QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
     QString fileName = QFileDialog::getOpenFileName(this,
                                                     tr("Open Segments"), default_load_dir);
@@ -1442,7 +1442,7 @@ void SignalControl::addImagePressed() {
 
 void SignalControl::loadMembraneProbabilityPressed() {
     QSettings MySettings;
-    const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
+    const QString DEFAULT_LOAD_DIR_KEY("default_save_dir");
     QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
     QString fileName = QFileDialog::getOpenFileName(this,
                                                     tr("Open Images"), default_load_dir);
