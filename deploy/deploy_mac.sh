@@ -22,7 +22,15 @@ if [[ "$(uname)" == "Darwin" ]]; then
     os_name="macOS"
     os_version=$(sw_vers -productVersion)
     os_build=$(sw_vers -buildVersion)
-    os_info_string="${os_name}_${os_version}_${os_build}"
+    arch=$(uname -m)
+    if [[ "$arch" == "arm64" ]]; then
+        arch_label="Apple_Silicon"
+    elif [[ "$arch" == "x86_64" ]]; then
+        arch_label="Intel"
+    else
+        arch_label="$arch"
+    fi
+    os_info_string="${os_name}_${os_version}_${os_build}_${arch_label}"
     echo "OS: $os_info_string"
 fi
 
