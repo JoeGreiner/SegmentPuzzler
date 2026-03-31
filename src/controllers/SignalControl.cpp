@@ -15,6 +15,7 @@
 #include <QSettings>
 #include <QThread>
 #include <QApplication>
+#include <clocale>
 
 SignalControl::~SignalControl() {
 
@@ -524,6 +525,19 @@ void SignalControl::exportSelectedSegmentation() {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(path));
         try {
+            {
+                auto spacing = graphBase->pSelectedSegmentation->GetSpacing();
+                auto origin = graphBase->pSelectedSegmentation->GetOrigin();
+                auto direction = graphBase->pSelectedSegmentation->GetDirection();
+                std::cout << "exportSelectedSegmentation: About to write pSelectedSegmentation:\n";
+                std::cout << "  Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
+                std::cout << "  Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
+                std::cout << "  Direction: [["
+                          << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
+                          << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
+                          << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
+                std::cout << "  LC_NUMERIC locale: " << std::setlocale(LC_NUMERIC, nullptr) << "\n";
+            }
             graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(graphBase->pSelectedSegmentation,
                                                                            path.toStdString());
         } catch (itk::ExceptionObject &err) {
@@ -701,6 +715,13 @@ void SignalControl::addEmptySegmentsFromBoundary() {
     pImage->SetSpacing(graphBase->pSelectedBoundary->GetSpacing());
     pImage->SetOrigin(graphBase->pSelectedBoundary->GetOrigin());
     pImage->Allocate(true);
+
+    {
+        auto srcSpacing = graphBase->pSelectedBoundary->GetSpacing();
+        auto dstSpacing = pImage->GetSpacing();
+        std::cout << "addEmptySegmentsFromBoundary: Source (boundary) spacing: [" << srcSpacing[0] << ", " << srcSpacing[1] << ", " << srcSpacing[2] << "]\n";
+        std::cout << "addEmptySegmentsFromBoundary: New image spacing:         [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
+    }
 
     //TODO: Make uinbtimagelist etc dependent on whatever is on datatype/segmentidtype
     size_t signalIndexLocal = (*pSegmentTypeImageList).size();
@@ -893,6 +914,29 @@ void SignalControl::createNewSegmentationVolume() {
     pImage->SetSpacing(graphBase->pWorkingSegmentsImage->GetSpacing());
     pImage->SetOrigin(graphBase->pWorkingSegmentsImage->GetOrigin());
     pImage->Allocate(true);
+
+    {
+        auto srcSpacing = graphBase->pWorkingSegmentsImage->GetSpacing();
+        auto srcOrigin = graphBase->pWorkingSegmentsImage->GetOrigin();
+        auto srcDirection = graphBase->pWorkingSegmentsImage->GetDirection();
+        auto dstSpacing = pImage->GetSpacing();
+        auto dstOrigin = pImage->GetOrigin();
+        auto dstDirection = pImage->GetDirection();
+        std::cout << "createNewSegmentationVolume: Source (pWorkingSegmentsImage):\n";
+        std::cout << "  Spacing: [" << srcSpacing[0] << ", " << srcSpacing[1] << ", " << srcSpacing[2] << "]\n";
+        std::cout << "  Origin:  [" << srcOrigin[0] << ", " << srcOrigin[1] << ", " << srcOrigin[2] << "]\n";
+        std::cout << "  Direction: [["
+                  << srcDirection[0][0] << ", " << srcDirection[0][1] << ", " << srcDirection[0][2] << "], ["
+                  << srcDirection[1][0] << ", " << srcDirection[1][1] << ", " << srcDirection[1][2] << "], ["
+                  << srcDirection[2][0] << ", " << srcDirection[2][1] << ", " << srcDirection[2][2] << "]]\n";
+        std::cout << "createNewSegmentationVolume: Destination (new segmentation):\n";
+        std::cout << "  Spacing: [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
+        std::cout << "  Origin:  [" << dstOrigin[0] << ", " << dstOrigin[1] << ", " << dstOrigin[2] << "]\n";
+        std::cout << "  Direction: [["
+                  << dstDirection[0][0] << ", " << dstDirection[0][1] << ", " << dstDirection[0][2] << "], ["
+                  << dstDirection[1][0] << ", " << dstDirection[1][1] << ", " << dstDirection[1][2] << "], ["
+                  << dstDirection[2][0] << ", " << dstDirection[2][1] << ", " << dstDirection[2][2] << "]]\n";
+    }
 
     //TODO: Make uinbtimagelist etc dependent on whatever is on datatype/segmentidtype
     size_t signalIndexLocal = (*pSegmentTypeImageList).size();

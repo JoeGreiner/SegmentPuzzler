@@ -1083,6 +1083,13 @@ void WatershedControl::exportSegments() {
         paddedWorkingSegmentsImage->SetOrigin(linkedSignalControl->graphBase->pWorkingSegmentsImage->GetOrigin());
         paddedWorkingSegmentsImage->Allocate(true);
 
+        {
+            auto srcSpacing = linkedSignalControl->graphBase->pWorkingSegmentsImage->GetSpacing();
+            auto dstSpacing = paddedWorkingSegmentsImage->GetSpacing();
+            std::cout << "exportSegments (ROI): Source spacing: [" << srcSpacing[0] << ", " << srcSpacing[1] << ", " << srcSpacing[2] << "]\n";
+            std::cout << "exportSegments (ROI): Padded spacing: [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
+        }
+
         // paste in the created watershed
         using PasteImageFilterType = itk::PasteImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
         PasteImageFilterType::Pointer pasteImageFilter = PasteImageFilterType::New();

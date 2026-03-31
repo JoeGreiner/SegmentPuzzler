@@ -11,6 +11,7 @@
 #include <QMetaType>
 #include <sys/stat.h>
 #include <cstdlib>
+#include <clocale>
 
 
 bool return_string_if_valid_option(int argc, char *argv[], int requested_index){
@@ -46,6 +47,8 @@ std::string getEnvVar(const char* name) {
 
 int main(int argc, char *argv[]) {
     QApplication a(argc, argv);
+
+    std::setlocale(LC_NUMERIC, "C");
 
     QApplication::setApplicationName("SegmentPuzzler");
     QApplication::setOrganizationName("IEKM");

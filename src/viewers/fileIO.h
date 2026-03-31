@@ -33,18 +33,38 @@ typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
     typename ImageType::Pointer pImage = reader->GetOutput();
     reader->Update();
 
+    auto spacing = pImage->GetSpacing();
+    auto origin = pImage->GetOrigin();
+    auto direction = pImage->GetDirection();
     std::cout << "ITKImageLoader: Done!\n";
+    std::cout << "ITKImageLoader: Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
+    std::cout << "ITKImageLoader: Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
+    std::cout << "ITKImageLoader: Direction: [["
+              << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
+              << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
+              << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
 
     return pImage;
 }
 
 template<typename imageType>
 void ITKImageWriter(typename imageType::Pointer pImage, std::string filePathWriter) {
+    auto spacing = pImage->GetSpacing();
+    auto origin = pImage->GetOrigin();
+    auto direction = pImage->GetDirection();
+    std::cout << "ITKImageWriter (fileIO): Writing to: " << filePathWriter << "\n";
+    std::cout << "ITKImageWriter (fileIO): Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
+    std::cout << "ITKImageWriter (fileIO): Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
+    std::cout << "ITKImageWriter (fileIO): Direction: [["
+              << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
+              << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
+              << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
     using WriterType = itk::ImageFileWriter<imageType>;
     typename WriterType::Pointer writer = WriterType::New();
     writer->SetInput(pImage);
     writer->SetFileName(filePathWriter);
     writer->Update();
+    std::cout << "ITKImageWriter (fileIO): Done!\n";
 }
 
 

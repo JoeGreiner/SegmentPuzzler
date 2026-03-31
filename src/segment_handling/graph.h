@@ -157,6 +157,16 @@ public:
             std::cout << "Graph::ITKImageWriter Writing to: " << filePathWriter << "\n";
             t = utils::tic();
         }
+        auto spacing = pImage->GetSpacing();
+        auto origin = pImage->GetOrigin();
+        auto direction = pImage->GetDirection();
+        std::cout << "Graph::ITKImageWriter: Writing to: " << filePathWriter << "\n";
+        std::cout << "Graph::ITKImageWriter: Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
+        std::cout << "Graph::ITKImageWriter: Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
+        std::cout << "Graph::ITKImageWriter: Direction: [["
+                  << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
+                  << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
+                  << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
         using WriterType = itk::ImageFileWriter<imageType>;
         typename WriterType::Pointer writer = WriterType::New();
         writer->SetInput(pImage);
