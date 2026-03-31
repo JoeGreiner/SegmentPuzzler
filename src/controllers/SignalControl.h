@@ -30,7 +30,6 @@ public:
     using GraphSegmentImageType = dataType::SegmentsImageType;
 
     void addEmptySegmentsFromBoundary();
-    void addSegmentsGraph(QString &fileName);
     void initializeGraph(size_t signalIndexLocal, size_t signalIndexGlobal);
 
 
@@ -125,6 +124,8 @@ public slots:
     void addImagePressed();
 
     void loadMembraneProbabilityPressed();
+
+    void addSegmentsGraph(QString fileName);
 
     void addImage(QString fileName, QString displayedName="");
 
