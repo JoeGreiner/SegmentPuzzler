@@ -82,27 +82,20 @@ public:
 
     virtual void resetQImages();
 
-    // if the cmd key was clicked
-    bool cmdClicked;
-
-    bool shiftClicked;
-    // if watershed refinement keys are pressed: s for by [s]egment, p for by [p]osition
-    // transfer node at cursor fom workingsegment to active segmentation
-    bool sClicked;
-    // delete node at cursor in active segmentation
-    bool dClicked;
-    // split workingnode into its initialnodes
-    bool xClicked;
-    // cut out initialsegment from mouse from current workingsegment
-    bool cClicked;
-    // select color for paintbrushmode
-    bool qClicked;
-    // refinement of watershed
-    bool pClicked;
-    // fill holes due to closing
-    bool fClicked;
-    bool gClicked;
-    bool hClicked;
+    enum class ToolMode {
+        None,
+        Ctrl,        // Ctrl: center viewports on click, pan on drag
+        Transfer,    // S: transfer working node to final segmentation
+        Delete,      // D: delete label from final segmentation
+        Split,       // X: split working node into initial nodes
+        Cut,         // C: cut one initial segment out of a working node
+        SelectColor, // Q: pick paint color from segmentation
+        Refine,      // P: inject refinement segment (clears after click)
+        Fill,        // F: morphological fill/close (clears after click)
+        Open,        // G: morphological open/erode (clears after click)
+        Insert       // H: insert segmentation segment into initial segments (clears after click)
+    };
+    ToolMode activeTool = ToolMode::None;
 
     std::shared_ptr<GraphBase> graphBase;
 

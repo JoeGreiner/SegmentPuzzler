@@ -14,6 +14,7 @@
 #include <itkFloodFilledImageFunctionConditionalIterator.h>
 #include "AnnotationSliceViewer.h"
 #include "itkImageRegionIteratorWithIndex.h"
+#include <unordered_map>
 #include "src/utils/utils.h"
 #include "OrthoViewer.h"
 #include "src/qtUtils/qdialogprogressbarpassthrough.h"
@@ -175,15 +176,15 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         decrementSliceIndex();
     } else if (event->key() == Qt::Key_X) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->xClicked = true;
+            viewer->activeTool = ToolMode::Split;
         }
     } else if (event->key() == Qt::Key_C) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->cClicked = true;
+            viewer->activeTool = ToolMode::Cut;
         }
     } else if (event->key() == Qt::Key_Control) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->cmdClicked = true;
+            viewer->activeTool = ToolMode::Ctrl;
         }
     } else if (event->key() == Qt::Key_U) {
         this->exportView();
@@ -191,32 +192,31 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         this->exportVideo();
     } else if (event->key() == Qt::Key_S) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->sClicked = true;
+            viewer->activeTool = ToolMode::Transfer;
         }
     } else if (event->key() == Qt::Key_P) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->pClicked = true;
+            viewer->activeTool = ToolMode::Refine;
         }
     } else if (event->key() == Qt::Key_Q) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->qClicked = true;
+            viewer->activeTool = ToolMode::SelectColor;
         }
     } else if (event->key() == Qt::Key_D) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->dClicked = true;
+            viewer->activeTool = ToolMode::Delete;
         }
     } else if (event->key() == Qt::Key_F) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->fClicked = true;
+            viewer->activeTool = ToolMode::Fill;
         }
     } else if (event->key() == Qt::Key_G) {
-        for (auto &viewer: graphBase->viewerList) {
-//            std::cout << "Setting gClicked to true\n";
-            viewer->gClicked = true;
+        for (auto &viewer : graphBase->viewerList) {
+            viewer->activeTool = ToolMode::Open;
         }
     } else if (event->key() == Qt::Key_H) {
-        for (auto &viewer: graphBase->viewerList) {
-            viewer->hClicked = true;
+        for (auto &viewer : graphBase->viewerList) {
+            viewer->activeTool = ToolMode::Insert;
         }
     } else if (event->key() == Qt::Key_E) {
         exportDebugInformation();
@@ -246,46 +246,23 @@ void AnnotationSliceViewer::exportDebugInformation() {
 void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
 
 //    std::cout << "Release: " << event->key() << "\n";
-    if (event->key() == Qt::Key_Control) {
+    static const std::unordered_map<int, ToolMode> keyToToolMode = {
+        {Qt::Key_Control, ToolMode::Ctrl},
+        {Qt::Key_S,       ToolMode::Transfer},
+        {Qt::Key_P,       ToolMode::Refine},
+        {Qt::Key_D,       ToolMode::Delete},
+        {Qt::Key_X,       ToolMode::Split},
+        {Qt::Key_C,       ToolMode::Cut},
+        {Qt::Key_Q,       ToolMode::SelectColor},
+        {Qt::Key_F,       ToolMode::Fill},
+        {Qt::Key_G,       ToolMode::Open},
+        {Qt::Key_H,       ToolMode::Insert},
+    };
+    auto it = keyToToolMode.find(event->key());
+    if (it != keyToToolMode.end()) {
         for (auto &viewer : graphBase->viewerList) {
-            viewer->cmdClicked = false;
-        }
-    } else if (event->key() == Qt::Key_S) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->sClicked = false;
-        }
-    } else if (event->key() == Qt::Key_P) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->pClicked = false;
-        }
-    } else if (event->key() == Qt::Key_D) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->dClicked = false;
-        }
-    } else if (event->key() == Qt::Key_X) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->xClicked = false;
-        }
-    } else if (event->key() == Qt::Key_C) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->cClicked = false;
-        }
-    } else if (event->key() == Qt::Key_Q) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->qClicked = false;
-        }
-    } else if (event->key() == Qt::Key_F) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->fClicked = false;
-        }
-    } else if (event->key() == Qt::Key_G) {
-        for (auto &viewer : graphBase->viewerList) {
-            std::cout << "Setting gClicked to false\n";
-            viewer->gClicked = false;
-        }
-    } else if (event->key() == Qt::Key_H) {
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->hClicked = false;
+            if (viewer->activeTool == it->second)
+                viewer->activeTool = ToolMode::None;
         }
     }
 }
@@ -296,9 +273,15 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         std :: cout << "Graph is locked; exiting AnnotationSliceViewer::mousePressEvent" << std::endl;
         return;
     }
-    if (!cmdClicked && !sClicked && !pClicked && !dClicked && !xClicked && !cClicked && !qClicked &&
-    !ROISelectionModeIsActive && !fClicked && !gClicked && !hClicked) {
-        if (event->button() == Qt::LeftButton) {
+    switch (activeTool) {
+    case ToolMode::None:
+        if (ROISelectionModeIsActive) {
+            ROISelectionOrigin = event->pos();
+            if (ROISelectionRubberBand != nullptr) { delete ROISelectionRubberBand; }
+            ROISelectionRubberBand = new QRubberBand(QRubberBand::Line, this);
+            ROISelectionRubberBand->setGeometry(QRect(ROISelectionOrigin, QSize(1, 1)));
+            ROISelectionRubberBand->show();
+        } else if (event->button() == Qt::LeftButton) {
             lastPoint = QPoint(event->pos().x() / zoomFactor, event->pos().y() / zoomFactor);
             scribbling = true;
             rightClicked = false;
@@ -312,76 +295,59 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
             old_middle_click_translate_x_pos = event->pos().x();
             old_middle_click_translate_y_pos = event->pos().y();
         }
-    } else if (cmdClicked) {
+        break;
+    case ToolMode::Ctrl: {
         setAllViewersToXYZCoordinates(event->pos().x(), event->pos().y());
         int x, y, z;
         getXYZfromPixmapPos(event->pos().x(), event->pos().y(), x, y, z);
-
         if (sliceAxis == 0) {
-// current axis slices through x, i.e. is a yz-view, update other views to center
             graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXY, x, y, zoomFactor);
             graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXZ, x, z, zoomFactor);
         } else if (sliceAxis == 1) {
-//            slice is xz
             graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXY, x, y, zoomFactor);
             graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaZY, z, y, zoomFactor);
         } else if (sliceAxis == 2) {
-//            slice is xy
             graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXZ, x, z, zoomFactor);
             graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaZY, z, y, zoomFactor);
         }
-
-    } else if (xClicked) {
+        break;
+    }
+    case ToolMode::Split:
         splitWorkingNodeIntoInitialNodes(event->pos().x(), event->pos().y());
-    } else if (pClicked) {
+        break;
+    case ToolMode::Refine:
         refineSegmentByPosition(event->pos().x(), event->pos().y());
         graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->recalculateQImages();
-        }
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->pClicked = false;
-        }
-    } else if (sClicked) {
+        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
+        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        break;
+    case ToolMode::Transfer:
         transferWorkingNodeToSegmentation(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->recalculateQImages();
-        }
-    } else if (dClicked) {
+        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
+        break;
+    case ToolMode::Delete:
         deleteConnectedLabelFromSegmentation(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->recalculateQImages();
-        }
-    } else if (cClicked) {
+        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
+        break;
+    case ToolMode::Cut:
         removeInitialSegmentFromWorkingSegmentAtClick(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->recalculateQImages();
-        }
-    } else if (qClicked) {
+        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
+        break;
+    case ToolMode::SelectColor:
         getSegmentationLabelIdAtCursor(event->pos().x(), event->pos().y());
-    } else if (ROISelectionModeIsActive){
-        ROISelectionOrigin = event->pos();
-        if (ROISelectionRubberBand != nullptr) {
-            delete ROISelectionRubberBand;
-        }
-        ROISelectionRubberBand = new QRubberBand(QRubberBand::Line, this);
-        ROISelectionRubberBand->setGeometry(QRect(ROISelectionOrigin, QSize(1,1)));
-        ROISelectionRubberBand->show();
-    } else if (fClicked){
+        break;
+    case ToolMode::Fill:
         runFillSegmentationLabel(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->fClicked = false;
-        }
-    } else if (gClicked){
+        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        break;
+    case ToolMode::Open:
         runOpenSegmentationLabel(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->gClicked = false;
-        }
-    } else if (hClicked){
+        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        break;
+    case ToolMode::Insert:
         runInsertSegmentationSegmentIntoInitialSegments(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->hClicked = false;
-        }
+        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        break;
     }
 
 }
@@ -798,7 +764,7 @@ void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
     }
 
 
-    if (cmdClicked) {
+    if (activeTool == ToolMode::Ctrl) {
         if (event->buttons() == Qt::LeftButton) {
             setAllViewersToXYZCoordinates(event->pos().x(), event->pos().y());
         }

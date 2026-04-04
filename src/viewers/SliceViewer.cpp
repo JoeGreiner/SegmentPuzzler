@@ -30,18 +30,6 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent
     dimY = 1;
     dimZ = 1;
 
-    //TODO: I'm not sure these belong here -> move them to AnnotationViewer?
-    cmdClicked = false;
-    sClicked = false;
-    pClicked = false;
-    dClicked = false;
-    xClicked = false;
-    cClicked = false;
-    qClicked = false;
-    fClicked = false;
-    gClicked = false;
-    hClicked = false;
-    shiftClicked = false;
     numberSignals = 0;
 
     indexHorizontalIndicator = 0;
