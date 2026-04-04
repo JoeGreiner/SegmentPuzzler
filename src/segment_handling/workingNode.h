@@ -45,23 +45,33 @@ public:
 
     std::vector<SegmentIdType> getVectorOfConnectedNodeIds() override;
 
-    std::vector<InitialNode *>
-    convertVecOfWorkingNodesToVecOfInitialNodes(std::vector<WorkingNode> &vecOfWorkingNodesToConstructUpon);
-
-    std::vector<InitialNode *>
-    convertVecOfInitialNodeLabelsToVecOfInitialNodes(std::vector<SegmentIdType> &labelsOfInitialNodes,
-                                                     std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes);
-
-    std::vector<InitialNode *>
-    convertSetOfInitialNodeLabelsToVecOfInitialNodes(std::set<SegmentIdType> &labelsOfInitialNodes,
-                                                     std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes);
-
     void addNodeFeature(Feature *feature);
 
     void computeNodeFeatures();
 
+private:
+    static std::vector<InitialNode *>
+    convertVecOfWorkingNodesToVecOfInitialNodes(std::vector<WorkingNode> &vecOfWorkingNodes);
 
+    template<typename Container>
+    static std::vector<InitialNode *>
+    convertInitialNodeLabelsToVecOfInitialNodes(
+            const Container &labelsOfInitialNodes,
+            std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes);
 };
+
+template<typename Container>
+std::vector<InitialNode *> WorkingNode::convertInitialNodeLabelsToVecOfInitialNodes(
+        const Container &labelsOfInitialNodes,
+        std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes) {
+    assert(!labelsOfInitialNodes.empty());
+    std::vector<InitialNode *> result;
+    result.reserve(labelsOfInitialNodes.size());
+    for (const auto &lbl : labelsOfInitialNodes) {
+        result.push_back(allInitialNodes[lbl].get());
+    }
+    return result;
+}
 
 
 #endif //SEGMENTCOUPLER_WORKINGNODE_H

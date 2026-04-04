@@ -18,16 +18,16 @@ WorkingNode::WorkingNode(std::vector<WorkingNode> vecOfWorkingNodesToConstructUp
 WorkingNode::WorkingNode(std::vector<SegmentIdType> vecOfInitialNodeLabelsToConstructUpon,
                          SegmentIdType labelOfNewNode,
                          std::unordered_map<BaseNode::SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes) :
-        WorkingNode(convertVecOfInitialNodeLabelsToVecOfInitialNodes(vecOfInitialNodeLabelsToConstructUpon,
-                                                                     allInitialNodes), labelOfNewNode,
+        WorkingNode(convertInitialNodeLabelsToVecOfInitialNodes(vecOfInitialNodeLabelsToConstructUpon,
+                                                                allInitialNodes), labelOfNewNode,
                     allInitialNodes) {
 }
 
 WorkingNode::WorkingNode(std::set<SegmentIdType> setOfInitialNodeLabelsToConstructUpon,
                          SegmentIdType labelOfNewNode,
                          std::unordered_map<BaseNode::SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes) :
-        WorkingNode(convertSetOfInitialNodeLabelsToVecOfInitialNodes(setOfInitialNodeLabelsToConstructUpon,
-                                                                     allInitialNodes), labelOfNewNode,
+        WorkingNode(convertInitialNodeLabelsToVecOfInitialNodes(setOfInitialNodeLabelsToConstructUpon,
+                                                                allInitialNodes), labelOfNewNode,
                     allInitialNodes) {
 }
 
@@ -91,34 +91,6 @@ std::vector<InitialNode *> WorkingNode::convertVecOfWorkingNodesToVecOfInitialNo
 
     return vecOfInitialNodesToConstructUpon;
 }
-
-std::vector<InitialNode *> WorkingNode::convertVecOfInitialNodeLabelsToVecOfInitialNodes(
-        std::vector<SegmentIdType> &labelsOfInitialNodes,
-        std::unordered_map<BaseNode::SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes) {
-    assert(!labelsOfInitialNodes.empty());
-
-    std::vector<InitialNode *> vecOfInitialNodesToConstructUpon;
-    vecOfInitialNodesToConstructUpon.reserve(labelsOfInitialNodes.size());
-    for (auto &label : labelsOfInitialNodes) {
-        vecOfInitialNodesToConstructUpon.push_back(allInitialNodes[label].get());
-    }
-    return vecOfInitialNodesToConstructUpon;
-}
-
-
-std::vector<InitialNode *> WorkingNode::convertSetOfInitialNodeLabelsToVecOfInitialNodes(
-        std::set<SegmentIdType> &labelsOfInitialNodes,
-        std::unordered_map<BaseNode::SegmentIdType, std::shared_ptr<InitialNode>> &allInitialNodes) {
-    assert(!labelsOfInitialNodes.empty());
-
-    std::vector<InitialNode *> vecOfInitialNodesToConstructUpon;
-    vecOfInitialNodesToConstructUpon.reserve(labelsOfInitialNodes.size());
-    for (auto &label : labelsOfInitialNodes) {
-        vecOfInitialNodesToConstructUpon.push_back(allInitialNodes[label].get());
-    }
-    return vecOfInitialNodesToConstructUpon;
-}
-
 
 void WorkingNode::print(int indentationLevel, std::ostream &outStream) {
     std::string indentationString = "";
