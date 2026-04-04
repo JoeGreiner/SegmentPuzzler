@@ -1126,25 +1126,9 @@ void SignalControl::addRefinementWatershed(QString fileName, QString displayedNa
 bool SignalControl::insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
                                            size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut,
                                            bool forceShapeOfSegments) {
-    bool loadingWasSuccessful = false;
-    std::unique_ptr<itkSignal<unsigned int>> pSignal2(new itkSignal<unsigned int>(pImage));
-    pSignal2->isShapeMatched(segmentsGraph);
-    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-        signalIndexLocalOut = uIntSignalList.size();
-        uIntImageList.push_back(pImage);
-        uIntSignalList.push_back(std::move(pSignal2));
-        signalIndexGlobalOut = allSignalList.size();
-        itkSignalBase *pSignal = uIntSignalList[signalIndexLocalOut].get();
-        allSignalList.push_back(pSignal);
-        loadingWasSuccessful = true;
-    } else {
-        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                  << segmentsGraph->getDimZ() << "]\n";
-        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                  << pSignal2->getDimZ() << "]\n";
-        std::cout << "Dimension mismatch! Image is not added.\n";
-    }
-    return loadingWasSuccessful;
+    return insertTypedImage<dataType::SegmentIdType>(
+        pImage, uIntImageList, uIntSignalList,
+        signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
 }
 
 bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
@@ -1176,254 +1160,74 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
                 }
 
                 case itk::ImageIOBase::IOComponentType::UCHAR: {
-                    itk::Image<unsigned char, 3>::Pointer pImage = ITKImageLoader<unsigned char>(fileName);
-                    std::unique_ptr<itkSignal<unsigned char>> pSignal2(new itkSignal<unsigned char>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = uCharSignalList.size();
-                        uCharImageList.push_back(pImage);
-                        uCharSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = uCharSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<unsigned char>(fileName);
+                    loadingWasSuccessful = insertTypedImage<unsigned char>(pImage, uCharImageList, uCharSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::CHAR: {
-                    itk::Image<char, 3>::Pointer pImage = ITKImageLoader<char>(fileName);
-                    std::unique_ptr<itkSignal<char>> pSignal2(new itkSignal<char>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = charSignalList.size();
-                        charImageList.push_back(pImage);
-                        charSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = charSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<char>(fileName);
+                    loadingWasSuccessful = insertTypedImage<char>(pImage, charImageList, charSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::USHORT: {
-                    itk::Image<unsigned short, 3>::Pointer pImage = ITKImageLoader<unsigned short>(fileName);
-                    std::unique_ptr<itkSignal<unsigned short>> pSignal2(new itkSignal<unsigned short>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = uShortSignalList.size();
-                        uShortImageList.push_back(pImage);
-                        uShortSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = uShortSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<unsigned short>(fileName);
+                    loadingWasSuccessful = insertTypedImage<unsigned short>(pImage, uShortImageList, uShortSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::SHORT: {
-                    itk::Image<short, 3>::Pointer pImage = ITKImageLoader<short>(fileName);
-                    std::unique_ptr<itkSignal<short>> pSignal2(new itkSignal<short>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = shortSignalList.size();
-                        shortImageList.push_back(pImage);
-                        shortSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = shortSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<short>(fileName);
+                    loadingWasSuccessful = insertTypedImage<short>(pImage, shortImageList, shortSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::UINT: {
-                    itk::Image<unsigned int, 3>::Pointer pImage = ITKImageLoader<unsigned int>(fileName);
-                    std::unique_ptr<itkSignal<unsigned int>> pSignal2(new itkSignal<unsigned int>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = uIntSignalList.size();
-                        uIntImageList.push_back(pImage);
-                        uIntSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = uIntSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<unsigned int>(fileName);
+                    loadingWasSuccessful = insertTypedImage<unsigned int>(pImage, uIntImageList, uIntSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::INT: {
-                    itk::Image<int, 3>::Pointer pImage = ITKImageLoader<int>(fileName);
-                    std::unique_ptr<itkSignal<int>> pSignal2(new itkSignal<int>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = intSignalList.size();
-                        intImageList.push_back(pImage);
-                        intSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = intSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<int>(fileName);
+                    loadingWasSuccessful = insertTypedImage<int>(pImage, intImageList, intSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONG: {
-                    itk::Image<unsigned long, 3>::Pointer pImage = ITKImageLoader<unsigned long>(fileName);
-                    std::unique_ptr<itkSignal<unsigned long>> pSignal2(new itkSignal<unsigned long>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = uLongSignalList.size();
-                        uLongImageList.push_back(pImage);
-                        uLongSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = uLongSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<unsigned long>(fileName);
+                    loadingWasSuccessful = insertTypedImage<unsigned long>(pImage, uLongImageList, uLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONG: {
-                    itk::Image<long, 3>::Pointer pImage = ITKImageLoader<long>(fileName);
-                    std::unique_ptr<itkSignal<long>> pSignal2(new itkSignal<long>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = longSignalList.size();
-                        longImageList.push_back(pImage);
-                        longSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = longSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<long>(fileName);
+                    loadingWasSuccessful = insertTypedImage<long>(pImage, longImageList, longSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONGLONG: {
-                    itk::Image<unsigned long long, 3>::Pointer pImage = ITKImageLoader<unsigned long long>(fileName);
-                    std::unique_ptr<itkSignal<unsigned long long>> pSignal2(new itkSignal<unsigned long long>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = uLongLongSignalList.size();
-                        uLongLongImageList.push_back(pImage);
-                        uLongLongSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = uLongLongSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<unsigned long long>(fileName);
+                    loadingWasSuccessful = insertTypedImage<unsigned long long>(pImage, uLongLongImageList, uLongLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONGLONG: {
-                    itk::Image<long long, 3>::Pointer pImage = ITKImageLoader<long long>(fileName);
-                    std::unique_ptr<itkSignal<long long>> pSignal2(new itkSignal<long long>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = longLongSignalList.size();
-                        longLongImageList.push_back(pImage);
-                        longLongSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = longLongSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<long long>(fileName);
+                    loadingWasSuccessful = insertTypedImage<long long>(pImage, longLongImageList, longLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::FLOAT: {
-                    itk::Image<float, 3>::Pointer pImage = ITKImageLoader<float>(fileName);
-                    std::unique_ptr<itkSignal<float>> pSignal2(new itkSignal<float>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = floatSignalList.size();
-                        floatImageList.push_back(pImage);
-                        floatSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = floatSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<float>(fileName);
+                    loadingWasSuccessful = insertTypedImage<float>(pImage, floatImageList, floatSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::DOUBLE: {
-                    itk::Image<double, 3>::Pointer pImage = ITKImageLoader<double>(fileName);
-                    std::unique_ptr<itkSignal<double>> pSignal2(new itkSignal<double>(pImage));
-                    if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-                        signalIndexLocalOut = doubleSignalList.size();
-                        doubleImageList.push_back(pImage);
-                        doubleSignalList.push_back(std::move(pSignal2));
-                        signalIndexGlobalOut = allSignalList.size();
-                        itkSignalBase *pSignal = doubleSignalList[signalIndexLocalOut].get();
-                        allSignalList.push_back(pSignal);
-                        loadingWasSuccessful = true;
-                    } else {
-                        std::cout << "Segments: [" << segmentsGraph->getDimX() << " " << segmentsGraph->getDimY() << " "
-                                  << segmentsGraph->getDimZ() << "]\n";
-                        std::cout << "Segments: [" << pSignal2->getDimX() << " " << pSignal2->getDimY() << " "
-                                  << pSignal2->getDimZ() << "]\n";
-                        std::cout << "Dimension mismatch! Image is not added.\n";
-                    }
+                    auto pImage = ITKImageLoader<double>(fileName);
+                    loadingWasSuccessful = insertTypedImage<double>(pImage, doubleImageList, doubleSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 

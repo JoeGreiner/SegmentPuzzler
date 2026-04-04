@@ -244,6 +244,34 @@ private:
     void setupWidget(QTreeWidget *treeWidget, QWidget *buttonsWidget, QGridLayout *buttonsLayout, QPushButton *button, QString tabName);
 
     bool getDimensionMatchWithSegmentImage();
+
+    template<typename T>
+    bool insertTypedImage(
+        typename itk::Image<T, 3>::Pointer                pImage,
+        std::vector<typename itk::Image<T, 3>::Pointer>  &imageList,
+        std::vector<std::unique_ptr<itkSignal<T>>>       &signalList,
+        size_t                                           &signalIndexLocalOut,
+        size_t                                           &signalIndexGlobalOut,
+        bool                                              forceShapeOfSegments)
+    {
+        std::unique_ptr<itkSignal<T>> pSignal2(new itkSignal<T>(pImage));
+        if (pSignal2->isShapeMatched(itkSignalSegmentsGraph) | !forceShapeOfSegments) {
+            signalIndexLocalOut = signalList.size();
+            imageList.push_back(pImage);
+            signalList.push_back(std::move(pSignal2));
+            signalIndexGlobalOut = allSignalList.size();
+            itkSignalBase *pSignal = signalList[signalIndexLocalOut].get();
+            allSignalList.push_back(pSignal);
+            return true;
+        } else {
+            std::cout << "Segments: [" << itkSignalSegmentsGraph->getDimX() << " "
+                      << itkSignalSegmentsGraph->getDimY() << " " << itkSignalSegmentsGraph->getDimZ() << "]\n";
+            std::cout << "Image:    [" << pSignal2->getDimX() << " "
+                      << pSignal2->getDimY() << " " << pSignal2->getDimZ() << "]\n";
+            std::cout << "Dimension mismatch! Image is not added.\n";
+            return false;
+        }
+    }
 };
 
 
