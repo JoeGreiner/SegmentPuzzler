@@ -273,6 +273,10 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         std :: cout << "Graph is locked; exiting AnnotationSliceViewer::mousePressEvent" << std::endl;
         return;
     }
+    if (graphBase->pWorkingSegmentsImage == nullptr &&
+        activeTool != ToolMode::None && activeTool != ToolMode::Ctrl) {
+        return;
+    }
     switch (activeTool) {
     case ToolMode::None:
         if (ROISelectionModeIsActive) {

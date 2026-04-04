@@ -972,6 +972,7 @@ Graph::SegmentIdType Graph::getLargestIdInSegmentVolume(Graph::SegmentsImageType
 
 
 void Graph::splitWorkingNodeIntoInitialNodes(int x, int y, int z) {
+    if (graphBase->pWorkingSegmentsImage == nullptr) return;
     SegmentIdType labelOfWorkingNode = graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
     if (!isIgnoredId(labelOfWorkingNode)) {
         splitWorkingNodeIntoInitialNodes(labelOfWorkingNode);
