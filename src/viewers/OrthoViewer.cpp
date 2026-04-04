@@ -105,21 +105,15 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent
 
 
     // link horizontal and vertical scrollbars
-    connect(scrollAreaXY->horizontalScrollBar(), SIGNAL(valueChanged(int)), scrollAreaXZ->horizontalScrollBar(),
-            SLOT(setValue(int)));
-    connect(scrollAreaXZ->horizontalScrollBar(), SIGNAL(valueChanged(int)), scrollAreaXY->horizontalScrollBar(),
-            SLOT(setValue(int)));
+    connect(scrollAreaXY->horizontalScrollBar(), &QScrollBar::valueChanged, scrollAreaXZ->horizontalScrollBar(), &QScrollBar::setValue);
+    connect(scrollAreaXZ->horizontalScrollBar(), &QScrollBar::valueChanged, scrollAreaXY->horizontalScrollBar(), &QScrollBar::setValue);
 
-    connect(scrollAreaXY->verticalScrollBar(), SIGNAL(valueChanged(int)), scrollAreaZY->verticalScrollBar(),
-            SLOT(setValue(int)));
-    connect(scrollAreaZY->verticalScrollBar(), SIGNAL(valueChanged(int)), scrollAreaXY->verticalScrollBar(),
-            SLOT(setValue(int)));
+    connect(scrollAreaXY->verticalScrollBar(), &QScrollBar::valueChanged, scrollAreaZY->verticalScrollBar(), &QScrollBar::setValue);
+    connect(scrollAreaZY->verticalScrollBar(), &QScrollBar::valueChanged, scrollAreaXY->verticalScrollBar(), &QScrollBar::setValue);
 
-    // link horizontal splitters, movedsplittertolinked() blocks signals during execution to prohibit cycles
-    connect(splitterHorizontalTop, SIGNAL(splitterMoved(int, int)), splitterHorizontalBottom,
-            SLOT(moveSplitterToLinked(int, int)));
-    connect(splitterHorizontalBottom, SIGNAL(splitterMoved(int, int)), splitterHorizontalTop,
-            SLOT(moveSplitterToLinked(int, int)));
+    // link horizontal splitters, moveSplitterToLinked() blocks signals during execution to prohibit cycles
+    connect(splitterHorizontalTop, &QSplitter::splitterMoved, splitterHorizontalBottom, &QLinkedSplitter::moveSplitterToLinked);
+    connect(splitterHorizontalBottom, &QSplitter::splitterMoved, splitterHorizontalTop, &QLinkedSplitter::moveSplitterToLinked);
 
     // syncrhonize bottom horizontal splitters
 //    std::cout << splitterHorizontalTop->pos().x() << " " << splitterHorizontalTop->pos().y() << "\n";
@@ -235,9 +229,9 @@ void OrthoViewer::initialize() {
     scrollAreaXZ->setWidget(xz);
     scrollAreaXY->setWidget(xy);
 
-    connect(sliderXY, SIGNAL(valueChanged(int)), xy, SLOT(setSliceIndex(int)));
-    connect(sliderZY, SIGNAL(valueChanged(int)), zy, SLOT(setSliceIndex(int)));
-    connect(sliderXZ, SIGNAL(valueChanged(int)), xz, SLOT(setSliceIndex(int)));
+    connect(sliderXY, &QSlider::valueChanged, xy, &SliceViewer::setSliceIndex);
+    connect(sliderZY, &QSlider::valueChanged, zy, &SliceViewer::setSliceIndex);
+    connect(sliderXZ, &QSlider::valueChanged, xz, &SliceViewer::setSliceIndex);
 
     xy->setLinkedSlider(sliderXY);
     zy->setLinkedSlider(sliderZY);

@@ -95,12 +95,11 @@ void WatershedControl::setupSignalTreeWidget() {
     signalInputButtonsLayout = new QGridLayout();
     thresholdBoundariesButton = new QPushButton("Threshold Boundaries");
     setupWidget(signalTreeWidget, signalInputButtonsWidget, signalInputButtonsLayout, thresholdBoundariesButton, "Boundaries");
-    connect(thresholdBoundariesButton, SIGNAL (clicked()), this, SLOT (thresholdBoundariesPressed()));
+    connect(thresholdBoundariesButton, &QPushButton::clicked, this, &WatershedControl::thresholdBoundariesPressed);
     thresholdValueSlider = new QSlider(Qt::Horizontal, this);
 //    thresholdValueSlider->setRange(0, 3000);
     thresholdBoundariesButton->parentWidget()->layout()->addWidget(thresholdValueSlider);
-    connect(thresholdValueSlider, SIGNAL (valueChanged(int)),
-            this, SLOT(forwardValueChangedSignal(int)));
+    connect(thresholdValueSlider, &QSlider::valueChanged, this, &WatershedControl::forwardValueChangedSignal);
 }
 void WatershedControl::forwardValueChangedSignal(int value) {
     std::cout << value << "\n";
@@ -116,11 +115,11 @@ void WatershedControl::setupThresholdWidget() {
     thresholdButtonsLayout = new QGridLayout();
     calculateDistanceMapButton = new QPushButton("Calculate Distancemap");
     setupWidget(thresholdTreeWidget, thresholdButtonsWidget, thresholdButtonsLayout, calculateDistanceMapButton, "Threshold");
-    connect(calculateDistanceMapButton, SIGNAL (clicked()), this, SLOT (calculateDistanceMapPressed()));
+    connect(calculateDistanceMapButton, &QPushButton::clicked, this, &WatershedControl::calculateDistanceMapPressed);
 
     togglePaintBoundaryModeButton = new QPushButton("Turn Paintmode On");
     calculateDistanceMapButton->parentWidget()->layout()->addWidget(togglePaintBoundaryModeButton);
-    connect(togglePaintBoundaryModeButton, SIGNAL (clicked()), this, SLOT (togglePaintBoundaryMode()));
+    connect(togglePaintBoundaryModeButton, &QPushButton::clicked, this, &WatershedControl::togglePaintBoundaryMode);
 }
 
 
@@ -130,7 +129,7 @@ void WatershedControl::setupDistanceMapWidget() {
     distanceMapButtonsLayout = new QGridLayout(this);
     calculateSeedsButton = new QPushButton("Extract Seeds");
     setupWidget(distanceMapTreeWidget, distanceMapButtonsWidget, distanceMapButtonsLayout, calculateSeedsButton, "DistanceMap");
-    connect(calculateSeedsButton, SIGNAL (clicked()), this, SLOT (extractSeedsPressed()));
+    connect(calculateSeedsButton, &QPushButton::clicked, this, &WatershedControl::extractSeedsPressed);
 
 }
 
@@ -150,10 +149,8 @@ void WatershedControl::setupWidget(QTreeWidget *treeWidget, QWidget *buttonsWidg
     buttonsWidget->setLayout(buttonsLayout);
     buttonsLayout->addWidget(button);
 
-    connect(treeWidget, SIGNAL (itemDoubleClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeDoubleClicked(QTreeWidgetItem * , int)));
-    connect(treeWidget, SIGNAL (itemClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeClicked(QTreeWidgetItem * , int)));
+    connect(treeWidget, &QTreeWidget::itemDoubleClicked, this, &WatershedControl::treeDoubleClicked);
+    connect(treeWidget, &QTreeWidget::itemClicked, this, &WatershedControl::treeClicked);
 
     this->addTab(mainWidget, tabName);
 }
@@ -198,15 +195,13 @@ void WatershedControl::setupSeedWidget() {
 
 
 
-    connect(seedsTreeWidget, SIGNAL (itemDoubleClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeDoubleClicked(QTreeWidgetItem * , int)));
-    connect(seedsTreeWidget, SIGNAL (itemClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeClicked(QTreeWidgetItem * , int)));
+    connect(seedsTreeWidget, &QTreeWidget::itemDoubleClicked, this, &WatershedControl::treeDoubleClicked);
+    connect(seedsTreeWidget, &QTreeWidget::itemClicked, this, &WatershedControl::treeClicked);
 
     this->addTab(mainWidget, "Seeds");
 
 
-    connect(runWatershedButton, SIGNAL (clicked()), this, SLOT (watershedPressed()));
+    connect(runWatershedButton, &QPushButton::clicked, this, &WatershedControl::watershedPressed);
 }
 
 
@@ -217,7 +212,7 @@ void WatershedControl::setupWatershedWidget() {
     watershedButtonsLayout = new QGridLayout();
     exportSegmentButton = new QPushButton("Export Segments", this);
     setupWidget(watershedTreeWidget, watershedButtonsWidget, watershedButtonsLayout, exportSegmentButton, "Watershed");
-    connect(exportSegmentButton, SIGNAL (clicked()), this, SLOT (exportSegmentsPressed()));
+    connect(exportSegmentButton, &QPushButton::clicked, this, &WatershedControl::exportSegmentsPressed);
 }
 
 

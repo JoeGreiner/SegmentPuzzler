@@ -369,7 +369,7 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
     QFutureWatcher<void> futureWatcher;
     QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::transferSegmentationSegmentToInitialSegment, x, y, z);
     futureWatcher.setFuture(future);
-    QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
     dialog.show();
     future.waitForFinished();
 
@@ -389,7 +389,7 @@ void AnnotationSliceViewer::runOpenSegmentationLabel(int posX, int posY){
     QFutureWatcher<void> futureWatcher;
     QFuture<void> future = QtConcurrent::run(this, &AnnotationSliceViewer::openSegmentationLabel, posX, posY);
     futureWatcher.setFuture(future);
-    QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
     dialog.show();
     future.waitForFinished();
 }
@@ -404,7 +404,7 @@ void AnnotationSliceViewer::runFillSegmentationLabel(int posX, int posY){
     QFutureWatcher<void> futureWatcher;
     QFuture<void> future = QtConcurrent::run(this, &AnnotationSliceViewer::fillSegmentationLabel, posX, posY);
     futureWatcher.setFuture(future);
-    QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
     dialog.show();
     future.waitForFinished();
 }
@@ -656,7 +656,7 @@ void AnnotationSliceViewer::refineSegmentByPosition(int posX, int posY) {
 //    QFutureWatcher<void> futureWatcher;
 //    QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::refineSegmentByPosition, x, y, z);
 //    futureWatcher.setFuture(future);
-//    QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
+//    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
 //    dialog.show();
 //    future.waitForFinished();
     QMetaObject::invokeMethod(this, [this, x, y, z]() {

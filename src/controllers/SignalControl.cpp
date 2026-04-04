@@ -99,7 +99,7 @@ void SignalControl::setupSignalTreeWidget() {
 //    signalControlLayout->addWidget(signalTreeWidget);
     signalWidgetLayout->addWidget(signalTreeWidget);
 //    connect(signalTreeWidget, SIGNAL(urlDropped(QString)), this, SLOT(addImage(QString)));
-    connect(signalTreeWidget, SIGNAL(urlDropped(QString)), this, SLOT(loadFileFromDragAndDropTriggered(QString)));
+    connect(signalTreeWidget, &QTreeWidgetWithDragAndDrop::urlDropped, this, &SignalControl::loadFileFromDragAndDropTriggered);
 
     signalInputButtonsWidget = new QWidget();
     signalInputButtonsLayout = new QGridLayout();
@@ -113,13 +113,11 @@ void SignalControl::setupSignalTreeWidget() {
     signalWidgetLayout->addWidget(signalInputButtonsWidget);
 
 //    QTreeWidget::itemDoubleClicked()
-    connect(addSegmentsButton, SIGNAL (clicked()), this, SLOT (addSegmentsPressed()));
-    connect(addSignalButton, SIGNAL (clicked()), this, SLOT (addImagePressed()));
+    connect(addSegmentsButton, &QPushButton::clicked, this, &SignalControl::addSegmentsPressed);
+    connect(addSignalButton, &QPushButton::clicked, this, &SignalControl::addImagePressed);
 
-    connect(signalTreeWidget, SIGNAL (itemDoubleClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeDoubleClicked(QTreeWidgetItem * , int)));
-    connect(signalTreeWidget, SIGNAL (itemClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeClicked(QTreeWidgetItem * , int)));
+    connect(signalTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
+    connect(signalTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::treeClicked);
 
     this->addTab(signalWidget, "Overlays");
 }
@@ -152,17 +150,15 @@ void SignalControl::setupProbabilityTreeWidget() {
 
     selectROIRefinementButton = new QPushButton("Turn ROI-Selection WS On");
     probabilityButtonWidgetLayout->addWidget(selectROIRefinementButton, 2, 0);
-    connect(selectROIRefinementButton, SIGNAL(clicked()), this, SLOT(selectROIRefinementPressed()));
+    connect(selectROIRefinementButton, &QPushButton::clicked, this, &SignalControl::selectROIRefinementPressed);
 
 
-    connect(addMembraneProbabilityButton, SIGNAL(clicked()), this, SLOT(loadMembraneProbabilityPressed()));
-    connect(runWatershedButton, SIGNAL(clicked()), this, SLOT(runWatershed()));
+    connect(addMembraneProbabilityButton, &QPushButton::clicked, this, &SignalControl::loadMembraneProbabilityPressed);
+    connect(runWatershedButton, &QPushButton::clicked, this, &SignalControl::runWatershed);
 
 
-    connect(probabilityTreeWidget, SIGNAL (itemDoubleClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeDoubleClicked(QTreeWidgetItem * , int)));
-    connect(probabilityTreeWidget, SIGNAL (itemClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeClicked(QTreeWidgetItem * , int)));
+    connect(probabilityTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
+    connect(probabilityTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::treeClicked);
 
     this->addTab(probabilityWidget, "Probabilities");
 }
@@ -181,7 +177,7 @@ void SignalControl::setupRefinementWatershedTreeWidget() {
     refinementWatershedTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
 //    signalControlLayout->addWidget(refinementWatershedTreeWidget);
     refinementWidgetLayout->addWidget(refinementWatershedTreeWidget);
-    connect(refinementWatershedTreeWidget, SIGNAL(urlDropped(QString)), this, SLOT(addRefinementWatershed(QString)));
+    connect(refinementWatershedTreeWidget, &QTreeWidgetWithDragAndDrop::urlDropped, this, qOverload<QString>(&SignalControl::addRefinementWatershed));
 
 
     refinementWatershedInputButtonsWidget = new QWidget();
@@ -200,16 +196,13 @@ void SignalControl::setupRefinementWatershedTreeWidget() {
     refinementWidgetLayout->addWidget(refinementWatershedInputButtonsWidget);
 
 
-    connect(mergeWithRefinementWatershedButton, SIGNAL(clicked()), this,
-            SLOT(mergeSegmentsWithRefinementWatershedClicked()));
+    connect(mergeWithRefinementWatershedButton, &QPushButton::clicked, this, &SignalControl::mergeSegmentsWithRefinementWatershedClicked);
 //    signalControlLayout->addWidget(refinementWatershedInputButtonsWidget);
-    connect(addRefinementWatershedButton, SIGNAL(clicked()), this, SLOT(addRefinementWatershedPressed()));
-    connect(setIdToTransparentInRefinementWSButton, SIGNAL(clicked()), this, SLOT(setIdToTransparentInRefinementWS()));
+    connect(addRefinementWatershedButton, &QPushButton::clicked, this, &SignalControl::addRefinementWatershedPressed);
+    connect(setIdToTransparentInRefinementWSButton, &QPushButton::clicked, this, &SignalControl::setIdToTransparentInRefinementWS);
 
-    connect(refinementWatershedTreeWidget, SIGNAL (itemDoubleClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeDoubleClicked(QTreeWidgetItem * , int)));
-    connect(refinementWatershedTreeWidget, SIGNAL (itemClicked(QTreeWidgetItem * , int)), this,
-            SLOT(watershedClicked(QTreeWidgetItem * , int)));
+    connect(refinementWatershedTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
+    connect(refinementWatershedTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::watershedClicked);
 
     this->addTab(refinementWidget, "Refinements");
 
@@ -376,20 +369,18 @@ void SignalControl::setupSegmentationTreeWidget() {
 
     segmentationWidgetLayout->addWidget(segmentationButtonWidget);
 
-    connect(addSegmentationButton, SIGNAL(clicked()), this, SLOT(createNewSegmentationVolume()));
-    connect(loadSegmentationButton, SIGNAL(clicked()), this, SLOT(loadSegmentationVolumePressed()));
-    connect(exportSegmentationButton, SIGNAL(clicked()), this, SLOT(exportSelectedSegmentation()));
-    connect(togglePaintBrushButton, SIGNAL(clicked()), this, SLOT(togglePaintMode()));
-    connect(setPaintIdButton, SIGNAL(clicked()), this, SLOT(setPaintId()));
-    connect(transferSegmentsWithVolumeButton, SIGNAL(clicked()), this, SLOT(transferSegmentsWithVolume()));
-    connect(transferSegmentsWithRefinementButton, SIGNAL(clicked()), this, SLOT(transferSegmentsWithRefinementWS()));
-    connect(transferAllSegmentsButton, SIGNAL(clicked()), this, SLOT(transferAllSegments()));
+    connect(addSegmentationButton, &QPushButton::clicked, this, &SignalControl::createNewSegmentationVolume);
+    connect(loadSegmentationButton, &QPushButton::clicked, this, &SignalControl::loadSegmentationVolumePressed);
+    connect(exportSegmentationButton, &QPushButton::clicked, this, &SignalControl::exportSelectedSegmentation);
+    connect(togglePaintBrushButton, &QPushButton::clicked, this, &SignalControl::togglePaintMode);
+    connect(setPaintIdButton, &QPushButton::clicked, this, &SignalControl::setPaintId);
+    connect(transferSegmentsWithVolumeButton, &QPushButton::clicked, this, &SignalControl::transferSegmentsWithVolume);
+    connect(transferSegmentsWithRefinementButton, &QPushButton::clicked, this, &SignalControl::transferSegmentsWithRefinementWS);
+    connect(transferAllSegmentsButton, &QPushButton::clicked, this, &SignalControl::transferAllSegments);
 
 
-    connect(segmentationTreeWidget, SIGNAL (itemDoubleClicked(QTreeWidgetItem * , int)), this,
-            SLOT(treeDoubleClicked(QTreeWidgetItem * , int)));
-    connect(segmentationTreeWidget, SIGNAL (itemClicked(QTreeWidgetItem * , int)), this,
-            SLOT(segmentationClicked(QTreeWidgetItem * , int)));
+    connect(segmentationTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
+    connect(segmentationTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::segmentationClicked);
 
     this->addTab(segmentationWidget, "Segmentations");
 }
@@ -1097,6 +1088,10 @@ void SignalControl::mergeSegmentsWithRefinementWatershedClicked() {
     for (auto &viewer: graphBase->viewerList) {
         viewer->recalculateQImages();
     }
+}
+
+void SignalControl::addRefinementWatershed(QString fileName) {
+    addRefinementWatershed(fileName, "");
 }
 
 void SignalControl::addRefinementWatershed(QString fileName, QString displayedName) {

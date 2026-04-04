@@ -129,7 +129,8 @@ public slots:
 
     void addImage(QString fileName, QString displayedName="");
 
-    void addRefinementWatershed(QString fileName, QString displayedName="");
+    void addRefinementWatershed(QString fileName);
+    void addRefinementWatershed(QString fileName, QString displayedName);
 
     void mergeSegmentsWithRefinementWatershedClicked();
 
