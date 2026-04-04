@@ -39,11 +39,9 @@ void WatershedControl::addImage(QString fileName) {
     std::cout << "Adding file: " << fileName.toStdString() << std::endl;
     if (!fileName.isEmpty()) {
         itk::ImageIOBase::IOComponentType dataType;
-        size_t signalIndexLocal;
         size_t signalIndexGlobal;
-        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal, false);
+        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false);
         if (loadSuccessFull) {
-            globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
             allSignalList[signalIndexGlobal]->setLUTContinuous();
             allSignalList[signalIndexGlobal]->setName(QFileInfo(fileName).baseName());
             allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
@@ -69,16 +67,6 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn, QWidg
     ty = 0;
     tz = 0;
 
-
-#ifdef SEGMENTSHORT
-    pSegmentTypeSignalList = &shortSignalList;
-    pSegmentTypeImageList = &shortImageList;
-#endif
-
-#ifdef SEGMENTUINT
-    pSegmentTypeSignalList = &uIntSignalList;
-    pSegmentTypeImageList = &uIntImageList;
-#endif
 
     this->setTabPosition(QTabWidget::South);
 
@@ -386,25 +374,19 @@ void WatershedControl::setUserAlpha(QTreeWidgetItem *item) {
 
 
 void WatershedControl::transferWatershedToGraph() {
-    size_t signalIndexLocal; // index inside the corrosponding array, i.e. shortSignalList
-    size_t signalIndexGlobal; // index inside the corrosponding treeview list
+    size_t signalIndexGlobal = allSignalList.size();
 
     std::unique_ptr<itkSignal<unsigned int>> pSignal2(new itkSignal<unsigned int>(pWatershed));
-    signalIndexLocal = uIntSignalList.size();
-    uIntImageList.push_back(pWatershed);
-    uIntSignalList.push_back(std::move(pSignal2));
-    signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = uIntSignalList.at(signalIndexLocal).get();
+    itkSignalBase *pSignal = pSignal2.get();
+    ownedSignals.push_back(std::move(pSignal2));
     allSignalList.push_back(pSignal);
-
-    globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
 
     allSignalList.at(signalIndexGlobal)->setName("Watershed");
     allSignalList.at(signalIndexGlobal)->setupTreeWidget(watershedTreeWidget, signalIndexGlobal);
     allSignalList.at(signalIndexGlobal)->setLUTCategorical();
 //    allSignalList.at(signalIndexGlobal)->setLUTValueToTransparent(0);
 
-    itkSignalSegmentsGraph = (*pSegmentTypeSignalList)[signalIndexLocal].get();
+    itkSignalSegmentsGraph = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndexGlobal]);
     graphBase->pWorkingSegments = itkSignalSegmentsGraph;
     graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
 
@@ -434,7 +416,7 @@ void WatershedControl::transferWatershedToGraph() {
 
 
 bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
-                              size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut, bool forceShapeOfSegments,
+                              size_t &signalIndexGlobalOut, bool forceShapeOfSegments,
                               bool forceSegmentDataType) {
     bool loadingWasSuccessful = false;
     if (!fileName.isEmpty()) {
@@ -453,73 +435,73 @@ bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponent
 
                 case itk::ImageIOBase::IOComponentType::UCHAR: {
                     auto pImage = ITKImageLoader<unsigned char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned char>(pImage, uCharImageList, uCharSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::CHAR: {
                     auto pImage = ITKImageLoader<char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<char>(pImage, charImageList, charSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::USHORT: {
                     auto pImage = ITKImageLoader<unsigned short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned short>(pImage, uShortImageList, uShortSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::SHORT: {
                     auto pImage = ITKImageLoader<short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<short>(pImage, shortImageList, shortSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::UINT: {
                     auto pImage = ITKImageLoader<unsigned int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned int>(pImage, uIntImageList, uIntSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::INT: {
                     auto pImage = ITKImageLoader<int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<int>(pImage, intImageList, intSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONG: {
                     auto pImage = ITKImageLoader<unsigned long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long>(pImage, uLongImageList, uLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONG: {
                     auto pImage = ITKImageLoader<long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long>(pImage, longImageList, longSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONGLONG: {
                     auto pImage = ITKImageLoader<unsigned long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long long>(pImage, uLongLongImageList, uLongLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONGLONG: {
                     auto pImage = ITKImageLoader<long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long long>(pImage, longLongImageList, longLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::FLOAT: {
                     auto pImage = ITKImageLoader<float>(fileName);
-                    loadingWasSuccessful = insertTypedImage<float>(pImage, floatImageList, floatSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<float>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::DOUBLE: {
                     auto pImage = ITKImageLoader<double>(fileName);
-                    loadingWasSuccessful = insertTypedImage<double>(pImage, doubleImageList, doubleSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<double>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
@@ -667,20 +649,13 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
 }
 
 void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn) {
-    size_t signalIndexLocal, signalIndexGlobal;
-    signalIndexLocal = uShortSignalList.size();
-    signalIndexGlobal = allSignalList.size();
-    globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
+    size_t signalIndexGlobal = allSignalList.size();
 
-//    std::unique_ptr<itkSignal<dataType::BoundaryVoxelType >> pBoundariesSignal(new itkSignal<dataType::BoundaryVoxelType >(pBoundariesIn));
-    std::unique_ptr<itkSignalThresholdPreview<dataType::BoundaryVoxelType >> pBoundariesSignalTmp(new itkSignalThresholdPreview<dataType::BoundaryVoxelType >(pBoundariesIn));
+    std::unique_ptr<itkSignalThresholdPreview<dataType::BoundaryVoxelType>> pBoundariesSignalTmp(
+        new itkSignalThresholdPreview<dataType::BoundaryVoxelType>(pBoundariesIn));
     pBoundariesSignal = std::move(pBoundariesSignalTmp);
-    //    std::unique_ptr<itkSignal<dataType::BoundaryVoxelType >> pBoundariesSignal(new itkSignalThresholdPreview<dataType::BoundaryVoxelType >(pBoundariesIn));
 
-    uShortImageList.push_back(pBoundariesIn);
-//    uShortSignalList.push_back(std::move(pBoundariesSignal));
-
-//    itkSignalBase *pBaseSignal = uShortSignalList[signalIndexLocal].get();
+    pBoundaries = pBoundariesIn;
     allSignalList.push_back(pBoundariesSignal.get());
 
     allSignalList[signalIndexGlobal]->setLUTContinuous();
@@ -689,8 +664,6 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
     graphBase->pOrthoViewer->addSignal(allSignalList.at(signalIndexGlobal));
     graphBase->pOrthoViewer->setViewToMiddleOfStack();
-    // TODO: Make union to hold any datatype?
-    pBoundaries = uShortImageList[signalIndexLocal];
 
     int minValue = pBoundariesSignal->minimumValue;
     int maxValue = pBoundariesSignal->maximumValue;
@@ -726,17 +699,11 @@ void WatershedControl::thresholdBoundaries() {
 
     binaryThresholdImageFilterFloat(pBoundaries, pThresholdedMembrane, thresholdValueSlider->value());
 
-    size_t signalIndexLocal, signalIndexGlobal;
-
     std::unique_ptr<itkSignal<unsigned char>> pThresholdedMembraneSignal(new itkSignal<unsigned char>(pThresholdedMembrane));
-    signalIndexLocal = uCharSignalList.size();
-    uCharImageList.push_back(pThresholdedMembrane);
-    uCharSignalList.push_back(std::move(pThresholdedMembraneSignal));
-    signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = uCharSignalList[signalIndexLocal].get();
+    size_t signalIndexGlobal = allSignalList.size();
+    itkSignalBase *pSignal = pThresholdedMembraneSignal.get();
+    ownedSignals.push_back(std::move(pThresholdedMembraneSignal));
     allSignalList.push_back(pSignal);
-
-    globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
 
     allSignalList[signalIndexGlobal]->setName("Thresholded Boundaries");
     allSignalList[signalIndexGlobal]->setupTreeWidget(thresholdTreeWidget, signalIndexGlobal);
@@ -782,17 +749,12 @@ void WatershedControl::extractSeeds() {
 
     double minimalMinimaHeight = 1;
     extractMinimaFromDistanceMap(pDistanceMap, pSeeds, minimalMinimaHeight);
-    size_t signalIndexLocal, signalIndexGlobal;
 
     std::unique_ptr<itkSignal<unsigned int>> pSeedsSignal(new itkSignal<unsigned int>(pSeeds));
-    signalIndexLocal = uIntSignalList.size();
-    uIntImageList.push_back(pSeeds);
-    uIntSignalList.push_back(std::move(pSeedsSignal));
-    signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = uIntSignalList[signalIndexLocal].get();
+    size_t signalIndexGlobal = allSignalList.size();
+    itkSignalBase *pSignal = pSeedsSignal.get();
+    ownedSignals.push_back(std::move(pSeedsSignal));
     allSignalList.push_back(pSignal);
-
-    globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
 
     allSignalList[signalIndexGlobal]->setName("Seeds");
     allSignalList[signalIndexGlobal]->setupTreeWidget(seedsTreeWidget, signalIndexGlobal);
@@ -965,17 +927,11 @@ void WatershedControl::calculateDistanceMap() {
     double distanceMapSmoothingVariance = 0;
     generateDistanceMap(pThresholdedMembrane, pDistanceMap, distanceMapSmoothingVariance);
 
-    size_t signalIndexLocal, signalIndexGlobal;
-
     std::unique_ptr<itkSignal<float>> pDistanceMapSignal(new itkSignal<float>(pDistanceMap));
-    signalIndexLocal = floatSignalList.size();
-    floatImageList.push_back(pDistanceMap);
-    floatSignalList.push_back(std::move(pDistanceMapSignal));
-    signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = floatSignalList[signalIndexLocal].get();
+    size_t signalIndexGlobal = allSignalList.size();
+    itkSignalBase *pSignal = pDistanceMapSignal.get();
+    ownedSignals.push_back(std::move(pDistanceMapSignal));
     allSignalList.push_back(pSignal);
-
-    globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
 
     allSignalList[signalIndexGlobal]->setName("Distance Map");
     allSignalList[signalIndexGlobal]->setupTreeWidget(distanceMapTreeWidget, signalIndexGlobal);

@@ -27,18 +27,16 @@ void SignalControl::addImage(QString fileName, QString displayedName) {
     std::cout << "Adding file: " << fileName.toStdString() << std::endl;
     if (!fileName.isEmpty()) {
         itk::ImageIOBase::IOComponentType dataType;
-        size_t signalIndexLocal;
         size_t signalIndexGlobal;
         bool loadSuccessFull = false;
         try {
-            loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal);
+            loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal);
         } catch (itk::ExceptionObject &e) {
             std::cout << "Error loading image: " << fileName.toStdString() << std::endl;
             std::cout << "Exception caught!" << std::endl;
             std::cout << e << std::endl;
         }
         if (loadSuccessFull) {
-            globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
             allSignalList[signalIndexGlobal]->setLUTContinuous();
             if (displayedName == "") {
                 displayedName = QFileInfo(fileName).baseName();
@@ -60,17 +58,6 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn, QWidget *pa
     segmentsGraph = nullptr;
     DEFAULT_SAVE_DIR = "";
     setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::MinimumExpanding);
-
-
-#ifdef SEGMENTSHORT
-    pSegmentTypeSignalList = &shortSignalList;
-    pSegmentTypeImageList = &shortImageList;
-#endif
-
-#ifdef SEGMENTUINT
-    pSegmentTypeSignalList = &uIntSignalList;
-    pSegmentTypeImageList = &uIntImageList;
-#endif
 
 
 
@@ -418,11 +405,9 @@ void SignalControl::watershedClicked(QTreeWidgetItem *item, int index) {
     bool isShort, isUChar, isSegments, isEdge;
     unsigned int signalIndex;
     getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
-    if (verbose) {
-        std::cout << "Setting local WS Refinement index to: " << globalToLocalMapping[signalIndex] << std::endl;
-    }
-    graphBase->pRefinementWatershed = (*pSegmentTypeImageList)[globalToLocalMapping[signalIndex]];
-    graphBase->pRefinementWatershedSignal = (*pSegmentTypeSignalList)[globalToLocalMapping[signalIndex]].get();
+    graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType*>(
+        allSignalList[signalIndex]->getImageBase().GetPointer());
+    graphBase->pRefinementWatershedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndex]);
 }
 
 
@@ -444,11 +429,9 @@ void SignalControl::segmentationClicked(QTreeWidgetItem *item, int index) {
     bool isShort, isUChar, isSegments, isEdge;
     unsigned int signalIndex;
     getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
-    if (verbose) {
-        std::cout << "Setting active segmentation volume to: " << globalToLocalMapping[signalIndex] << std::endl;
-    }
-    graphBase->pSelectedSegmentation = (*pSegmentTypeImageList)[globalToLocalMapping[signalIndex]];
-    graphBase->pSelectedSegmentationSignal = (*pSegmentTypeSignalList)[globalToLocalMapping[signalIndex]].get();
+    graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType*>(
+        allSignalList[signalIndex]->getImageBase().GetPointer());
+    graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndex]);
     dataType::SegmentIdType maxId = graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
     std::cout << "Max Id in selected segmentation: " << maxId << "\n";
     graphBase->selectedSegmentationMaxSegmentId = maxId;
@@ -658,17 +641,16 @@ void SignalControl::addSegmentsGraph(QString fileName) {
     graphBase->currentlyCalculating = true;
 
     itk::ImageIOBase::IOComponentType dataType;
-    size_t signalIndexLocal;
     size_t signalIndexGlobal;
     bool loadSuccessFull;
     try {
-        loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal, false, true);
+        loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false, true);
     } catch (const std::exception &e) {
         std::cout << "Exception in loadImage: " << e.what() << std::endl;
     }
 
     if (loadSuccessFull) {
-        initializeGraph(signalIndexLocal, signalIndexGlobal);
+        initializeGraph(signalIndexGlobal);
     } else {
         QMessageBox::critical(this, "Error", "Failed to load the image.");
     }
@@ -714,39 +696,33 @@ void SignalControl::addEmptySegmentsFromBoundary() {
         std::cout << "addEmptySegmentsFromBoundary: New image spacing:         [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
     }
 
-    //TODO: Make uinbtimagelist etc dependent on whatever is on datatype/segmentidtype
-    size_t signalIndexLocal = (*pSegmentTypeImageList).size();
-    (*pSegmentTypeImageList).push_back(pImage);
-
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
-    (*pSegmentTypeSignalList).push_back(std::move(pSignal2));
-
     size_t signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = (*pSegmentTypeSignalList)[signalIndexLocal].get();
-    allSignalList.push_back(pSignal);
+    itkSignalBase *pRaw = pSignal2.get();
+    ownedSignals.push_back(std::move(pSignal2));
+    allSignalList.push_back(pRaw);
 
-    initializeGraph(signalIndexLocal, signalIndexGlobal);
+    initializeGraph(signalIndexGlobal);
 
     std::cout << "Done add segment function!\n";
 }
 
-void SignalControl::initializeGraph(size_t signalIndexLocal, size_t signalIndexGlobal) {
+void SignalControl::initializeGraph(size_t signalIndexGlobal) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
-    globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
-    GraphSegmentImageType::Pointer pSegments = (*pSegmentTypeImageList)[signalIndexLocal];
-    segmentsGraph = (*pSegmentTypeSignalList)[signalIndexLocal].get();
+    segmentsGraph = allSignalList[signalIndexGlobal];
+    auto *typedSegmentsSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(segmentsGraph);
     allSignalList[signalIndexGlobal]->setLUTCategorical();
     allSignalList[signalIndexGlobal]->setName("Segments");
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
     std::cout << "Done setup tree!\n";
 
-    graphBase->pWorkingSegments = segmentsGraph;
-    graphBase->pWorkingSegmentsImage = segmentsGraph->pImage;
+    graphBase->pWorkingSegments = typedSegmentsSignal;
+    graphBase->pWorkingSegmentsImage = typedSegmentsSignal->pImage;
 
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
 
 
-    graphBase->pGraph->constructFromVolume(segmentsGraph->pImage);
+    graphBase->pGraph->constructFromVolume(typedSegmentsSignal->pImage);
 
     //TODO: Add feature calculation
 //    graphBase->pGraph->calculateNodeFeatures();
@@ -808,11 +784,10 @@ void SignalControl::runWatershed() {
 }
 
 void SignalControl::receiveNewRefinementWatershed(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage) {
-    size_t signalIndexLocal, signalIndexGlobal;
-    bool loadSuccessFull;
-    loadSuccessFull = insertImageSegmenttype(pImage, signalIndexLocal, signalIndexGlobal);
+    size_t signalIndexGlobal;
+    bool loadSuccessFull = insertImageSegmenttype(pImage, signalIndexGlobal);
     if (loadSuccessFull) {
-        globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
+        auto *typedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndexGlobal]);
         allSignalList[signalIndexGlobal]->setLUTCategorical();
         allSignalList[signalIndexGlobal]->setName("Refined Watershed");
         allSignalList[signalIndexGlobal]->setupTreeWidget(refinementWatershedTreeWidget, signalIndexGlobal);
@@ -823,19 +798,20 @@ void SignalControl::receiveNewRefinementWatershed(itk::Image<dataType::SegmentId
         refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
         refinementWatershedTreeWidget->setCurrentItem(refinementWatershedTreeWidget->topLevelItem(lastItemIndex));
         graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-        graphBase->pRefinementWatershed = (*pSegmentTypeImageList).at(signalIndexLocal);
-        graphBase->pRefinementWatershedSignal = (*pSegmentTypeSignalList).at(signalIndexLocal).get();
+        graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType*>(
+            allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
+        graphBase->pRefinementWatershedSignal = typedSignal;
 
         // Set ROI to currently set watershed ROI
         // this is used to prevent out-of-ROI refinements through user input
         if (graphBase->ROI_set) {
-            (*pSegmentTypeSignalList).at(signalIndexLocal)->ROI_set = true;
-            (*pSegmentTypeSignalList).at(signalIndexLocal)->ROI_fx = graphBase->ROI_fx;
-            (*pSegmentTypeSignalList).at(signalIndexLocal)->ROI_fy = graphBase->ROI_fy;
-            (*pSegmentTypeSignalList).at(signalIndexLocal)->ROI_fz = graphBase->ROI_fz;
-            (*pSegmentTypeSignalList).at(signalIndexLocal)->ROI_tx = graphBase->ROI_tx;
-            (*pSegmentTypeSignalList).at(signalIndexLocal)->ROI_ty = graphBase->ROI_ty;
-            (*pSegmentTypeSignalList).at(signalIndexLocal)->ROI_tz = graphBase->ROI_tz;
+            typedSignal->ROI_set = true;
+            typedSignal->ROI_fx = graphBase->ROI_fx;
+            typedSignal->ROI_fy = graphBase->ROI_fy;
+            typedSignal->ROI_fz = graphBase->ROI_fz;
+            typedSignal->ROI_tx = graphBase->ROI_tx;
+            typedSignal->ROI_ty = graphBase->ROI_ty;
+            typedSignal->ROI_tz = graphBase->ROI_tz;
         }
     }
 }
@@ -855,22 +831,17 @@ void SignalControl::loadMembraneProbability(QString fileName, QString displayedN
         }
         if (!segmentsAreNotAdded || (reply == QMessageBox::Yes)) {
             itk::ImageIOBase::IOComponentType dataType;
-            size_t signalIndexLocal;
             size_t signalIndexGlobal;
-            bool forceShapeOfSegments;
-            if (graphBase->pWorkingSegmentsImage == nullptr) {
-                forceShapeOfSegments = false;
-            } else {
-                forceShapeOfSegments = true;
-            }
+            bool forceShapeOfSegments = graphBase->pWorkingSegmentsImage != nullptr;
             bool forceSegmentDataType = true;
             itk::ImageIOBase::IOComponentType forcedDataType = itk::ImageIOBase::IOComponentType::USHORT;
             // TODO: support more datatypes. maybe sth like a union can do the trick here?
-            bool loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal,
+            bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal,
                                              forceShapeOfSegments, forceSegmentDataType, forcedDataType);
 
             if (loadSuccessFull) {
-                graphBase->pSelectedBoundary = uShortImageList.at(signalIndexLocal);
+                graphBase->pSelectedBoundary = dynamic_cast<dataType::BoundaryImageType*>(
+                    allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
 
                 if (graphBase->pWorkingSegmentsImage == nullptr) {
                     //TODO:add prompt asking if it should create the seg?
@@ -878,7 +849,6 @@ void SignalControl::loadMembraneProbability(QString fileName, QString displayedN
                 }
 
                 std::cout << "datatype: " << dataType << "\n";
-                globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
                 allSignalList[signalIndexGlobal]->setLUTContinuous();
                 if (displayedName == "") {
                     displayedName = QFileInfo(fileName).baseName();
@@ -929,21 +899,14 @@ void SignalControl::createNewSegmentationVolume() {
                   << dstDirection[2][0] << ", " << dstDirection[2][1] << ", " << dstDirection[2][2] << "]]\n";
     }
 
-    //TODO: Make uinbtimagelist etc dependent on whatever is on datatype/segmentidtype
-    size_t signalIndexLocal = (*pSegmentTypeImageList).size();
-    (*pSegmentTypeImageList).push_back(pImage);
     graphBase->pSelectedSegmentation = pImage;
 
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
-    (*pSegmentTypeSignalList).push_back(std::move(pSignal2));
-    graphBase->pSelectedSegmentationSignal = (*pSegmentTypeSignalList)[signalIndexLocal].get();
-
+    auto *typedSignal = pSignal2.get();
     size_t signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = (*pSegmentTypeSignalList)[signalIndexLocal].get();
-    allSignalList.push_back(pSignal);
-
-
-    globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
+    allSignalList.push_back(typedSignal);
+    ownedSignals.push_back(std::move(pSignal2));
+    graphBase->pSelectedSegmentationSignal = typedSignal;
 
     allSignalList[signalIndexGlobal]->setLUTCategorical();
     allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
@@ -976,14 +939,12 @@ void SignalControl::loadSegmentationVolume(QString fileName, QString displayName
     graphBase->currentlyCalculating = true;
     if (!fileName.isEmpty()) {
         itk::ImageIOBase::IOComponentType dataType;
-        size_t signalIndexLocal;
         size_t signalIndexGlobal;
         bool forceShapeOfSegments = graphBase->pWorkingSegmentsImage != nullptr;
         bool forceSegmentDataTypeUInt = true;
-        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal, forceShapeOfSegments,
+        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, forceShapeOfSegments,
                                          forceSegmentDataTypeUInt);
         if (loadSuccessFull) {
-            globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
             allSignalList[signalIndexGlobal]->setLUTCategorical();
 
             if (displayName == "") {
@@ -995,8 +956,10 @@ void SignalControl::loadSegmentationVolume(QString fileName, QString displayName
             allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
             allSignalList[signalIndexGlobal]->setIsActive(true);
 
-            graphBase->pSelectedSegmentation = (*pSegmentTypeImageList)[signalIndexLocal];
-            graphBase->pSelectedSegmentationSignal = (*pSegmentTypeSignalList)[signalIndexLocal].get();
+            graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType*>(
+                allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
+            graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(
+                allSignalList[signalIndexGlobal]);
             dataType::SegmentIdType maxId = graphBase->pGraph->getLargestIdInSegmentVolume(
                     graphBase->pSelectedSegmentation);
             std::cout << "Max Id in selected segmentation: " << maxId << "\n";
@@ -1098,11 +1061,9 @@ void SignalControl::addRefinementWatershed(QString fileName, QString displayedNa
     graphBase->currentlyCalculating = true;
     if (!fileName.isEmpty()) {
         itk::ImageIOBase::IOComponentType dataType;
-        size_t signalIndexLocal;
         size_t signalIndexGlobal;
-        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal, true, true);
+        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, true, true);
         if (loadSuccessFull) {
-            globalToLocalMapping[signalIndexGlobal] = signalIndexLocal;
             allSignalList[signalIndexGlobal]->setLUTCategorical();
             if (displayedName == "") {
                 displayedName = QFileInfo(fileName).baseName();
@@ -1115,8 +1076,10 @@ void SignalControl::addRefinementWatershed(QString fileName, QString displayedNa
             refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
             refinementWatershedTreeWidget->setCurrentItem(refinementWatershedTreeWidget->topLevelItem(lastItemIndex));
             graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-            graphBase->pRefinementWatershed = (*pSegmentTypeImageList).at(signalIndexLocal);
-            graphBase->pRefinementWatershedSignal = (*pSegmentTypeSignalList).at(signalIndexLocal).get();
+            graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType*>(
+                allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
+            graphBase->pRefinementWatershedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(
+                allSignalList[signalIndexGlobal]);
         }
     }
     graphBase->currentlyCalculating = false;
@@ -1124,15 +1087,13 @@ void SignalControl::addRefinementWatershed(QString fileName, QString displayedNa
 }
 
 bool SignalControl::insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
-                                           size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut,
+                                           size_t &signalIndexGlobalOut,
                                            bool forceShapeOfSegments) {
-    return insertTypedImage<dataType::SegmentIdType>(
-        pImage, uIntImageList, uIntSignalList,
-        signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+    return insertTypedImage<dataType::SegmentIdType>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
 }
 
 bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
-                              size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut, bool forceShapeOfSegments,
+                              size_t &signalIndexGlobalOut, bool forceShapeOfSegments,
                               bool forceSegmentDataTypeUInt, itk::ImageIOBase::IOComponentType forcedDataType) {
     bool loadingWasSuccessful = false;
     if (!fileName.isEmpty()) {
@@ -1161,73 +1122,73 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
 
                 case itk::ImageIOBase::IOComponentType::UCHAR: {
                     auto pImage = ITKImageLoader<unsigned char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned char>(pImage, uCharImageList, uCharSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::CHAR: {
                     auto pImage = ITKImageLoader<char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<char>(pImage, charImageList, charSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::USHORT: {
                     auto pImage = ITKImageLoader<unsigned short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned short>(pImage, uShortImageList, uShortSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::SHORT: {
                     auto pImage = ITKImageLoader<short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<short>(pImage, shortImageList, shortSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::UINT: {
                     auto pImage = ITKImageLoader<unsigned int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned int>(pImage, uIntImageList, uIntSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::INT: {
                     auto pImage = ITKImageLoader<int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<int>(pImage, intImageList, intSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONG: {
                     auto pImage = ITKImageLoader<unsigned long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long>(pImage, uLongImageList, uLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONG: {
                     auto pImage = ITKImageLoader<long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long>(pImage, longImageList, longSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONGLONG: {
                     auto pImage = ITKImageLoader<unsigned long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long long>(pImage, uLongLongImageList, uLongLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<unsigned long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONGLONG: {
                     auto pImage = ITKImageLoader<long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long long>(pImage, longLongImageList, longLongSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::FLOAT: {
                     auto pImage = ITKImageLoader<float>(fileName);
-                    loadingWasSuccessful = insertTypedImage<float>(pImage, floatImageList, floatSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<float>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::DOUBLE: {
                     auto pImage = ITKImageLoader<double>(fileName);
-                    loadingWasSuccessful = insertTypedImage<double>(pImage, doubleImageList, doubleSignalList, signalIndexLocalOut, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = insertTypedImage<double>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
                     break;
                 }
 

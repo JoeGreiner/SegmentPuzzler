@@ -122,6 +122,8 @@ public:
 
     void setName(QString name) override;
 
+    itk::ImageBase<3>::Pointer getImageBase() const override { return pImage; }
+
     bool isShapeMatched(itkSignalBase *otherSignal);
 
     void computeExtrema();

@@ -2,6 +2,7 @@
 #define HELLOWORLD_ITKSIGNALBASE_H
 
 #include <itkImage.h>
+#include <itkImageBase.h>
 #include <QRgb>
 #include <vector>
 #include <map>
@@ -15,6 +16,8 @@ class itkSignalBase {
 public:
 
     virtual ~itkSignalBase() {};
+
+    virtual itk::ImageBase<3>::Pointer getImageBase() const = 0;
 
     virtual void setupTreeWidget(QTreeWidget *motherTreeWidget, size_t signalIndex) = 0;
 

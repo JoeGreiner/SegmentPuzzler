@@ -30,7 +30,7 @@ public:
     using GraphSegmentImageType = dataType::SegmentsImageType;
 
     void addEmptySegmentsFromBoundary();
-    void initializeGraph(size_t signalIndexLocal, size_t signalIndexGlobal);
+    void initializeGraph(size_t signalIndexGlobal);
 
 
 //    void ITKLoaderUnknownFileType(QString &fileName);
@@ -49,42 +49,14 @@ public:
     // the pointer gets invalidated if you resize the vector!!!!
 //    std::vector<itkSignal<unsigned char>> uCharSignalList;
 //    std::vector<itkSignal<short>> shortSignalList;
-    //TODO: isn't there a better way to do this? virtual baseclass?
-    std::vector<itk::Image<unsigned char, 3>::Pointer> uCharImageList;
-    std::vector<itk::Image<char, 3>::Pointer> charImageList;
-    std::vector<itk::Image<unsigned short, 3>::Pointer> uShortImageList;
-    std::vector<itk::Image<short, 3>::Pointer> shortImageList;
-    std::vector<itk::Image<unsigned int, 3>::Pointer> uIntImageList;
-    std::vector<itk::Image<int, 3>::Pointer> intImageList;
-    std::vector<itk::Image<unsigned long, 3>::Pointer> uLongImageList;
-    std::vector<itk::Image<long, 3>::Pointer> longImageList;
-    std::vector<itk::Image<unsigned long long, 3>::Pointer> uLongLongImageList;
-    std::vector<itk::Image<long long, 3>::Pointer> longLongImageList;
-    std::vector<itk::Image<float, 3>::Pointer> floatImageList;
-    std::vector<itk::Image<double, 3>::Pointer> doubleImageList;
-
-    // do we actually need to save the signals? or can we just use the abstract class instead?
-    std::vector<std::unique_ptr<itkSignal<unsigned char>>> uCharSignalList;
-    std::vector<std::unique_ptr<itkSignal<char>>> charSignalList;
-    std::vector<std::unique_ptr<itkSignal<unsigned short>>> uShortSignalList;
-    std::vector<std::unique_ptr<itkSignal<short>>> shortSignalList;
-    std::vector<std::unique_ptr<itkSignal<unsigned int>>> uIntSignalList;
-    std::vector<std::unique_ptr<itkSignal<int>>> intSignalList;
-    std::vector<std::unique_ptr<itkSignal<unsigned long>>> uLongSignalList;
-    std::vector<std::unique_ptr<itkSignal<long>>> longSignalList;
-    std::vector<std::unique_ptr<itkSignal<unsigned long long>>> uLongLongSignalList;
-    std::vector<std::unique_ptr<itkSignal<long long>>> longLongSignalList;
-    std::vector<std::unique_ptr<itkSignal<float>>> floatSignalList;
-    std::vector<std::unique_ptr<itkSignal<double>>> doubleSignalList;
-
-    std::vector<std::unique_ptr<itkSignal<dataType::SegmentIdType>>> *pSegmentTypeSignalList;
-    std::vector<itk::Image<dataType::SegmentIdType, 3>::Pointer> *pSegmentTypeImageList;
-
+    // Owns all signals created during image loading.
+    // allSignalList is a non-owning view used for indexed access by tree-widget callbacks.
+    std::vector<std::unique_ptr<itkSignalBase>> ownedSignals;
     std::vector<itkSignalBase *> allSignalList;
 
     std::vector<itkSignal<dataType::SegmentIdType>> refinementWatershedList;
 
-    itkSignal<GraphSegmentType> *segmentsGraph;
+    itkSignalBase *segmentsGraph;
 
     QTreeWidgetWithDragAndDrop *signalTreeWidget;
     QTreeWidget *probabilityTreeWidget;
@@ -94,7 +66,7 @@ public:
 
 
     bool loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
-                   size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
+                   size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
                    bool forceSegmentDataTypeUInt = false,
                    itk::ImageIOBase::IOComponentType forcedDataType = itk::ImageIOBase::IOComponentType::UINT);
 
@@ -155,7 +127,7 @@ public slots:
     void receiveNewRefinementWatershed(itk::Image<dataType::SegmentIdType, 3>::Pointer);
 
     bool insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
-    size_t &signalIndexLocalOut, size_t &signalIndexGlobalOut,
+    size_t &signalIndexGlobalOut,
     bool forceShapeOfSegments = true);
 
     void setPaintId();
@@ -215,7 +187,6 @@ private:
 
     QImageSelectionRadioButtons* imageSelectionButtonWidget;
 
-    std::map<size_t, size_t> globalToLocalMapping; // mapping: local index of <dtype>Array -> globalIndex of allSignalLists
 
 
     QString DEFAULT_SAVE_DIR;
@@ -242,27 +213,22 @@ private:
 
     template<typename T>
     bool insertTypedImage(
-        typename itk::Image<T, 3>::Pointer                pImage,
-        std::vector<typename itk::Image<T, 3>::Pointer>  &imageList,
-        std::vector<std::unique_ptr<itkSignal<T>>>       &signalList,
-        size_t                                           &signalIndexLocalOut,
-        size_t                                           &signalIndexGlobalOut,
-        bool                                              forceShapeOfSegments)
+        typename itk::Image<T, 3>::Pointer  pImage,
+        size_t                             &signalIndexGlobalOut,
+        bool                                forceShapeOfSegments)
     {
-        std::unique_ptr<itkSignal<T>> pSignal2(new itkSignal<T>(pImage));
-        if (pSignal2->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
-            signalIndexLocalOut = signalList.size();
-            imageList.push_back(pImage);
-            signalList.push_back(std::move(pSignal2));
+        std::unique_ptr<itkSignal<T>> pSignal(new itkSignal<T>(pImage));
+        if (pSignal->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
             signalIndexGlobalOut = allSignalList.size();
-            itkSignalBase *pSignal = signalList[signalIndexLocalOut].get();
-            allSignalList.push_back(pSignal);
+            itkSignalBase *pRaw = pSignal.get();
+            ownedSignals.push_back(std::move(pSignal));
+            allSignalList.push_back(pRaw);
             return true;
         } else {
             std::cout << "Segments: [" << segmentsGraph->getDimX() << " "
                       << segmentsGraph->getDimY() << " " << segmentsGraph->getDimZ() << "]\n";
-            std::cout << "Image:    [" << pSignal2->getDimX() << " "
-                      << pSignal2->getDimY() << " " << pSignal2->getDimZ() << "]\n";
+            std::cout << "Image:    [" << pSignal->getDimX() << " "
+                      << pSignal->getDimY() << " " << pSignal->getDimZ() << "]\n";
             std::cout << "Dimension mismatch! Image is not added.\n";
             return false;
         }
