@@ -56,6 +56,10 @@ struct CenterOfMass {
     float z;
 
     float distTo(CenterOfMass B) {
+        return std::sqrt(distToSquared(B));
+    }
+
+    float distToSquared(CenterOfMass B) {
 
         float distX = (x - B.x) * (x - B.x);
         float distY = (y - B.y) * (y - B.y);
