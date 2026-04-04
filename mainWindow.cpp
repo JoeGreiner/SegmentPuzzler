@@ -241,27 +241,175 @@ MainWindow::MainWindow() {
 #include <QUrl>
 #include <QStandardPaths>
 #include <QDir>
+#include <QElapsedTimer>
 
 
 #include <QSslSocket>
 #include <QLoggingCategory>
 #include <QProgressDialog>
 
-QString downloadFile(QString url_to_download, QString outputFilePath) {
+#include <functional>
+
+namespace {
+
+constexpr int sampleDownloadCount = 4;
+constexpr int sampleDownloadProgressResolution = 1000;
+constexpr qint64 sampleDownloadCachedAnimationDurationMs = 150;
+
+using DownloadProgressCallback = std::function<void(const QString&, int, int, qint64, qint64)>;
+
+enum class SampleDownloadResultType {
+    Failed,
+    Downloaded,
+    Cached
+};
+
+struct SampleDownloadResult {
+    QString filePath;
+    SampleDownloadResultType type = SampleDownloadResultType::Failed;
+};
+
+void setSampleDownloadDialogState(QProgressDialog *progressDialog,
+                                  const QString &actionLabel,
+                                  const QString &fileLabel,
+                                  int fileIndex,
+                                  int totalFiles,
+                                  int value) {
+    if (progressDialog == nullptr) {
+        return;
+    }
+
+    progressDialog->setLabelText(QString("%1 (%2/%3): %4")
+                                         .arg(actionLabel)
+                                         .arg(fileIndex + 1)
+                                         .arg(totalFiles)
+                                         .arg(fileLabel));
+    progressDialog->setRange(0, totalFiles * sampleDownloadProgressResolution);
+    progressDialog->setValue(value);
+    progressDialog->repaint();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void animateSampleDownloadProgress(QProgressDialog *progressDialog,
+                                   const QString &actionLabel,
+                                   const QString &fileLabel,
+                                   int fileIndex,
+                                   int totalFiles,
+                                   int startValue,
+                                   int endValue,
+                                   qint64 durationMs) {
+    if (progressDialog == nullptr) {
+        return;
+    }
+
+    if (endValue <= startValue || durationMs <= 0) {
+        setSampleDownloadDialogState(progressDialog, actionLabel, fileLabel, fileIndex, totalFiles, endValue);
+        return;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+
+    while (timer.elapsed() < durationMs) {
+        const double progress = static_cast<double>(timer.elapsed()) / static_cast<double>(durationMs);
+        const int value = startValue + static_cast<int>((endValue - startValue) * progress);
+        setSampleDownloadDialogState(progressDialog, actionLabel, fileLabel, fileIndex, totalFiles, value);
+    }
+
+    setSampleDownloadDialogState(progressDialog, actionLabel, fileLabel, fileIndex, totalFiles, endValue);
+}
+
+void updateSampleDownloadProgress(QProgressDialog *progressDialog,
+                                  const QString &fileLabel,
+                                  int fileIndex,
+                                  int totalFiles,
+                                  qint64 bytesReceived,
+                                  qint64 bytesTotal) {
+    if (progressDialog == nullptr) {
+        return;
+    }
+
+    int value = fileIndex * sampleDownloadProgressResolution;
+    if (bytesTotal > 0) {
+        double progress = static_cast<double>(bytesReceived) / static_cast<double>(bytesTotal);
+        if (progress < 0.0) {
+            progress = 0.0;
+        }
+        if (progress > 1.0) {
+            progress = 1.0;
+        }
+        value += static_cast<int>(progress * sampleDownloadProgressResolution);
+    }
+
+    setSampleDownloadDialogState(progressDialog, "Downloading sample data", fileLabel, fileIndex, totalFiles, value);
+}
+
+void markSampleDownloadComplete(QProgressDialog *progressDialog,
+                                const QString &fileLabel,
+                                int fileIndex,
+                                int totalFiles,
+                                bool isCached) {
+    if (progressDialog == nullptr) {
+        return;
+    }
+
+    const int startValue = progressDialog->value();
+    const int endValue = (fileIndex + 1) * sampleDownloadProgressResolution;
+
+    if (isCached) {
+        animateSampleDownloadProgress(progressDialog,
+                                      "Using cached sample data",
+                                      fileLabel,
+                                      fileIndex,
+                                      totalFiles,
+                                      startValue,
+                                      endValue,
+                                      sampleDownloadCachedAnimationDurationMs);
+        return;
+    }
+
+    setSampleDownloadDialogState(progressDialog,
+                                 "Downloading sample data",
+                                 fileLabel,
+                                 fileIndex,
+                                 totalFiles,
+                                 endValue);
+}
+
+} // namespace
+
+SampleDownloadResult downloadFile(const QString &url_to_download,
+                                  const QString &outputFilePath,
+                                  const QString &fileLabel,
+                                  int fileIndex,
+                                  int totalFiles,
+                                  const DownloadProgressCallback &progressCallback) {
     QNetworkAccessManager manager;
     QUrl qurl(url_to_download);
     QNetworkRequest request(qurl);
 
     if (QFile::exists(outputFilePath)) {
         std::cout << "File already exists: " << outputFilePath.toStdString() << std::endl;
-        return outputFilePath;
+        return {outputFilePath, SampleDownloadResultType::Cached};
     }
 
     int redirectCount = 0;
     const int maxRedirects = 5;
 
+    if (progressCallback) {
+        progressCallback(fileLabel, fileIndex, totalFiles, 0, 0);
+    }
+
     while (redirectCount < maxRedirects) {
         QNetworkReply *reply = manager.get(request);
+
+        QObject::connect(reply,
+                         &QNetworkReply::downloadProgress,
+                         [progressCallback, fileLabel, fileIndex, totalFiles](qint64 bytesReceived, qint64 bytesTotal) {
+                             if (progressCallback) {
+                                 progressCallback(fileLabel, fileIndex, totalFiles, bytesReceived, bytesTotal);
+                             }
+                         });
 
         QEventLoop loop;
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -270,7 +418,7 @@ QString downloadFile(QString url_to_download, QString outputFilePath) {
         if (reply->error() != QNetworkReply::NoError) {
             std::cout << "Download failed: " << reply->errorString().toStdString() << std::endl;
             reply->deleteLater();
-            return "";
+            return {};
         }
 
         QVariant redirection = reply->attribute(QNetworkRequest::RedirectionTargetAttribute);
@@ -283,6 +431,9 @@ QString downloadFile(QString url_to_download, QString outputFilePath) {
             request.setUrl(newUrl);
             reply->deleteLater();
             redirectCount++;
+            if (progressCallback) {
+                progressCallback(fileLabel, fileIndex, totalFiles, 0, 0);
+            }
             continue; // Follow the redirect
         }
 
@@ -291,29 +442,32 @@ QString downloadFile(QString url_to_download, QString outputFilePath) {
 
         if (data.isEmpty()) {
             std::cout << "No data received after following redirects.\n";
-            return "";
+            return {};
         }
 
         QFile file(outputFilePath);
         if (!file.open(QIODevice::WriteOnly)) {
             std::cout << "Failed to open file: " << outputFilePath.toStdString() << std::endl;
-            return "";
+            return {};
         }
 
         file.write(data);
         file.close();
 
         std::cout << "File downloaded successfully to: " << outputFilePath.toStdString() << "\n";
-        return outputFilePath;
+        if (progressCallback) {
+            progressCallback(fileLabel, fileIndex, totalFiles, 1, 1);
+        }
+        return {outputFilePath, SampleDownloadResultType::Downloaded};
     }
 
     std::cout << "Too many redirects.\n";
-    return "";
+    return {};
 };
 
 
 
-std::tuple<QString, QString, QString, QString> downloadFiles() {
+std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *progressDialog) {
 
     QLoggingCategory::setFilterRules(QStringLiteral("qt.network.ssl.warning=true\n"
                                                     "qt.network.ssl.debug=true\n"));
@@ -330,8 +484,6 @@ std::tuple<QString, QString, QString, QString> downloadFiles() {
               << QSslSocket::sslLibraryVersionString().toStdString()
               << std::endl;
 
-
-    QString url = "https://drive.google.com/uc?export=download&id=1FW592Qge47SjoVQupk83LSwkhs-70nh2";
     QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     if (tempDir.isEmpty()) {
         std::cout << "Failed to retrieve the temporary directory path.\n";
@@ -357,12 +509,79 @@ std::tuple<QString, QString, QString, QString> downloadFiles() {
     QString url_segments_ws = "https://drive.google.com/uc?export=download&id=1x_QYEfPRNrTWlwHRUMI9jFKh1xyWw39Y";
     QString url_segments_bnd = "https://drive.google.com/uc?export=download&id=1YMFz84x8_E4OVh74ABn8j2pcpGXKtu8r";
 
-    QString downloadedFilePathMC = downloadFile(url_segments_mc, outputFilePathMC);
-    QString downloadedFilePathWGA = downloadFile(url_segments_wga, outputFilePathWGA);
-    QString downloadedFilePathWS = downloadFile(url_segments_ws, outputFilePathWS);
-    QString downloadedFilePathBnd = downloadFile(url_segments_bnd, outputFilePathBnd);
+    if (progressDialog != nullptr) {
+        progressDialog->setRange(0, sampleDownloadCount * sampleDownloadProgressResolution);
+        progressDialog->setValue(0);
+    }
 
-    return std::make_tuple(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd);
+    const DownloadProgressCallback progressCallback = [progressDialog](const QString &fileLabel,
+                                                                       int fileIndex,
+                                                                       int totalFiles,
+                                                                       qint64 bytesReceived,
+                                                                       qint64 bytesTotal) {
+        updateSampleDownloadProgress(progressDialog, fileLabel, fileIndex, totalFiles, bytesReceived, bytesTotal);
+    };
+
+    SampleDownloadResult downloadedMC = downloadFile(url_segments_mc,
+                                                     outputFilePathMC,
+                                                     "Watershed_MC.tif",
+                                                     0,
+                                                     sampleDownloadCount,
+                                                     progressCallback);
+    if (!downloadedMC.filePath.isEmpty()) {
+        markSampleDownloadComplete(progressDialog,
+                                   "Watershed_MC.tif",
+                                   0,
+                                   sampleDownloadCount,
+                                   downloadedMC.type == SampleDownloadResultType::Cached);
+    }
+
+    SampleDownloadResult downloadedWGA = downloadFile(url_segments_wga,
+                                                      outputFilePathWGA,
+                                                      "WGA.nrrd",
+                                                      1,
+                                                      sampleDownloadCount,
+                                                      progressCallback);
+    if (!downloadedWGA.filePath.isEmpty()) {
+        markSampleDownloadComplete(progressDialog,
+                                   "WGA.nrrd",
+                                   1,
+                                   sampleDownloadCount,
+                                   downloadedWGA.type == SampleDownloadResultType::Cached);
+    }
+
+    SampleDownloadResult downloadedWS = downloadFile(url_segments_ws,
+                                                     outputFilePathWS,
+                                                     "Watershed.nrrd",
+                                                     2,
+                                                     sampleDownloadCount,
+                                                     progressCallback);
+    if (!downloadedWS.filePath.isEmpty()) {
+        markSampleDownloadComplete(progressDialog,
+                                   "Watershed.nrrd",
+                                   2,
+                                   sampleDownloadCount,
+                                   downloadedWS.type == SampleDownloadResultType::Cached);
+    }
+
+    SampleDownloadResult downloadedBnd = downloadFile(url_segments_bnd,
+                                                      outputFilePathBnd,
+                                                      "BoundaryPrediction.tif",
+                                                      3,
+                                                      sampleDownloadCount,
+                                                      progressCallback);
+    if (!downloadedBnd.filePath.isEmpty()) {
+        markSampleDownloadComplete(progressDialog,
+                                   "BoundaryPrediction.tif",
+                                   3,
+                                   sampleDownloadCount,
+                                   downloadedBnd.type == SampleDownloadResultType::Cached);
+    }
+
+    return std::make_tuple(downloadedMC.filePath,
+                           downloadedWGA.filePath,
+                           downloadedWS.filePath,
+                           downloadedBnd.filePath);
 }
 
 
@@ -412,12 +631,16 @@ void MainWindow::loadSegmentationSample() {
     progressDialog.setCancelButton(nullptr);
     progressDialog.setMinimumDuration(0);
     progressDialog.setWindowTitle("Please Wait");
+    progressDialog.setAutoClose(false);
+    progressDialog.setAutoReset(false);
+    progressDialog.setRange(0, sampleDownloadCount * sampleDownloadProgressResolution);
+    progressDialog.setValue(0);
     progressDialog.show();
 
     QCoreApplication::processEvents();
 
     QString downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd;
-    std::tie(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd) = downloadFiles();
+    std::tie(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd) = downloadFiles(&progressDialog);
 
     progressDialog.close();
 
