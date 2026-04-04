@@ -65,7 +65,7 @@ public:
 
     void calculateLUTContinuous(long long dTypeMax) override;
 
-    void calculateLUTCategorical(long long dTypeMax) override;
+    void calculateLUTCategorical(long long dTypeMax, size_t startIndex) override;
 
     void calculateLUTEdge(long long dTypeMax) override;
 
@@ -164,6 +164,10 @@ public:
     bool isEdge;
 
     bool isFloatingPoint;
+
+    // true once the LUT has been built as categorical at least once;
+    // false forces a full rebuild when first switching from continuous to categorical
+    bool categoricalLUTInitialized = false;
 
 
     std::unordered_map<unsigned int, char> *labelToStatus;
@@ -467,13 +471,16 @@ void itkSignal<dType>::calculateLUT() {
     std::cout << "Calculating LUTs for " << LUTSizeWanted << " values.\n";
 
     std::cout << "Current LUT size: " << LUT.size() << std::endl;
+    size_t oldLUTSize = LUT.size();
     if (size_t(LUTSizeWanted) > LUT.size()) {
         std::cout << "Resizing LUT to fit index " << LUTSizeWanted << ". New size: " << LUTSizeWanted << "\n";
         LUT.resize(LUTSizeWanted);
     }
 
     if (isCategorical) {
-        calculateLUTCategorical(LUTSizeWanted);
+        size_t categoricalStart = categoricalLUTInitialized ? oldLUTSize : 0;
+        calculateLUTCategorical(LUTSizeWanted, categoricalStart);
+        categoricalLUTInitialized = true;
     } else if (isEdge) {
         calculateLUTEdge(LUTSizeWanted);
     } else {
@@ -506,18 +513,19 @@ void itkSignal<dType>::calculateLUTContinuous(long long) {
 }
 
 template<typename dType>
-void itkSignal<dType>::calculateLUTCategorical(long long) {
-    if (verbose) { std::cout << "Categorical LUT" << std::endl; }
-    for (size_t i = 0; i < LUT.size(); ++i) {
+void itkSignal<dType>::calculateLUTCategorical(long long, size_t startIndex) {
+    if (verbose) { std::cout << "Categorical LUT (startIndex=" << startIndex << ")" << std::endl; }
+    // Generate new random colors only for entries beyond startIndex
+    for (size_t i = startIndex; i < LUT.size(); ++i) {
         auto colorR = (std::rand() % 255);
         auto colorG = (std::rand() % 255);
         auto colorB = (std::rand() % 255);
         auto colorA = alpha;
         LUT.at(static_cast<unsigned long>(i)) = qRgba(colorR, colorG, colorB, colorA);
-//        if (verbose) {
-//            std::cout << i << " " << (int) colorR << " " << (int) colorG
-//                      << " " << (int) colorB << " " << (int) colorA << std::endl;
-//        }
+    }
+    // Update alpha for existing entries, preserving their RGB colors
+    for (size_t i = 0; i < startIndex; ++i) {
+        LUT[i] = qRgba(qRed(LUT[i]), qGreen(LUT[i]), qBlue(LUT[i]), alpha);
     }
     for (auto val: blackLUTValues) {
         LUT.at(val) = qRgba(0, 0, 0, 255);
@@ -557,6 +565,7 @@ void itkSignal<dType>::setAlpha(unsigned char alphaIn) {
 template<typename dType>
 void itkSignal<dType>::setLUTContinuous() {
     isCategorical = false;
+    categoricalLUTInitialized = false;
     calculateLUT();
 }
 
@@ -579,9 +588,23 @@ void itkSignal<dType>::setLUTValueToBlack(unsigned int value) {
 template<typename dType>
 void itkSignal<dType>::checkAndResizeLUT(unsigned int value) {
     if (value >= LUT.size()) {
-        LUT.resize((value + 1) * 2);
-        calculateLUT();
-        std::cout << "Resizing LUT to fit index " << value << ". New size: " << (value + 1) * 2 << "\n";
+        constexpr size_t minimumCategoricalLUTSize = 256;
+        size_t oldSize = LUT.size();
+        size_t newSize = oldSize;
+        if (newSize < minimumCategoricalLUTSize) {
+            newSize = minimumCategoricalLUTSize;
+        }
+        while (newSize <= value) {
+            newSize *= 2;
+        }
+        LUT.resize(newSize);
+        std::cout << "Resizing LUT to fit index " << value << ". New size: " << newSize << "\n";
+        if (isCategorical) {
+            // Extend with new random colors; existing entries keep their colours
+            calculateLUTCategorical(newSize, oldSize);
+        } else {
+            calculateLUT();
+        }
     }
 }
 

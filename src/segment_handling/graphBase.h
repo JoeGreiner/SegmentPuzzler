@@ -78,7 +78,7 @@ public:
         pWorkingSegments = nullptr;
         pSelectedSegmentation = nullptr;
         pSelectedSegmentationSignal = nullptr;
-        selectedSegmentationMaxSegmentId = 254;
+        selectedSegmentationMaxSegmentId = 0;
         pEdgesInitialSegmentsITKSignal = nullptr;
         pSelectedBoundary = nullptr;
         ROI_fx = -1;

@@ -28,7 +28,7 @@ public:
 
     virtual void calculateLUTContinuous(long long dTypeMax) = 0;
 
-    virtual void calculateLUTCategorical(long long dTypeMax) = 0;
+    virtual void calculateLUTCategorical(long long dTypeMax, size_t startIndex = 0) = 0;
 
     virtual void calculateLUTEdge(long long dTypeMax) = 0;
 

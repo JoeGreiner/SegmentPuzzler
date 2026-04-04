@@ -900,6 +900,7 @@ void SignalControl::createNewSegmentationVolume() {
     }
 
     graphBase->pSelectedSegmentation = pImage;
+    graphBase->selectedSegmentationMaxSegmentId = 0;
 
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
     auto *typedSignal = pSignal2.get();
