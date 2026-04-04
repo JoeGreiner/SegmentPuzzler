@@ -317,8 +317,6 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         break;
     case ToolMode::Refine:
         refineSegmentByPosition(event->pos().x(), event->pos().y());
-        graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
         for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
         break;
     case ToolMode::Transfer:
@@ -675,12 +673,12 @@ void AnnotationSliceViewer::refineSegmentByPosition(int posX, int posY) {
 
 
         dialog->exec();
-    }, Qt::QueuedConnection);
 
-//    graphBase->pGraph->refineSegmentByPosition(x, y, z);
-    for (auto &viewer : graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+        graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+        for (auto &viewer : graphBase->viewerList) {
+            viewer->recalculateQImages();
+        }
+    }, Qt::QueuedConnection);
 }
 
 void AnnotationSliceViewer::splitWorkingNodeIntoInitialNodes(int posX, int posY) {
