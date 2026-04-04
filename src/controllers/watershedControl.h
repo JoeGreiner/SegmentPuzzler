@@ -215,6 +215,11 @@ private:
 
     bool getDimensionMatchWithSegmentImage();
 
+    // Registers a signal: takes ownership, appends to ownedSignals/allSignalList,
+    // sets name/LUT/tree widget, adds to viewer. Returns the global signal index.
+    size_t registerSignal(std::unique_ptr<itkSignalBase> sig, QTreeWidget *tree,
+                          const QString &name, bool categorical = false, bool transparentZero = false);
+
     template<typename T>
     bool insertTypedImage(
         typename itk::Image<T, 3>::Pointer  pImage,

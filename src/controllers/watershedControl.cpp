@@ -35,6 +35,21 @@ WatershedControl::~WatershedControl() {
 }
 
 
+size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, QTreeWidget *tree,
+                                        const QString &name, bool categorical, bool transparentZero) {
+    size_t idx = allSignalList.size();
+    itkSignalBase *raw = sig.get();
+    ownedSignals.push_back(std::move(sig));
+    allSignalList.push_back(raw);
+    raw->setName(name);
+    raw->setupTreeWidget(tree, idx);
+    if (categorical) raw->setLUTCategorical(); else raw->setLUTContinuous();
+    if (transparentZero) raw->setLUTValueToTransparent(0);
+    graphBase->pOrthoViewer->addSignal(raw);
+    return idx;
+}
+
+
 void WatershedControl::addImage(QString fileName) {
     std::cout << "Adding file: " << fileName.toStdString() << std::endl;
     if (!fileName.isEmpty()) {
@@ -374,19 +389,11 @@ void WatershedControl::setUserAlpha(QTreeWidgetItem *item) {
 
 
 void WatershedControl::transferWatershedToGraph() {
-    size_t signalIndexGlobal = allSignalList.size();
-
-    std::unique_ptr<itkSignal<unsigned int>> pSignal2(new itkSignal<unsigned int>(pWatershed));
+    auto pSignal2 = std::make_unique<itkSignal<unsigned int>>(pWatershed);
     itkSignalBase *pSignal = pSignal2.get();
-    ownedSignals.push_back(std::move(pSignal2));
-    allSignalList.push_back(pSignal);
+    registerSignal(std::move(pSignal2), watershedTreeWidget, "Watershed", /*categorical=*/true);
 
-    allSignalList.at(signalIndexGlobal)->setName("Watershed");
-    allSignalList.at(signalIndexGlobal)->setupTreeWidget(watershedTreeWidget, signalIndexGlobal);
-    allSignalList.at(signalIndexGlobal)->setLUTCategorical();
-//    allSignalList.at(signalIndexGlobal)->setLUTValueToTransparent(0);
-
-    itkSignalSegmentsGraph = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndexGlobal]);
+    itkSignalSegmentsGraph = dynamic_cast<itkSignal<GraphSegmentType>*>(pSignal);
     graphBase->pWorkingSegments = itkSignalSegmentsGraph;
     graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
 
@@ -398,8 +405,7 @@ void WatershedControl::transferWatershedToGraph() {
 //    graphBase->pGraph->calculateEdgeFeatures();
 //    graphBase->pGraph->calculateUnionFeatures();
     // set highestid/background to black
-    allSignalList[signalIndexGlobal]->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
-    graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    pSignal->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
 
     graphBase->pEdgesInitialSegmentsITKSignal->setName("Edges");
     graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
@@ -699,17 +705,9 @@ void WatershedControl::thresholdBoundaries() {
 
     binaryThresholdImageFilterFloat(pBoundaries, pThresholdedMembrane, thresholdValueSlider->value());
 
-    std::unique_ptr<itkSignal<unsigned char>> pThresholdedMembraneSignal(new itkSignal<unsigned char>(pThresholdedMembrane));
-    size_t signalIndexGlobal = allSignalList.size();
+    auto pThresholdedMembraneSignal = std::make_unique<itkSignal<unsigned char>>(pThresholdedMembrane);
     itkSignalBase *pSignal = pThresholdedMembraneSignal.get();
-    ownedSignals.push_back(std::move(pThresholdedMembraneSignal));
-    allSignalList.push_back(pSignal);
-
-    allSignalList[signalIndexGlobal]->setName("Thresholded Boundaries");
-    allSignalList[signalIndexGlobal]->setupTreeWidget(thresholdTreeWidget, signalIndexGlobal);
-    allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
-    graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    registerSignal(std::move(pThresholdedMembraneSignal), thresholdTreeWidget, "Thresholded Boundaries", /*categorical=*/true, /*transparentZero=*/true);
     graphBase->pOrthoViewer->xy->pThresholdedBoundaries = pThresholdedMembrane;
     graphBase->pOrthoViewer->xz->pThresholdedBoundaries = pThresholdedMembrane;
     graphBase->pOrthoViewer->zy->pThresholdedBoundaries = pThresholdedMembrane;
@@ -750,17 +748,7 @@ void WatershedControl::extractSeeds() {
     double minimalMinimaHeight = 1;
     extractMinimaFromDistanceMap(pDistanceMap, pSeeds, minimalMinimaHeight);
 
-    std::unique_ptr<itkSignal<unsigned int>> pSeedsSignal(new itkSignal<unsigned int>(pSeeds));
-    size_t signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = pSeedsSignal.get();
-    ownedSignals.push_back(std::move(pSeedsSignal));
-    allSignalList.push_back(pSignal);
-
-    allSignalList[signalIndexGlobal]->setName("Seeds");
-    allSignalList[signalIndexGlobal]->setupTreeWidget(seedsTreeWidget, signalIndexGlobal);
-    allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
-    graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    registerSignal(std::make_unique<itkSignal<unsigned int>>(pSeeds), seedsTreeWidget, "Seeds", /*categorical=*/true, /*transparentZero=*/true);
 
 
     // automatically set it to the next tab
@@ -927,15 +915,7 @@ void WatershedControl::calculateDistanceMap() {
     double distanceMapSmoothingVariance = 0;
     generateDistanceMap(pThresholdedMembrane, pDistanceMap, distanceMapSmoothingVariance);
 
-    std::unique_ptr<itkSignal<float>> pDistanceMapSignal(new itkSignal<float>(pDistanceMap));
-    size_t signalIndexGlobal = allSignalList.size();
-    itkSignalBase *pSignal = pDistanceMapSignal.get();
-    ownedSignals.push_back(std::move(pDistanceMapSignal));
-    allSignalList.push_back(pSignal);
-
-    allSignalList[signalIndexGlobal]->setName("Distance Map");
-    allSignalList[signalIndexGlobal]->setupTreeWidget(distanceMapTreeWidget, signalIndexGlobal);
-    graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    registerSignal(std::make_unique<itkSignal<float>>(pDistanceMap), distanceMapTreeWidget, "Distance Map");
 
     // automatically set it to the next tab
     this->setCurrentIndex(2);
