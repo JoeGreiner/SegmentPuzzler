@@ -3,6 +3,7 @@
 
 
 #include <QString>
+#include <type_traits>
 #include <itkImage.h>
 #include <src/viewers/itkSignal.h>
 #include <QWidget>
@@ -28,6 +29,18 @@ public:
 
     using GraphSegmentType = dataType::SegmentIdType;
     using GraphSegmentImageType = dataType::SegmentsImageType;
+
+    // Maps the compiled SegmentIdType to its ITK IOComponentType.
+    // Ensures segment files are always forced to load with the pixel type
+    // that matches the current build (SEGMENTUINT → UINT, SEGMENTSHORT → SHORT).
+    static constexpr itk::ImageIOBase::IOComponentType kSegmentLoadIOType =
+        std::is_same_v<dataType::SegmentIdType, unsigned int>
+            ? itk::ImageIOBase::IOComponentType::UINT
+            : std::is_same_v<dataType::SegmentIdType, short>
+                ? itk::ImageIOBase::IOComponentType::SHORT
+                : itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE;
+    static_assert(kSegmentLoadIOType != itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE,
+                  "SegmentIdType has no corresponding IOComponentType — add it to kSegmentLoadIOType");
 
     void addEmptySegmentsFromBoundary();
     void initializeGraph(size_t signalIndexGlobal);
@@ -68,7 +81,7 @@ public:
     bool loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
                    size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
                    bool forceSegmentDataTypeUInt = false,
-                   itk::ImageIOBase::IOComponentType forcedDataType = itk::ImageIOBase::IOComponentType::UINT);
+                   itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType);
 
 
 public slots:
