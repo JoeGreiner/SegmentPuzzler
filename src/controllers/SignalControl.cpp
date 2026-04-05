@@ -2,6 +2,8 @@
 #include "src/segment_handling/graphBase.h"
 #include "src/viewers/fileIO.h"
 #include "MainWindowWatershedControl.h"
+#include "src/viewers/OrthoViewer.h"
+#include "src/qtUtils/TaskRunner.h"
 #include <itkImage.h>
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
@@ -15,44 +17,420 @@
 #include <QSettings>
 #include <QThread>
 #include <QApplication>
+#include <QTimer>
 #include <clocale>
 
 SignalControl::~SignalControl() {
 
 }
 
+void SignalControl::setGuiBusy(bool busy) {
+    signalTreeWidget->setEnabled(!busy);
+    probabilityTreeWidget->setEnabled(!busy);
+    segmentationTreeWidget->setEnabled(!busy);
+    refinementWatershedTreeWidget->setEnabled(!busy);
 
-void SignalControl::addImage(QString fileName, QString displayedName) {
-    graphBase->currentlyCalculating = true;
-    std::cout << "Adding file: " << fileName.toStdString() << std::endl;
-    if (!fileName.isEmpty()) {
-        itk::ImageIOBase::IOComponentType dataType;
-        size_t signalIndexGlobal;
-        bool loadSuccessFull = false;
-        try {
-            loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal);
-        } catch (itk::ExceptionObject &e) {
-            std::cout << "Error loading image: " << fileName.toStdString() << std::endl;
-            std::cout << "Exception caught!" << std::endl;
-            std::cout << e << std::endl;
-        }
-        if (loadSuccessFull) {
-            allSignalList[signalIndexGlobal]->setLUTContinuous();
-            if (displayedName == "") {
-                displayedName = QFileInfo(fileName).baseName();
-            }
-            allSignalList[signalIndexGlobal]->setName(displayedName);
-            allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
-            graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-        }
-    }
-    graphBase->currentlyCalculating = false;
-
+    addSignalButton->setEnabled(!busy);
+    addSegmentsButton->setEnabled(!busy);
+    addRefinementWatershedButton->setEnabled(!busy);
+    mergeWithRefinementWatershedButton->setEnabled(!busy);
+    setIdToTransparentInRefinementWSButton->setEnabled(!busy);
+    addSegmentationButton->setEnabled(!busy);
+    exportSegmentationButton->setEnabled(!busy);
+    loadSegmentationButton->setEnabled(!busy);
+    togglePaintBrushButton->setEnabled(!busy);
+    setPaintIdButton->setEnabled(!busy);
+    transferSegmentsWithVolumeButton->setEnabled(!busy);
+    transferSegmentsWithRefinementButton->setEnabled(!busy);
+    transferAllSegmentsButton->setEnabled(!busy);
+    addMembraneProbabilityButton->setEnabled(!busy);
+    runWatershedButton->setEnabled(!busy);
+    selectROIRefinementButton->setEnabled(!busy);
 }
 
-SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent, bool verboseIn) {
+void SignalControl::refreshViewers() {
+    orthoViewer->refreshViewers();
+}
+
+QString SignalControl::resolvedDisplayName(const QString &fileName, const QString &displayedName) const {
+    if (!displayedName.isEmpty()) {
+        return displayedName;
+    }
+    return QFileInfo(fileName).baseName();
+}
+
+void SignalControl::invokeLoadCallbackLater(LoadCallback then, LoadResult result) {
+    if (!then) {
+        return;
+    }
+
+    // Queue chained loads until the next event-loop turn so TaskRunner has
+    // finished its busy->false transition before the next task starts.
+    QTimer::singleShot(0, this, [then = std::move(then), result = std::move(result)]() mutable {
+        then(std::move(result));
+    });
+}
+
+SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
+                                                            bool forceSegmentDataTypeUInt,
+                                                            itk::ImageIOBase::IOComponentType forcedDataType) {
+    LoadedImageData loadedImage;
+    if (fileName.isEmpty()) {
+        return loadedImage;
+    }
+
+    unsigned int dimension = 0;
+    std::cout << "Reading: " << fileName.toStdString() << "\n";
+    getDimensionAndDataTypeOfFile(fileName, dimension, loadedImage.dataType);
+    std::cout << "Image dimension: " << dimension << "\n";
+
+    if (dimension != 3) {
+        throw std::logic_error("Image is not 3D!");
+    }
+
+    if (forceSegmentDataTypeUInt) {
+        loadedImage.dataType = forcedDataType;
+    }
+
+    switch (loadedImage.dataType) {
+        case itk::ImageIOBase::IOComponentType::UCHAR:
+            loadedImage.image = ITKImageLoader<unsigned char>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::CHAR:
+            loadedImage.image = ITKImageLoader<char>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::USHORT:
+            loadedImage.image = ITKImageLoader<unsigned short>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::SHORT:
+            loadedImage.image = ITKImageLoader<short>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::UINT:
+            loadedImage.image = ITKImageLoader<unsigned int>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::INT:
+            loadedImage.image = ITKImageLoader<int>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::ULONG:
+            loadedImage.image = ITKImageLoader<unsigned long>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::LONG:
+            loadedImage.image = ITKImageLoader<long>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::ULONGLONG:
+            loadedImage.image = ITKImageLoader<unsigned long long>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::LONGLONG:
+            loadedImage.image = ITKImageLoader<long long>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::FLOAT:
+            loadedImage.image = ITKImageLoader<float>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::DOUBLE:
+            loadedImage.image = ITKImageLoader<double>(fileName).GetPointer();
+            break;
+        case itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE:
+        default:
+            throw std::logic_error("SignalControl::loadImageData unknown component type encountered.");
+    }
+
+    return loadedImage;
+}
+
+bool SignalControl::insertLoadedImage(const LoadedImageData &loadedImage,
+                                      size_t &signalIndexGlobalOut,
+                                      bool forceShapeOfSegments) {
+    switch (loadedImage.dataType) {
+        case itk::ImageIOBase::IOComponentType::UCHAR:
+            return insertTypedImage<unsigned char>(
+                dynamic_cast<itk::Image<unsigned char, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::CHAR:
+            return insertTypedImage<char>(
+                dynamic_cast<itk::Image<char, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::USHORT:
+            return insertTypedImage<unsigned short>(
+                dynamic_cast<itk::Image<unsigned short, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::SHORT:
+            return insertTypedImage<short>(
+                dynamic_cast<itk::Image<short, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::UINT:
+            return insertTypedImage<unsigned int>(
+                dynamic_cast<itk::Image<unsigned int, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::INT:
+            return insertTypedImage<int>(
+                dynamic_cast<itk::Image<int, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::ULONG:
+            return insertTypedImage<unsigned long>(
+                dynamic_cast<itk::Image<unsigned long, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::LONG:
+            return insertTypedImage<long>(
+                dynamic_cast<itk::Image<long, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::ULONGLONG:
+            return insertTypedImage<unsigned long long>(
+                dynamic_cast<itk::Image<unsigned long long, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::LONGLONG:
+            return insertTypedImage<long long>(
+                dynamic_cast<itk::Image<long long, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::FLOAT:
+            return insertTypedImage<float>(
+                dynamic_cast<itk::Image<float, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::DOUBLE:
+            return insertTypedImage<double>(
+                dynamic_cast<itk::Image<double, 3> *>(loadedImage.image.GetPointer()),
+                signalIndexGlobalOut,
+                forceShapeOfSegments);
+        case itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE:
+        default:
+            throw std::logic_error("SignalControl::insertLoadedImage unknown component type encountered.");
+    }
+}
+
+void SignalControl::registerImageSignal(size_t signalIndexGlobal, const QString &name) {
+    allSignalList[signalIndexGlobal]->setLUTContinuous();
+    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+    orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+}
+
+void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const QString &name) {
+    allSignalList[signalIndexGlobal]->setLUTCategorical();
+    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
+    allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
+    allSignalList[signalIndexGlobal]->setIsActive(true);
+
+    graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType *>(
+        allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
+    graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
+        allSignalList[signalIndexGlobal]);
+    graphBase->selectedSegmentationMaxSegmentId =
+        graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
+    orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+}
+
+void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QString &name) {
+    graphBase->pSelectedBoundary = dynamic_cast<dataType::BoundaryImageType *>(
+        allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
+    allSignalList[signalIndexGlobal]->setLUTContinuous();
+    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
+    orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+}
+
+void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QString &name) {
+    allSignalList[signalIndexGlobal]->setLUTCategorical();
+    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setupTreeWidget(refinementWatershedTreeWidget, signalIndexGlobal);
+    allSignalList[signalIndexGlobal]->setIsActive(false);
+    int lastItemIndex = refinementWatershedTreeWidget->topLevelItemCount() - 1;
+    refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
+    refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
+    refinementWatershedTreeWidget->setCurrentItem(refinementWatershedTreeWidget->topLevelItem(lastItemIndex));
+    orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType *>(
+        allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
+    graphBase->pRefinementWatershedSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
+        allSignalList[signalIndexGlobal]);
+}
+
+void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal) {
+    segmentsGraph = allSignalList[signalIndexGlobal];
+    auto *typedSegmentsSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(segmentsGraph);
+    allSignalList[signalIndexGlobal]->setLUTCategorical();
+    allSignalList[signalIndexGlobal]->setName("Segments");
+    allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+
+    graphBase->pWorkingSegments = typedSegmentsSignal;
+    graphBase->pWorkingSegmentsImage = typedSegmentsSignal->pImage;
+
+    allSignalList[signalIndexGlobal]->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
+    orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+
+    graphBase->pEdgesInitialSegmentsITKSignal->setName("Edges");
+    graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
+    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
+    int lastItemIndex = signalTreeWidget->topLevelItemCount() - 1;
+    signalTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
+    signalTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
+    allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
+    orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
+
+    orthoViewer->setViewToMiddleOfStack();
+    createNewSegmentationVolume();
+}
+
+void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadCallback then) {
+    if (fileName.isEmpty()) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
+    taskRunner->run(
+        [this, fileName]() { return loadImageData(fileName); },
+        [this, fileName, displayedName, then = std::move(then)](LoadedImageData loadedImage) mutable {
+            size_t signalIndexGlobal = 0;
+            bool ok = insertLoadedImage(loadedImage, signalIndexGlobal, true);
+            if (ok) {
+                registerImageSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+            }
+            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        });
+}
+
+void SignalControl::loadSegmentationVolumeAsync(QString fileName, QString displayedName, LoadCallback then) {
+    if (fileName.isEmpty()) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
+    taskRunner->run(
+        [fileName]() mutable { return ITKImageLoader<GraphSegmentType>(fileName); },
+        [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
+            size_t signalIndexGlobal = 0;
+            bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, graphBase->pWorkingSegmentsImage != nullptr);
+            if (ok) {
+                registerSegmentationSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+            }
+            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        });
+}
+
+void SignalControl::addRefinementWatershedAsync(QString fileName, QString displayedName, LoadCallback then) {
+    if (fileName.isEmpty()) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
+    taskRunner->run(
+        [fileName]() mutable { return ITKImageLoader<GraphSegmentType>(fileName); },
+        [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
+            size_t signalIndexGlobal = 0;
+            bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, true);
+            if (ok) {
+                registerRefinementSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+            }
+            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        });
+}
+
+void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
+    if (fileName.isEmpty()) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
+    taskRunner->run(
+        [this, fileName]() mutable {
+            // Modifies graphBase on the worker thread. Safe only because
+            // one task runs at a time and the GUI is disabled (no concurrent access).
+            auto pImage = ITKImageLoader<GraphSegmentType>(fileName);
+            graphBase->ignoredSegmentLabels.clear();
+            graphBase->edgeStatus.clear();
+            graphBase->colorLookUpEdgesStatus.clear();
+            graphBase->pWorkingSegmentsImage = pImage;
+            graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+            graphBase->pGraph->constructFromVolume(pImage);
+            return pImage;
+        },
+        [this, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
+            size_t signalIndexGlobal = 0;
+            bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, false);
+            if (ok) {
+                registerSegmentsGraphSignal(signalIndexGlobal);
+            } else {
+                QMessageBox::critical(this, "Error", "Failed to load the image.");
+            }
+            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        });
+}
+
+void SignalControl::loadMembraneProbabilityAsync(QString fileName, QString displayedName, LoadCallback then) {
+    if (fileName.isEmpty()) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
+    const bool createEmptySegments = graphBase->pWorkingSegmentsImage == nullptr;
+    taskRunner->run(
+        [this, fileName, createEmptySegments]() mutable {
+            BoundaryLoadResult result;
+            result.boundaryImage = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
+            if (createEmptySegments) {
+                result.emptySegmentsImage = dataType::SegmentsImageType::New();
+                result.emptySegmentsImage->SetRegions(result.boundaryImage->GetLargestPossibleRegion());
+                result.emptySegmentsImage->SetSpacing(result.boundaryImage->GetSpacing());
+                result.emptySegmentsImage->SetOrigin(result.boundaryImage->GetOrigin());
+                result.emptySegmentsImage->Allocate(true);
+
+                // Modifies graphBase on the worker thread. Safe only because
+                // one task runs at a time and the GUI is disabled (no concurrent access).
+                graphBase->ignoredSegmentLabels.clear();
+                graphBase->edgeStatus.clear();
+                graphBase->colorLookUpEdgesStatus.clear();
+                graphBase->pWorkingSegmentsImage = result.emptySegmentsImage;
+                graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+                graphBase->pGraph->constructFromVolume(result.emptySegmentsImage);
+                result.createdEmptySegments = true;
+            }
+            return result;
+        },
+        [this, fileName, displayedName, createEmptySegments, then = std::move(then)](BoundaryLoadResult result) mutable {
+            size_t signalIndexGlobal = 0;
+            bool ok = insertTypedImage<dataType::BoundaryVoxelType>(
+                result.boundaryImage,
+                signalIndexGlobal,
+                !createEmptySegments);
+            if (ok) {
+                if (result.createdEmptySegments) {
+                    size_t segmentIndexGlobal = 0;
+                    const bool insertedSegments = insertImageSegmenttype(result.emptySegmentsImage, segmentIndexGlobal, false);
+                    if (insertedSegments) {
+                        registerSegmentsGraphSignal(segmentIndexGlobal);
+                    }
+                }
+                registerBoundarySignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+            }
+            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        });
+}
+
+void SignalControl::addImage(QString fileName, QString displayedName) {
+    std::cout << "Adding file: " << fileName.toStdString() << std::endl;
+    addImageAsync(fileName, displayedName);
+}
+
+SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
+                             OrthoViewer *orthoViewerIn,
+                             TaskRunner *taskRunnerIn,
+                             QWidget *parent,
+                             bool verboseIn) {
     setParent(parent);
     graphBase = graphBaseIn;
+    orthoViewer = orthoViewerIn;
+    taskRunner = taskRunnerIn;
     verbose = verboseIn;
     allSignalList.reserve(10);
     segmentsGraph = nullptr;
@@ -69,6 +447,8 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn, QWidget *pa
     setupProbabilityTreeWidget();
     setupRefinementWatershedTreeWidget();
     setupSegmentationTreeWidget();
+
+    connect(taskRunner, &TaskRunner::busyChanged, this, &SignalControl::setGuiBusy);
 
 }
 
@@ -206,17 +586,6 @@ void SignalControl::loadFileFromDragAndDropTriggered(QString fileName) {
 
 void SignalControl::loadFileFromDragAndDrop(QString fileName, QString choiceOfImage) {
     imageSelectionButtonWidget->close();
-    QMessageBox dialog;
-//    QProgressDialog dialog;
-//    dialog.setCancelButton(0);
-//    dialog.setRange(0, 0);
-    dialog.setWindowTitle("Loading");
-    dialog.setText(QString("Loading file ..."));
-    dialog.show();
-//    QFutureWatcher<void> futureWatcher;
-//    QFuture<void> future;
-    bool validChoice = true;
-    bool skipDialog = false; //TODO: unknown-to-me bug that appears when adding boundaries before graph. this should not be necessary?
     if (((choiceOfImage != "Segments") && (choiceOfImage != "Boundary")) &&
         graphBase->pWorkingSegmentsImage == nullptr) {
         QMessageBox msgBox;
@@ -224,46 +593,23 @@ void SignalControl::loadFileFromDragAndDrop(QString fileName, QString choiceOfIm
         msgBox.exec();
     } else if (choiceOfImage == "Segments") {
         askForBackgroundStrategy();
-//        dialog.setLabelText(QString("Setting up graph ..."));
-//        future = QtConcurrent::run(this, &SignalControl::addSegmentsGraph, fileName);
-        // run this from main thread
         addSegmentsGraph(fileName);
     } else if (choiceOfImage == "Image") {
-//        dialog.setLabelText(QString("Loading image ..."));
-//        future = QtConcurrent::run(this, &SignalControl::addImage, fileName, QString(""));
         addImage(fileName, QString(""));
     } else if (choiceOfImage == "Boundary") {
-//        dialog.setLabelText(QString("Loading boundary ..."));
         if (graphBase->pWorkingSegmentsImage == nullptr) {
             // in this case user has option to construct empty graph from boundary image files
             loadMembraneProbability(fileName);
-            skipDialog = true;
         } else {
-//            future = QtConcurrent::run(this, &SignalControl::loadMembraneProbability, fileName, QString(""));
             loadMembraneProbability(fileName, QString(""));
         }
     } else if (choiceOfImage == "Refinement Watershed") {
-//        dialog.setLabelText(QString("Loading refinement watershed ..."));
-//        future = QtConcurrent::run(this, &SignalControl::addRefinementWatershed, fileName, QString(""));
         addRefinementWatershed(fileName, QString(""));
     } else if (choiceOfImage == "Segmentation") {
-//        dialog.setLabelText(QString("Loading segmentation ..."));
-//        future = QtConcurrent::run(this, &SignalControl::loadSegmentationVolume, fileName, QString(""));
         SignalControl::loadSegmentationVolume(fileName, QString(""));
     } else {
-        validChoice = false;
         std::cout << "Unknown choice of image: " << choiceOfImage.toStdString() << "\n";
     }
-
-    dialog.close();
-
-
-//    if (validChoice && !skipDialog) {
-//        futureWatcher.setFuture(future);
-//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-//        dialog.exec();
-//        future.waitForFinished();
-//    }
 }
 
 
@@ -274,9 +620,9 @@ void SignalControl::selectROIRefinementPressed() {
         selectROIRefinementButton->setText("Turn ROI-Selection WS On");
     }
 
-    graphBase->pOrthoViewer->xy->toggleROISelectonModeIsActive();
-    graphBase->pOrthoViewer->xz->toggleROISelectonModeIsActive();
-    graphBase->pOrthoViewer->zy->toggleROISelectonModeIsActive();
+    orthoViewer->xy->toggleROISelectonModeIsActive();
+    orthoViewer->xz->toggleROISelectonModeIsActive();
+    orthoViewer->zy->toggleROISelectonModeIsActive();
 }
 
 void SignalControl::transferSegmentsWithVolume() {
@@ -288,25 +634,22 @@ void SignalControl::transferSegmentsWithVolume() {
         return;
     }
 
-    graphBase->pGraph->transferSegmentsWithVolumeCriterion(volumeThreshold);
-    for (auto &viewer: graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    taskRunner->run(
+        [this, volumeThreshold]() { graphBase->pGraph->transferSegmentsWithVolumeCriterion(volumeThreshold); },
+        [this]() { refreshViewers(); });
 }
 
 void SignalControl::transferAllSegments() {
-    graphBase->pGraph->transferSegmentsWithVolumeCriterion(1);
-    for (auto &viewer: graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    taskRunner->run(
+        [this]() { graphBase->pGraph->transferSegmentsWithVolumeCriterion(1); },
+        [this]() { refreshViewers(); });
 }
 
 
 void SignalControl::transferSegmentsWithRefinementWS() {
-    graphBase->pGraph->transferSegmentsWithRefinementOverlap();
-    for (auto &viewer: graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    taskRunner->run(
+        [this]() { graphBase->pGraph->transferSegmentsWithRefinementOverlap(); },
+        [this]() { refreshViewers(); });
 }
 
 
@@ -416,9 +759,7 @@ void SignalControl::setIdToTransparentInRefinementWS() {
         int inputVal = QInputDialog::getInt(this, "Value to set transparent", "Value to set transparent", 0, 0);
         std::cout << "Set " << inputVal << " to transparent in selected refinement watershed.\n";
         graphBase->pRefinementWatershedSignal->setLUTValueToTransparent(inputVal);
-        for (auto &viewer: graphBase->viewerList) {
-            viewer->recalculateQImages();
-        }
+        refreshViewers();
     }
 }
 
@@ -457,9 +798,7 @@ void SignalControl::setUserColor(QTreeWidgetItem *item) {
 
     allSignalList[signalIndex]->setMainColor(newColor);
 
-    for (auto &viewer: graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    refreshViewers();
 }
 
 void SignalControl::setDescription(QTreeWidgetItem *item) {
@@ -542,12 +881,12 @@ void SignalControl::setPaintId(){
         return;
     }
     std::cout << "Setting paint id to: " << paintId << std::endl;
-    graphBase->pOrthoViewer->xy->labelOfClickedSegmentation = paintId;
-    graphBase->pOrthoViewer->zy->labelOfClickedSegmentation = paintId;
-    graphBase->pOrthoViewer->xz->labelOfClickedSegmentation = paintId;
-    graphBase->pOrthoViewer->xy->setPaintId(paintId);
-    graphBase->pOrthoViewer->zy->setPaintId(paintId);
-    graphBase->pOrthoViewer->xz->setPaintId(paintId);
+    orthoViewer->xy->labelOfClickedSegmentation = paintId;
+    orthoViewer->zy->labelOfClickedSegmentation = paintId;
+    orthoViewer->xz->labelOfClickedSegmentation = paintId;
+    orthoViewer->xy->setPaintId(paintId);
+    orthoViewer->zy->setPaintId(paintId);
+    orthoViewer->xz->setPaintId(paintId);
 }
 
 void SignalControl::togglePaintMode() {
@@ -557,9 +896,9 @@ void SignalControl::togglePaintMode() {
         togglePaintBrushButton->setText("Turn Paintmode On");
     }
 
-    graphBase->pOrthoViewer->xy->togglePaintMode();
-    graphBase->pOrthoViewer->zy->togglePaintMode();
-    graphBase->pOrthoViewer->xz->togglePaintMode();
+    orthoViewer->xy->togglePaintMode();
+    orthoViewer->zy->togglePaintMode();
+    orthoViewer->xz->togglePaintMode();
 }
 
 
@@ -577,7 +916,7 @@ void SignalControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
 
     allSignalList[signalIndex]->setIsActive(isActiveIn);
 
-    for (auto &viewer: graphBase->viewerList) {
+    for (auto *viewer: orthoViewer->viewerList) {
         viewer->setSliceIndex(viewer->getSliceIndex()); // update slice indices of newly activated signals
         viewer->recalculateQImages();
     }
@@ -609,9 +948,7 @@ void SignalControl::setUserNorm(QTreeWidgetItem *item) {
 
     allSignalList[signalIndex]->setNorm(normLower, normUpper);
 
-    for (auto &viewer: graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    refreshViewers();
 }
 
 void SignalControl::setUserAlpha(QTreeWidgetItem *item) {
@@ -626,57 +963,13 @@ void SignalControl::setUserAlpha(QTreeWidgetItem *item) {
 
     allSignalList[signalIndex]->setAlpha(alpha);
 
-    for (auto &viewer: graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    refreshViewers();
 }
 
 
 void SignalControl::addSegmentsGraph(QString fileName) {
-    std::cout << "SignalControl created in thread: "
-              << QThread::currentThread()->objectName().toStdString()
-              << " (ID: " << QThread::currentThreadId()
-              << ")" << std::endl;
-    Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
-    graphBase->currentlyCalculating = true;
-
-    itk::ImageIOBase::IOComponentType dataType;
-    size_t signalIndexGlobal;
-    bool loadSuccessFull;
-    try {
-        loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false, true);
-    } catch (const std::exception &e) {
-        std::cout << "Exception in loadImage: " << e.what() << std::endl;
-    }
-
-    if (loadSuccessFull) {
-        initializeGraph(signalIndexGlobal);
-    } else {
-        QMessageBox::critical(this, "Error", "Failed to load the image.");
-    }
-
-    graphBase->currentlyCalculating = false;
+    addSegmentsGraphAsync(fileName);
 }
-//
-//void SignalControl::addSegmentsGraph(QString &fileName) {
-//    graphBase->currentlyCalculating = true;
-//    itk::ImageIOBase::IOComponentType dataType;
-//    size_t signalIndexLocal; // index inside the corrosponding array, i.e. shortSignalList
-//    size_t signalIndexGlobal; // index inside the corrosponding treeview list
-//    bool loadSuccessFull = false;
-//    try {
-//        loadSuccessFull = loadImage(fileName, dataType, signalIndexLocal, signalIndexGlobal, false, true);
-//    } catch (const std::exception& e){
-//        std::cout << e.what() << std::endl;
-//    }
-//    std::cout << "Done loading file!\n";
-//
-//    if (loadSuccessFull) {
-//        initializeGraph(signalIndexLocal, signalIndexGlobal);
-//    }
-//    std::cout << "Done add segment function!\n";
-//    graphBase->currentlyCalculating = false;
-//}
 
 void SignalControl::addEmptySegmentsFromBoundary() {
     std::cout << "Adding empty segments/graph volume based on boundary volume\n";
@@ -702,55 +995,19 @@ void SignalControl::addEmptySegmentsFromBoundary() {
     ownedSignals.push_back(std::move(pSignal2));
     allSignalList.push_back(pRaw);
 
-    initializeGraph(signalIndexGlobal);
+    graphBase->ignoredSegmentLabels.clear();
+    graphBase->edgeStatus.clear();
+    graphBase->colorLookUpEdgesStatus.clear();
+    graphBase->pWorkingSegmentsImage = pImage;
+    graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graphBase->pGraph->constructFromVolume(pImage);
+    registerSegmentsGraphSignal(signalIndexGlobal);
 
     std::cout << "Done add segment function!\n";
 }
 
 void SignalControl::initializeGraph(size_t signalIndexGlobal) {
-    Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
-    segmentsGraph = allSignalList[signalIndexGlobal];
-    auto *typedSegmentsSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(segmentsGraph);
-    allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setName("Segments");
-    allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
-    std::cout << "Done setup tree!\n";
-
-    graphBase->pWorkingSegments = typedSegmentsSignal;
-    graphBase->pWorkingSegmentsImage = typedSegmentsSignal->pImage;
-
-    graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-
-
-    graphBase->pGraph->constructFromVolume(typedSegmentsSignal->pImage);
-
-    //TODO: Add feature calculation
-//    graphBase->pGraph->calculateNodeFeatures();
-//    if(FeatureList::GroundTruthLabelComputed) graphBase->pGraph->propagateMergeFlagToEdges();
-//    graphBase->pGraph->calculateEdgeFeatures();
-//    graphBase->pGraph->calculateUnionFeatures();
-
-
-    // set highestid/background to black
-    allSignalList[signalIndexGlobal]->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
-    graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-
-    graphBase->pEdgesInitialSegmentsITKSignal->setName("Edges");
-    graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
-    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-    graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
-    int lastItemIndex = signalTreeWidget->topLevelItemCount() - 1;
-    signalTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-    signalTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-    allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
-    graphBase->pOrthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
-
-//    Important: Make sure painting threads are called from the main thread!
-//    graphBase->pOrthoViewer->setViewToMiddleOfStack();
-    QMetaObject::invokeMethod(graphBase->pOrthoViewer, "setViewToMiddleOfStack", Qt::QueuedConnection);
-
-
-    createNewSegmentationVolume();
+    registerSegmentsGraphSignal(signalIndexGlobal);
 }
 
 void SignalControl::runWatershed() {
@@ -776,9 +1033,9 @@ void SignalControl::runWatershed() {
 
         if (selectROIRefinementButton->text() == "Turn ROI-Selection WS Off") {
             selectROIRefinementButton->setText("Turn ROI-Selection WS On");
-            graphBase->pOrthoViewer->xy->turnROISelectonModeInactive();
-            graphBase->pOrthoViewer->xz->turnROISelectonModeInactive();
-            graphBase->pOrthoViewer->zy->turnROISelectonModeInactive();
+            orthoViewer->xy->turnROISelectonModeInactive();
+            orthoViewer->xz->turnROISelectonModeInactive();
+            orthoViewer->zy->turnROISelectonModeInactive();
         }
     }
 }
@@ -797,7 +1054,7 @@ void SignalControl::receiveNewRefinementWatershed(itk::Image<dataType::SegmentId
         refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
         refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
         refinementWatershedTreeWidget->setCurrentItem(refinementWatershedTreeWidget->topLevelItem(lastItemIndex));
-        graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+        orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
         graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType*>(
             allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
         graphBase->pRefinementWatershedSignal = typedSignal;
@@ -819,49 +1076,17 @@ void SignalControl::receiveNewRefinementWatershed(itk::Image<dataType::SegmentId
 
 void SignalControl::loadMembraneProbability(QString fileName, QString displayedName) {
     std::cout << "Loading boundaries: " << fileName.toStdString() << "\n";
-    if (!fileName.isEmpty()) {
-        std::cout << "Adding Boundaries: " << fileName.toStdString() << std::endl;
-
-        bool segmentsAreNotAdded = graphBase->pWorkingSegmentsImage == nullptr;
-        QMessageBox::StandardButton reply = QMessageBox::Yes;
-        if (segmentsAreNotAdded) {
-            reply = QMessageBox::question(this, "No Segmentation Added",
-                                          "No Segments added. Do you want to create empty segments based on the added boundary image?",
-                                          QMessageBox::Yes | QMessageBox::No);
-        }
-        if (!segmentsAreNotAdded || (reply == QMessageBox::Yes)) {
-            itk::ImageIOBase::IOComponentType dataType;
-            size_t signalIndexGlobal;
-            bool forceShapeOfSegments = graphBase->pWorkingSegmentsImage != nullptr;
-            bool forceSegmentDataType = true;
-            itk::ImageIOBase::IOComponentType forcedDataType = itk::ImageIOBase::IOComponentType::USHORT;
-            // TODO: support more datatypes. maybe sth like a union can do the trick here?
-            bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal,
-                                             forceShapeOfSegments, forceSegmentDataType, forcedDataType);
-
-            if (loadSuccessFull) {
-                graphBase->pSelectedBoundary = dynamic_cast<dataType::BoundaryImageType*>(
-                    allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
-
-                if (graphBase->pWorkingSegmentsImage == nullptr) {
-                    //TODO:add prompt asking if it should create the seg?
-                    addEmptySegmentsFromBoundary();
-                }
-
-                std::cout << "datatype: " << dataType << "\n";
-                allSignalList[signalIndexGlobal]->setLUTContinuous();
-                if (displayedName == "") {
-                    displayedName = QFileInfo(fileName).baseName();
-                }
-                allSignalList[signalIndexGlobal]->setName(displayedName);
-                allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
-                graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-
-            }
-        }
-
+    bool segmentsAreNotAdded = graphBase->pWorkingSegmentsImage == nullptr;
+    QMessageBox::StandardButton reply = QMessageBox::Yes;
+    if (segmentsAreNotAdded) {
+        reply = QMessageBox::question(this,
+                                      "No Segmentation Added",
+                                      "No Segments added. Do you want to create empty segments based on the added boundary image?",
+                                      QMessageBox::Yes | QMessageBox::No);
     }
-//    graphBase->currentlyCalculating = false;
+    if (!segmentsAreNotAdded || reply == QMessageBox::Yes) {
+        loadMembraneProbabilityAsync(fileName, displayedName);
+    }
 }
 
 
@@ -914,7 +1139,7 @@ void SignalControl::createNewSegmentationVolume() {
     allSignalList[signalIndexGlobal]->setName("Segmentation");
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
 
-    graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
 }
 
 void SignalControl::loadSegmentationVolumePressed() {
@@ -937,39 +1162,7 @@ void SignalControl::loadSegmentationVolumePressed() {
 }
 
 void SignalControl::loadSegmentationVolume(QString fileName, QString displayName) {
-    graphBase->currentlyCalculating = true;
-    if (!fileName.isEmpty()) {
-        itk::ImageIOBase::IOComponentType dataType;
-        size_t signalIndexGlobal;
-        bool forceShapeOfSegments = graphBase->pWorkingSegmentsImage != nullptr;
-        bool forceSegmentDataTypeUInt = true;
-        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, forceShapeOfSegments,
-                                         forceSegmentDataTypeUInt);
-        if (loadSuccessFull) {
-            allSignalList[signalIndexGlobal]->setLUTCategorical();
-
-            if (displayName == "") {
-                displayName = QFileInfo(fileName).baseName();
-            }
-            allSignalList[signalIndexGlobal]->setName(displayName);
-
-            allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
-            allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
-            allSignalList[signalIndexGlobal]->setIsActive(true);
-
-            graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType*>(
-                allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
-            graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(
-                allSignalList[signalIndexGlobal]);
-            dataType::SegmentIdType maxId = graphBase->pGraph->getLargestIdInSegmentVolume(
-                    graphBase->pSelectedSegmentation);
-            std::cout << "Max Id in selected segmentation: " << maxId << "\n";
-            graphBase->selectedSegmentationMaxSegmentId = maxId;
-
-            graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-        }
-    }
-    graphBase->currentlyCalculating = false;
+    loadSegmentationVolumeAsync(fileName, displayName);
 }
 
 
@@ -990,22 +1183,7 @@ void SignalControl::addSegmentsPressed() {
 
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-//        QProgressDialog dialog;
-//        dialog.setCancelButton(0);
-//        dialog.setLabelText(QString("Setting up graph ..."));
-//        dialog.setRange(0, 0);
-        //TODO: Running it concurrently gives raise to the following error:
-        // QPainter::begin: Paint device returned engine == 0, type: 3
-        // QPainter::setPen: Painter not active
-//        QFutureWatcher<void> futureWatcher;
-//        QFuture<void> future = QtConcurrent::run(this, &SignalControl::addSegmentsGraph, fileName);
-//        futureWatcher.setFuture(future);
-//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-//        dialog.exec();
-//        future.waitForFinished();
-
-//        invke with main thread not
-        QMetaObject::invokeMethod(this, "addSegmentsGraph", Qt::QueuedConnection, Q_ARG(QString, fileName));
+        addSegmentsGraph(fileName);
 
     }
     signalInputButtonsLayout->removeWidget(addSegmentsButton);
@@ -1021,25 +1199,7 @@ void SignalControl::addRefinementWatershedPressed() {
     if (!fileName.isEmpty()) {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-//        QProgressDialog dialog;
-//        dialog.setCancelButton(0);
-//        dialog.setLabelText(QString("Adding Refinement Watershed ..."));
-//        dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
-//        dialog.setRange(0, 0);
-//        dialog.exec();
-        QMessageBox dialog;
-        dialog.setText("Adding Refinement Watershed ...");
-        dialog.show();
-
-
-//        QFutureWatcher<void> futureWatcher;
-//        QFuture<void> future = QtConcurrent::run(this, &SignalControl::addRefinementWatershed, fileName, QString(""));
-//        futureWatcher.setFuture(future);
-//        QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-//        future.waitForFinished();
-
         addRefinementWatershed(fileName);
-        dialog.close();
     }
 
 
@@ -1048,10 +1208,9 @@ void SignalControl::addRefinementWatershedPressed() {
 }
 
 void SignalControl::mergeSegmentsWithRefinementWatershedClicked() {
-    graphBase->pGraph->mergeSegmentsWithRefinementWatershed();
-    for (auto &viewer: graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    taskRunner->run(
+        [this]() { graphBase->pGraph->mergeSegmentsWithRefinementWatershed(); },
+        [this]() { refreshViewers(); });
 }
 
 void SignalControl::addRefinementWatershed(QString fileName) {
@@ -1059,32 +1218,7 @@ void SignalControl::addRefinementWatershed(QString fileName) {
 }
 
 void SignalControl::addRefinementWatershed(QString fileName, QString displayedName) {
-    graphBase->currentlyCalculating = true;
-    if (!fileName.isEmpty()) {
-        itk::ImageIOBase::IOComponentType dataType;
-        size_t signalIndexGlobal;
-        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, true, true);
-        if (loadSuccessFull) {
-            allSignalList[signalIndexGlobal]->setLUTCategorical();
-            if (displayedName == "") {
-                displayedName = QFileInfo(fileName).baseName();
-            }
-            allSignalList[signalIndexGlobal]->setName(displayedName);
-            allSignalList[signalIndexGlobal]->setupTreeWidget(refinementWatershedTreeWidget, signalIndexGlobal);
-            allSignalList[signalIndexGlobal]->setIsActive(false);
-            int lastItemIndex = refinementWatershedTreeWidget->topLevelItemCount() - 1;
-            refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-            refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-            refinementWatershedTreeWidget->setCurrentItem(refinementWatershedTreeWidget->topLevelItem(lastItemIndex));
-            graphBase->pOrthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-            graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType*>(
-                allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
-            graphBase->pRefinementWatershedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(
-                allSignalList[signalIndexGlobal]);
-        }
-    }
-    graphBase->currentlyCalculating = false;
-
+    addRefinementWatershedAsync(fileName, displayedName);
 }
 
 void SignalControl::askForBackgroundStrategy() {
@@ -1227,25 +1361,7 @@ void SignalControl::addImagePressed() {
         if (!fileName.isEmpty()) {
             QDir CurrentDir;
             MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-//            QProgressDialog dialog;
-//            dialog.setCancelButton(0);
-//            dialog.setLabelText(QString("Loading Image ..."));
-//            dialog.setRange(0, 0);
-//            dialog.exec();
-            QMessageBox dialog;
-            dialog.setText("Loading Image ...");
-            dialog.show();
-
-
-//            QFutureWatcher<void> futureWatcher;
-//            QFuture<void> future = QtConcurrent::run(this, &SignalControl::addImage, fileName, QString(""));
-//            futureWatcher.setFuture(future);
-//            QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-//            future.waitForFinished();
-
             addImage(fileName);
-            dialog.close();
-
         }
     }
 }
@@ -1261,27 +1377,9 @@ void SignalControl::loadMembraneProbabilityPressed() {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
         if (graphBase->pWorkingSegmentsImage == nullptr) {
-            //TODO: this doesnt run with the progressbar for some unknown-to-me reason. fix that i guess ...
             loadMembraneProbability(fileName);
         } else {
-//            QProgressDialog dialog;
-//            dialog.setCancelButton(0);
-//            dialog.setLabelText(QString("Loading Boundaries ..."));
-//            dialog.setRange(0, 0);
-//            dialog.exec();
-            QMessageBox dialog;
-            dialog.setText("Loading Boundaries ...");
-            dialog.show();
-
-//            QFutureWatcher<void> futureWatcher;
-//            QFuture<void> future = QtConcurrent::run(this, &SignalControl::loadMembraneProbability, fileName,
-//                                                     QString(""));
-//            futureWatcher.setFuture(future);
-//            QObject::connect(&futureWatcher, SIGNAL(finished()), &dialog, SLOT(cancel()));
-//            future.waitForFinished();
-
             loadMembraneProbability(fileName);
-            dialog.close();
         }
     }
 }
@@ -1326,4 +1424,3 @@ bool SignalControl::getIsShort(QTreeWidgetItem *item) {
     }
     return false;
 }
-

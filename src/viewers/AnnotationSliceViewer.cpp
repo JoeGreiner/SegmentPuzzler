@@ -4,7 +4,6 @@
 #include <omp.h>
 #endif
 #include <Qt>
-#include <QtConcurrent/QtConcurrent>
 #include <itkLabelGeometryImageFilter.h>
 #include <itkRegionOfInterestImageFilter.h>
 #include <itkBinaryBallStructuringElement.h>
@@ -17,10 +16,14 @@
 #include <unordered_map>
 #include "src/utils/utils.h"
 #include "OrthoViewer.h"
-#include "src/qtUtils/qdialogprogressbarpassthrough.h"
+#include "src/qtUtils/TaskRunner.h"
 
 
-AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *, bool) : SliceViewer(graphBaseIn) {
+AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn,
+                                             TaskRunner *taskRunnerIn,
+                                             QWidget *parent,
+                                             bool)
+    : SliceViewer(graphBaseIn, taskRunnerIn, parent) {
     if (verbose) { std::cout << "AnnotationSliceViewer: Constructor\n"; }
 
     paintModeIsActive = false;
@@ -82,7 +85,7 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
 
     // update sliceIndicatorImage in own viewer (draw other indicator for other views in viewer)
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0)); // erase old slice indicator image!
-    for (auto &viewer : graphBase->viewerList) {
+    for (auto *viewer : linkedViewerList) {
         drawOtherViewerSliceIndicator(viewer->getSliceAxis(), viewer->getSliceIndex());
     }
 //    painter.drawImage(targetRect, sliceIndicatorImage, sourceRect);
@@ -126,7 +129,7 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
 
 
 void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
-    if (graphBase->currentlyCalculating){
+    if (taskRunner != nullptr && taskRunner->isBusy()) {
         std::cout << "Currently Calculating, not accepting more KeyPressEvents!" << std::endl;
         return;
     }
@@ -143,7 +146,7 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         if (graphBase->pRefinementWatershedSignal != nullptr) {
             graphBase->pRefinementWatershedSignal->randomizeCategoricalLUT();
         }
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->recalculateQImages();
         }
     } else if (event->key() == Qt::Key_Plus) {
@@ -175,15 +178,15 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
     } else if (event->key() == Qt::Key_Down) {
         decrementSliceIndex();
     } else if (event->key() == Qt::Key_X) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Split;
         }
     } else if (event->key() == Qt::Key_C) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Cut;
         }
     } else if (event->key() == Qt::Key_Control) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Ctrl;
         }
     } else if (event->key() == Qt::Key_U) {
@@ -191,31 +194,31 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
     } else if (event->key() == Qt::Key_V) {
         this->exportVideo();
     } else if (event->key() == Qt::Key_S) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Transfer;
         }
     } else if (event->key() == Qt::Key_P) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Refine;
         }
     } else if (event->key() == Qt::Key_Q) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::SelectColor;
         }
     } else if (event->key() == Qt::Key_D) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Delete;
         }
     } else if (event->key() == Qt::Key_F) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Fill;
         }
     } else if (event->key() == Qt::Key_G) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Open;
         }
     } else if (event->key() == Qt::Key_H) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             viewer->activeTool = ToolMode::Insert;
         }
     } else if (event->key() == Qt::Key_E) {
@@ -260,7 +263,7 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
     };
     auto it = keyToToolMode.find(event->key());
     if (it != keyToToolMode.end()) {
-        for (auto &viewer : graphBase->viewerList) {
+        for (auto *viewer : linkedViewerList) {
             if (viewer->activeTool == it->second)
                 viewer->activeTool = ToolMode::None;
         }
@@ -269,8 +272,7 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
 
 
 void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
-    if (graphBase->currentlyCalculating){
-        std :: cout << "Graph is locked; exiting AnnotationSliceViewer::mousePressEvent" << std::endl;
+    if (taskRunner != nullptr && taskRunner->isBusy()) {
         return;
     }
     if (graphBase->pWorkingSegmentsImage == nullptr &&
@@ -305,14 +307,14 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         int x, y, z;
         getXYZfromPixmapPos(event->pos().x(), event->pos().y(), x, y, z);
         if (sliceAxis == 0) {
-            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXY, x, y, zoomFactor);
-            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXZ, x, z, zoomFactor);
+            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXY, x, y, zoomFactor);
+            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXZ, x, z, zoomFactor);
         } else if (sliceAxis == 1) {
-            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXY, x, y, zoomFactor);
-            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaZY, z, y, zoomFactor);
+            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXY, x, y, zoomFactor);
+            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaZY, z, y, zoomFactor);
         } else if (sliceAxis == 2) {
-            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaXZ, x, z, zoomFactor);
-            graphBase->pOrthoViewer->centerViewportsToXYViewportSpace(graphBase->pOrthoViewer->scrollAreaZY, z, y, zoomFactor);
+            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXZ, x, z, zoomFactor);
+            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaZY, z, y, zoomFactor);
         }
         break;
     }
@@ -321,34 +323,34 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         break;
     case ToolMode::Refine:
         refineSegmentByPosition(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
         break;
     case ToolMode::Transfer:
         transferWorkingNodeToSegmentation(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
+        for (auto *viewer : linkedViewerList) { viewer->recalculateQImages(); }
         break;
     case ToolMode::Delete:
         deleteConnectedLabelFromSegmentation(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
+        for (auto *viewer : linkedViewerList) { viewer->recalculateQImages(); }
         break;
     case ToolMode::Cut:
         removeInitialSegmentFromWorkingSegmentAtClick(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) { viewer->recalculateQImages(); }
+        for (auto *viewer : linkedViewerList) { viewer->recalculateQImages(); }
         break;
     case ToolMode::SelectColor:
         getSegmentationLabelIdAtCursor(event->pos().x(), event->pos().y());
         break;
     case ToolMode::Fill:
         runFillSegmentationLabel(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
         break;
     case ToolMode::Open:
         runOpenSegmentationLabel(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
         break;
     case ToolMode::Insert:
         runInsertSegmentationSegmentIntoInitialSegments(event->pos().x(), event->pos().y());
-        for (auto &viewer : graphBase->viewerList) { viewer->activeTool = ToolMode::None; }
+        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
         break;
     }
 
@@ -361,54 +363,28 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
     getXYZfromPixmapPos(posX, posY, x, y, z);
     printf("Insert segment at position: %d %d %d\n", x, y, z);
 
-    QDialogProgressbarPassthrough dialog(this);
-    dialog.setCancelButton(0);
-    dialog.setLabelText(QString("Insert Segment by Position ..."));
-    dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
-    dialog.setRange(0, 0);
-    dialog.show();
-
-    QFutureWatcher<void> futureWatcher;
-    QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::transferSegmentationSegmentToInitialSegment, x, y, z);
-    futureWatcher.setFuture(future);
-    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
-    dialog.show();
-    future.waitForFinished();
-
-    for (auto &viewer : graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    taskRunner->run(
+        [this, x, y, z]() { graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z); },
+        [this]() {
+            orthoViewer()->refreshViewers();
+        });
 }
 
 void AnnotationSliceViewer::runOpenSegmentationLabel(int posX, int posY){
     std::cout << "Running OpenSegmentationLabel\n";
-    QDialogProgressbarPassthrough dialog(this);
-    dialog.setCancelButton(0);
-    dialog.setLabelText(QString("Open Segment ..."));
-    dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
-    dialog.setRange(0, 0);
-
-    QFutureWatcher<void> futureWatcher;
-    QFuture<void> future = QtConcurrent::run(this, &AnnotationSliceViewer::openSegmentationLabel, posX, posY);
-    futureWatcher.setFuture(future);
-    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
-    dialog.show();
-    future.waitForFinished();
+    taskRunner->run(
+        [this, posX, posY]() { openSegmentationLabel(posX, posY); },
+        [this]() {
+            orthoViewer()->refreshViewers();
+        });
 }
 
 void AnnotationSliceViewer::runFillSegmentationLabel(int posX, int posY){
-    QDialogProgressbarPassthrough dialog(this);
-    dialog.setCancelButton(0);
-    dialog.setLabelText(QString("Filling Holes ..."));
-    dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
-    dialog.setRange(0, 0);
-
-    QFutureWatcher<void> futureWatcher;
-    QFuture<void> future = QtConcurrent::run(this, &AnnotationSliceViewer::fillSegmentationLabel, posX, posY);
-    futureWatcher.setFuture(future);
-    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
-    dialog.show();
-    future.waitForFinished();
+    taskRunner->run(
+        [this, posX, posY]() { fillSegmentationLabel(posX, posY); },
+        [this]() {
+            orthoViewer()->refreshViewers();
+        });
 }
 
 // openSegmentationLabel
@@ -532,10 +508,6 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
         ++it;
     }
 
-    for (auto &viewer : graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
-
     utils::toc(tic, "OpenSegmentationLabel finished: ");
 }
 
@@ -635,10 +607,6 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
         ++it;
     }
 
-    for (auto &viewer : graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
-
     utils::toc(tic, "FillSegmentationLabel finished: ");
 }
 
@@ -649,40 +617,12 @@ void AnnotationSliceViewer::refineSegmentByPosition(int posX, int posY) {
     getXYZfromPixmapPos(posX, posY, x, y, z);
     printf("Refining segments at position: %d %d %d\n", x, y, z);
 
-//    QDialogProgressbarPassthrough dialog(this);
-//    dialog.setCancelButton(0);
-//    dialog.setLabelText(QString("Refine Segment by Position ..."));
-//    dialog.setMinimumWidth(QFontMetrics(dialog.font()).horizontalAdvance(dialog.labelText()) + 50);
-//    dialog.setRange(0, 0);
-//
-//    QFutureWatcher<void> futureWatcher;
-//    QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::refineSegmentByPosition, x, y, z);
-//    futureWatcher.setFuture(future);
-//    QObject::connect(&futureWatcher, &QFutureWatcher<void>::finished, &dialog, &QProgressDialog::cancel);
-//    dialog.show();
-//    future.waitForFinished();
-    QMetaObject::invokeMethod(this, [this, x, y, z]() {
-        QDialogProgressbarPassthrough *dialog = new QDialogProgressbarPassthrough(this);
-        dialog->setCancelButton(0);
-        dialog->setLabelText(QString("Refine Segment by Position ..."));
-        dialog->setMinimumWidth(QFontMetrics(dialog->font()).horizontalAdvance(dialog->labelText()) + 50);
-        dialog->setRange(0, 0);
-
-        QFutureWatcher<void> *futureWatcher = new QFutureWatcher<void>(this);
-        QFuture<void> future = QtConcurrent::run(graphBase->pGraph, &Graph::refineSegmentByPosition, x, y, z);
-        futureWatcher->setFuture(future);
-        QObject::connect(futureWatcher, &QFutureWatcher<void>::finished, dialog, &QDialog::accept);
-        QObject::connect(dialog, &QDialog::finished, futureWatcher, &QObject::deleteLater);
-        QObject::connect(dialog, &QDialog::finished, dialog, &QObject::deleteLater);
-
-
-        dialog->exec();
-
-        graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-        for (auto &viewer : graphBase->viewerList) {
-            viewer->recalculateQImages();
-        }
-    }, Qt::QueuedConnection);
+    taskRunner->run(
+        [this, x, y, z]() { graphBase->pGraph->refineSegmentByPosition(x, y, z); },
+        [this]() {
+            graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+            orthoViewer()->refreshViewers();
+        });
 }
 
 void AnnotationSliceViewer::splitWorkingNodeIntoInitialNodes(int posX, int posY) {
@@ -691,9 +631,7 @@ void AnnotationSliceViewer::splitWorkingNodeIntoInitialNodes(int posX, int posY)
     std::cout << "Splitting workingsegment into initial nodes at position: " << x << " " << y << " " << z << "\n";
     graphBase->pGraph->splitWorkingNodeIntoInitialNodes(x, y, z);
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-    for (auto &viewer : graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    orthoViewer()->refreshViewers();
 }
 
 void AnnotationSliceViewer::removeInitialSegmentFromWorkingSegmentAtClick(int posX, int posY) {
@@ -703,9 +641,7 @@ void AnnotationSliceViewer::removeInitialSegmentFromWorkingSegmentAtClick(int po
     graphBase->pGraph->removeInitialNodeFromWorkingNodeAtPosition(x, y, z);
 
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-    for (auto &viewer : graphBase->viewerList) {
-        viewer->recalculateQImages();
-    }
+    orthoViewer()->refreshViewers();
 }
 
 void AnnotationSliceViewer::transferWorkingNodeToSegmentation(int posX, int posY) {
@@ -760,7 +696,7 @@ void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
 
 
 
-    for (auto &viewer : graphBase->viewerList) {
+    for (auto *viewer : linkedViewerList) {
         viewer->updateMousePosition(x, y, z);
         viewer->updateFunction();
     }
@@ -785,11 +721,11 @@ void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
 
         QScrollAreaNoWheel *currentScrollArea;
         if (sliceAxis == 0) {
-            currentScrollArea = graphBase->pOrthoViewer->scrollAreaZY;
+            currentScrollArea = orthoViewer()->scrollAreaZY;
         } else if (sliceAxis == 1) { // xz
-            currentScrollArea = graphBase->pOrthoViewer->scrollAreaXZ;
+            currentScrollArea = orthoViewer()->scrollAreaXZ;
         } else if (sliceAxis == 2) {
-            currentScrollArea = graphBase->pOrthoViewer->scrollAreaXY;
+            currentScrollArea = orthoViewer()->scrollAreaXY;
         } else {
             throw std::logic_error("slice axis not implemented");
         }
@@ -953,9 +889,9 @@ void AnnotationSliceViewer::drawLineTo(QPoint endPoint) {
 
 
 void AnnotationSliceViewer::updatePenWidthInAllViewers(int newPenWidth) {
-    graphBase->pOrthoViewer->xy->setPenWidth(newPenWidth);
-    graphBase->pOrthoViewer->zy->setPenWidth(newPenWidth);
-    graphBase->pOrthoViewer->xz->setPenWidth(newPenWidth);
+    orthoViewer()->xy->setPenWidth(newPenWidth);
+    orthoViewer()->zy->setPenWidth(newPenWidth);
+    orthoViewer()->xz->setPenWidth(newPenWidth);
 }
 
 
@@ -1047,7 +983,7 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
                         graphBase->pEdgesInitialSegmentsITKSignal->updateLUTEdge(annotatedEdgeNumIdsToUnmerge);
                     }
 
-                    for (auto &viewer : graphBase->viewerList) {
+                    for (auto *viewer : linkedViewerList) {
                         viewer->recalculateQImages();
                     }
                 }
@@ -1091,7 +1027,7 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
                     }
                 }
             }
-            for (auto &viewer : graphBase->viewerList) {
+            for (auto *viewer : linkedViewerList) {
                 viewer->recalculateQImages();
             }
         }
@@ -1115,6 +1051,7 @@ void AnnotationSliceViewer::resetQImages() {
                                  static_cast<int>(getCurrentSliceHeight()), QImage::Format_RGBA8888);
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0));
     setPixmap(QPixmap::fromImage(annotationImage));
+    syncViewerSizeToImage();
 }
 
 

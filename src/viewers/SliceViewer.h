@@ -10,7 +10,8 @@
 #include "src/segment_handling/graphBase.h"
 #include "src/segment_handling/Graph.h"
 
-
+class TaskRunner;
+class OrthoViewer;
 
 class SliceViewer : public QLabel {
 Q_OBJECT
@@ -23,6 +24,8 @@ public:
 //    ~SliceViewer() override;
 
     SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent = nullptr, bool verbose = false
+    );
+    SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn, QWidget *parent = nullptr, bool verbose = false
     );
 
     virtual void addSignal(SliceViewerITKSignal *signal);
@@ -45,6 +48,7 @@ public:
     void addLinkedViewers(SliceViewer *viewer);
 
     void setLinkedViewers(std::vector<SliceViewer *> viewerList);
+    void setOrthoViewer(OrthoViewer *orthoViewerIn);
 
     std::vector<SliceViewer *> getLinkedViewers();
 
@@ -98,6 +102,7 @@ public:
     ToolMode activeTool = ToolMode::None;
 
     std::shared_ptr<GraphBase> graphBase;
+    TaskRunner *taskRunner;
 
     double zoomFactor;
 
@@ -146,11 +151,13 @@ protected:
     int dimX, dimY, dimZ;
 
     void setUpCustomCursor();
+    void syncViewerSizeToImage();
 
     void getXYZfromPixmapPos(int posX, int posY, int &xOut, int &yOut, int &zOut, bool adjustForZoom = true);
 
     int old_middle_click_translate_x_pos;
     int old_middle_click_translate_y_pos;
+    OrthoViewer *orthoViewer() const;
 public:
     int getDimX() const;
 
@@ -183,6 +190,7 @@ protected:
 
 private:
     void updateLastMouseXYZAfterSliceInOrDecrement();
+    OrthoViewer *linkedOrthoViewer;
 
 };
 

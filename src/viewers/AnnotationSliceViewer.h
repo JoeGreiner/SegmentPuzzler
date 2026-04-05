@@ -9,7 +9,8 @@ class AnnotationSliceViewer : public SliceViewer {
 Q_OBJECT
 
 public:
-    explicit AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent = 0, bool verbose = false);
+    explicit AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn,
+                                   QWidget *parent = 0, bool verbose = false);
 
     ~AnnotationSliceViewer() override;
 

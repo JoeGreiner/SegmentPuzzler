@@ -1,5 +1,6 @@
 #include "OrthoViewer.h"
 #include "SliceViewerITKSignal.h"
+#include "src/qtUtils/TaskRunner.h"
 #include <QScrollBar>
 #include "src/segment_handling/graphBase.h"
 #include <QApplication>
@@ -9,14 +10,13 @@
 
 #define CHECK_IF_MAIN_THREAD True
 
-OrthoViewer::~OrthoViewer() {
-//    clean up e.g. the added signals
-}
+OrthoViewer::~OrthoViewer() = default;
 
 
-OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent) : QWidget(parent) {
+OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn, QWidget *parent) : QWidget(parent) {
     initialized = false;
     graphBase = graphBaseIn;
+    taskRunner = taskRunnerIn;
 
     setFocusPolicy(Qt::NoFocus);
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
@@ -115,40 +115,45 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent
     connect(splitterHorizontalTop, &QSplitter::splitterMoved, splitterHorizontalBottom, &QLinkedSplitter::moveSplitterToLinked);
     connect(splitterHorizontalBottom, &QSplitter::splitterMoved, splitterHorizontalTop, &QLinkedSplitter::moveSplitterToLinked);
 
-    // syncrhonize bottom horizontal splitters
-//    std::cout << splitterHorizontalTop->pos().x() << " " << splitterHorizontalTop->pos().y() << "\n";
-
-
-
     splitterLayout->addWidget(splitterVertical);
     setLayout(splitterLayout);
 
-    zy = new AnnotationSliceViewer(graphBase, this);
-    xz = new AnnotationSliceViewer(graphBase, this);
-    xy = new AnnotationSliceViewer(graphBase, this);
+    zy = new AnnotationSliceViewer(graphBase, taskRunner, this);
+    xz = new AnnotationSliceViewer(graphBase, taskRunner, this);
+    xy = new AnnotationSliceViewer(graphBase, taskRunner, this);
 
     viewerList.reserve(3);
     viewerList.push_back(xy);
     viewerList.push_back(xz);
     viewerList.push_back(zy);
 
-    graphBase->viewerList.push_back(xy);
-    graphBase->viewerList.push_back(xz);
-    graphBase->viewerList.push_back(zy);
-
     zy->setLinkedViewers(viewerList);
     xy->setLinkedViewers(viewerList);
     xz->setLinkedViewers(viewerList);
+    zy->setOrthoViewer(this);
+    xy->setOrthoViewer(this);
+    xz->setOrthoViewer(this);
 
     show();
 
-//    splitterHorizontalTop->moveSplitterExt(400, 1);
     splitterHorizontalBottom->moveSplitterExt(300, 1);
 }
 
-void OrthoViewer::updateMaximumSizes(double zoomFactor) {
-    //    // TODO: Layout does not really work out initially
+void OrthoViewer::refreshViewers() {
+    for (auto *viewer : viewerList) {
+        viewer->recalculateQImages();
+    }
+}
 
+bool OrthoViewer::isBusy() const {
+    return taskRunner != nullptr && taskRunner->isBusy();
+}
+
+TaskRunner *OrthoViewer::getTaskRunner() const {
+    return taskRunner;
+}
+
+void OrthoViewer::updateMaximumSizes(double zoomFactor) {
     int scrollBarOffset = 36;
     int sliderOffset = 42;
     scrollAreaXY->setMaximumHeight(xy->getCurrentSliceHeight() * zoomFactor + scrollBarOffset);
@@ -171,9 +176,7 @@ void OrthoViewer::updateMaximumSizes(double zoomFactor) {
 
 void OrthoViewer::addSignal(itkSignalBase *signal) {
     std::lock_guard<std::mutex> lock(viewerListMutex);
-    std::cout << "Added Signal!" << std::endl;
     if (!initialized) { initialize(); }
-    //TODO: Isnt it wise to make it a unique ptr instead?
     zy->addSignal(new SliceViewerITKSignal(signal, zy->getSliceIndex(), 0));
     xz->addSignal(new SliceViewerITKSignal(signal, xz->getSliceIndex(), 1));
     xy->addSignal(new SliceViewerITKSignal(signal, xy->getSliceIndex(), 2));
@@ -189,39 +192,10 @@ void OrthoViewer::addSignal(itkSignalBase *signal) {
 
 void OrthoViewer::receiveStatusMessage(QString string) {
     emit sendStatusMessage(string);
-};
-
-
-void OrthoViewer::printVal(int val) {
-    std::cout << val << std::endl;
 }
 
 void OrthoViewer::initialize() {
     initialized = true;
-//    zy = new AnnotationSliceViewer(this);
-//    xz = new AnnotationSliceViewer(this);
-//    xy = new AnnotationSliceViewer(this);
-//    zy = new SliceViewer(this);
-//    xz = new SliceViewer(this);
-//    xy = new SliceViewer(this);
-
-//    viewerList.push_back(xy);
-//    viewerList.push_back(xz);
-//    viewerList.push_back(zy);
-//
-//    zy->setLinkedViewers(viewerList);
-//    xy->setLinkedViewers(viewerList);
-//    xz->setLinkedViewers(viewerList);
-
-
-//
-//    zy->addLinkedViewers(xy);
-//    zy->addLinkedViewers(xz);
-//    xy->addLinkedViewers(zy);
-//    xy->addLinkedViewers(xz);
-//    xz->addLinkedViewers(zy);
-//    xz->addLinkedViewers(xy);
-
     zy->setSliceAxis(0);
     xz->setSliceAxis(1);
     xy->setSliceAxis(2);
@@ -246,16 +220,6 @@ void OrthoViewer::setViewToMiddleOfStack() {
 #if CHECK_IF_MAIN_THREAD
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
 #endif
-    //calculate zoom in a way that the whole stack is visible
-    //TODO: calculate zoom better. multiple of twos? actually consider x,y, and z?
-//    QRect rec =    QGuiApplication::primaryScreen()->geometry();
-//    unsigned int screenWidth = rec.width();
-//    unsigned int screenHeight = rec.height();
-//    double zoomX = static_cast<double>(screenWidth) / static_cast<double>(2 * xy->getDimX());
-//    std::cout << "initial zoomlevel: " <<  xy->getDimX() << " " << screenWidth << " " << zoomX <<  "\n";
-
-//    int zoomY = xy->getDimY() / screenWidth;
-//    xy->modifyZoomInAllViewers(zoomX / xy->zoomFactor);
     xy->modifyZoomInAllViewers(1);
 
     xy->setSliceIndex(xy->getDimZ() / 2);
@@ -305,7 +269,7 @@ void OrthoViewer::centerViewportsToXYViewportSpace(QScrollArea* scrollArea,
     bool xIsVisible = (centerXWanted >= leftInView && centerXWanted <= rightInView);
     bool yIsVisible = (centerYWanted >= topInView  && centerYWanted <= bottomInView);
 
-//  its already visible, no need to scroll
+    // Already visible, no scrolling needed.
     if (xIsVisible && yIsVisible) {
         return;
     }

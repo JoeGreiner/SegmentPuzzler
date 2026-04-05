@@ -1,6 +1,7 @@
 #include "OrthoViewer.h"
 #include "itkImageRegionIteratorWithIndex.h"
 #include "ROIExtractionSliceViewer.h"
+#include "src/qtUtils/TaskRunner.h"
 #include <Qt>
 #include <QtWidgets>
 #include "src/segment_handling/graphBase.h"
@@ -16,13 +17,19 @@
 #include <mutex>
 
 
-SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent, bool verbose) : verbose{verbose} {
+SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent, bool verbose)
+    : SliceViewer(graphBaseIn, nullptr, parent, verbose) {
+}
+
+SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn, QWidget *parent, bool verbose)
+    : verbose{verbose} {
     setParent(parent);
     if (verbose) { std::cout << "SliceViewer: Constructor\n"; }
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
     setFocusPolicy(Qt::WheelFocus);
 
     graphBase = graphBaseIn;
+    taskRunner = taskRunnerIn;
 
     linkedSliderSet = false;
 
@@ -44,6 +51,7 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent
     sliceAxis = 2;
 
     zoomFactor = 1;
+    linkedOrthoViewer = nullptr;
 
     //setup custom cursor
     cursorColor = Qt::white;
@@ -73,10 +81,10 @@ bool SliceViewer::isSliceIndexValid(int proposedSliceIndex) {
 void SliceViewer::setAllViewersToXYZCoordinates(int posX, int posY) {
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    for (auto &viewer : graphBase->viewerList) {
+    for (auto *viewer : linkedViewerList) {
         viewer->setSliceIndexWithOutUpdating(getSliceIndexFromXYZ(viewer->getSliceAxis(), x, y, z));
     }
-    for (auto &viewer : graphBase->viewerList) {
+    for (auto *viewer : linkedViewerList) {
         viewer->setSliceIndex(getSliceIndexFromXYZ(viewer->getSliceAxis(), x, y, z));
     }
     if (verbose) { std::cout << posX << " " << posY << " \n"; }
@@ -244,6 +252,10 @@ void SliceViewer::prepareSliceIndex(int proposedSliceIndex) {
 
 
 void SliceViewer::wheelEvent(QWheelEvent *event) {
+    if (taskRunner != nullptr && taskRunner->isBusy()) {
+        event->ignore();
+        return;
+    }
     int angleDelta = event->angleDelta().y();
     if (angleDelta > 0) {
         incrementSliceIndex();
@@ -271,7 +283,6 @@ void SliceViewer::addSignal(SliceViewerITKSignal *signal) {
         dimY = newDimY;
         dimZ = newDimZ;
         resetQImages();
-        resize(getCurrentSliceWidth(), getCurrentSliceHeight());
     } else {
         if (hasDimensionMisMatch(newDimX, newDimY, newDimZ)) {
             throw std::logic_error("Loaded image has a different dimension!");
@@ -319,8 +330,6 @@ int SliceViewer::getCurrentSliceHeight() {
 
 void SliceViewer::paintEvent(QPaintEvent *event) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
-    qWarning() << "This is a test!!!!";
-
 
     if (verbose) { std::cout << "Viewer: Paintevent triggered" << std::endl; }
     double tic = utils::tic();
@@ -374,10 +383,10 @@ void SliceViewer::resetQImages() {
                                  static_cast<int>(getCurrentSliceHeight()), QImage::Format_RGBA8888);
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0));
     setPixmap(QPixmap::fromImage(backGroundImage));
+    syncViewerSizeToImage();
 }
 
 
-//TODO: add option to only recalculate qimages in a certain rect? would speed up things a lot when merging etc
 void SliceViewer::recalculateQImages() {
     double t = 0;
     if (verbose) { t = utils::tic("Viewer: recalculating QImages"); }
@@ -396,8 +405,6 @@ void SliceViewer::recalculateQImages() {
 void SliceViewer::drawOtherViewerSliceIndicator(int otherSliceAxis, int otherSliceIndex) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
     if (verbose) { std::cout << "drawing indicator: " << otherSliceAxis << " " << otherSliceIndex << std::endl; }
-    //TODO: SliceIndicator should only be a very narrow rectangle that gets painted not over the whole pixmap, but where it belongs to
-//    check if sliceIndicatorImage is initialized
     if (sliceIndicatorImage.isNull()) {
         qWarning() << "sliceIndicatorImage is not initialized!";
     }
@@ -550,45 +557,38 @@ void SliceViewer::setLinkedViewers(std::vector<SliceViewer *> viewerList) {
     linkedViewerList = viewerList;
 }
 
+void SliceViewer::setOrthoViewer(OrthoViewer *orthoViewerIn) {
+    linkedOrthoViewer = orthoViewerIn;
+}
+
 std::vector<SliceViewer *> SliceViewer::getLinkedViewers() {
     return linkedViewerList;
 }
 
 void SliceViewer::modifyZoomInAllViewers(double factor) {
-    graphBase->pOrthoViewer->zy->modifyZoom(factor);
-    graphBase->pOrthoViewer->xz->modifyZoom(factor);
-    graphBase->pOrthoViewer->xy->modifyZoom(factor);
-    graphBase->pOrthoViewer->updateMaximumSizes(zoomFactor);
+    auto *viewer = orthoViewer();
+    viewer->zy->modifyZoom(factor);
+    viewer->xz->modifyZoom(factor);
+    viewer->xy->modifyZoom(factor);
+    viewer->updateMaximumSizes(zoomFactor);
 }
 
 void SliceViewer::modifyZoom(double factor) {
     zoomFactor *= factor;
-    double currentWidth = this->width();
-    double currentHeight = this->height();
-    setFixedSize(static_cast<int>(currentWidth * factor), static_cast<int>(currentHeight * factor));
+    syncViewerSizeToImage();
 
     // update only xy view, it linked sliders will update other views
     if (sliceAxis == 2) {
-        std::cout << "Ensuring that x0: " << lastMouseX << " x1:" << lastMouseY << " is visible!" << std::endl;
-        auto rect = graphBase->pOrthoViewer->scrollAreaXY->viewport()->rect();
-        std::cout << "Rect x: " << rect.x() << " y:" << rect.y() << " w:" << rect.width() << " h:" << rect.height() << std::endl;
-//            GraphBase::pOrthoViewer->scrollAreaXY->scroll()
-        int horizontal_before = graphBase->pOrthoViewer->scrollAreaXY->horizontalScrollBar()->value();
-        int horizontal_before_max = graphBase->pOrthoViewer->scrollAreaXY->horizontalScrollBar()->maximum();
-        int verical_before = graphBase->pOrthoViewer->scrollAreaXY->verticalScrollBar()->value();
-        int verical_before_max = graphBase->pOrthoViewer->scrollAreaXY->verticalScrollBar()->maximum();
-        std::cout << "Scrollbars horizonal: " << horizontal_before << "/" << horizontal_before_max << " vertical: "
-                  << verical_before << "/" << verical_before_max << std::endl;
-//        printf("Scrollbars horizonal: %d/%d vertical: %d/%d\n",
-//               horizontal_before, horizontal_before_max,
-//               verical_before, verical_before_max);
+        auto *viewer = orthoViewer();
+        auto rect = viewer->scrollAreaXY->viewport()->rect();
+        int horizontal_before = viewer->scrollAreaXY->horizontalScrollBar()->value();
+        int horizontal_before_max = viewer->scrollAreaXY->horizontalScrollBar()->maximum();
+        int verical_before = viewer->scrollAreaXY->verticalScrollBar()->value();
+        int verical_before_max = viewer->scrollAreaXY->verticalScrollBar()->maximum();
         int offX;
         int offY;
         double centerXWanted = lastMouseX * zoomFactor;
         double centerYWanted = lastMouseY * zoomFactor;
-        std::cout << "CenterXWanted: " << centerXWanted << " centerYWanted: " << centerYWanted << std::endl;
-
-        // centerX = off + (recW/2)
 
         offX = static_cast<int>(centerXWanted - (rect.width() / 2.));
         offY = static_cast<int>(centerYWanted - (rect.height() / 2.));
@@ -596,12 +596,20 @@ void SliceViewer::modifyZoom(double factor) {
         offY = offY > verical_before_max ? verical_before_max : offY;
         offX = offX < 0 ? 0 : offX;
         offY = offY < 0 ? 0 : offY;
-        std::cout << "New scrollbars horizonal: " << offX << "/" << horizontal_before_max << " vertical: " << offY << "/"
-                  << verical_before_max << std::endl;
-        graphBase->pOrthoViewer->scrollAreaXY->horizontalScrollBar()->setValue(offX);
-        graphBase->pOrthoViewer->scrollAreaXY->verticalScrollBar()->setValue(offY);
+        viewer->scrollAreaXY->horizontalScrollBar()->setValue(offX);
+        viewer->scrollAreaXY->verticalScrollBar()->setValue(offY);
     }
     setUpCustomCursor();
+}
+
+OrthoViewer *SliceViewer::orthoViewer() const {
+    return linkedOrthoViewer;
+}
+
+void SliceViewer::syncViewerSizeToImage() {
+    const int scaledWidth = std::max(1, static_cast<int>(std::lround(getCurrentSliceWidth() * zoomFactor)));
+    const int scaledHeight = std::max(1, static_cast<int>(std::lround(getCurrentSliceHeight() * zoomFactor)));
+    setFixedSize(scaledWidth, scaledHeight);
 }
 
 void SliceViewer::setUpCustomCursor() {

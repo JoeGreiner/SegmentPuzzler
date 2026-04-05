@@ -4,7 +4,10 @@
 
 #include <QString>
 #include <type_traits>
+#include <functional>
+#include <optional>
 #include <itkImage.h>
+#include <itkDataObject.h>
 #include <src/viewers/itkSignal.h>
 #include <QWidget>
 #include <QPushButton>
@@ -17,19 +20,29 @@
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <src/qtUtils/QBackgroundIdRadioBox.h>
 
+class OrthoViewer;
+class TaskRunner;
 
 class SignalControl : public QTabWidget {
 Q_OBJECT
 public:
     //TODO: Fix file handling. dataype + signal index should be enough as an unique identifier.
-    SignalControl(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent = 0, bool verboseIn = true);
+    SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
+                  OrthoViewer *orthoViewerIn,
+                  TaskRunner *taskRunnerIn,
+                  QWidget *parent = 0,
+                  bool verboseIn = true);
 
     ~SignalControl();
 
     std::shared_ptr<GraphBase> graphBase;
+    OrthoViewer *orthoViewer;
+    TaskRunner *taskRunner;
 
     using GraphSegmentType = dataType::SegmentIdType;
     using GraphSegmentImageType = dataType::SegmentsImageType;
+    using LoadResult = std::optional<size_t>;
+    using LoadCallback = std::function<void(LoadResult)>;
 
     // Maps the compiled SegmentIdType to its ITK IOComponentType.
     // Ensures segment files are always forced to load with the pixel type
@@ -58,11 +71,6 @@ public:
 
     void setDescription(QTreeWidgetItem *item);
 
-
-    // ATTENTION: if you link the pointer to uCharImageList, and not to uCharImageList.at(0),
-    // the pointer gets invalidated if you resize the vector!!!!
-//    std::vector<itkSignal<unsigned char>> uCharSignalList;
-//    std::vector<itkSignal<short>> shortSignalList;
     // Owns all signals created during image loading.
     // allSignalList is a non-owning view used for indexed access by tree-widget callbacks.
     std::vector<std::unique_ptr<itkSignalBase>> ownedSignals;
@@ -83,6 +91,12 @@ public:
                    size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
                    bool forceSegmentDataTypeUInt = false,
                    itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType);
+
+    void addImageAsync(QString fileName, QString displayedName, LoadCallback then = {});
+    void loadSegmentationVolumeAsync(QString fileName, QString displayedName, LoadCallback then = {});
+    void loadMembraneProbabilityAsync(QString fileName, QString displayedName, LoadCallback then = {});
+    void addSegmentsGraphAsync(QString fileName, LoadCallback then = {});
+    void addRefinementWatershedAsync(QString fileName, QString displayedName, LoadCallback then = {});
 
 
 public slots:
@@ -149,6 +163,17 @@ public slots:
 
 
 private:
+    struct LoadedImageData {
+        itk::ImageIOBase::IOComponentType dataType = itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE;
+        itk::DataObject::Pointer image;
+    };
+
+    struct BoundaryLoadResult {
+        dataType::BoundaryImageType::Pointer boundaryImage;
+        dataType::SegmentsImageType::Pointer emptySegmentsImage;
+        bool createdEmptySegments = false;
+    };
+
     unsigned int getSignalIndex(QTreeWidgetItem *item);
 
     bool getIsUChar(QTreeWidgetItem *item);
@@ -226,6 +251,23 @@ private:
 
 
     bool getDimensionMatchWithSegmentImage();
+    void setGuiBusy(bool busy);
+    void refreshViewers();
+    QString resolvedDisplayName(const QString &fileName, const QString &displayedName) const;
+    void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
+
+    LoadedImageData loadImageData(QString fileName,
+                                  bool forceSegmentDataTypeUInt = false,
+                                  itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType);
+    bool insertLoadedImage(const LoadedImageData &loadedImage,
+                           size_t &signalIndexGlobalOut,
+                           bool forceShapeOfSegments);
+
+    void registerImageSignal(size_t signalIndexGlobal, const QString &name);
+    void registerSegmentationSignal(size_t signalIndexGlobal, const QString &name);
+    void registerBoundarySignal(size_t signalIndexGlobal, const QString &name);
+    void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
+    void registerSegmentsGraphSignal(size_t signalIndexGlobal);
 
     template<typename T>
     bool insertTypedImage(

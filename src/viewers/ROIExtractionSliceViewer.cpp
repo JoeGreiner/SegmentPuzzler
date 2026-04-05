@@ -8,8 +8,11 @@
 #include "OrthoViewer.h"
 #include "SliceViewer.h"
 
-
-ROIExtractionSliceViewer::ROIExtractionSliceViewer(QWidget *, bool) : SliceViewer() {
+ROIExtractionSliceViewer::ROIExtractionSliceViewer(std::shared_ptr<GraphBase> graphBaseIn,
+                                                   TaskRunner *taskRunnerIn,
+                                                   QWidget *parent,
+                                                   bool)
+    : SliceViewer(graphBaseIn, taskRunnerIn, parent) {
     if (verbose) { std::cout << "ROIExtractionSliceViewer: Constructor\n"; }
 
     cursorColor = Qt::white;
@@ -49,7 +52,7 @@ void ROIExtractionSliceViewer::paintEvent(QPaintEvent *event) {
     }
 
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0)); // erase old slice indicator image!
-    for (auto &viewer : GraphBase::viewerList) {
+    for (auto *viewer : linkedViewerList) {
         drawOtherViewerSliceIndicator(viewer->getSliceAxis(), viewer->getSliceIndex());
     }
     painter.drawImage(0, 0, sliceIndicatorImage);
@@ -111,7 +114,7 @@ void ROIExtractionSliceViewer::mouseMoveEvent(QMouseEvent *event) {
 
     sendStatusMessage(logMessage);
 
-    for (auto &viewer : GraphBase::viewerList) {
+    for (auto *viewer : linkedViewerList) {
         viewer->updateMousePosition(x, y, z);
         viewer->updateFunction();
     }
@@ -126,11 +129,11 @@ void ROIExtractionSliceViewer::mouseMoveEvent(QMouseEvent *event) {
 
         QScrollAreaNoWheel *currentScrollArea;
         if (sliceAxis == 0) {
-            currentScrollArea = GraphBase::pOrthoViewer->scrollAreaZY;
+            currentScrollArea = orthoViewer()->scrollAreaZY;
         } else if (sliceAxis == 1) { // xz
-            currentScrollArea = GraphBase::pOrthoViewer->scrollAreaXZ;
+            currentScrollArea = orthoViewer()->scrollAreaXZ;
         } else if (sliceAxis == 2) {
-            currentScrollArea = GraphBase::pOrthoViewer->scrollAreaXY;
+            currentScrollArea = orthoViewer()->scrollAreaXY;
         } else {
             throw std::logic_error("slice axis not implemented");
         }
@@ -153,4 +156,3 @@ void ROIExtractionSliceViewer::mouseReleaseEvent(QMouseEvent *event) {
 void ROIExtractionSliceViewer::updateFunction() {
     update();
 }
-

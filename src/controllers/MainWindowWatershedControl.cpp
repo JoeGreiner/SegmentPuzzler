@@ -3,6 +3,9 @@
 #include <src/controllers/watershedControl.h>
 #include <QApplication>
 #include <QScreen>
+#include "src/qtUtils/TaskRunner.h"
+
+MainWindowWatershedControl::~MainWindowWatershedControl() = default;
 
 void MainWindowWatershedControl::closeFromExternalSignal() {
     close();
@@ -30,10 +33,10 @@ MainWindowWatershedControl::MainWindowWatershedControl() {
     graphBase->pGraph = ownedGraph.get();
     Graph *graph = ownedGraph.get();
 
-    auto myOrthowindow = new OrthoViewer(graphBase);
-    graphBase->pOrthoViewer = myOrthowindow;
+    taskRunner = std::make_unique<TaskRunner>(this, this);
+    myOrthowindow = new OrthoViewer(graphBase, taskRunner.get());
 
-    myWatershedControl = new WatershedControl(graphBase);
+    myWatershedControl = new WatershedControl(graphBase, myOrthowindow, taskRunner.get());
     auto horizontalSplitter = new QSplitter();
     horizontalSplitter->addWidget(myWatershedControl);
     horizontalSplitter->addWidget(myOrthowindow);
@@ -46,7 +49,6 @@ MainWindowWatershedControl::MainWindowWatershedControl() {
 
 
 //    myWatershedControl->addBoundaries("/Users/joachimgreiner/Documents/memcrop.nrrd");
-//    graphBase->pOrthoViewer->setViewToMiddleOfStack();
 
 //    myWatershedControl->thresholdBoundaries();
 //    myWatershedControl->calculateDistanceMap();

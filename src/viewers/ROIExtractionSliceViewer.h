@@ -9,7 +9,10 @@ class ROIExtractionSliceViewer : public SliceViewer {
 Q_OBJECT
 
 public:
-    explicit ROIExtractionSliceViewer(QWidget *parent = 0, bool verbose = True);
+    explicit ROIExtractionSliceViewer(std::shared_ptr<GraphBase> graphBaseIn,
+                                      TaskRunner *taskRunnerIn,
+                                      QWidget *parent = 0,
+                                      bool verbose = true);
 
 
 protected:

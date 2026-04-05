@@ -11,11 +11,13 @@
 #include <src/segment_handling/Graph.h>
 #include <memory>
 
+class TaskRunner;
 
 class MainWindowWatershedControl : public QMainWindow {
     Q_OBJECT
 public:
     MainWindowWatershedControl();
+    ~MainWindowWatershedControl() override;
     WatershedControl* myWatershedControl;
 
     void setLinkedSignalControl(SignalControl* linkedSignalControlIn);
@@ -28,6 +30,7 @@ private:
     OrthoViewer *myOrthowindow;
     SignalControl* linkedSignalControl;
     std::unique_ptr<Graph> ownedGraph;
+    std::unique_ptr<TaskRunner> taskRunner;
 
 };
 

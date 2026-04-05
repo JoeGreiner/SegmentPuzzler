@@ -10,9 +10,6 @@
 
 // forward declaration
 class Graph;
-class SliceViewer;
-
-class OrthoViewer;
 
 class GraphBase {
 public:
@@ -26,8 +23,6 @@ public:
 
     using BoundaryVoxelType = dataType::BoundaryVoxelType;
     using BoundaryImageType = dataType::BoundaryImageType;
-
-    bool currentlyCalculating;
 
 
     std::map<std::string, FeatureImageType::Pointer> signalList;
@@ -54,9 +49,6 @@ public:
 
     // Non-owning — owned by Graph (via Graph::ownedEdgesSignal)
     itkSignal<MappedEdgeIdType> *pEdgesInitialSegmentsITKSignal;
-    std::vector<SliceViewer *> viewerList; // Non-owning — viewers owned by Qt hierarchy
-    // Non-owning — lifetime managed by Qt parent-child hierarchy
-    OrthoViewer *pOrthoViewer;
 
     EdgeImageType::Pointer pEdgesInitialSegmentsImage;
     size_t edgeCounter;
@@ -65,7 +57,6 @@ public:
 //  maps initial edges to their status: 0 = uninformed -2 == do not merge, 2 == do merge
     std::unordered_map<MappedEdgeIdType, char> edgeStatus;
 
-    // TODO: Handle that bullshit with different datatypes robustly
     BoundaryImageType::Pointer pSelectedBoundary;
 
     bool ROI_set;
@@ -76,7 +67,6 @@ public:
         edgeCounter = 0;
         pGraph = nullptr;
         pEdgesInitialSegmentsITKSignal = nullptr;
-        pOrthoViewer = nullptr;
         pGroundTruth = nullptr;
         pWorkingSegmentsImage = nullptr;
         pRefinementWatershed = nullptr;
@@ -93,7 +83,6 @@ public:
         ROI_ty = -1;
         ROI_tz = -1;
         ROI_set = false;
-        currentlyCalculating = false;
     }
 };
 

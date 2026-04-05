@@ -122,83 +122,137 @@ int main(int argc, char *argv[]) {
                 }
                 if (!checkIfPathExists(pathToSegment)){
                     std::cout << "Can't access " << pathToSegment.toStdString() << " , skipping.\n";
+                    pathToSegment.clear();
                 }
             }
         }
     }
 
-    if (loadSegment) {
-//        graphBase->pGraph->askForBackgroundStrategy();
-        myMainWindow->mySignalControl->addSegmentsGraph(pathToSegment);
-
+    if (loadSegment && !pathToSegment.isEmpty()) {
         if(argc >= 2){
             for (int i = 1; i < argc; ++i) {
                 if ((std::string(argv[i]) == "--image") & (i+1 < argc)) {
                     pathToImage = QString(argv[i+1]);
                     std::cout << "Path to image: " << pathToImage.toStdString() << "\n";
                     imageNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (!checkIfPathExists(pathToImage)){
-                        std::cout << "Can't access " << pathToImage.toStdString() << " , skipping.\n";
-                        continue;
-                    }
                     if (imageNameIsGiven){
                         imageName = argv[i+2];
                         std::cout << "Image name: " << imageName.toStdString() << "\n";
-                        myMainWindow->mySignalControl->addImage(pathToImage, imageName);
-                    } else {
-                        myMainWindow->mySignalControl->addImage(pathToImage);
+                    }
+                    if (!checkIfPathExists(pathToImage)){
+                        std::cout << "Can't access " << pathToImage.toStdString() << " , skipping.\n";
+                        pathToImage.clear();
                     }
                 }
                 if ((std::string(argv[i]) == "--segmentation") & (i+1 < argc)) {
                     pathToSegmentation = QString(argv[i+1]);
                     std::cout << "Path to segmentation: " << pathToSegmentation.toStdString() << "\n";
                     segmentationNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (!checkIfPathExists(pathToSegmentation)) {
-                        std::cout << "Can't access " << pathToSegmentation.toStdString() << " , skipping.\n";
-                        continue;
-                    }
                     if (segmentationNameIsGiven){
                         segmentationName = argv[i+2];
                         std::cout << "Segmentation name: " << segmentationName.toStdString() << "\n";
-                        myMainWindow->mySignalControl->loadSegmentationVolume(pathToSegmentation, segmentationName);
-                    } else {
-                        myMainWindow->mySignalControl->loadSegmentationVolume(pathToSegmentation);
+                    }
+                    if (!checkIfPathExists(pathToSegmentation)) {
+                        std::cout << "Can't access " << pathToSegmentation.toStdString() << " , skipping.\n";
+                        pathToSegmentation.clear();
                     }
                 }
                 if ((std::string(argv[i]) == "--boundary") & (i+1 < argc)) {
                     pathToBoundary = QString(argv[i+1]);
                     std::cout << "Path to boundary: " << pathToBoundary.toStdString() << "\n";
                     boundaryNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (!checkIfPathExists(pathToBoundary)) {
-                        std::cout << "Can't access " << pathToBoundary.toStdString() << " , skipping.\n";
-                        continue;
-                    }
                     if (boundaryNameIsGiven){
                         boundaryName = argv[i+2];
                         std::cout << "boundary name: " << boundaryName.toStdString() << "\n";
-                        myMainWindow->mySignalControl->loadMembraneProbability(pathToBoundary, boundaryName);
-                    } else {
-                        myMainWindow->mySignalControl->loadMembraneProbability(pathToBoundary);
+                    }
+                    if (!checkIfPathExists(pathToBoundary)) {
+                        std::cout << "Can't access " << pathToBoundary.toStdString() << " , skipping.\n";
+                        pathToBoundary.clear();
                     }
                 }
                 if ((std::string(argv[i]) == "--refinement") & (i+1 < argc)) {
                     pathToRefinement = QString(argv[i+1]);
                     std::cout << "Path to refinement: " << pathToRefinement.toStdString() << "\n";
                     refinementNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (!checkIfPathExists(pathToRefinement)) {
-                        std::cout << "Can't access " << pathToRefinement.toStdString() << " , skipping.\n";
-                        continue;
-                    }
                     if (refinementNameIsGiven){
                         refinementName = argv[i+2];
                         std::cout << "Refinement name: " << refinementName.toStdString() << "\n";
-                        myMainWindow->mySignalControl->addRefinementWatershed(pathToRefinement, refinementName);
-                    } else {
-                        myMainWindow->mySignalControl->addRefinementWatershed(pathToRefinement);
+                    }
+                    if (!checkIfPathExists(pathToRefinement)) {
+                        std::cout << "Can't access " << pathToRefinement.toStdString() << " , skipping.\n";
+                        pathToRefinement.clear();
                     }
                 }
             }
         }
+
+        myMainWindow->mySignalControl->addSegmentsGraphAsync(
+            pathToSegment,
+            [myMainWindow,
+             pathToImage,
+             imageName,
+             pathToSegmentation,
+             segmentationName,
+             pathToBoundary,
+             boundaryName,
+             pathToRefinement,
+             refinementName](SignalControl::LoadResult segmentsIndex) {
+                if (!segmentsIndex) {
+                    return;
+                }
+
+                auto loadRefinement = [myMainWindow, pathToRefinement, refinementName]() {
+                    if (!pathToRefinement.isEmpty()) {
+                        myMainWindow->mySignalControl->addRefinementWatershed(pathToRefinement, refinementName);
+                    }
+                };
+
+                auto loadBoundary = [myMainWindow, pathToBoundary, boundaryName, loadRefinement]() {
+                    if (!pathToBoundary.isEmpty()) {
+                        myMainWindow->mySignalControl->loadMembraneProbabilityAsync(
+                            pathToBoundary,
+                            boundaryName,
+                            [loadRefinement](SignalControl::LoadResult boundaryIndex) {
+                                if (!boundaryIndex) {
+                                    return;
+                                }
+                                loadRefinement();
+                            });
+                    } else {
+                        loadRefinement();
+                    }
+                };
+
+                auto loadSegmentation = [myMainWindow, pathToSegmentation, segmentationName, loadBoundary]() {
+                    if (!pathToSegmentation.isEmpty()) {
+                        myMainWindow->mySignalControl->loadSegmentationVolumeAsync(
+                            pathToSegmentation,
+                            segmentationName,
+                            [loadBoundary](SignalControl::LoadResult segmentationIndex) {
+                                if (!segmentationIndex) {
+                                    return;
+                                }
+                                loadBoundary();
+                            });
+                    } else {
+                        loadBoundary();
+                    }
+                };
+
+                if (!pathToImage.isEmpty()) {
+                    myMainWindow->mySignalControl->addImageAsync(
+                        pathToImage,
+                        imageName,
+                        [loadSegmentation](SignalControl::LoadResult imageIndex) {
+                            if (!imageIndex) {
+                                return;
+                            }
+                            loadSegmentation();
+                        });
+                } else {
+                    loadSegmentation();
+                }
+            });
     }
 
     int val = 0;
@@ -209,5 +263,3 @@ int main(int argc, char *argv[]) {
     }
     return val;
 }
-
-

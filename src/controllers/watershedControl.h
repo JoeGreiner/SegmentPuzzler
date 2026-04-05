@@ -1,6 +1,7 @@
 #ifndef SEGMENTCOUPLER_WATERSHEDCONTROL_H
 #define SEGMENTCOUPLER_WATERSHEDCONTROL_H
 #include <QString>
+#include <functional>
 #include <itkImage.h>
 #include <src/viewers/itkSignal.h>
 #include <src/viewers/itkSignalThresholdPreview.h>
@@ -19,6 +20,8 @@
 #include <QCheckBox>
 #include <QSpinBox>
 
+class OrthoViewer;
+class TaskRunner;
 
 class QTreeWidgetWithDragAndDrop2 : public QTreeWidget {
 Q_OBJECT
@@ -63,7 +66,11 @@ class WatershedControl : public QTabWidget {
 Q_OBJECT
 public:
     //TODO: Fix file handling. dataype + signal index should be enough as an unique identifier.
-    WatershedControl(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent = 0, bool verboseIn = true);
+    WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
+                     OrthoViewer *orthoViewerIn,
+                     TaskRunner *taskRunnerIn,
+                     QWidget *parent = 0,
+                     bool verboseIn = true);
 
     ~WatershedControl();
 
@@ -71,6 +78,8 @@ public:
 
 
     std::shared_ptr<GraphBase> graphBase;
+    OrthoViewer *orthoViewer;
+    TaskRunner *taskRunner;
 
     using GraphSegmentType = dataType::SegmentIdType;
     using GraphSegmentImageType = dataType::SegmentsImageType;
@@ -85,11 +94,6 @@ public:
 
     void setDescription(QTreeWidgetItem *item);
 
-
-    // ATTENTION: if you link the pointer to uCharImageList, and not to uCharImageList.at(0),
-    // the pointer gets invalidated if you resize the vector!!!! This is a big FIXME!
-//    std::vector<itkSignal<unsigned char>> uCharSignalList;
-//    std::vector<itkSignal<short>> shortSignalList;
     // Owns all signals created during image loading.
     // allSignalList is a non-owning view used for indexed access by tree-widget callbacks.
     std::vector<std::unique_ptr<itkSignalBase>> ownedSignals;
@@ -153,7 +157,6 @@ public slots:
 
     void treeClicked(QTreeWidgetItem *item, int index);
 
-
 private:
     unsigned int getSignalIndex(QTreeWidgetItem *item);
 
@@ -214,6 +217,13 @@ private:
     void setupWidget(QTreeWidget *treeWidget, QWidget *buttonsWidget, QGridLayout *buttonsLayout, QPushButton *button, QString tabName);
 
     bool getDimensionMatchWithSegmentImage();
+    void setGuiBusy(bool busy);
+    void refreshViewers();
+    void thresholdBoundariesAsync(std::function<void()> then = {});
+    void calculateDistanceMapAsync(std::function<void()> then = {});
+    void extractSeedsAsync(std::function<void()> then = {});
+    void watershedAsync(std::function<void()> then = {});
+    void exportSegmentsAsync(std::function<void()> then = {});
 
     // Registers a signal: takes ownership, appends to ownedSignals/allSignalList,
     // sets name/LUT/tree widget, adds to viewer. Returns the global signal index.

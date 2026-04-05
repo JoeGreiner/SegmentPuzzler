@@ -12,6 +12,7 @@
 #include "src/viewers/AnnotationSliceViewer.h"
 #include "itkSignal.h"
 
+class TaskRunner;
 
 class QScrollAreaNoWheel : public QScrollArea {
 Q_OBJECT
@@ -28,12 +29,8 @@ public slots:
         moveSplitter(position, index);
     }
 
-
-
     void moveSplitterToLinked(int position, int index) {
-        std::cout << position << " " << index << "\n";
-
-        // to prohibit cyclic calls to movesplitter, receiver is blocked from emitting signals
+        // Block signals while mirroring the linked splitter to avoid cycles.
         blockSignals(true);
         moveSplitter(position, index);
         blockSignals(false);
@@ -45,22 +42,25 @@ public slots:
 class OrthoViewer : public QWidget {
 Q_OBJECT
 public:
-    OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent = 0);
+    OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn, QWidget *parent = 0);
 
     ~OrthoViewer();
 
     void addSignal(itkSignalBase *signal);
+    void refreshViewers();
+    bool isBusy() const;
+    TaskRunner *getTaskRunner() const;
 
     void updateMaximumSizes(double zoomFactor = 1.);
 
 
     std::shared_ptr<GraphBase> graphBase;
+    TaskRunner *taskRunner;
 
     std::mutex viewerListMutex;
     std::vector<SliceViewer *> viewerList;
 
-    // public to be callable from GraphBase
-    // TODO: Make better/cleaner
+    // Public for direct coordination from controllers and viewers.
     AnnotationSliceViewer *zy;
     AnnotationSliceViewer *xz;
     AnnotationSliceViewer *xy;
@@ -75,7 +75,6 @@ signals:
 
 public slots:
     void receiveStatusMessage(QString string);
-    void printVal(int val);
     void setViewToMiddleOfStack();
     void centerViewportsToXYZImageSpace(int x, int y, int z);
     void centerViewportsToXYViewportSpace(QScrollArea* scrollArea,

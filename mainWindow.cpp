@@ -11,6 +11,9 @@
 #include "src/utils/utils.h"
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
+#include "src/qtUtils/TaskRunner.h"
+
+MainWindow::~MainWindow() = default;
 
 MainWindow::MainWindow() {
 
@@ -30,8 +33,8 @@ MainWindow::MainWindow() {
     graph = std::make_unique<Graph>(graphBase);
     graphBase->pGraph = graph.get();
 
-    myOrthowindow = new OrthoViewer(graphBase);
-    graphBase->pOrthoViewer = myOrthowindow;
+    taskRunner = std::make_unique<TaskRunner>(this, this);
+    myOrthowindow = new OrthoViewer(graphBase, taskRunner.get());
 
 //    QString fileName = "/Volumes/Borneo/jg19/segmentation/files/160323_1/watershed4.shlat";
 //    QString fileName = "/Volumes/Seagate/ManualCorrection/watershed.uilat";
@@ -58,7 +61,7 @@ MainWindow::MainWindow() {
 //    QString fileName2 = "/mnt/work/tmp/seg_stack_2/prediction_combined/2024_11_08_WGA_Rabbit_stack_1_wga_MultiCut/2024_11_08_WGA_Rabbit_stack_1_wga_mc_0.075_pmap_zero.nrrd";
 //    QString fileName2 = "/mnt/work/tmp/seg_stack_2/prediction_combined/2024_11_08_WGA_Rabbit_stack_1_wga_ws.nrrd";
 
-    mySignalControl = new SignalControl(graphBase);
+    mySignalControl = new SignalControl(graphBase, myOrthowindow, taskRunner.get());
 //    mySignalControl->addSegmentsGraph(fileName2);
 //    mySignalControl->loadMembraneProbability(fileName2);
 //    graphBase->ROI_fx = 0;d
@@ -231,6 +234,7 @@ MainWindow::MainWindow() {
     helpMenu->addAction(openHotkeysAction);
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
+    connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
 }
 
 
@@ -646,13 +650,47 @@ void MainWindow::loadSegmentationSample() {
 
     if (utils::check_if_file_exists(downloadedFilePathMC)){
         graph->setBackgroundIdStrategy("backgroundIsLowestId");
-        mySignalControl->addSegmentsGraph(downloadedFilePathMC);
-        mySignalControl->addRefinementWatershed(downloadedFilePathWS);
-        mySignalControl->addImage(downloadedFilePathWGA);
-        mySignalControl->loadMembraneProbability(downloadedFilePathBnd);
-        QTreeWidgetItem *probability_item = mySignalControl->probabilityTreeWidget->topLevelItem(0);
-        mySignalControl->setIsActive(probability_item, false);
-        mySignalControl->allSignalList[4]->setNorm(0, 100);
+        mySignalControl->addSegmentsGraphAsync(
+            downloadedFilePathMC,
+            [this, downloadedFilePathWS, downloadedFilePathWGA, downloadedFilePathBnd](
+                SignalControl::LoadResult segmentsIndex) {
+                if (!segmentsIndex) {
+                    return;
+                }
+                mySignalControl->addRefinementWatershedAsync(
+                    downloadedFilePathWS,
+                    "",
+                    [this, downloadedFilePathWGA, downloadedFilePathBnd](SignalControl::LoadResult refinementIndex) {
+                        if (!refinementIndex) {
+                            return;
+                        }
+                        mySignalControl->addImageAsync(
+                            downloadedFilePathWGA,
+                            "",
+                            [this, downloadedFilePathBnd](SignalControl::LoadResult imageIndex) {
+                                if (!imageIndex) {
+                                    return;
+                                }
+                                mySignalControl->loadMembraneProbabilityAsync(
+                                    downloadedFilePathBnd,
+                                    "",
+                                    [this, imageIndex](SignalControl::LoadResult boundaryIndex) {
+                                        if (!boundaryIndex) {
+                                            return;
+                                        }
+                                        QTreeWidgetItem *probabilityItem =
+                                            mySignalControl->probabilityTreeWidget->topLevelItem(0);
+                                        if (probabilityItem != nullptr) {
+                                            mySignalControl->setIsActive(probabilityItem, false);
+                                        }
+                                        if (*imageIndex < mySignalControl->allSignalList.size()) {
+                                            mySignalControl->allSignalList[*imageIndex]->setNorm(0, 100);
+                                            myOrthowindow->refreshViewers();
+                                        }
+                                    });
+                            });
+                    });
+            });
 
 
     } else {
@@ -765,4 +803,3 @@ void MainWindow::showHotkeys() {
 void MainWindow::receiveStatusMessage(const QString& string) {
     statusBar()->showMessage(string);
 }
-

@@ -10,12 +10,15 @@
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
 
+class TaskRunner;
+
 class MainWindow : public QMainWindow {
 Q_OBJECT
 
 
 public:
     MainWindow();
+    ~MainWindow() override;
     SignalControl* mySignalControl;
 
 public slots:
@@ -35,6 +38,7 @@ private:
     QAction *loadSampleSegmentationAction;
     std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
+    std::unique_ptr<TaskRunner> taskRunner;
 };
 
 #endif //SEGMENTCOUPLER_MAINWINDOW_H

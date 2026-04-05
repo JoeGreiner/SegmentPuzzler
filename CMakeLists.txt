@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10.0)
 project(SegmentPuzzler LANGUAGES CXX VERSION 0.2.2)
 string(TOLOWER "${PROJECT_NAME}" PROJECT_NAME_LOWER)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(BUILD_SHARED_LIBS ON)
 
 message(STATUS "Building SegmentPuzzler Version ${PROJECT_VERSION}")
@@ -44,7 +44,7 @@ MESSAGE(STATUS "USE_OMP: " ${USE_OMP})
 
 ### Apple compile options
 if (APPLE AND DEPLOY)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.7" CACHE STRING "Minimum OS X deployment version" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "15" CACHE STRING "Minimum OS X deployment version" FORCE)
     set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR})
     set(prefix "${PROJECT_NAME}.app/Contents")
     set(INSTALL_RUNTIME_DIR "${prefix}/MacOS")
