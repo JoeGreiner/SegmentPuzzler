@@ -133,15 +133,15 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
 //    std::cout << event->key() << std::endl;
     if (event->key() == Qt::Key_R) {
         if(graphBase->pWorkingSegments != nullptr) {
-            graphBase->pWorkingSegments->calculateLUT();
+            graphBase->pWorkingSegments->randomizeCategoricalLUT();
             graphBase->pWorkingSegments->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
         }
         if (graphBase->pSelectedSegmentationSignal != nullptr) {
             graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
-            graphBase->pSelectedSegmentationSignal->calculateLUT();
+            graphBase->pSelectedSegmentationSignal->randomizeCategoricalLUT();
         }
         if (graphBase->pRefinementWatershedSignal != nullptr) {
-            graphBase->pRefinementWatershedSignal->calculateLUT();
+            graphBase->pRefinementWatershedSignal->randomizeCategoricalLUT();
         }
         for (auto &viewer : graphBase->viewerList) {
             viewer->recalculateQImages();

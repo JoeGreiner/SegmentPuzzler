@@ -1,6 +1,6 @@
 
 #include "node.h"
-#include "graph.h"
+#include "Graph.h"
 #include "itkShapedNeighborhoodIterator.h"
 
 Node::Node() {

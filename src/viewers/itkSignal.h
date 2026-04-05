@@ -73,6 +73,9 @@ public:
 
     void checkAndResizeLUT(unsigned int value);
 
+    // Re-randomizes all categorical LUT entries from scratch.
+    void randomizeCategoricalLUT();
+
 
     virtual QImage
     calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer) override;
@@ -606,6 +609,13 @@ void itkSignal<dType>::checkAndResizeLUT(unsigned int value) {
             calculateLUT();
         }
     }
+}
+
+
+template<typename dType>
+void itkSignal<dType>::randomizeCategoricalLUT() {
+    categoricalLUTInitialized = false;
+    calculateLUT();
 }
 
 

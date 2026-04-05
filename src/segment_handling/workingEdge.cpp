@@ -1,6 +1,6 @@
 
 #include "workingEdge.h"
-#include "graph.h"
+#include "Graph.h"
 
 
 WorkingEdge::WorkingEdge(std::shared_ptr<InitialEdge> &initialEdgeToCopy) :

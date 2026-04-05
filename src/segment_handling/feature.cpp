@@ -1,6 +1,6 @@
 
 #include "feature.h"
-#include "graph.h"
+#include "Graph.h"
 
 // define static members
 

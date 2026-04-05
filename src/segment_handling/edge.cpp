@@ -1,7 +1,7 @@
 
 
 #include "edge.h"
-#include "graph.h"
+#include "Graph.h"
 
 
 //Edge::~Edge(){
