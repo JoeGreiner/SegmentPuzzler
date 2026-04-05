@@ -27,7 +27,6 @@
 #include <QSpinBox>
 #include "src/qtUtils/TaskRunner.h"
 
-
 WatershedControl::~WatershedControl() {
 
 }
@@ -56,7 +55,8 @@ void WatershedControl::refreshViewers() {
 
 void WatershedControl::thresholdBoundariesAsync(std::function<void()> then) {
     const int thresholdValue = thresholdValueSlider->value();
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Thresholding boundaries..."),
         [this, thresholdValue]() {
             dataType::BoundaryImageType::Pointer thresholdInput = pBoundaries;
             itk::Image<unsigned char, 3>::Pointer thresholded;
@@ -85,7 +85,8 @@ void WatershedControl::thresholdBoundariesAsync(std::function<void()> then) {
 }
 
 void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Calculating distance map..."),
         [this]() {
             itk::Image<float, 3>::Pointer distanceMap;
             generateDistanceMap(pThresholdedMembrane, distanceMap, 0);
@@ -100,7 +101,8 @@ void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
 }
 
 void WatershedControl::extractSeedsAsync(std::function<void()> then) {
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Extracting seeds..."),
         [this]() {
             itk::Image<unsigned int, 3>::Pointer seeds;
             extractMinimaFromDistanceMap(pDistanceMap, seeds, 1);
@@ -121,7 +123,8 @@ void WatershedControl::extractSeedsAsync(std::function<void()> then) {
 void WatershedControl::watershedAsync(std::function<void()> then) {
     const bool filterEnabled = checkBoxFiltering->isChecked();
     const int minSegmentSize = sizeFilteringInput->value();
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Running watershed..."),
         [this, filterEnabled, minSegmentSize]() {
             itk::Image<float, 3>::Pointer invertedDistanceMap = itk::Image<float, 3>::New();
             invertDistanceMap(pDistanceMap, invertedDistanceMap);
@@ -137,7 +140,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
             insertBoundariesIntoWatershed(watershedImage, pThresholdedMembrane);
 
             // Modifies graphBase on the worker thread. Safe only because
-            // one task runs at a time and the GUI is disabled (no concurrent access).
+            // one task runs at a time and the owning window is blocked.
             graphBase->ignoredSegmentLabels.clear();
             graphBase->edgeStatus.clear();
             graphBase->colorLookUpEdgesStatus.clear();
@@ -174,7 +177,8 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
 }
 
 void WatershedControl::exportSegmentsAsync(std::function<void()> then) {
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Exporting segments..."),
         [this]() {
             if (!useROI) {
                 return graphBase->pWorkingSegmentsImage;

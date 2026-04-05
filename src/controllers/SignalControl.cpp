@@ -11,7 +11,6 @@
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QAbstractItemView>
-#include <QtWidgets/QProgressDialog>
 #include <QStandardPaths>
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <QSettings>
@@ -288,7 +287,8 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
         return;
     }
 
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Loading image..."),
         [this, fileName]() { return loadImageData(fileName); },
         [this, fileName, displayedName, then = std::move(then)](LoadedImageData loadedImage) mutable {
             size_t signalIndexGlobal = 0;
@@ -306,7 +306,8 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName, QString displa
         return;
     }
 
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Loading segmentation..."),
         [fileName]() mutable { return ITKImageLoader<GraphSegmentType>(fileName); },
         [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
             size_t signalIndexGlobal = 0;
@@ -324,7 +325,8 @@ void SignalControl::addRefinementWatershedAsync(QString fileName, QString displa
         return;
     }
 
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Loading refinement watershed..."),
         [fileName]() mutable { return ITKImageLoader<GraphSegmentType>(fileName); },
         [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
             size_t signalIndexGlobal = 0;
@@ -342,10 +344,11 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
         return;
     }
 
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Loading segments and building graph..."),
         [this, fileName]() mutable {
             // Modifies graphBase on the worker thread. Safe only because
-            // one task runs at a time and the GUI is disabled (no concurrent access).
+            // one task runs at a time and the owning window is blocked.
             auto pImage = ITKImageLoader<GraphSegmentType>(fileName);
             graphBase->ignoredSegmentLabels.clear();
             graphBase->edgeStatus.clear();
@@ -374,7 +377,8 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName, QString displ
     }
 
     const bool createEmptySegments = graphBase->pWorkingSegmentsImage == nullptr;
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Loading boundary probabilities..."),
         [this, fileName, createEmptySegments]() mutable {
             BoundaryLoadResult result;
             result.boundaryImage = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
@@ -386,7 +390,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName, QString displ
                 result.emptySegmentsImage->Allocate(true);
 
                 // Modifies graphBase on the worker thread. Safe only because
-                // one task runs at a time and the GUI is disabled (no concurrent access).
+                // one task runs at a time and the owning window is blocked.
                 graphBase->ignoredSegmentLabels.clear();
                 graphBase->edgeStatus.clear();
                 graphBase->colorLookUpEdgesStatus.clear();
@@ -634,20 +638,23 @@ void SignalControl::transferSegmentsWithVolume() {
         return;
     }
 
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Transferring segments..."),
         [this, volumeThreshold]() { graphBase->pGraph->transferSegmentsWithVolumeCriterion(volumeThreshold); },
         [this]() { refreshViewers(); });
 }
 
 void SignalControl::transferAllSegments() {
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Transferring segments..."),
         [this]() { graphBase->pGraph->transferSegmentsWithVolumeCriterion(1); },
         [this]() { refreshViewers(); });
 }
 
 
 void SignalControl::transferSegmentsWithRefinementWS() {
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Transferring segments with refinement overlap..."),
         [this]() { graphBase->pGraph->transferSegmentsWithRefinementOverlap(); },
         [this]() { refreshViewers(); });
 }
@@ -1208,7 +1215,8 @@ void SignalControl::addRefinementWatershedPressed() {
 }
 
 void SignalControl::mergeSegmentsWithRefinementWatershedClicked() {
-    taskRunner->run(
+    taskRunner->runWithLabel(
+        QStringLiteral("Merging segments with refinement watershed..."),
         [this]() { graphBase->pGraph->mergeSegmentsWithRefinementWatershed(); },
         [this]() { refreshViewers(); });
 }
