@@ -1,6 +1,7 @@
 #ifndef graph_h
 #define graph_h
 
+#include <memory>
 #include "src/utils/voxel.h"
 
 #include "initialEdge.h"
@@ -70,9 +71,13 @@ struct CenterOfMass {
     }
 };
 
+// forward declaration — avoids pulling itkSignal.h into every Graph.h includer
+template<typename T> class itkSignal;
+
 class Graph {
 public:
     Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
+    ~Graph();  // defined in Graph.cpp (needed for unique_ptr<itkSignal<...>> with forward decl)
 
     // get the segment of the refinement watershed and put into the current segmentation map
     void refineSegmentByPosition(int x, int y, int z);
@@ -254,7 +259,7 @@ private:
     std::vector<SegmentIdType> *pIgnoredSegmentLabels;
     bool verbose;
 
-
+    std::unique_ptr<itkSignal<dataType::MappedEdgeIdType>> ownedEdgesSignal;
 
     SegmentManager segmentManager;
 

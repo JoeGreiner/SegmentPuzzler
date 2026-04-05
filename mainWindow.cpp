@@ -27,8 +27,8 @@ MainWindow::MainWindow() {
     graphBase->colorLookUpEdgesStatus = std::unordered_map<char, std::vector<unsigned char>>();
     graphBase->edgeStatus = std::unordered_map<dataType::MappedEdgeIdType, char>();
 
-    graph = new Graph(graphBase);
-    graphBase->pGraph = graph;
+    graph = std::make_unique<Graph>(graphBase);
+    graphBase->pGraph = graph.get();
 
     myOrthowindow = new OrthoViewer(graphBase);
     graphBase->pOrthoViewer = myOrthowindow;

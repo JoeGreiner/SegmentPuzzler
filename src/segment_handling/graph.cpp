@@ -3,7 +3,7 @@
 #include <omp.h>
 #endif
 #include <fstream>
-#include "graph.h"
+#include "Graph.h"
 #include <itkImageFileWriter.h>
 #include <queue>
 #include <itkNeighborhoodIterator.h>
@@ -11,6 +11,8 @@
 #include <QMessageBox>
 #include "src/utils/utils.h"
 #include "graphBase.h"
+
+Graph::~Graph() = default;
 
 Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn) {
     verbose = verboseIn;
@@ -176,8 +178,9 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
             std::pair<char, std::vector<unsigned char>>(2, {0, 255, 0, 255}));
 
 
-    graphBase->pEdgesInitialSegmentsITKSignal = new itkSignal<dataType::MappedEdgeIdType>(
+    ownedEdgesSignal = std::make_unique<itkSignal<dataType::MappedEdgeIdType>>(
             graphBase->pEdgesInitialSegmentsImage);
+    graphBase->pEdgesInitialSegmentsITKSignal = ownedEdgesSignal.get();
     graphBase->pEdgesInitialSegmentsITKSignal->setLUTEdgeMap(&graphBase->edgeStatus,
                                                              &graphBase->colorLookUpEdgesStatus);
     if (verbose) { utils::toc(t, "Graph::initializeEdgeVolumeAndEdgeStatus finished"); }

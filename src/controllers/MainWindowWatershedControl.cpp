@@ -26,8 +26,9 @@ MainWindowWatershedControl::MainWindowWatershedControl() {
     graphBase->colorLookUpEdgesStatus = std::unordered_map<char, std::vector<unsigned char>>();
     graphBase->edgeStatus = std::unordered_map<dataType::MappedEdgeIdType, char>();
 
-    Graph *graph = new Graph(graphBase);
-    graphBase->pGraph = graph;
+    ownedGraph = std::make_unique<Graph>(graphBase);
+    graphBase->pGraph = ownedGraph.get();
+    Graph *graph = ownedGraph.get();
 
     auto myOrthowindow = new OrthoViewer(graphBase);
     graphBase->pOrthoViewer = myOrthowindow;

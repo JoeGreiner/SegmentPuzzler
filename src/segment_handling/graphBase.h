@@ -10,7 +10,6 @@
 
 // forward declaration
 class Graph;
-//template <typename dType> class itkSignal;
 class SliceViewer;
 
 class OrthoViewer;
@@ -34,23 +33,29 @@ public:
     std::map<std::string, FeatureImageType::Pointer> signalList;
     SegmentsImageType::Pointer pGroundTruth;
     std::vector<GraphBase::SegmentsVoxelType> ignoredSegmentLabels;
+    // Non-owning — owned by MainWindow / MainWindowWatershedControl
     Graph *pGraph;
 
     SegmentsImageType::Pointer pWorkingSegmentsImage;
 //    static SegmentsImageType::Pointer pInitialSegments;
     SegmentsImageType::Pointer pRefinementWatershed;
+    // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pRefinementWatershedSignal;
+    // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pWorkingSegments;
 
 
     SegmentsImageType::Pointer pSelectedSegmentation;
 // keep track of max id of selected segmentation
     SegmentsVoxelType selectedSegmentationMaxSegmentId;
+    // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pSelectedSegmentationSignal;
 
 
+    // Non-owning — owned by Graph (via Graph::ownedEdgesSignal)
     itkSignal<MappedEdgeIdType> *pEdgesInitialSegmentsITKSignal;
-    std::vector<SliceViewer *> viewerList;
+    std::vector<SliceViewer *> viewerList; // Non-owning — viewers owned by Qt hierarchy
+    // Non-owning — lifetime managed by Qt parent-child hierarchy
     OrthoViewer *pOrthoViewer;
 
     EdgeImageType::Pointer pEdgesInitialSegmentsImage;
@@ -70,6 +75,7 @@ public:
     GraphBase() {
         edgeCounter = 0;
         pGraph = nullptr;
+        pEdgesInitialSegmentsITKSignal = nullptr;
         pOrthoViewer = nullptr;
         pGroundTruth = nullptr;
         pWorkingSegmentsImage = nullptr;
@@ -79,7 +85,6 @@ public:
         pSelectedSegmentation = nullptr;
         pSelectedSegmentationSignal = nullptr;
         selectedSegmentationMaxSegmentId = 0;
-        pEdgesInitialSegmentsITKSignal = nullptr;
         pSelectedBoundary = nullptr;
         ROI_fx = -1;
         ROI_fy = -1;

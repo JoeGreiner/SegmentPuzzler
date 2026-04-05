@@ -5,6 +5,7 @@
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <memory>
 
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
@@ -32,7 +33,7 @@ private:
 
     QAction *openHotkeysAction;
     QAction *loadSampleSegmentationAction;
-    Graph * graph;
+    std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
 };
 

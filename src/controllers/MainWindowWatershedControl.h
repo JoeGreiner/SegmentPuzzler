@@ -8,6 +8,8 @@
 #include <QMessageBox>
 #include <src/controllers/watershedControl.h>
 #include "SignalControl.h"
+#include <src/segment_handling/Graph.h>
+#include <memory>
 
 
 class MainWindowWatershedControl : public QMainWindow {
@@ -25,6 +27,7 @@ public slots:
 private:
     OrthoViewer *myOrthowindow;
     SignalControl* linkedSignalControl;
+    std::unique_ptr<Graph> ownedGraph;
 
 };
 
