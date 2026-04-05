@@ -3,7 +3,7 @@
 
 #include <src/viewers/SliceViewer.h>
 #include "src/segment_handling/graphBase.h"
-#include "src/segment_handling/graph.h"
+#include "src/segment_handling/Graph.h"
 
 class ROIExtractionSliceViewer : public SliceViewer {
 Q_OBJECT

@@ -15,9 +15,6 @@
 #include "node.h"
 #include "SegmentManager.h"
 #include "src/utils/utils.h"
-#include <src/qtUtils/QBackgroundIdRadioBox.h>
-
-
 // todo: add this to node/featurres or whatever
 struct CenterOfMass {
     CenterOfMass() {}
@@ -73,20 +70,14 @@ struct CenterOfMass {
     }
 };
 
-class Graph : public QWidget{
-    Q_OBJECT
-
-
-
-public slots:
-            // get the segment of the refinement watershed and put into the current segmentation map
-    void refineSegmentByPosition(int x, int y, int z);
-    void transferSegmentationSegmentToInitialSegment(int x, int y, int z);
-    void receiveBackgroundIdStrategy(QString backgroundIdStrategyIn);
-
+class Graph {
 public:
     Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
-    void askForBackgroundStrategy();
+
+    // get the segment of the refinement watershed and put into the current segmentation map
+    void refineSegmentByPosition(int x, int y, int z);
+    void transferSegmentationSegmentToInitialSegment(int x, int y, int z);
+    void setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn);
 
 
     static constexpr int Dimension = 3;
@@ -268,8 +259,6 @@ private:
     SegmentManager segmentManager;
 
     void insertWorkingNodeInSegmentImage(WorkingNode &pWorkingNode);
-
-    QBackgroundIdRadioBox* dialog;
 
 };
 

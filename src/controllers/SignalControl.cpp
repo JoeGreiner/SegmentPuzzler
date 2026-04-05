@@ -223,7 +223,7 @@ void SignalControl::loadFileFromDragAndDrop(QString fileName, QString choiceOfIm
         msgBox.setText("Please add the Segments first.");
         msgBox.exec();
     } else if (choiceOfImage == "Segments") {
-        graphBase->pGraph->askForBackgroundStrategy();
+        askForBackgroundStrategy();
 //        dialog.setLabelText(QString("Setting up graph ..."));
 //        future = QtConcurrent::run(this, &SignalControl::addSegmentsGraph, fileName);
         // run this from main thread
@@ -986,7 +986,7 @@ void SignalControl::addSegmentsPressed() {
     QString fileName = QFileDialog::getOpenFileName(this,
                                                     tr("Open Segments"), default_load_dir);
     if (!fileName.isEmpty()) {
-        graphBase->pGraph->askForBackgroundStrategy();
+        askForBackgroundStrategy();
 
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
@@ -1085,6 +1085,12 @@ void SignalControl::addRefinementWatershed(QString fileName, QString displayedNa
     }
     graphBase->currentlyCalculating = false;
 
+}
+
+void SignalControl::askForBackgroundStrategy() {
+    QBackgroundIdRadioBox dialog;
+    dialog.exec();
+    graphBase->pGraph->setBackgroundIdStrategy(dialog.getStrategy().toStdString());
 }
 
 bool SignalControl::insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,

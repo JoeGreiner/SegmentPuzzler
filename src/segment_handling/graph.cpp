@@ -11,12 +11,8 @@
 #include <QMessageBox>
 #include "src/utils/utils.h"
 #include "graphBase.h"
-#include <QtConcurrent/QtConcurrent>
-#include <QtWidgets/QProgressDialog>
-#include <src/qtUtils/QBackgroundIdRadioBox.h>
-#include <src/qtUtils/QImageSelectionRadioButtons.h>
 
-Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn)  : QWidget(){
+Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn) {
     verbose = verboseIn;
     nextFreeId = 0;
     pIgnoredSegmentLabels = nullptr;
@@ -39,11 +35,6 @@ Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn)  : QWidget(
                                     pIgnoredSegmentLabels, &nextFreeId);
 }
 
-void Graph::askForBackgroundStrategy(){
-    dialog = new QBackgroundIdRadioBox();
-    QObject::connect(dialog, &QBackgroundIdRadioBox::sendBackgroundIdStrategy, this, &Graph::receiveBackgroundIdStrategy);
-    dialog->exec();
-}
 
 void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     initializeEdgeVolumeAndEdgeStatus();
@@ -1237,11 +1228,10 @@ void Graph::transferSegmentsWithVolumeCriterion(double volumeThreshold) {
     if (verbose) { utils::toc(t, "Graph::transferSegmentsWithVolumeCriterion finished"); }
 }
 
-void Graph::receiveBackgroundIdStrategy(QString backgroundIdStrategyIn){
-    std::cout << "Graph::receiveBackgroundIdStrategy started"  << std::endl;
-    backgroundIdStrategy = backgroundIdStrategyIn.toStdString();
+void Graph::setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn) {
+    backgroundIdStrategy = backgroundIdStrategyIn;
     if (verbose) {
-        std::cout << "Graph::receiveBackgroundIdStrategy Changing background strategy to:" << backgroundIdStrategy << "\n";
+        std::cout << "Graph::setBackgroundIdStrategy: " << backgroundIdStrategy << "\n";
     }
 }
 

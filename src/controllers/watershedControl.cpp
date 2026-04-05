@@ -9,7 +9,7 @@
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
 #include <QColorDialog>
-#include <src/segment_handling/graph.h>
+#include <src/segment_handling/Graph.h>
 #include <src/viewers/OrthoViewer.h>
 #include <QInputDialog>
 #include <QHeaderView>

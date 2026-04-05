@@ -3,7 +3,7 @@
 #include <QHeaderView>
 #include <QInputDialog>
 #include <src/viewers/OrthoViewer.h>
-#include <src/segment_handling/graph.h>
+#include <src/segment_handling/Graph.h>
 #include <QColorDialog>
 #include <QFileDialog>
 #include <src/viewers/itkSignal.h>

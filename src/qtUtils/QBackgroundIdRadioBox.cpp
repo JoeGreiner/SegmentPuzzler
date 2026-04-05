@@ -34,10 +34,12 @@ void QBackgroundIdRadioBox::evaluateSelection() {
     bool radioLowestIdIsBackgroundIsChecked = radioLowestIdIsBackground->isChecked();
     if (radioHighestIdIsBackgroundIsChecked) {
         std::cout << "highest" << std::endl;
-        emit sendBackgroundIdStrategy(QString("backgroundIsHighestId"));
+        strategy = "backgroundIsHighestId";
+        emit sendBackgroundIdStrategy(strategy);
     } else if (radioLowestIdIsBackgroundIsChecked) {
         std::cout << "lowest" << std::endl;
-        emit sendBackgroundIdStrategy(QString("backgroundIsLowestId"));
+        strategy = "backgroundIsLowestId";
+        emit sendBackgroundIdStrategy(strategy);
     }
     this->close();
 }

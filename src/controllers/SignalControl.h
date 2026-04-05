@@ -15,6 +15,7 @@
 
 #include "src/qtUtils/QTreeWidgetWithDragAndDrop.h"
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
+#include <src/qtUtils/QBackgroundIdRadioBox.h>
 
 
 class SignalControl : public QTabWidget {
@@ -203,6 +204,8 @@ private:
 
 
     QString DEFAULT_SAVE_DIR;
+
+    void askForBackgroundStrategy();
 
     void setupSignalTreeWidget();
 

@@ -645,7 +645,7 @@ void MainWindow::loadSegmentationSample() {
     progressDialog.close();
 
     if (utils::check_if_file_exists(downloadedFilePathMC)){
-        graph->receiveBackgroundIdStrategy("backgroundIsLowestId");
+        graph->setBackgroundIdStrategy("backgroundIsLowestId");
         mySignalControl->addSegmentsGraph(downloadedFilePathMC);
         mySignalControl->addRefinementWatershed(downloadedFilePathWS);
         mySignalControl->addImage(downloadedFilePathWGA);

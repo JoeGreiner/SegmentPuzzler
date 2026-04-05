@@ -13,6 +13,8 @@ class QBackgroundIdRadioBox : public QDialog {
 public:
     explicit QBackgroundIdRadioBox(QWidget *parent= nullptr);
 
+    QString getStrategy() const { return strategy; }
+
 public slots:
             void evaluateSelection();
 
@@ -28,6 +30,7 @@ private:
     QRadioButton *radioHighestIdIsBackground;
     QRadioButton *radioLowestIdIsBackground;
     QVBoxLayout *groupBoxLayout;
+    QString strategy{"backgroundIsLowestId"};
 };
 
 

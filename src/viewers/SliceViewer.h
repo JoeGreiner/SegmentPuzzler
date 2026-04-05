@@ -8,7 +8,7 @@
 #include "SliceViewerITKSignal.h"
 #include "src/file_definitions/dataTypes.h"
 #include "src/segment_handling/graphBase.h"
-#include "src/segment_handling/graph.h"
+#include "src/segment_handling/Graph.h"
 
 
 
