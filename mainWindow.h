@@ -21,6 +21,9 @@ public:
     ~MainWindow() override;
     SignalControl* mySignalControl;
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 public slots:
     void loadSegmentationSample();
     void receiveStatusMessage(const QString& string);
@@ -30,15 +33,21 @@ private slots:
 
 private:
     OrthoViewer *myOrthowindow;
+    QMenu *addDataMenu;
+    QMenu *boundariesMenu;
+    QMenu *refinementsMenu;
+    QMenu *segmentationsMenu;
     QMenu *helpMenu;
-    QMenu *viewerMenu;
-    QMenu *sampleDataMenu;
+    QMenu *goToMenu;
 
     QAction *openHotkeysAction;
     QAction *loadSampleSegmentationAction;
     std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
     std::unique_ptr<TaskRunner> taskRunner;
+
+    void installInitialFileDropHandling();
+    void registerDropTarget(QWidget *widget);
 };
 
 #endif //SEGMENTCOUPLER_MAINWINDOW_H

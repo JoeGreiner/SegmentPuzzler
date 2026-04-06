@@ -1,30 +1,29 @@
 #ifndef SEGMENTCOUPLER_QIMAGESELECTIONRADIOBUTTONS_H
 #define SEGMENTCOUPLER_QIMAGESELECTIONRADIOBUTTONS_H
 
-
 #include <QDialog>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QRadioButton>
 #include <QPushButton>
+#include <QVBoxLayout>
+
+enum class ImageLoadChoice {
+    Supervoxels,
+    Image,
+    Boundaries,
+    Refinement,
+    Segmentation
+};
 
 class QImageSelectionRadioButtons : public QDialog {
 Q_OBJECT
 public:
-    explicit QImageSelectionRadioButtons(QString fileNameIn, QWidget *parent= nullptr);
-
-public slots:
-    void evaluateButtons();
-
-signals:
-    void sendButton(QString fileName, QString choiceOfImage);
-    void testSignal();
-
-public:
-    QPushButton* evaluateButton;
+    explicit QImageSelectionRadioButtons(QWidget *parent = nullptr);
+    ImageLoadChoice selectedChoice() const;
 
 private:
-    QString fileName;
+    QPushButton *evaluateButton;
     QGridLayout *grid;
     QGroupBox *groupBox;
     QRadioButton *radioGraph;

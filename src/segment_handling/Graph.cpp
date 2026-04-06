@@ -40,18 +40,8 @@ Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn) {
 
 void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     initializeEdgeVolumeAndEdgeStatus();
-
-    //TODO: Implement none/guess
-    std::cout << "BackgroundIdStrategy: " << backgroundIdStrategy << "\n";
-    if(backgroundIdStrategy == "backgroundIsHighestId"){
-        backgroundId = getLargestSegmentId(pImage);
-    } else if  (backgroundIdStrategy == "backgroundIsLowestId"){
-        backgroundId = getSmallestSegmentId(pImage);
-    } else {
-        throw std::invalid_argument("Received unknown backgroundIdStrategy in Graph::constructFromVolume");
-    }//TODO: Implement: No Background
+    updateBackgroundIdFromVolume(pImage);
     pIgnoredSegmentLabels->push_back(backgroundId);
-
 
     nextFreeId = getNextFreeId(pImage);
     constructInitialNodes(pImage);
@@ -1126,28 +1116,28 @@ Graph::SegmentsImageType::RegionType Graph::getDilatedRegionFromRoi(Roi roi, Seg
 
 
 // highlevel workflow:
-// calculate overlap of initial voxels with refinement watershed
+// calculate overlap of initial voxels with the refinement
 // if edge connects two segments with the same overlaplabel, both greater than threshold, merge them
 // if overlap higher than threshold, merge them
 
 // future:
 // use different labels for manually merged segments than automatically merged labels
 // override automatic decision with manual decision, if available
-void Graph::mergeSegmentsWithRefinementWatershed() {
+void Graph::mergeSegmentsWithRefinement() {
     double t = 0, t1 = 0;
     if (verbose) {
-        std::cout << "Graph::mergeSegmentsWithRefinementWatershed called: \n";
+        std::cout << "Graph::mergeSegmentsWithRefinement called: \n";
         t = utils::tic();
     }
 
 
-    if (graphBase->pRefinementWatershed != nullptr) {
+    if (graphBase->pSelectedRefinement != nullptr) {
 
         std::map<dataType::SegmentIdType, LabelOverlap> overlapMap;
         double mergeThreshold = 0.75;
         for (auto &node : initialNodes) {
             overlapMap[node.first] = LabelOverlap();
-            overlapMap[node.first].setPToOtherLabelImagePointer(graphBase->pRefinementWatershed);
+            overlapMap[node.first].setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
             overlapMap[node.first].compute(node.second->voxels);
 //            std::cout << "label: " << overlapMap[node.first].corrospondingLabelWithMostOverlap << " " <<
 //                      overlapMap[node.first].overlapPercentage << "\n";
@@ -1174,7 +1164,7 @@ void Graph::mergeSegmentsWithRefinementWatershed() {
 
         }
         mergeEdges(edgesToMerge);
-        if (verbose) { utils::toc(t1, "Graph::mergeSegmentsWithRefinementWatershed Merging edges finished"); }
+        if (verbose) { utils::toc(t1, "Graph::mergeSegmentsWithRefinement Merging edges finished"); }
 
 
 //    for (auto &feature : nodeFeatures) {
@@ -1182,7 +1172,7 @@ void Graph::mergeSegmentsWithRefinementWatershed() {
 //    }
 
     }
-    if (verbose) { utils::toc(t, "Graph::mergeSegmentsWithRefinementWatershed finished"); }
+    if (verbose) { utils::toc(t, "Graph::mergeSegmentsWithRefinement finished"); }
 
 }
 
@@ -1194,11 +1184,11 @@ void Graph::transferSegmentsWithRefinementOverlap() {
     }
 
     if (graphBase->pSelectedSegmentation != nullptr) {
-        if (graphBase->pRefinementWatershed != nullptr) {
+        if (graphBase->pSelectedRefinement != nullptr) {
             double overlapThreshold = 0.7;
             for (auto &node : workingNodes) {
                 LabelOverlap overlapFeature = LabelOverlap();
-                overlapFeature.setPToOtherLabelImagePointer(graphBase->pRefinementWatershed);
+            overlapFeature.setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
                 overlapFeature.compute(node.second->getVoxelPointerArray());
                 std::cout << overlapFeature.values[0] << "\n";
                 if (overlapFeature.values[0] > overlapThreshold) {
@@ -1238,6 +1228,17 @@ void Graph::setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn) {
     }
 }
 
+void Graph::updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage) {
+    std::cout << "BackgroundIdStrategy: " << backgroundIdStrategy << "\n";
+    if (backgroundIdStrategy == "backgroundIsHighestId") {
+        backgroundId = getLargestSegmentId(pImage);
+    } else if (backgroundIdStrategy == "backgroundIsLowestId") {
+        backgroundId = getSmallestSegmentId(pImage);
+    } else {
+        throw std::invalid_argument("Received unknown backgroundIdStrategy in Graph::updateBackgroundIdFromVolume");
+    }
+}
+
 void Graph::exportDebugInformation(){
     std::cout << "Graph::exportDebugInformation started"  << std::endl;
     printEdgeIdLookUpToFile("edgeIdLookup.txt");
@@ -1258,23 +1259,25 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
 // treat that new segment as a normal refinement segmentation call
 
     auto label = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+    const SegmentIdType backgroundLabel = backgroundId;
 
-    if (label == 0){
-        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: Label is 0, not transferring\n";
+    if (label == backgroundLabel) {
+        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: Label matches background label ("
+                  << backgroundLabel << "), not transferring\n";
         return;
     }
 
-//    create temporary refinement watershed
-    auto pRefinementWatershed = SegmentsImageType::New();
-    pRefinementWatershed->SetRegions(graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-    pRefinementWatershed->Allocate();
-    pRefinementWatershed->FillBuffer(0);
+//    create temporary refinement
+    auto temporaryRefinement = SegmentsImageType::New();
+    temporaryRefinement->SetRegions(graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
+    temporaryRefinement->Allocate();
+    temporaryRefinement->FillBuffer(backgroundLabel);
 
 //    just transfer the whole image and only copy if label matches
     itk::ImageRegionConstIterator<SegmentsImageType> it(graphBase->pSelectedSegmentation,
                                                         graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-    itk::ImageRegionIterator<SegmentsImageType> itRefinement(pRefinementWatershed,
-                                                             pRefinementWatershed->GetLargestPossibleRegion());
+    itk::ImageRegionIterator<SegmentsImageType> itRefinement(temporaryRefinement,
+                                                             temporaryRefinement->GetLargestPossibleRegion());
     std::cout << "Label: " << label << "\n";
     for (it.GoToBegin(), itRefinement.GoToBegin(); !it.IsAtEnd(); ++it, ++itRefinement) {
         if (it.Get() == label) {
@@ -1284,90 +1287,96 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
 
 //    std::unique_ptr<itkSignal<unsigned char>> pSignal2(new itkSignal<unsigned char>(pImage));
 
-//    auto pRefinementWatershedSignal = itkSignal<dataType::SegmentIdType>(pRefinementWatershed);
-    auto pRefinementWatershedSignal = std::make_shared<itkSignal<dataType::SegmentIdType>>(pRefinementWatershed);
+//    auto temporaryRefinementSignal = itkSignal<dataType::SegmentIdType>(temporaryRefinement);
+    auto temporaryRefinementSignal =
+        std::make_shared<itkSignal<dataType::SegmentIdType>>(temporaryRefinement);
 
+    auto previousSelectedRefinement = graphBase->pSelectedRefinement;
+    auto previousSelectedRefinementSignal = graphBase->pSelectedRefinementSignal;
 
-    auto oldRefinement = graphBase->pRefinementWatershed;
-    auto oldRefinementSignal = graphBase->pRefinementWatershedSignal;
+    // Reuse the normal refinement-by-position path by temporarily swapping in
+    // both selected-refinement pointers for a refinement built from the clicked
+    // segmentation label, then restore the previous selection afterwards.
+    graphBase->pSelectedRefinement = temporaryRefinement;
+    graphBase->pSelectedRefinementSignal = temporaryRefinementSignal.get();
 
-    graphBase->pRefinementWatershed = pRefinementWatershed;
-    graphBase->pRefinementWatershedSignal = pRefinementWatershedSignal.get();
-
-
-    refineSegmentByPosition(x, y, z);
-    graphBase->pRefinementWatershed = oldRefinement;
-    graphBase->pRefinementWatershedSignal = oldRefinementSignal;
+    refineWithSelectedRefinementAtPosition(x, y, z);
+    graphBase->pSelectedRefinement = previousSelectedRefinement;
+    graphBase->pSelectedRefinementSignal = previousSelectedRefinementSignal;
 }
 
 
 // highlevel workflow:
-// * get the background id of the refinement ws (highest label)<
+// * get the background id of the refinement
 // * check if the clicked label is not background
 // * do a floodfill on the clicked pixel to get the refined segments voxels
-void Graph::refineSegmentByPosition(int x, int y, int z) {
+void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
     double t = 0, t1 = 0, t2 = 0;
-    if (verbose) { t = utils::tic("Graph::refineSegmentByPosition called"); }
-    // use a reference to write shorter/better more readable code
-    auto &pRefinementWatershed = graphBase->pRefinementWatershed;
+    if (verbose) { t = utils::tic("Graph::refineWithSelectedRefinementAtPosition called"); }
+    auto &selectedRefinement = graphBase->pSelectedRefinement;
+    auto *selectedRefinementSignal = graphBase->pSelectedRefinementSignal;
+    if (selectedRefinement == nullptr || selectedRefinementSignal == nullptr) {
+        std::cout << "Selected refinement was never initialized, add a refinement before refining!\n";
+        return;
+    }
 
-    if (pRefinementWatershed != nullptr) {
-        bool coordinates_in_ROI = true;
-        if (graphBase->pRefinementWatershedSignal->ROI_set){
+    bool coordinates_in_ROI = true;
+    if (selectedRefinementSignal->ROI_set){
 
-            if(x < graphBase->pRefinementWatershedSignal->ROI_fx){
-                coordinates_in_ROI = false;
-            }
-            if(y < graphBase->pRefinementWatershedSignal->ROI_fy){
-                coordinates_in_ROI = false;
-            }
-            if(z < graphBase->pRefinementWatershedSignal->ROI_fz){
-                coordinates_in_ROI = false;
-            }
-
-            if(x > graphBase->pRefinementWatershedSignal->ROI_tx){
-                coordinates_in_ROI = false;
-            }
-            if(y > graphBase->pRefinementWatershedSignal->ROI_ty){
-                coordinates_in_ROI = false;
-            }
-            if(z > graphBase->pRefinementWatershedSignal->ROI_tz){
-                coordinates_in_ROI = false;
-            }
+        if(x < selectedRefinementSignal->ROI_fx){
+            coordinates_in_ROI = false;
+        }
+        if(y < selectedRefinementSignal->ROI_fy){
+            coordinates_in_ROI = false;
+        }
+        if(z < selectedRefinementSignal->ROI_fz){
+            coordinates_in_ROI = false;
         }
 
-        if(coordinates_in_ROI) {
-            if (verbose) { t1 = utils::tic(); }
-//        SegmentIdType backgroundLabelInRefinementWS = getLargestIdInSegmentVolume(pRefinementWatershed);
+        if(x > selectedRefinementSignal->ROI_tx){
+            coordinates_in_ROI = false;
+        }
+        if(y > selectedRefinementSignal->ROI_ty){
+            coordinates_in_ROI = false;
+        }
+        if(z > selectedRefinementSignal->ROI_tz){
+            coordinates_in_ROI = false;
+        }
+    }
 
-            SegmentIdType labelInRefinementWS = pRefinementWatershed->GetPixel({x, y, z});
-            SegmentIdType labelToInsertTargetWS = nextFreeId;
-            nextFreeId++;
+    if(coordinates_in_ROI) {
+        if (verbose) { t1 = utils::tic(); }
+//        SegmentIdType backgroundLabelInRefinement = getLargestIdInSegmentVolume(selectedRefinement);
 
-            int msgBoxAnswer = QMessageBox::Yes;
+        const SegmentIdType backgroundLabel = backgroundId;
+        SegmentIdType labelInRefinement = selectedRefinement->GetPixel({x, y, z});
+        SegmentIdType labelToInsertTarget = nextFreeId;
+        nextFreeId++;
 
-            bool hardExtIfLabelInRefinementIs0 = true;
-            if (labelInRefinementWS == 0) {
-                if (hardExtIfLabelInRefinementIs0){
-                    return;
-                }
-                QMessageBox msgBox;
-                msgBox.setWindowTitle("Refinment");
-                msgBox.setText(
-                        "You're trying to get a segment that has the label of 0 (normally background label) in the watershed. Continue?");
-                msgBox.setStandardButtons(QMessageBox::Yes);
-                msgBox.addButton(QMessageBox::No);
-                msgBox.setDefaultButton(QMessageBox::No);
-                msgBoxAnswer = msgBox.exec();
+        int msgBoxAnswer = QMessageBox::Yes;
+
+        bool hardExitIfLabelInRefinementIsBackground = true;
+        if (labelInRefinement == backgroundLabel) {
+            if (hardExitIfLabelInRefinementIsBackground){
+                return;
             }
+            QMessageBox msgBox;
+            msgBox.setWindowTitle("Refinement");
+            msgBox.setText(QString("You're trying to refine a segment with the background label (%1) in the selected refinement. Continue?")
+                               .arg(backgroundLabel));
+            msgBox.setStandardButtons(QMessageBox::Yes);
+            msgBox.addButton(QMessageBox::No);
+            msgBox.setDefaultButton(QMessageBox::No);
+            msgBoxAnswer = msgBox.exec();
+        }
 
-            if (msgBoxAnswer == QMessageBox::Yes) {
-                // create new initial node by floodfilling refinement watershed
-                std::cout << "Inserting Initial Node (id: " << labelToInsertTargetWS << ")\n";
-                InitialNode *newInitialNode = new InitialNode(graphBase, pRefinementWatershed, labelToInsertTargetWS, x,
-                                                              y, z);
-                // reset the corrosponding segment pointer to the working segments image
-                newInitialNode->setSegmentPointer(graphBase->pWorkingSegmentsImage);
+        if (msgBoxAnswer == QMessageBox::Yes) {
+            // create new initial node by flood-filling the refinement
+            std::cout << "Inserting Initial Node (id: " << labelToInsertTarget << ")\n";
+            InitialNode *newInitialNode = new InitialNode(graphBase, selectedRefinement, labelToInsertTarget, x,
+                                                          y, z);
+            // reset the corrosponding segment pointer to the working segments image
+            newInitialNode->setSegmentPointer(graphBase->pWorkingSegmentsImage);
                 // insert node in initialNodes
                 segmentManager.addInitialNode(newInitialNode);
                 newInitialNode->roi.updateBoundingRoi(newInitialNode->voxels);
@@ -1426,8 +1435,8 @@ void Graph::refineSegmentByPosition(int x, int y, int z) {
                 std::cout << "\n";
 
                 for (auto &voxel : newInitialNode->voxels) {
-//                printf("INSERT: %d %d %d label: %d\n", voxel.x, voxel.y, voxel.z, labelToInsertTargetWS);
-                    graphBase->pWorkingSegmentsImage->SetPixel({voxel.x, voxel.y, voxel.z}, labelToInsertTargetWS);
+//                printf("INSERT: %d %d %d label: %d\n", voxel.x, voxel.y, voxel.z, labelToInsertTarget);
+                    graphBase->pWorkingSegmentsImage->SetPixel({voxel.x, voxel.y, voxel.z}, labelToInsertTarget);
                 }
 
                 itAfter.GoToBegin();
@@ -1516,25 +1525,22 @@ void Graph::refineSegmentByPosition(int x, int y, int z) {
 
                 // generate new workingnode  and working edges based of new segment
 
-                auto newWorkingNode = new WorkingNode(newInitialNode, labelToInsertTargetWS, initialNodes);
+                auto newWorkingNode = new WorkingNode(newInitialNode, labelToInsertTarget, initialNodes);
                 segmentManager.addWorkingNode(newWorkingNode);
                 segmentManager.recalculateEdgesOnWorkingNode(newWorkingNode);
 
                 //TODO: check voxelwise if refinement split a initial node into two segments
                 if (verbose) { utils::toc(t2, "second part finished"); }
 
-            } else {
-                std::cout << "Label to insert is background (highest label), refinement is not done. \n";
-            }
         } else {
-            std::cout << "Clicked point outside of refinement ROI.\n";
+            std::cout << "Label to insert matches background label (" << backgroundLabel
+                      << "), refinement is not done.\n";
         }
-
     } else {
-        std::cout << "Watershed Pointer was never initialized, add refinement watershed before refining! \n";
+        std::cout << "Clicked point outside of refinement ROI.\n";
     }
 
-    if (verbose) { utils::toc(t, "Graph::refineSegmentByPosition finished"); }
+    if (verbose) { utils::toc(t, "Graph::refineWithSelectedRefinementAtPosition finished"); }
 
 }
 
@@ -1673,4 +1679,3 @@ void Graph::printWorkingEdgesToFile(const std::string &pathToOutputfile) {
     printWorkingEdges(outFile);
     outFile.close();
 }
-

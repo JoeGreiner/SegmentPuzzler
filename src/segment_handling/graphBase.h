@@ -33,9 +33,9 @@ public:
 
     SegmentsImageType::Pointer pWorkingSegmentsImage;
 //    static SegmentsImageType::Pointer pInitialSegments;
-    SegmentsImageType::Pointer pRefinementWatershed;
+    SegmentsImageType::Pointer pSelectedRefinement;
     // Non-owning — points into SignalControl::ownedSignals
-    itkSignal<SegmentsVoxelType> *pRefinementWatershedSignal;
+    itkSignal<SegmentsVoxelType> *pSelectedRefinementSignal;
     // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pWorkingSegments;
 
@@ -69,8 +69,8 @@ public:
         pEdgesInitialSegmentsITKSignal = nullptr;
         pGroundTruth = nullptr;
         pWorkingSegmentsImage = nullptr;
-        pRefinementWatershed = nullptr;
-        pRefinementWatershedSignal = nullptr;
+        pSelectedRefinement = nullptr;
+        pSelectedRefinementSignal = nullptr;
         pWorkingSegments = nullptr;
         pSelectedSegmentation = nullptr;
         pSelectedSegmentationSignal = nullptr;

@@ -3,9 +3,51 @@
 #include <src/controllers/watershedControl.h>
 #include <QApplication>
 #include <QScreen>
+#include <QTimer>
 #include "src/qtUtils/TaskRunner.h"
 
 MainWindowWatershedControl::~MainWindowWatershedControl() = default;
+
+namespace {
+
+void showWindowWithinAvailableScreen(QMainWindow *window) {
+    if (window == nullptr) {
+        return;
+    }
+
+    window->show();
+    QTimer::singleShot(0, window, [window]() {
+        QScreen *screen = window->screen();
+        if (screen == nullptr) {
+            screen = QGuiApplication::primaryScreen();
+        }
+
+        if (screen == nullptr) {
+            return;
+        }
+
+        const QRect availableGeometry = screen->availableGeometry();
+        const QRect frameGeometry = window->frameGeometry();
+        const QRect contentGeometry = window->geometry();
+
+        const int leftFrameMargin = contentGeometry.left() - frameGeometry.left();
+        const int topFrameMargin = contentGeometry.top() - frameGeometry.top();
+        const int rightFrameMargin = frameGeometry.right() - contentGeometry.right();
+        const int bottomFrameMargin = frameGeometry.bottom() - contentGeometry.bottom();
+
+        QRect targetGeometry = availableGeometry.adjusted(leftFrameMargin,
+                                                          topFrameMargin,
+                                                          -rightFrameMargin,
+                                                          -bottomFrameMargin);
+        if (targetGeometry.width() < 1 || targetGeometry.height() < 1) {
+            targetGeometry = availableGeometry;
+        }
+
+        window->setGeometry(targetGeometry);
+    });
+}
+
+} // namespace
 
 void MainWindowWatershedControl::closeFromExternalSignal() {
     close();
@@ -96,11 +138,5 @@ MainWindowWatershedControl::MainWindowWatershedControl() {
 
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindowWatershedControl::receiveStatusMessage);
     connect(myWatershedControl, &WatershedControl::sendClosingSignal, this, &MainWindowWatershedControl::closeFromExternalSignal);
-
-    QRect rec =    QGuiApplication::primaryScreen()->geometry();
-    unsigned int screenWidth = rec.width();
-    unsigned int screenHeight = rec.height();
-    printf("width: %d height: %d\n", screenWidth, screenHeight);
-    this->resize(0.9*screenWidth, 0.9*screenHeight); //have to do this
-    this->showMaximized();
+    showWindowWithinAvailableScreen(this);
 }

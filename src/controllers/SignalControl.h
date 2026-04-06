@@ -9,28 +9,33 @@
 #include <itkImage.h>
 #include <itkDataObject.h>
 #include <src/viewers/itkSignal.h>
+#include <QAction>
 #include <QWidget>
+#include <QSplitter>
 #include <QPushButton>
 #include <QHBoxLayout>
+#include <QTreeWidget>
 #include <itkImageIOBase.h>
 #include "src/file_definitions/dataTypes.h"
 #include "src/segment_handling/graphBase.h"
 
-#include "src/qtUtils/QTreeWidgetWithDragAndDrop.h"
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <src/qtUtils/QBackgroundIdRadioBox.h>
 
 class OrthoViewer;
 class TaskRunner;
+class QMenu;
+class QLabel;
+class QVBoxLayout;
 
-class SignalControl : public QTabWidget {
+class SignalControl : public QWidget {
 Q_OBJECT
 public:
     //TODO: Fix file handling. dataype + signal index should be enough as an unique identifier.
     SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
                   OrthoViewer *orthoViewerIn,
                   TaskRunner *taskRunnerIn,
-                  QWidget *parent = 0,
+                  QWidget *parent = nullptr,
                   bool verboseIn = true);
 
     ~SignalControl();
@@ -76,16 +81,12 @@ public:
     std::vector<std::unique_ptr<itkSignalBase>> ownedSignals;
     std::vector<itkSignalBase *> allSignalList;
 
-    std::vector<itkSignal<dataType::SegmentIdType>> refinementWatershedList;
-
     itkSignalBase *segmentsGraph;
 
-    QTreeWidgetWithDragAndDrop *signalTreeWidget;
+    QTreeWidget *signalTreeWidget;
     QTreeWidget *probabilityTreeWidget;
     QTreeWidget *segmentationTreeWidget;
-    QTreeWidgetWithDragAndDrop *refinementWatershedTreeWidget;
-
-
+    QTreeWidget *refinementTreeWidget;
 
     bool loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
                    size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
@@ -93,23 +94,26 @@ public:
                    itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType);
 
     void addImageAsync(QString fileName, QString displayedName, LoadCallback then = {});
-    void loadSegmentationVolumeAsync(QString fileName, QString displayedName, LoadCallback then = {});
+    void loadSegmentationVolume(QString fileName, QString displayedName="", LoadCallback then = {});
     void loadMembraneProbabilityAsync(QString fileName, QString displayedName, LoadCallback then = {});
     void addSegmentsGraphAsync(QString fileName, LoadCallback then = {});
-    void addRefinementWatershedAsync(QString fileName, QString displayedName, LoadCallback then = {});
+    void loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then = {});
+
+    bool hasWorkingSegments() const;
+    void populateAddDataMenu(QMenu *menu, QAction *loadSampleDataAction);
+    void populateBoundariesMenu(QMenu *menu);
+    void populateRefinementsMenu(QMenu *menu);
+    void populateSegmentationsMenu(QMenu *menu);
 
 
 public slots:
-    void loadFileFromDragAndDropTriggered(QString fileName);
-    void loadFileFromDragAndDrop(QString fileName, QString choiceOfImage);
+    void handleDroppedFile(QString fileName);
 
-    void selectROIRefinementPressed();
+    void toggleROISelection();
 
-    void addRefinementWatershedPressed();
+    void loadRefinementPressed();
 
-    void createNewSegmentationVolume();
-
-    void loadSegmentationVolume(QString fileName, QString displayedName="");
+    void createEmptySegmentation();
 
     void loadSegmentationVolumePressed();
 
@@ -129,30 +133,31 @@ public slots:
 
     void addImage(QString fileName, QString displayedName="");
 
-    void addRefinementWatershed(QString fileName);
-    void addRefinementWatershed(QString fileName, QString displayedName);
+    void loadRefinement(QString fileName);
+    void loadRefinement(QString fileName, QString displayedName);
 
-    void mergeSegmentsWithRefinementWatershedClicked();
+    void mergeSupervoxelsByRefinementLabel();
 
     void treeDoubleClicked(QTreeWidgetItem *item, int index);
 
     void treeClicked(QTreeWidgetItem *item, int index);
 
-    void watershedClicked(QTreeWidgetItem *item, int index);
+    void refinementClicked(QTreeWidgetItem *item, int index);
 
     void segmentationClicked(QTreeWidgetItem *item, int index);
+    void boundaryClicked(QTreeWidgetItem *item, int index);
 
     void transferSegmentsWithVolume();
 
     void transferAllSegments();
 
-    void transferSegmentsWithRefinementWS();
+    void transferSupervoxelsByRefinementOverlap();
 
-    void setIdToTransparentInRefinementWS();
+    void setTransparentLabelIdInRefinement();
 
     void runWatershed();
 
-    void receiveNewRefinementWatershed(itk::Image<dataType::SegmentIdType, 3>::Pointer);
+    void receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer);
 
     bool insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
     size_t &signalIndexGlobalOut,
@@ -174,6 +179,11 @@ private:
         bool createdEmptySegments = false;
     };
 
+    struct SegmentationLoadResultData {
+        GraphSegmentImageType::Pointer segmentationImage;
+        GraphSegmentImageType::Pointer workingSegmentsImage;
+    };
+
     unsigned int getSignalIndex(QTreeWidgetItem *item);
 
     bool getIsUChar(QTreeWidgetItem *item);
@@ -188,57 +198,72 @@ private:
                                 unsigned int &signalIndex);
 
     bool verbose;
+    bool guiBusy = false;
 
-    QVBoxLayout *signalControlLayout;
+    QSplitter *sectionSplitter = nullptr;
+    QPushButton *togglePaintBrushButton = nullptr;
+    QPushButton *setPaintIdButton = nullptr;
+    QPushButton *toggleROISelectionButton = nullptr;
+    QPushButton *runWatershedButton = nullptr;
+    QPushButton *exportSegmentationButton = nullptr;
+    QLabel *selectedBoundaryLabel = nullptr;
+    QLabel *selectedRefinementLabel = nullptr;
+    QLabel *selectedSegmentationLabel = nullptr;
+    QTreeWidgetItem *lastAutoSelectedBoundaryItem = nullptr;
+    QTreeWidgetItem *lastAutoSelectedRefinementItem = nullptr;
+    QTreeWidgetItem *lastAutoSelectedSegmentationItem = nullptr;
 
-    // overlay tree widget
-    QWidget *signalInputButtonsWidget;
-    QGridLayout *signalInputButtonsLayout;
-    QPushButton *addSignalButton;
-    QPushButton *addSegmentsButton;
+    QAction *addImageAction = nullptr;
+    QAction *addSegmentsAction = nullptr;
+    QAction *addBoundariesAction = nullptr;
+    QAction *loadRefinementAction = nullptr;
 
-    // refinement watershed tree
-    QWidget *refinementWatershedInputButtonsWidget;
-    QGridLayout *refinementWatershedButtonLayout;
-    QPushButton *addRefinementWatershedButton;
-    QPushButton *mergeWithRefinementWatershedButton;
-    QPushButton *setIdToTransparentInRefinementWSButton;
+    QAction *createEmptySegmentationAction = nullptr;
+    QAction *loadSegmentationAction = nullptr;
+    QAction *exportSegmentationAction = nullptr;
 
-    // segmentation tree widget
-    QWidget *segmentationButtonWidget;
-    QGridLayout *segmentationButtonWidgetGridLayout;
-    QPushButton *addSegmentationButton;
-    QPushButton *exportSegmentationButton;
-    QPushButton *loadSegmentationButton;
-    QPushButton *togglePaintBrushButton;
-    QPushButton *setPaintIdButton;
-    QPushButton *transferSegmentsWithVolumeButton;
-    QPushButton *transferSegmentsWithRefinementButton;
-    QPushButton *transferAllSegmentsButton;
+    QAction *runWatershedAction = nullptr;
+    QAction *mergeWithRefinementAction = nullptr;
+    QAction *setIdTransparentAction = nullptr;
 
+    QAction *toggleROISelectionAction = nullptr;
+    QAction *togglePaintModeAction = nullptr;
+    QAction *setPaintIdAction = nullptr;
 
-    // probabilities tree widget
-    QWidget *probabilityButtonWidget;
-    QGridLayout *probabilityButtonWidgetLayout;
-    QPushButton *addMembraneProbabilityButton;
-    QPushButton *runWatershedButton;
-    QPushButton *selectROIRefinementButton;
+    QAction *transferWithVolumeAction = nullptr;
+    QAction *transferAllAction = nullptr;
+    QAction *transferWithRefinementAction = nullptr;
 
-    QImageSelectionRadioButtons* imageSelectionButtonWidget;
-
-
+    bool roiSelectionActive = false;
+    bool paintModeActive = false;
 
     QString DEFAULT_SAVE_DIR;
 
     void askForBackgroundStrategy();
+    void loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice);
 
     void setupSignalTreeWidget();
 
-    void setupRefinementWatershedTreeWidget();
+    void setupRefinementTreeWidget();
 
     void setupSegmentationTreeWidget();
 
     void setupProbabilityTreeWidget();
+    QVBoxLayout *createSectionLayout(const QString &title);
+    void createMenuActions();
+    void updateModeActionTexts();
+    void setROISelectionActive(bool active);
+    void setPaintModeActive(bool active);
+    void refreshUiState();
+    void updateSelectionLabel(QTreeWidget *tree, QLabel *label);
+    void selectLoadedItemIfAppropriate(QTreeWidget *tree, QTreeWidgetItem *newItem, QTreeWidgetItem *&lastAutoSelectedItem);
+    void selectBoundaryItem(QTreeWidgetItem *item);
+    void selectRefinementItem(QTreeWidgetItem *item);
+    void selectSegmentationItem(QTreeWidgetItem *item);
+    void showInfoMessage(const QString &message) const;
+    bool hasSelectedSegmentation() const;
+    bool hasSelectedRefinement() const;
+    bool hasSelectedBoundary() const;
 
 
 
@@ -255,6 +280,7 @@ private:
     void refreshViewers();
     QString resolvedDisplayName(const QString &fileName, const QString &displayedName) const;
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
+    GraphSegmentImageType::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage);
 
     LoadedImageData loadImageData(QString fileName,
                                   bool forceSegmentDataTypeUInt = false,
@@ -262,12 +288,16 @@ private:
     bool insertLoadedImage(const LoadedImageData &loadedImage,
                            size_t &signalIndexGlobalOut,
                            bool forceShapeOfSegments);
+    void loadSegmentationVolumeAsync(QString fileName,
+                                     QString displayedName,
+                                     bool createWorkingSegments,
+                                     LoadCallback then);
 
     void registerImageSignal(size_t signalIndexGlobal, const QString &name);
     void registerSegmentationSignal(size_t signalIndexGlobal, const QString &name);
     void registerBoundarySignal(size_t signalIndexGlobal, const QString &name);
     void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
-    void registerSegmentsGraphSignal(size_t signalIndexGlobal);
+    void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
 
     template<typename T>
     bool insertTypedImage(

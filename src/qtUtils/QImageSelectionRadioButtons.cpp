@@ -3,18 +3,18 @@
 #include "QImageSelectionRadioButtons.h"
 
 
-QImageSelectionRadioButtons::QImageSelectionRadioButtons(QString fileNameIn, QWidget *parent) :
-        fileName(fileNameIn), QDialog(parent)
+QImageSelectionRadioButtons::QImageSelectionRadioButtons(QWidget *parent) :
+        QDialog(parent)
 {
     grid = new QGridLayout;
 
 
-    groupBox = new QGroupBox(QObject::tr("Please choose the type of file you want to load:"));
+    groupBox = new QGroupBox(QObject::tr("Choose what to load:"));
 
-    radioGraph = new QRadioButton(QObject::tr("&Graph/Segments"));
+    radioGraph = new QRadioButton(QObject::tr("&Supervoxels"));
     radioImage = new QRadioButton(QObject::tr("&Image"));
-    radioBoundary = new QRadioButton(QObject::tr("&Boundary"));
-    radioRefinement = new QRadioButton(QObject::tr("&Refinement Watershed"));
+    radioBoundary = new QRadioButton(QObject::tr("&Boundaries"));
+    radioRefinement = new QRadioButton(QObject::tr("&Refinement"));
     radioSegmentation = new QRadioButton(QObject::tr("&Segmentation"));
 
     radioGraph->setChecked(true);
@@ -29,8 +29,8 @@ QImageSelectionRadioButtons::QImageSelectionRadioButtons(QString fileNameIn, QWi
     groupBox->setLayout(vbox);
     grid->addWidget(groupBox);
 
-    evaluateButton = new QPushButton(QObject::tr("Load file"));
-    connect(evaluateButton, &QPushButton::released, this, &QImageSelectionRadioButtons::evaluateButtons);
+    evaluateButton = new QPushButton(QObject::tr("Load"));
+    connect(evaluateButton, &QPushButton::released, this, &QDialog::accept);
     grid->addWidget(evaluateButton);
 
     this->setLayout(grid);
@@ -39,22 +39,19 @@ QImageSelectionRadioButtons::QImageSelectionRadioButtons(QString fileNameIn, QWi
 
 }
 
-void QImageSelectionRadioButtons::evaluateButtons() {
-    bool radioGraphclicked = radioGraph->isChecked();
-    bool radioImageClicked = radioImage->isChecked();
-    bool radioBoundaryClicked = radioBoundary->isChecked();
-    bool radioRefinementClicked = radioRefinement->isChecked();
-    bool radioSegmentationClicked = radioSegmentation->isChecked();
-    if (radioGraphclicked) {
-        emit sendButton(fileName, "Segments");
-    } else if (radioImageClicked) {
-        emit sendButton(fileName, "Image");
-    } else if (radioBoundaryClicked) {
-        emit sendButton(fileName, "Boundary");
-    } else if (radioRefinementClicked) {
-        emit sendButton(fileName, "Refinement Watershed");
-    } else if (radioSegmentationClicked) {
-        emit sendButton(fileName, "Segmentation");
+ImageLoadChoice QImageSelectionRadioButtons::selectedChoice() const {
+    if (radioGraph->isChecked()) {
+        return ImageLoadChoice::Supervoxels;
     }
-    this->close();
+    if (radioImage->isChecked()) {
+        return ImageLoadChoice::Image;
+    }
+    if (radioBoundary->isChecked()) {
+        return ImageLoadChoice::Boundaries;
+    }
+    if (radioRefinement->isChecked()) {
+        return ImageLoadChoice::Refinement;
+    }
+    Q_ASSERT(radioSegmentation->isChecked());
+    return ImageLoadChoice::Segmentation;
 }

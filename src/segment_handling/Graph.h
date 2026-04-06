@@ -79,8 +79,8 @@ public:
     Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
     ~Graph();  // defined in Graph.cpp (needed for unique_ptr<itkSignal<...>> with forward decl)
 
-    // get the segment of the refinement watershed and put into the current segmentation map
-    void refineSegmentByPosition(int x, int y, int z);
+    // Refine using the currently selected refinement image and signal at the given voxel.
+    void refineWithSelectedRefinementAtPosition(int x, int y, int z);
     void transferSegmentationSegmentToInitialSegment(int x, int y, int z);
     void setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn);
 
@@ -122,6 +122,7 @@ public:
 
     // construct a graph from
     void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage);
+    void updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage);
 
     void initializeEdgeVolumeAndEdgeStatus();
 
@@ -214,7 +215,7 @@ public:
 
     void removeInitialNodeFromWorkingNodeAtPosition(int x, int y, int z);
 
-    void mergeSegmentsWithRefinementWatershed();
+    void mergeSegmentsWithRefinement();
 
 
 

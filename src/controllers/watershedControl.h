@@ -15,52 +15,11 @@
 
 
 #include <QTreeWidget>
-#include <QMimeData>
-#include <QDragEnterEvent>
 #include <QCheckBox>
 #include <QSpinBox>
 
 class OrthoViewer;
 class TaskRunner;
-
-class QTreeWidgetWithDragAndDrop2 : public QTreeWidget {
-Q_OBJECT
-public:
-    explicit QTreeWidgetWithDragAndDrop2(QTreeWidget *parent = 0) : QTreeWidget(parent) {
-        setAcceptDrops(true);
-    };
-
-
-    void dragEnterEvent(QDragEnterEvent *e) override {
-        if (e->mimeData()->hasUrls()) {
-            e->acceptProposedAction();
-        }
-    }
-
-    // seems to be needed that dropevent is fired
-    void dragMoveEvent(QDragMoveEvent *e) override {
-        if (e->mimeData()->hasUrls()) {
-            e->acceptProposedAction();
-        }
-    }
-
-    void dropEvent(QDropEvent *e) override {
-        for (int i = 0; i < e->mimeData()->urls().size(); i++) {
-            QUrl url = e->mimeData()->urls().at(i);
-            QString fileName = url.toLocalFile();
-            emit urlDropped(fileName);
-        }
-    }
-
-signals:
-
-    void urlDropped(QString url);
-
-};
-
-
-
-
 
 class WatershedControl : public QTabWidget {
 Q_OBJECT
@@ -119,8 +78,6 @@ signals:
     void sendClosingSignal();
 
 public slots:
-
-    void togglePaintMode();
     void togglePaintBoundaryMode();
 
     void forwardValueChangedSignal(int value);
@@ -147,9 +104,7 @@ public slots:
 
     void watershedPressed();
 
-    void exportSegments();
-
-    void exportSegmentsPressed();
+    void createRefinementPressed();
 
     void addImage(QString fileName);
 
@@ -207,7 +162,8 @@ private:
     QTreeWidget *watershedTreeWidget;
     QWidget *watershedButtonsWidget;
     QGridLayout *watershedButtonsLayout;
-    QPushButton *exportSegmentButton;
+    QPushButton *createRefinementButton;
+    bool paintBoundaryModeActive = false;
 
     void setupSignalTreeWidget();
     void setupThresholdWidget();
@@ -215,6 +171,7 @@ private:
     void setupSeedWidget();
     void setupWatershedWidget();
     void setupWidget(QTreeWidget *treeWidget, QWidget *buttonsWidget, QGridLayout *buttonsLayout, QPushButton *button, QString tabName);
+    void updatePaintBoundaryModeButtonText();
 
     bool getDimensionMatchWithSegmentImage();
     void setGuiBusy(bool busy);
@@ -223,7 +180,7 @@ private:
     void calculateDistanceMapAsync(std::function<void()> then = {});
     void extractSeedsAsync(std::function<void()> then = {});
     void watershedAsync(std::function<void()> then = {});
-    void exportSegmentsAsync(std::function<void()> then = {});
+    void createRefinementAsync(std::function<void()> then = {});
 
     // Registers a signal: takes ownership, appends to ownedSignals/allSignalList,
     // sets name/LUT/tree widget, adds to viewer. Returns the global signal index.

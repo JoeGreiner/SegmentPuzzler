@@ -18,6 +18,19 @@
 #include "OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
 
+namespace {
+
+bool toolWorksWithoutWorkingSegments(SliceViewer::ToolMode tool) {
+    return tool == SliceViewer::ToolMode::None ||
+           tool == SliceViewer::ToolMode::Ctrl ||
+           tool == SliceViewer::ToolMode::Delete ||
+           tool == SliceViewer::ToolMode::SelectColor ||
+           tool == SliceViewer::ToolMode::Fill ||
+           tool == SliceViewer::ToolMode::Open;
+}
+
+}
+
 
 AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn,
                                              TaskRunner *taskRunnerIn,
@@ -143,8 +156,8 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
             graphBase->pSelectedSegmentationSignal->randomizeCategoricalLUT();
         }
-        if (graphBase->pRefinementWatershedSignal != nullptr) {
-            graphBase->pRefinementWatershedSignal->randomizeCategoricalLUT();
+        if (graphBase->pSelectedRefinementSignal != nullptr) {
+            graphBase->pSelectedRefinementSignal->randomizeCategoricalLUT();
         }
         for (auto *viewer : linkedViewerList) {
             viewer->recalculateQImages();
@@ -275,8 +288,7 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
     if (taskRunner != nullptr && taskRunner->isBusy()) {
         return;
     }
-    if (graphBase->pWorkingSegmentsImage == nullptr &&
-        activeTool != ToolMode::None && activeTool != ToolMode::Ctrl) {
+    if (graphBase->pWorkingSegmentsImage == nullptr && !toolWorksWithoutWorkingSegments(activeTool)) {
         return;
     }
     switch (activeTool) {
@@ -390,6 +402,10 @@ void AnnotationSliceViewer::runFillSegmentationLabel(int posX, int posY){
 // openSegmentationLabel
 void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     double tic = utils::tic();
+    if (graphBase->pSelectedSegmentation == nullptr) {
+        return;
+    }
+    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
 
     double time_first_part = utils::tic("OpenSegmentationLabel first part started: ");
     int x, y, z;
@@ -407,8 +423,9 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x,y,z});
     std::cout << "Label at click position: " << labelAtClickPosition << "\n";
 
-    if ((labelAtClickPosition == 0) | (labelAtClickPosition == graphBase->pGraph->backgroundId)){
-        std::cout << "Label at click position: is 0 (background), not refining.\n";
+    if (labelAtClickPosition == backgroundLabel) {
+        std::cout << "Label at click position matches the background label (" << backgroundLabel
+                  << "), not refining.\n";
         return void();
     }
 
@@ -489,7 +506,7 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     itDelete.GoToBegin();
     while (!itDelete.IsAtEnd()) {
         if(itDelete.Get() == labelAtClickPosition){
-            itDelete.Set(graphBase->pGraph->backgroundId);
+            itDelete.Set(backgroundLabel);
         }
         ++itDelete;
     }
@@ -515,6 +532,10 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
 
 void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
     double tic = utils::tic();
+    if (graphBase->pSelectedSegmentation == nullptr) {
+        return;
+    }
+    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
 
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
@@ -534,8 +555,9 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
     dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x,y,z});
     std::cout << "Label at click position: " << labelAtClickPosition << "\n";
 
-    if ((labelAtClickPosition == 0) | (labelAtClickPosition == graphBase->pGraph->backgroundId)){
-        std::cout << "Label at click position: is 0 (background), not refining.\n";
+    if (labelAtClickPosition == backgroundLabel) {
+        std::cout << "Label at click position matches the background label (" << backgroundLabel
+                  << "), not refining.\n";
         return void();
     }
 
@@ -588,7 +610,7 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
     itDelete.GoToBegin();
     while (!itDelete.IsAtEnd()) {
         if(itDelete.Get() == labelAtClickPosition){
-            itDelete.Set(graphBase->pGraph->backgroundId);
+            itDelete.Set(backgroundLabel);
         }
         ++itDelete;
     }
@@ -618,7 +640,7 @@ void AnnotationSliceViewer::refineSegmentByPosition(int posX, int posY) {
     printf("Refining segments at position: %d %d %d\n", x, y, z);
 
     taskRunner->run(
-        [this, x, y, z]() { graphBase->pGraph->refineSegmentByPosition(x, y, z); },
+        [this, x, y, z]() { graphBase->pGraph->refineWithSelectedRefinementAtPosition(x, y, z); },
         [this]() {
             graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
             orthoViewer()->refreshViewers();
@@ -656,16 +678,15 @@ void AnnotationSliceViewer::deleteConnectedLabelFromSegmentation(int posX, int p
     double tic = utils::tic();
     int x, y, z;
     if (graphBase->pSelectedSegmentation != nullptr) {
+        const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
         getXYZfromPixmapPos(posX, posY, x, y, z);
         dataType::SegmentIdType labelAtPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
         itk::ImageRegionIterator<dataType::SegmentsImageType> it(graphBase->pSelectedSegmentation,
                                                                   graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-
-        dataType::SegmentIdType bgLabel = 0;
         it.GoToBegin();
         while (!it.IsAtEnd()) {
             if (it.Get() == labelAtPosition) {
-                it.Set(bgLabel);
+                it.Set(backgroundLabel);
             }
             ++it;
         }
@@ -902,7 +923,11 @@ void AnnotationSliceViewer::setPenWidth(int newPenWidth) {
 
 
 void AnnotationSliceViewer::processAnnotationImage(QImage image) {
-    if ((graphBase->pEdgesInitialSegmentsImage != nullptr) || (pThresholdedBoundaries != nullptr)) {
+    const bool canEditEdges = graphBase->pEdgesInitialSegmentsImage != nullptr;
+    const bool canEditBoundaries = pThresholdedBoundaries != nullptr;
+    const bool canEditSegmentation = graphBase->pSelectedSegmentation != nullptr;
+    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    if (canEditEdges || canEditBoundaries || canEditSegmentation) {
         //TODO: Separate function into smaller parts, make sliceblabla general
 
         int bytesPerPixel = 4;
@@ -934,7 +959,7 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
 
 
         if (!paintModeIsActive && !paintBoundaryModeIsActive) { // edge merging/unmerging modus
-            if (graphBase->pEdgesInitialSegmentsImage != nullptr) {
+            if (canEditEdges) {
                 std::set<unsigned int> annotatedEdgeNumIdsToMerge;
                 std::set<unsigned int> annotatedEdgeNumIdsToUnmerge;
 
@@ -989,7 +1014,7 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
                 }
             }
         } else { // edit the segmentation modus
-            if (labelOfClickedSegmentation != 0) {
+            if (labelOfClickedSegmentation != backgroundLabel) {
                 for (y = 0; y < image.height(); y++) {
                     for (x = 0; x < image.width(); x++) {
                         int worldX, worldY, worldZ;
@@ -1002,24 +1027,24 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
                         // insert color
                         if (QColor(r, g, b, a) == (cursorColor)) {
                             getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
-                            if (paintModeIsActive) {
+                            if (paintModeIsActive && canEditSegmentation) {
                                 graphBase->pSelectedSegmentation->SetPixel({worldX, worldY, worldZ},
                                                                            labelOfClickedSegmentation);
                             } else {
-                                if (pThresholdedBoundaries) {
+                                if (canEditBoundaries) {
                                     pThresholdedBoundaries->SetPixel({worldX, worldY, worldZ},
                                                           labelOfClickedSegmentation);
                                 }
                             }
                         } else if (QColor(r, g, b, a) == Qt::black) { // delete stuff
                             getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
-                            if (paintModeIsActive) {
+                            if (paintModeIsActive && canEditSegmentation) {
                                 if (graphBase->pSelectedSegmentation->GetPixel({worldX, worldY, worldZ}) ==
                                     labelOfClickedSegmentation) {
-                                    graphBase->pSelectedSegmentation->SetPixel({worldX, worldY, worldZ}, 0);
+                                    graphBase->pSelectedSegmentation->SetPixel({worldX, worldY, worldZ}, backgroundLabel);
                                 }
                             } else {
-                                if (pThresholdedBoundaries) {
+                                if (canEditBoundaries) {
                                     pThresholdedBoundaries->SetPixel({worldX, worldY, worldZ}, 0);
                                 }
                             }

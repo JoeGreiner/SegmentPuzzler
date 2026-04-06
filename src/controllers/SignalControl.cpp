@@ -8,9 +8,12 @@
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
 #include <QColorDialog>
+#include <QFont>
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QAbstractItemView>
+#include <QLabel>
+#include <QMenu>
 #include <QStandardPaths>
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <QSettings>
@@ -18,33 +21,267 @@
 #include <QApplication>
 #include <QTimer>
 #include <clocale>
+#include <itkImageDuplicator.h>
+
+namespace {
+
+constexpr int kSectionSpacing = 4;
+// Default visible-row targets for the initial layout. Trees scroll once more
+// items are loaded.
+constexpr int kLayersVisibleRows = 4;
+constexpr int kOtherSectionVisibleRows = 2;
+constexpr int kApproximateTreeRowPadding = 8;
+
+QLabel *createSectionLabel(const QString &title, QWidget *parent) {
+    auto *label = new QLabel(title, parent);
+    QFont font = label->font();
+    font.setBold(true);
+    label->setFont(font);
+    label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    return label;
+}
+
+dataType::SegmentsImageType::Pointer duplicateSegmentsImage(
+    const dataType::SegmentsImageType::Pointer &sourceImage) {
+    using DuplicatorType = itk::ImageDuplicator<dataType::SegmentsImageType>;
+    auto duplicator = DuplicatorType::New();
+    duplicator->SetInputImage(sourceImage);
+    duplicator->Update();
+    return duplicator->GetOutput();
+}
+
+QTreeWidgetItem *topLevelTreeItem(QTreeWidgetItem *item) {
+    return (item != nullptr && item->parent() != nullptr) ? item->parent() : item;
+}
+
+void bindButtonToAction(QPushButton *button, QAction *action, const QString &buttonText = QString()) {
+    if (button == nullptr || action == nullptr) {
+        return;
+    }
+
+    auto syncButton = [button, action, buttonText]() {
+        button->setText(buttonText.isEmpty() ? action->text() : buttonText);
+        button->setEnabled(action->isEnabled());
+    };
+
+    syncButton();
+    QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
+    QObject::connect(action, &QAction::changed, button, syncButton);
+}
+
+void setTreeMinimumRows(QTreeWidget *tree, int rows) {
+    if (tree == nullptr) {
+        return;
+    }
+
+    const int rowHeight = tree->fontMetrics().height() + kApproximateTreeRowPadding;
+    const int headerHeight = tree->header() != nullptr ? tree->header()->sizeHint().height() : 0;
+    const int frameHeight = tree->frameWidth() * 2;
+    tree->setMinimumHeight(headerHeight + frameHeight + (std::max(0, rows) * rowHeight));
+}
+
+bool loadChoiceRequiresWorkingSegments(ImageLoadChoice loadChoice) {
+    switch (loadChoice) {
+        case ImageLoadChoice::Supervoxels:
+            return false;
+        case ImageLoadChoice::Image:
+            return true;
+        case ImageLoadChoice::Boundaries:
+            return false;
+        case ImageLoadChoice::Refinement:
+            return true;
+        case ImageLoadChoice::Segmentation:
+            return false;
+    }
+
+    return false;
+}
+
+}
 
 SignalControl::~SignalControl() {
 
 }
 
-void SignalControl::setGuiBusy(bool busy) {
-    signalTreeWidget->setEnabled(!busy);
-    probabilityTreeWidget->setEnabled(!busy);
-    segmentationTreeWidget->setEnabled(!busy);
-    refinementWatershedTreeWidget->setEnabled(!busy);
+void SignalControl::showInfoMessage(const QString &message) const {
+    QMessageBox msgBox;
+    msgBox.setText(message);
+    msgBox.exec();
+}
 
-    addSignalButton->setEnabled(!busy);
-    addSegmentsButton->setEnabled(!busy);
-    addRefinementWatershedButton->setEnabled(!busy);
-    mergeWithRefinementWatershedButton->setEnabled(!busy);
-    setIdToTransparentInRefinementWSButton->setEnabled(!busy);
-    addSegmentationButton->setEnabled(!busy);
-    exportSegmentationButton->setEnabled(!busy);
-    loadSegmentationButton->setEnabled(!busy);
-    togglePaintBrushButton->setEnabled(!busy);
-    setPaintIdButton->setEnabled(!busy);
-    transferSegmentsWithVolumeButton->setEnabled(!busy);
-    transferSegmentsWithRefinementButton->setEnabled(!busy);
-    transferAllSegmentsButton->setEnabled(!busy);
-    addMembraneProbabilityButton->setEnabled(!busy);
-    runWatershedButton->setEnabled(!busy);
-    selectROIRefinementButton->setEnabled(!busy);
+bool SignalControl::hasWorkingSegments() const {
+    return segmentsGraph != nullptr && graphBase->pWorkingSegmentsImage != nullptr;
+}
+
+bool SignalControl::hasSelectedSegmentation() const {
+    return graphBase->pSelectedSegmentation != nullptr;
+}
+
+bool SignalControl::hasSelectedRefinement() const {
+    return graphBase->pSelectedRefinement != nullptr;
+}
+
+bool SignalControl::hasSelectedBoundary() const {
+    return graphBase->pSelectedBoundary != nullptr;
+}
+
+void SignalControl::updateModeActionTexts() {
+    if (toggleROISelectionAction != nullptr) {
+        toggleROISelectionAction->setText(roiSelectionActive ? tr("Disable ROI Selection")
+                                                             : tr("Enable ROI Selection"));
+    }
+    if (togglePaintModeAction != nullptr) {
+        togglePaintModeAction->setText(paintModeActive ? tr("Disable Paint Mode")
+                                                       : tr("Enable Paint Mode"));
+    }
+}
+
+void SignalControl::setROISelectionActive(bool active) {
+    if (roiSelectionActive == active) {
+        return;
+    }
+
+    roiSelectionActive = active;
+    updateModeActionTexts();
+
+    if (roiSelectionActive) {
+        orthoViewer->xy->turnROISelectonModeActive();
+        orthoViewer->xz->turnROISelectonModeActive();
+        orthoViewer->zy->turnROISelectonModeActive();
+    } else {
+        orthoViewer->xy->turnROISelectonModeInactive();
+        orthoViewer->xz->turnROISelectonModeInactive();
+        orthoViewer->zy->turnROISelectonModeInactive();
+    }
+}
+
+void SignalControl::setPaintModeActive(bool active) {
+    if (paintModeActive == active) {
+        return;
+    }
+
+    paintModeActive = active;
+    updateModeActionTexts();
+    orthoViewer->xy->togglePaintMode();
+    orthoViewer->zy->togglePaintMode();
+    orthoViewer->xz->togglePaintMode();
+}
+
+void SignalControl::refreshUiState() {
+    const bool enabled = !guiBusy;
+
+    signalTreeWidget->setEnabled(enabled);
+    probabilityTreeWidget->setEnabled(enabled);
+    segmentationTreeWidget->setEnabled(enabled);
+    refinementTreeWidget->setEnabled(enabled);
+
+    updateSelectionLabel(probabilityTreeWidget, selectedBoundaryLabel);
+    updateSelectionLabel(refinementTreeWidget, selectedRefinementLabel);
+    updateSelectionLabel(segmentationTreeWidget, selectedSegmentationLabel);
+
+    addImageAction->setEnabled(enabled && hasWorkingSegments());
+    addSegmentsAction->setEnabled(enabled && !hasWorkingSegments());
+    addBoundariesAction->setEnabled(enabled);
+    loadRefinementAction->setEnabled(enabled && hasWorkingSegments());
+    createEmptySegmentationAction->setEnabled(enabled && hasWorkingSegments());
+    loadSegmentationAction->setEnabled(enabled);
+    exportSegmentationAction->setEnabled(enabled && hasSelectedSegmentation());
+    runWatershedAction->setEnabled(enabled && hasSelectedBoundary());
+    mergeWithRefinementAction->setEnabled(enabled && hasSelectedRefinement());
+    setIdTransparentAction->setEnabled(enabled && hasSelectedRefinement());
+    toggleROISelectionAction->setEnabled(enabled);
+    togglePaintModeAction->setEnabled(enabled && hasSelectedSegmentation());
+    setPaintIdAction->setEnabled(enabled && hasSelectedSegmentation());
+    transferWithVolumeAction->setEnabled(enabled && hasSelectedSegmentation());
+    transferWithRefinementAction->setEnabled(enabled && hasSelectedSegmentation() && hasSelectedRefinement());
+    transferAllAction->setEnabled(enabled && hasSelectedSegmentation());
+}
+
+void SignalControl::updateSelectionLabel(QTreeWidget *tree, QLabel *label) {
+    if (tree == nullptr || label == nullptr) {
+        return;
+    }
+
+    if (tree->topLevelItemCount() == 0) {
+        label->setText("Selected: none");
+        return;
+    }
+
+    // The label is a read-only view of the tree selection. Load/click paths are
+    // responsible for keeping the current item set.
+    QTreeWidgetItem *currentItem = topLevelTreeItem(tree->currentItem());
+    if (currentItem == nullptr) {
+        currentItem = tree->topLevelItem(tree->topLevelItemCount() - 1);
+    }
+
+    label->setText(QString("Selected: %1").arg(currentItem->text(0)));
+}
+
+void SignalControl::selectLoadedItemIfAppropriate(QTreeWidget *tree,
+                                                  QTreeWidgetItem *newItem,
+                                                  QTreeWidgetItem *&lastAutoSelectedItem) {
+    if (tree == nullptr || newItem == nullptr) {
+        return;
+    }
+
+    // Each section auto-follows the latest loaded item until the user clicks a
+    // different current item. The trees are append-only in the current UI, so
+    // tracking the last auto-selected item is enough here.
+    QTreeWidgetItem *currentItem = topLevelTreeItem(tree->currentItem());
+    if (currentItem == nullptr || currentItem == lastAutoSelectedItem) {
+        tree->setCurrentItem(newItem);
+        lastAutoSelectedItem = newItem;
+    }
+}
+
+void SignalControl::selectBoundaryItem(QTreeWidgetItem *item) {
+    QTreeWidgetItem *baseItem = topLevelTreeItem(item);
+    if (baseItem == nullptr) {
+        graphBase->pSelectedBoundary = nullptr;
+        return;
+    }
+
+    unsigned int signalIndex = getSignalIndex(baseItem);
+    graphBase->pSelectedBoundary = dynamic_cast<dataType::BoundaryImageType *>(
+        allSignalList[signalIndex]->getImageBase().GetPointer());
+}
+
+void SignalControl::selectRefinementItem(QTreeWidgetItem *item) {
+    QTreeWidgetItem *baseItem = topLevelTreeItem(item);
+    if (baseItem == nullptr) {
+        graphBase->pSelectedRefinement = nullptr;
+        graphBase->pSelectedRefinementSignal = nullptr;
+        return;
+    }
+
+    unsigned int signalIndex = getSignalIndex(baseItem);
+    graphBase->pSelectedRefinement = dynamic_cast<GraphSegmentImageType *>(
+        allSignalList[signalIndex]->getImageBase().GetPointer());
+    graphBase->pSelectedRefinementSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
+        allSignalList[signalIndex]);
+}
+
+void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
+    QTreeWidgetItem *baseItem = topLevelTreeItem(item);
+    if (baseItem == nullptr) {
+        graphBase->pSelectedSegmentation = nullptr;
+        graphBase->pSelectedSegmentationSignal = nullptr;
+        graphBase->selectedSegmentationMaxSegmentId = 0;
+        return;
+    }
+
+    unsigned int signalIndex = getSignalIndex(baseItem);
+    graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType *>(
+        allSignalList[signalIndex]->getImageBase().GetPointer());
+    graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
+        allSignalList[signalIndex]);
+    graphBase->selectedSegmentationMaxSegmentId =
+        graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
+}
+
+void SignalControl::setGuiBusy(bool busy) {
+    guiBusy = busy;
+    refreshUiState();
 }
 
 void SignalControl::refreshViewers() {
@@ -219,46 +456,45 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
     allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(true);
+    QTreeWidgetItem *newItem = segmentationTreeWidget->topLevelItem(segmentationTreeWidget->topLevelItemCount() - 1);
+    selectLoadedItemIfAppropriate(segmentationTreeWidget, newItem, lastAutoSelectedSegmentationItem);
 
-    graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType *>(
-        allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
-    graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
-        allSignalList[signalIndexGlobal]);
-    graphBase->selectedSegmentationMaxSegmentId =
-        graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    selectSegmentationItem(segmentationTreeWidget->currentItem());
+    refreshUiState();
 }
 
 void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QString &name) {
-    graphBase->pSelectedBoundary = dynamic_cast<dataType::BoundaryImageType *>(
-        allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
     allSignalList[signalIndexGlobal]->setLUTContinuous();
     allSignalList[signalIndexGlobal]->setName(name);
     allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
+    QTreeWidgetItem *newItem = probabilityTreeWidget->topLevelItem(probabilityTreeWidget->topLevelItemCount() - 1);
+    selectLoadedItemIfAppropriate(probabilityTreeWidget, newItem, lastAutoSelectedBoundaryItem);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    selectBoundaryItem(probabilityTreeWidget->currentItem());
+    refreshUiState();
 }
 
 void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QString &name) {
     allSignalList[signalIndexGlobal]->setLUTCategorical();
     allSignalList[signalIndexGlobal]->setName(name);
-    allSignalList[signalIndexGlobal]->setupTreeWidget(refinementWatershedTreeWidget, signalIndexGlobal);
+    allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(false);
-    int lastItemIndex = refinementWatershedTreeWidget->topLevelItemCount() - 1;
-    refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-    refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-    refinementWatershedTreeWidget->setCurrentItem(refinementWatershedTreeWidget->topLevelItem(lastItemIndex));
+    int lastItemIndex = refinementTreeWidget->topLevelItemCount() - 1;
+    refinementTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
+    refinementTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
+    QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(lastItemIndex);
+    selectLoadedItemIfAppropriate(refinementTreeWidget, newItem, lastAutoSelectedRefinementItem);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-    graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType *>(
-        allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
-    graphBase->pRefinementWatershedSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
-        allSignalList[signalIndexGlobal]);
+    selectRefinementItem(refinementTreeWidget->currentItem());
+    refreshUiState();
 }
 
-void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal) {
+void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume) {
     segmentsGraph = allSignalList[signalIndexGlobal];
     auto *typedSegmentsSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(segmentsGraph);
     allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setName("Segments");
+    allSignalList[signalIndexGlobal]->setName("Supervoxels");
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
 
     graphBase->pWorkingSegments = typedSegmentsSignal;
@@ -278,7 +514,10 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal) {
     orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
 
     orthoViewer->setViewToMiddleOfStack();
-    createNewSegmentationVolume();
+    if (createSegmentationVolume) {
+        createEmptySegmentation();
+    }
+    refreshUiState();
 }
 
 void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadCallback then) {
@@ -300,33 +539,86 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
         });
 }
 
-void SignalControl::loadSegmentationVolumeAsync(QString fileName, QString displayedName, LoadCallback then) {
+SignalControl::GraphSegmentImageType::Pointer SignalControl::duplicateSegmentationAndBuildWorkingSegments(
+    const GraphSegmentImageType::Pointer &segmentationImage) {
+    auto workingSegmentsImage = duplicateSegmentsImage(segmentationImage);
+    graphBase->ignoredSegmentLabels.clear();
+    graphBase->edgeStatus.clear();
+    graphBase->colorLookUpEdgesStatus.clear();
+    graphBase->pWorkingSegmentsImage = workingSegmentsImage;
+    graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graphBase->pGraph->constructFromVolume(workingSegmentsImage);
+    return workingSegmentsImage;
+}
+
+void SignalControl::loadSegmentationVolume(QString fileName, QString displayedName, LoadCallback then) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
+    bool createWorkingSegments = false;
+    if (!hasWorkingSegments()) {
+        askForBackgroundStrategy();
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this,
+            tr("No Supervoxels Loaded"),
+            tr("No supervoxels are loaded. Do you want to duplicate the loaded segmentation as supervoxels too?"),
+            QMessageBox::Yes | QMessageBox::No);
+        createWorkingSegments = reply == QMessageBox::Yes;
+    }
+
+    loadSegmentationVolumeAsync(fileName, displayedName, createWorkingSegments, std::move(then));
+}
+
+void SignalControl::loadSegmentationVolumeAsync(QString fileName,
+                                                QString displayedName,
+                                                bool createWorkingSegments,
+                                                LoadCallback then) {
+    if (fileName.isEmpty()) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
+    const bool hadWorkingSegments = hasWorkingSegments();
     taskRunner->runWithLabel(
         QStringLiteral("Loading segmentation..."),
-        [fileName]() mutable { return ITKImageLoader<GraphSegmentType>(fileName); },
-        [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
+        [this, fileName, createWorkingSegments, hadWorkingSegments]() mutable {
+            SegmentationLoadResultData result;
+            result.segmentationImage = ITKImageLoader<GraphSegmentType>(fileName);
+            if (!hadWorkingSegments) {
+                graphBase->pGraph->updateBackgroundIdFromVolume(result.segmentationImage);
+            }
+            if (createWorkingSegments) {
+                result.workingSegmentsImage = duplicateSegmentationAndBuildWorkingSegments(result.segmentationImage);
+            }
+            return result;
+        },
+        [this, fileName, displayedName, hadWorkingSegments, then = std::move(then)](SegmentationLoadResultData result) mutable {
             size_t signalIndexGlobal = 0;
-            bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, graphBase->pWorkingSegmentsImage != nullptr);
+            bool ok = insertImageSegmenttype(result.segmentationImage, signalIndexGlobal, hadWorkingSegments);
             if (ok) {
+                if (result.workingSegmentsImage != nullptr) {
+                    size_t segmentIndexGlobal = 0;
+                    const bool insertedSegments = insertImageSegmenttype(result.workingSegmentsImage, segmentIndexGlobal, false);
+                    if (insertedSegments) {
+                        registerSegmentsGraphSignal(segmentIndexGlobal, false);
+                    }
+                }
                 registerSegmentationSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
             }
             invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
         });
 }
 
-void SignalControl::addRefinementWatershedAsync(QString fileName, QString displayedName, LoadCallback then) {
+void SignalControl::loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
     taskRunner->runWithLabel(
-        QStringLiteral("Loading refinement watershed..."),
+        QStringLiteral("Loading refinement..."),
         [fileName]() mutable { return ITKImageLoader<GraphSegmentType>(fileName); },
         [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
             size_t signalIndexGlobal = 0;
@@ -345,7 +637,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
     }
 
     taskRunner->runWithLabel(
-        QStringLiteral("Loading segments and building graph..."),
+        QStringLiteral("Loading supervoxels and building graph..."),
         [this, fileName]() mutable {
             // Modifies graphBase on the worker thread. Safe only because
             // one task runs at a time and the owning window is blocked.
@@ -364,7 +656,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             if (ok) {
                 registerSegmentsGraphSignal(signalIndexGlobal);
             } else {
-                QMessageBox::critical(this, "Error", "Failed to load the image.");
+                QMessageBox::critical(this, tr("Error"), tr("Failed to load the supervoxels."));
             }
             invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
         });
@@ -376,9 +668,9 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName, QString displ
         return;
     }
 
-    const bool createEmptySegments = graphBase->pWorkingSegmentsImage == nullptr;
+    const bool createEmptySegments = !hasWorkingSegments();
     taskRunner->runWithLabel(
-        QStringLiteral("Loading boundary probabilities..."),
+        QStringLiteral("Loading boundaries..."),
         [this, fileName, createEmptySegments]() mutable {
             BoundaryLoadResult result;
             result.boundaryImage = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
@@ -422,8 +714,106 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName, QString displ
 }
 
 void SignalControl::addImage(QString fileName, QString displayedName) {
+    if (!hasWorkingSegments()) {
+        showInfoMessage("Please load supervoxels first.");
+        return;
+    }
     std::cout << "Adding file: " << fileName.toStdString() << std::endl;
     addImageAsync(fileName, displayedName);
+}
+
+void SignalControl::populateAddDataMenu(QMenu *menu, QAction *loadSampleDataAction) {
+    if (menu == nullptr) {
+        return;
+    }
+
+    if (loadSampleDataAction != nullptr) {
+        menu->addAction(loadSampleDataAction);
+        menu->addSeparator();
+    }
+    menu->addAction(addSegmentsAction);
+    menu->addAction(addImageAction);
+    menu->addAction(addBoundariesAction);
+    menu->addAction(loadRefinementAction);
+    menu->addAction(loadSegmentationAction);
+    menu->addSeparator();
+    menu->addAction(createEmptySegmentationAction);
+}
+
+void SignalControl::populateBoundariesMenu(QMenu *menu) {
+    if (menu == nullptr) {
+        return;
+    }
+
+    menu->addAction(addBoundariesAction);
+    menu->addSeparator();
+    menu->addAction(toggleROISelectionAction);
+    menu->addAction(runWatershedAction);
+}
+
+void SignalControl::populateRefinementsMenu(QMenu *menu) {
+    if (menu == nullptr) {
+        return;
+    }
+
+    menu->addAction(loadRefinementAction);
+    menu->addSeparator();
+    menu->addAction(mergeWithRefinementAction);
+    menu->addAction(setIdTransparentAction);
+}
+
+void SignalControl::populateSegmentationsMenu(QMenu *menu) {
+    if (menu == nullptr) {
+        return;
+    }
+
+    menu->addAction(loadSegmentationAction);
+    menu->addAction(createEmptySegmentationAction);
+    menu->addAction(exportSegmentationAction);
+    menu->addSeparator();
+    menu->addAction(togglePaintModeAction);
+    menu->addAction(setPaintIdAction);
+    menu->addSeparator();
+    menu->addAction(transferWithVolumeAction);
+    menu->addAction(transferAllAction);
+    menu->addAction(transferWithRefinementAction);
+}
+
+void SignalControl::createMenuActions() {
+    auto createAction = [this](QAction *&action, const QString &text, auto slot) {
+        action = new QAction(text, this);
+        connect(action, &QAction::triggered, this, slot);
+    };
+
+    createAction(addImageAction, tr("Load Image"), &SignalControl::addImagePressed);
+    createAction(addSegmentsAction, tr("Load Supervoxels"), &SignalControl::addSegmentsPressed);
+    createAction(addBoundariesAction, tr("Load Boundaries"), &SignalControl::loadMembraneProbabilityPressed);
+    createAction(loadRefinementAction, tr("Load Refinement"), &SignalControl::loadRefinementPressed);
+    createAction(createEmptySegmentationAction, tr("Create Empty Segmentation"), &SignalControl::createEmptySegmentation);
+    createAction(loadSegmentationAction, tr("Load Segmentation"), &SignalControl::loadSegmentationVolumePressed);
+    createAction(exportSegmentationAction, tr("Export Selected Segmentation"), &SignalControl::exportSelectedSegmentation);
+    createAction(runWatershedAction, tr("Run Watershed"), &SignalControl::runWatershed);
+    createAction(mergeWithRefinementAction, tr("Merge Supervoxels that Share a Refinement Label"), &SignalControl::mergeSupervoxelsByRefinementLabel);
+    createAction(setIdTransparentAction, tr("Set Transparent Label ID in Refinement"), &SignalControl::setTransparentLabelIdInRefinement);
+    createAction(toggleROISelectionAction, QString(), &SignalControl::toggleROISelection);
+    createAction(togglePaintModeAction, QString(), &SignalControl::togglePaintMode);
+    createAction(setPaintIdAction, tr("Set Paint Label ID"), &SignalControl::setPaintId);
+    createAction(transferWithVolumeAction, tr("Transfer Supervoxels by Volume"), &SignalControl::transferSegmentsWithVolume);
+    createAction(transferAllAction, tr("Transfer All Supervoxels"), &SignalControl::transferAllSegments);
+    createAction(transferWithRefinementAction, tr("Transfer Supervoxels by Refinement Overlap"), &SignalControl::transferSupervoxelsByRefinementOverlap);
+    updateModeActionTexts();
+}
+
+QVBoxLayout *SignalControl::createSectionLayout(const QString &title) {
+    auto *sectionWidget = new QWidget(sectionSplitter);
+    sectionWidget->setMinimumHeight(0);
+    sectionWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto *sectionLayout = new QVBoxLayout(sectionWidget);
+    sectionLayout->setContentsMargins(4, 4, 4, 4);
+    sectionLayout->setSpacing(kSectionSpacing);
+    sectionLayout->addWidget(createSectionLabel(title, sectionWidget));
+    sectionSplitter->addWidget(sectionWidget);
+    return sectionLayout;
 }
 
 SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
@@ -439,222 +829,200 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
     allSignalList.reserve(10);
     segmentsGraph = nullptr;
     DEFAULT_SAVE_DIR = "";
-    setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::MinimumExpanding);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
 
+    sectionSplitter = new QSplitter(Qt::Vertical, this);
+    sectionSplitter->setChildrenCollapsible(false);
+    mainLayout->addWidget(sectionSplitter);
 
-
-//    signalControlLayout = new QVBoxLayout();
-//    setLayout(signalControlLayout);
-    this->setTabPosition(QTabWidget::South);
+    createMenuActions();
 
     setupSignalTreeWidget();
     setupProbabilityTreeWidget();
-    setupRefinementWatershedTreeWidget();
+    setupRefinementTreeWidget();
     setupSegmentationTreeWidget();
 
-    connect(taskRunner, &TaskRunner::busyChanged, this, &SignalControl::setGuiBusy);
+    sectionSplitter->setStretchFactor(0, kLayersVisibleRows);
+    sectionSplitter->setStretchFactor(1, kOtherSectionVisibleRows);
+    sectionSplitter->setStretchFactor(2, kOtherSectionVisibleRows);
+    sectionSplitter->setStretchFactor(3, kOtherSectionVisibleRows);
 
+    connect(taskRunner, &TaskRunner::busyChanged, this, &SignalControl::setGuiBusy);
+    setGuiBusy(taskRunner->isBusy());
 }
 
 void SignalControl::setupSignalTreeWidget() {
-    QWidget *signalWidget = new QWidget();
-    auto *signalWidgetLayout = new QVBoxLayout();
-    signalWidget->setLayout(signalWidgetLayout);
+    auto *signalWidgetLayout = createSectionLayout(tr("Layers"));
 
-    signalTreeWidget = new QTreeWidgetWithDragAndDrop();
+    signalTreeWidget = new QTreeWidget();
+    signalTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    signalTreeWidget->setUniformRowHeights(true);
     signalTreeWidget->setFocusPolicy(Qt::NoFocus);
     signalTreeWidget->setColumnCount(2);
     signalTreeWidget->setHeaderLabels({"Name", "Properties"});
     signalTreeWidget->header()->setStretchLastSection(false);
     signalTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-//    signalControlLayout->addWidget(signalTreeWidget);
-    signalWidgetLayout->addWidget(signalTreeWidget);
-//    connect(signalTreeWidget, SIGNAL(urlDropped(QString)), this, SLOT(addImage(QString)));
-    connect(signalTreeWidget, &QTreeWidgetWithDragAndDrop::urlDropped, this, &SignalControl::loadFileFromDragAndDropTriggered);
-
-    signalInputButtonsWidget = new QWidget();
-    signalInputButtonsLayout = new QGridLayout();
-    signalInputButtonsWidget->setLayout(signalInputButtonsLayout);
-    addSignalButton = new QPushButton("Add Image File");
-    addSegmentsButton = new QPushButton("Add Segments File");
-    signalInputButtonsLayout->addWidget(addSignalButton, 0, 0);
-    signalInputButtonsLayout->addWidget(addSegmentsButton, 1, 0);
-
-//    signalControlLayout->addWidget(signalInputButtonsWidget);
-    signalWidgetLayout->addWidget(signalInputButtonsWidget);
-
-//    QTreeWidget::itemDoubleClicked()
-    connect(addSegmentsButton, &QPushButton::clicked, this, &SignalControl::addSegmentsPressed);
-    connect(addSignalButton, &QPushButton::clicked, this, &SignalControl::addImagePressed);
+    setTreeMinimumRows(signalTreeWidget, kLayersVisibleRows);
+    // Extra vertical space should go into the tree, not the section title.
+    signalWidgetLayout->addWidget(signalTreeWidget, 1);
 
     connect(signalTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(signalTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::treeClicked);
-
-    this->addTab(signalWidget, "Overlays");
 }
 
 
 void SignalControl::setupProbabilityTreeWidget() {
-
-    QWidget *probabilityWidget = new QWidget();
-    auto *probabilityWidgetLayout = new QVBoxLayout();
-    probabilityWidget->setLayout(probabilityWidgetLayout);
+    auto *probabilityWidgetLayout = createSectionLayout(tr("Boundaries"));
 
     probabilityTreeWidget = new QTreeWidget();
+    probabilityTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    probabilityTreeWidget->setUniformRowHeights(true);
     probabilityTreeWidget->setFocusPolicy(Qt::NoFocus);
     probabilityTreeWidget->setColumnCount(2);
     probabilityTreeWidget->setHeaderLabels({"Name", "Properties"});
     probabilityTreeWidget->header()->setStretchLastSection(false);
     probabilityTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    probabilityWidgetLayout->addWidget(probabilityTreeWidget);
+    setTreeMinimumRows(probabilityTreeWidget, kOtherSectionVisibleRows);
+    probabilityWidgetLayout->addWidget(probabilityTreeWidget, 1);
 
-    probabilityButtonWidget = new QWidget();
-    probabilityWidgetLayout->addWidget(probabilityButtonWidget);
-    probabilityButtonWidgetLayout = new QGridLayout();
-    probabilityButtonWidget->setLayout(probabilityButtonWidgetLayout);
+    selectedBoundaryLabel = new QLabel("Selected: none");
+    selectedBoundaryLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    probabilityWidgetLayout->addWidget(selectedBoundaryLabel);
 
-    addMembraneProbabilityButton = new QPushButton("Add Boundaries");
-    probabilityButtonWidgetLayout->addWidget(addMembraneProbabilityButton, 0, 0);
+    auto *boundaryButtonRow = new QHBoxLayout();
+    boundaryButtonRow->setContentsMargins(0, 0, 0, 0);
+    boundaryButtonRow->setSpacing(kSectionSpacing);
 
-    runWatershedButton = new QPushButton("Run Watershed");
-    probabilityButtonWidgetLayout->addWidget(runWatershedButton, 1, 0);
+    toggleROISelectionButton = new QPushButton();
+    runWatershedButton = new QPushButton();
+    toggleROISelectionButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    runWatershedButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    boundaryButtonRow->addWidget(toggleROISelectionButton);
+    boundaryButtonRow->addWidget(runWatershedButton);
+    boundaryButtonRow->addStretch();
+    probabilityWidgetLayout->addLayout(boundaryButtonRow);
 
-    selectROIRefinementButton = new QPushButton("Turn ROI-Selection WS On");
-    probabilityButtonWidgetLayout->addWidget(selectROIRefinementButton, 2, 0);
-    connect(selectROIRefinementButton, &QPushButton::clicked, this, &SignalControl::selectROIRefinementPressed);
-
-
-    connect(addMembraneProbabilityButton, &QPushButton::clicked, this, &SignalControl::loadMembraneProbabilityPressed);
-    connect(runWatershedButton, &QPushButton::clicked, this, &SignalControl::runWatershed);
+    bindButtonToAction(toggleROISelectionButton, toggleROISelectionAction);
+    bindButtonToAction(runWatershedButton, runWatershedAction);
 
 
     connect(probabilityTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
-    connect(probabilityTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::treeClicked);
-
-    this->addTab(probabilityWidget, "Probabilities");
+    connect(probabilityTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::boundaryClicked);
 }
 
 
-void SignalControl::setupRefinementWatershedTreeWidget() {
-    QWidget *refinementWidget = new QWidget();
-    auto *refinementWidgetLayout = new QVBoxLayout();
-    refinementWidget->setLayout(refinementWidgetLayout);
+void SignalControl::setupRefinementTreeWidget() {
+    auto *refinementWidgetLayout = createSectionLayout(tr("Refinements"));
 
-    refinementWatershedTreeWidget = new QTreeWidgetWithDragAndDrop();
-    refinementWatershedTreeWidget->setFocusPolicy(Qt::NoFocus);
-    refinementWatershedTreeWidget->setColumnCount(2);
-    refinementWatershedTreeWidget->setHeaderLabels({"Name", "Properties"});
-    refinementWatershedTreeWidget->header()->setStretchLastSection(false);
-    refinementWatershedTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-//    signalControlLayout->addWidget(refinementWatershedTreeWidget);
-    refinementWidgetLayout->addWidget(refinementWatershedTreeWidget);
-    connect(refinementWatershedTreeWidget, &QTreeWidgetWithDragAndDrop::urlDropped, this, qOverload<QString>(&SignalControl::addRefinementWatershed));
+    refinementTreeWidget = new QTreeWidget();
+    refinementTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    refinementTreeWidget->setUniformRowHeights(true);
+    refinementTreeWidget->setFocusPolicy(Qt::NoFocus);
+    refinementTreeWidget->setColumnCount(2);
+    refinementTreeWidget->setHeaderLabels({"Name", "Properties"});
+    refinementTreeWidget->header()->setStretchLastSection(false);
+    refinementTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    setTreeMinimumRows(refinementTreeWidget, kOtherSectionVisibleRows);
+    refinementWidgetLayout->addWidget(refinementTreeWidget, 1);
+    selectedRefinementLabel = new QLabel("Selected: none");
+    selectedRefinementLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    refinementWidgetLayout->addWidget(selectedRefinementLabel);
 
-
-    refinementWatershedInputButtonsWidget = new QWidget();
-    refinementWatershedButtonLayout = new QGridLayout();
-    refinementWatershedInputButtonsWidget->setLayout(refinementWatershedButtonLayout);
-    addRefinementWatershedButton = new QPushButton("Add Refinement Watershed");
-    mergeWithRefinementWatershedButton = new QPushButton("Merge with Refinement Watershed");
-//    replaceSegmentByPositionButton = new QPushButton("Refine by Position (r)");
-//    replaceSegmentBySegmentButton = new QPushButton("Refine by Segment (R)");
-    setIdToTransparentInRefinementWSButton = new QPushButton("Set Id Transparent in RefinementWS");
-    refinementWatershedButtonLayout->addWidget(addRefinementWatershedButton, 0, 0);
-//    refinementWatershedButtonLayout->addWidget(replaceSegmentByPositionButton, 1, 0);
-//    refinementWatershedButtonLayout->addWidget(replaceSegmentBySegmentButton, 2, 0);
-    refinementWatershedButtonLayout->addWidget(mergeWithRefinementWatershedButton, 1, 0);
-    refinementWatershedButtonLayout->addWidget(setIdToTransparentInRefinementWSButton, 2, 0);
-    refinementWidgetLayout->addWidget(refinementWatershedInputButtonsWidget);
-
-
-    connect(mergeWithRefinementWatershedButton, &QPushButton::clicked, this, &SignalControl::mergeSegmentsWithRefinementWatershedClicked);
-//    signalControlLayout->addWidget(refinementWatershedInputButtonsWidget);
-    connect(addRefinementWatershedButton, &QPushButton::clicked, this, &SignalControl::addRefinementWatershedPressed);
-    connect(setIdToTransparentInRefinementWSButton, &QPushButton::clicked, this, &SignalControl::setIdToTransparentInRefinementWS);
-
-    connect(refinementWatershedTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
-    connect(refinementWatershedTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::watershedClicked);
-
-    this->addTab(refinementWidget, "Refinements");
-
+    connect(refinementTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
+    connect(refinementTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::refinementClicked);
 }
 
-void SignalControl::loadFileFromDragAndDropTriggered(QString fileName) {
-    std::cout << "SignalControl::loadFileFromDragAndDropTriggered: " << fileName.toStdString() << '\n';
-    imageSelectionButtonWidget = new QImageSelectionRadioButtons(fileName, this);
-    imageSelectionButtonWidget->show();
-    connect(imageSelectionButtonWidget, &QImageSelectionRadioButtons::sendButton, this,
-            &SignalControl::loadFileFromDragAndDrop, Qt::QueuedConnection);
-    imageSelectionButtonWidget->exec();
+void SignalControl::handleDroppedFile(QString fileName) {
+    std::cout << "SignalControl::handleDroppedFile: " << fileName.toStdString() << '\n';
+    QImageSelectionRadioButtons chooser(this);
+    if (chooser.exec() == QDialog::Accepted) {
+        loadDroppedFileAs(fileName, chooser.selectedChoice());
+    }
 }
 
-void SignalControl::loadFileFromDragAndDrop(QString fileName, QString choiceOfImage) {
-    imageSelectionButtonWidget->close();
-    if (((choiceOfImage != "Segments") && (choiceOfImage != "Boundary")) &&
-        graphBase->pWorkingSegmentsImage == nullptr) {
-        QMessageBox msgBox;
-        msgBox.setText("Please add the Segments first.");
-        msgBox.exec();
-    } else if (choiceOfImage == "Segments") {
-        askForBackgroundStrategy();
-        addSegmentsGraph(fileName);
-    } else if (choiceOfImage == "Image") {
-        addImage(fileName, QString(""));
-    } else if (choiceOfImage == "Boundary") {
-        if (graphBase->pWorkingSegmentsImage == nullptr) {
-            // in this case user has option to construct empty graph from boundary image files
-            loadMembraneProbability(fileName);
-        } else {
-            loadMembraneProbability(fileName, QString(""));
-        }
-    } else if (choiceOfImage == "Refinement Watershed") {
-        addRefinementWatershed(fileName, QString(""));
-    } else if (choiceOfImage == "Segmentation") {
-        SignalControl::loadSegmentationVolume(fileName, QString(""));
-    } else {
-        std::cout << "Unknown choice of image: " << choiceOfImage.toStdString() << "\n";
+void SignalControl::loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice) {
+    if (loadChoiceRequiresWorkingSegments(loadChoice) && !hasWorkingSegments()) {
+        showInfoMessage("Please load supervoxels first.");
+        return;
+    }
+
+    switch (loadChoice) {
+        case ImageLoadChoice::Supervoxels:
+            askForBackgroundStrategy();
+            addSegmentsGraph(fileName);
+            break;
+        case ImageLoadChoice::Image:
+            addImage(fileName, QString(""));
+            break;
+        case ImageLoadChoice::Boundaries:
+            if (!hasWorkingSegments()) {
+                loadMembraneProbability(fileName);
+            } else {
+                loadMembraneProbability(fileName, QString(""));
+            }
+            break;
+        case ImageLoadChoice::Refinement:
+            loadRefinement(fileName, QString(""));
+            break;
+        case ImageLoadChoice::Segmentation:
+            loadSegmentationVolume(fileName, QString(""));
+            break;
     }
 }
 
 
-void SignalControl::selectROIRefinementPressed() {
-    if (selectROIRefinementButton->text() == "Turn ROI-Selection WS On") {
-        selectROIRefinementButton->setText("Turn ROI-Selection WS Off");
-    } else {
-        selectROIRefinementButton->setText("Turn ROI-Selection WS On");
-    }
-
-    orthoViewer->xy->toggleROISelectonModeIsActive();
-    orthoViewer->xz->toggleROISelectonModeIsActive();
-    orthoViewer->zy->toggleROISelectonModeIsActive();
+void SignalControl::toggleROISelection() {
+    setROISelectionActive(!roiSelectionActive);
 }
 
 void SignalControl::transferSegmentsWithVolume() {
+    if (!hasSelectedSegmentation()) {
+        showInfoMessage("Please load or create a segmentation first.");
+        return;
+    }
+
     bool ok;
-    double volumeThreshold = QInputDialog::getDouble(this, tr("Transfer with volume"),
-                                                     tr("Transfer all Segments with a volume greater than:"),
+    double volumeThreshold = QInputDialog::getDouble(this, tr("Transfer Supervoxels by Volume"),
+                                                     tr("Transfer all supervoxels with a volume greater than:"),
                                                      50000, 0, 1000000, 0, &ok);
     if (!ok) {
         return;
     }
 
     taskRunner->runWithLabel(
-        QStringLiteral("Transferring segments..."),
+        QStringLiteral("Transferring supervoxels..."),
         [this, volumeThreshold]() { graphBase->pGraph->transferSegmentsWithVolumeCriterion(volumeThreshold); },
         [this]() { refreshViewers(); });
 }
 
 void SignalControl::transferAllSegments() {
+    if (!hasSelectedSegmentation()) {
+        showInfoMessage("Please load or create a segmentation first.");
+        return;
+    }
+
     taskRunner->runWithLabel(
-        QStringLiteral("Transferring segments..."),
+        QStringLiteral("Transferring supervoxels..."),
         [this]() { graphBase->pGraph->transferSegmentsWithVolumeCriterion(1); },
         [this]() { refreshViewers(); });
 }
 
 
-void SignalControl::transferSegmentsWithRefinementWS() {
+void SignalControl::transferSupervoxelsByRefinementOverlap() {
+    if (!hasSelectedSegmentation()) {
+        showInfoMessage("Please load or create a segmentation first.");
+        return;
+    }
+    if (!hasSelectedRefinement()) {
+        showInfoMessage("Please load a refinement first.");
+        return;
+    }
+
     taskRunner->runWithLabel(
-        QStringLiteral("Transferring segments with refinement overlap..."),
+        QStringLiteral("Transferring supervoxels by refinement overlap..."),
         [this]() { graphBase->pGraph->transferSegmentsWithRefinementOverlap(); },
         [this]() { refreshViewers(); });
 }
@@ -669,57 +1037,53 @@ void SignalControl::setupSegmentationTreeWidget() {
     // i.e., if the active segmentation is changed,
     // the pointer in graphbase should be pointing to the new segmentation volume
 
-    QWidget *segmentationWidget = new QWidget();
-    auto *segmentationWidgetLayout = new QVBoxLayout();
-    segmentationWidget->setLayout(segmentationWidgetLayout);
+    auto *segmentationWidgetLayout = createSectionLayout(tr("Segmentations"));
 
     segmentationTreeWidget = new QTreeWidget();
+    segmentationTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    segmentationTreeWidget->setUniformRowHeights(true);
     segmentationTreeWidget->setFocusPolicy(Qt::NoFocus);
     segmentationTreeWidget->setColumnCount(2);
     segmentationTreeWidget->setHeaderLabels({"Name", "Properties"});
     segmentationTreeWidget->header()->setStretchLastSection(false);
     segmentationTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    segmentationWidgetLayout->addWidget(segmentationTreeWidget);
+    setTreeMinimumRows(segmentationTreeWidget, kOtherSectionVisibleRows);
+    segmentationWidgetLayout->addWidget(segmentationTreeWidget, 1);
 
-    segmentationButtonWidget = new QWidget();
-    segmentationButtonWidgetGridLayout = new QGridLayout();
-    segmentationButtonWidget->setLayout(segmentationButtonWidgetGridLayout);
+    auto *selectionRow = new QHBoxLayout();
+    selectionRow->setContentsMargins(0, 0, 0, 0);
+    selectionRow->setSpacing(kSectionSpacing);
 
-    addSegmentationButton = new QPushButton("New Segmentation Volume");
-    exportSegmentationButton = new QPushButton("Export Selected Segmentation");
-    loadSegmentationButton = new QPushButton("Load Segmentation");
-    togglePaintBrushButton = new QPushButton("Turn Paintmode On");
-    setPaintIdButton = new QPushButton("Set Paint Id");
-    transferSegmentsWithVolumeButton = new QPushButton("Transfer Segments with Volume");
-    transferSegmentsWithRefinementButton = new QPushButton("Transfer Segments with RefinementWS Overlap");
-    transferAllSegmentsButton = new QPushButton("Transfer all Segments");
-    // better: transfer with cell probability?
+    selectedSegmentationLabel = new QLabel("Selected: none");
+    selectedSegmentationLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    exportSegmentationButton = new QPushButton();
+    exportSegmentationButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    selectionRow->addWidget(selectedSegmentationLabel, 1);
+    selectionRow->addWidget(exportSegmentationButton);
+    segmentationWidgetLayout->addLayout(selectionRow);
 
-    segmentationButtonWidgetGridLayout->addWidget(addSegmentationButton, 0, 0);
-    segmentationButtonWidgetGridLayout->addWidget(exportSegmentationButton, 1, 0);
-    segmentationButtonWidgetGridLayout->addWidget(loadSegmentationButton, 2, 0);
-    segmentationButtonWidgetGridLayout->addWidget(togglePaintBrushButton, 3, 0);
-    segmentationButtonWidgetGridLayout->addWidget(setPaintIdButton, 4, 0);
-    segmentationButtonWidgetGridLayout->addWidget(transferSegmentsWithVolumeButton, 5, 0);
-    segmentationButtonWidgetGridLayout->addWidget(transferAllSegmentsButton, 6, 0);
-    segmentationButtonWidgetGridLayout->addWidget(transferSegmentsWithRefinementButton, 7, 0);
+    auto *segmentationButtonRow = new QHBoxLayout();
+    segmentationButtonRow->setContentsMargins(0, 0, 0, 0);
+    segmentationButtonRow->setSpacing(kSectionSpacing);
 
-    segmentationWidgetLayout->addWidget(segmentationButtonWidget);
+    togglePaintBrushButton = new QPushButton();
+    setPaintIdButton = new QPushButton();
+    togglePaintBrushButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    setPaintIdButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    segmentationButtonRow->addWidget(togglePaintBrushButton);
+    segmentationButtonRow->addWidget(setPaintIdButton);
+    segmentationButtonRow->addStretch();
 
-    connect(addSegmentationButton, &QPushButton::clicked, this, &SignalControl::createNewSegmentationVolume);
-    connect(loadSegmentationButton, &QPushButton::clicked, this, &SignalControl::loadSegmentationVolumePressed);
-    connect(exportSegmentationButton, &QPushButton::clicked, this, &SignalControl::exportSelectedSegmentation);
-    connect(togglePaintBrushButton, &QPushButton::clicked, this, &SignalControl::togglePaintMode);
-    connect(setPaintIdButton, &QPushButton::clicked, this, &SignalControl::setPaintId);
-    connect(transferSegmentsWithVolumeButton, &QPushButton::clicked, this, &SignalControl::transferSegmentsWithVolume);
-    connect(transferSegmentsWithRefinementButton, &QPushButton::clicked, this, &SignalControl::transferSegmentsWithRefinementWS);
-    connect(transferAllSegmentsButton, &QPushButton::clicked, this, &SignalControl::transferAllSegments);
+    segmentationWidgetLayout->addLayout(segmentationButtonRow);
 
+    // Keep the panel button short for space; the shared action keeps the full
+    // wording used in menus and dialogs.
+    bindButtonToAction(exportSegmentationButton, exportSegmentationAction, tr("Export Selected"));
+    bindButtonToAction(togglePaintBrushButton, togglePaintModeAction);
+    bindButtonToAction(setPaintIdButton, setPaintIdAction);
 
     connect(segmentationTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(segmentationTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::segmentationClicked);
-
-    this->addTab(segmentationWidget, "Segmentations");
 }
 
 
@@ -748,41 +1112,40 @@ void SignalControl::treeClicked(QTreeWidgetItem *item, int) {
     }
 }
 
-void SignalControl::watershedClicked(QTreeWidgetItem *item, int index) {
+void SignalControl::refinementClicked(QTreeWidgetItem *item, int index) {
     treeClicked(item, index);
+    selectRefinementItem(item);
+    refreshUiState();
+}
 
-    // set the focused watershed as refinement watershed
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
-    graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType*>(
-        allSignalList[signalIndex]->getImageBase().GetPointer());
-    graphBase->pRefinementWatershedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndex]);
+void SignalControl::boundaryClicked(QTreeWidgetItem *item, int index) {
+    treeClicked(item, index);
+    selectBoundaryItem(item);
+    refreshUiState();
 }
 
 
-void SignalControl::setIdToTransparentInRefinementWS() {
-    if (graphBase->pRefinementWatershed != nullptr) {
-        int inputVal = QInputDialog::getInt(this, "Value to set transparent", "Value to set transparent", 0, 0);
-        std::cout << "Set " << inputVal << " to transparent in selected refinement watershed.\n";
-        graphBase->pRefinementWatershedSignal->setLUTValueToTransparent(inputVal);
-        refreshViewers();
+void SignalControl::setTransparentLabelIdInRefinement() {
+    if (!hasSelectedRefinement()) {
+        showInfoMessage("Please load a refinement first.");
+        return;
     }
+
+    int inputVal = QInputDialog::getInt(this,
+                                        tr("Set Transparent Label ID in Refinement"),
+                                        tr("Set Transparent Label ID in Refinement"),
+                                        0,
+                                        0);
+    std::cout << "Set " << inputVal << " to transparent in the selected refinement.\n";
+    graphBase->pSelectedRefinementSignal->setLUTValueToTransparent(inputVal);
+    refreshViewers();
 }
 
 void SignalControl::segmentationClicked(QTreeWidgetItem *item, int index) {
     treeClicked(item, index);
-
-    // set the focused watershed as refinement watershedƒ
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
-    graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType*>(
-        allSignalList[signalIndex]->getImageBase().GetPointer());
-    graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndex]);
-    dataType::SegmentIdType maxId = graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
-    std::cout << "Max Id in selected segmentation: " << maxId << "\n";
-    graphBase->selectedSegmentationMaxSegmentId = maxId;
+    selectSegmentationItem(item);
+    std::cout << "Max Id in selected segmentation: " << graphBase->selectedSegmentationMaxSegmentId << "\n";
+    refreshUiState();
 }
 
 void SignalControl::setUserColor(QTreeWidgetItem *item) {
@@ -822,23 +1185,29 @@ void SignalControl::setDescription(QTreeWidgetItem *item) {
                                   &inputSuccessful);
 
     if (inputSuccessful) {
-        if (item->text(0) == "Segments") { // TODO: put some unique identifier besides name/descriptor for segments
+        if (getIsSegments(item)) { // TODO: put some unique identifier besides name/descriptor for segments
             std::cout << "TODO: Fix segment descriptor change!\n";
         } else {
             item->setText(0, newName);
             allSignalList[signalIndex]->setName(newName);
+            refreshUiState();
         }
     }
 }
 
 
 void SignalControl::exportSelectedSegmentation() {
+    if (!hasSelectedSegmentation()) {
+        showInfoMessage("Please load or create a segmentation first.");
+        return;
+    }
+
     // TODO: decide computer-wide vs application instance wide usage of settings
     QSettings MySettings;
     const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
     //    QString default_save_dir = MySettings.value(DEFAULT_SAVE_DIR_KEY).toString();
     QString path =
-            QFileDialog::getSaveFileName(this, "Export Segmentation", DEFAULT_SAVE_DIR,
+            QFileDialog::getSaveFileName(this, "Export Selected Segmentation", DEFAULT_SAVE_DIR,
                                          "Same Type as Watershed!!! (*.nrrd *.shlat *.uilat)");
     std::cout << path.toStdString() << "\n";
     if (!path.isEmpty()) {
@@ -869,10 +1238,8 @@ void SignalControl::exportSelectedSegmentation() {
 }
 
 void SignalControl::setPaintId(){
-    if (graphBase->pWorkingSegmentsImage == nullptr) {
-        QMessageBox msgBox;
-        msgBox.setText("OrthoViewer not initialised yet. Returning.");
-        msgBox.exec();
+    if (!hasSelectedSegmentation()) {
+        showInfoMessage("Please load or create a segmentation first.");
         return;
     }
     auto maxId = std::numeric_limits<dataType::SegmentIdType>::max();
@@ -881,7 +1248,7 @@ void SignalControl::setPaintId(){
         maxId = std::numeric_limits<int>::max();
     }
     bool ok;
-    int paintId = QInputDialog::getInt(this, "Set Paint Id", "Set Paint Id",
+    int paintId = QInputDialog::getInt(this, "Set Paint Label ID", "Set Paint Label ID",
                                        graphBase->pGraph->getNextFreeId(graphBase->pSelectedSegmentation),
                                        0, static_cast<int>(maxId), 1, &ok);
     if (!ok) {
@@ -897,15 +1264,7 @@ void SignalControl::setPaintId(){
 }
 
 void SignalControl::togglePaintMode() {
-    if (togglePaintBrushButton->text() == "Turn Paintmode On") {
-        togglePaintBrushButton->setText("Turn Paintmode Off");
-    } else {
-        togglePaintBrushButton->setText("Turn Paintmode On");
-    }
-
-    orthoViewer->xy->togglePaintMode();
-    orthoViewer->zy->togglePaintMode();
-    orthoViewer->xz->togglePaintMode();
+    setPaintModeActive(!paintModeActive);
 }
 
 
@@ -1019,55 +1378,48 @@ void SignalControl::initializeGraph(size_t signalIndexGlobal) {
 
 void SignalControl::runWatershed() {
     std::cout << "Running Watershed Widget" << "\n";
-    if (graphBase->pSelectedBoundary == nullptr) {
-        QMessageBox msgBox;
-        msgBox.setText("Please add boundaries first.");
-        msgBox.exec();
-    } else {
-        auto *myMainWindow = new MainWindowWatershedControl();
-        myMainWindow->setLinkedSignalControl(this);
-        if (graphBase->ROI_set) {
-            myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary,
-                                                            graphBase->ROI_fx, graphBase->ROI_tx,
-                                                            graphBase->ROI_fy, graphBase->ROI_ty,
-                                                            graphBase->ROI_fz, graphBase->ROI_tz);
-            myMainWindow->show();
-        } else {
-            myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary);
-            myMainWindow->show();
-
-        }
-
-        if (selectROIRefinementButton->text() == "Turn ROI-Selection WS Off") {
-            selectROIRefinementButton->setText("Turn ROI-Selection WS On");
-            orthoViewer->xy->turnROISelectonModeInactive();
-            orthoViewer->xz->turnROISelectonModeInactive();
-            orthoViewer->zy->turnROISelectonModeInactive();
-        }
+    if (!hasSelectedBoundary()) {
+        showInfoMessage("Please add boundaries first.");
+        return;
     }
+
+    auto *myMainWindow = new MainWindowWatershedControl();
+    myMainWindow->setLinkedSignalControl(this);
+    if (graphBase->ROI_set) {
+        myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary,
+                                                        graphBase->ROI_fx, graphBase->ROI_tx,
+                                                        graphBase->ROI_fy, graphBase->ROI_ty,
+                                                        graphBase->ROI_fz, graphBase->ROI_tz);
+        myMainWindow->show();
+    } else {
+        myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary);
+        myMainWindow->show();
+
+    }
+
+    setROISelectionActive(false);
 }
 
-void SignalControl::receiveNewRefinementWatershed(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage) {
+void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage) {
     size_t signalIndexGlobal;
     bool loadSuccessFull = insertImageSegmenttype(pImage, signalIndexGlobal);
     if (loadSuccessFull) {
         auto *typedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndexGlobal]);
         allSignalList[signalIndexGlobal]->setLUTCategorical();
-        allSignalList[signalIndexGlobal]->setName("Refined Watershed");
-        allSignalList[signalIndexGlobal]->setupTreeWidget(refinementWatershedTreeWidget, signalIndexGlobal);
+        allSignalList[signalIndexGlobal]->setName("Refinement");
+        allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
         allSignalList[signalIndexGlobal]->setIsActive(false);
         allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
-        int lastItemIndex = refinementWatershedTreeWidget->topLevelItemCount() - 1;
-        refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-        refinementWatershedTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-        refinementWatershedTreeWidget->setCurrentItem(refinementWatershedTreeWidget->topLevelItem(lastItemIndex));
+        int lastItemIndex = refinementTreeWidget->topLevelItemCount() - 1;
+        refinementTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
+        refinementTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
+        QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(lastItemIndex);
+        selectLoadedItemIfAppropriate(refinementTreeWidget, newItem, lastAutoSelectedRefinementItem);
         orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
-        graphBase->pRefinementWatershed = dynamic_cast<GraphSegmentImageType*>(
-            allSignalList[signalIndexGlobal]->getImageBase().GetPointer());
-        graphBase->pRefinementWatershedSignal = typedSignal;
+        selectRefinementItem(refinementTreeWidget->currentItem());
 
-        // Set ROI to currently set watershed ROI
-        // this is used to prevent out-of-ROI refinements through user input
+        // Copy the ROI that was active in the watershed workflow result so
+        // refinement clicks stay inside that ROI.
         if (graphBase->ROI_set) {
             typedSignal->ROI_set = true;
             typedSignal->ROI_fx = graphBase->ROI_fx;
@@ -1077,18 +1429,19 @@ void SignalControl::receiveNewRefinementWatershed(itk::Image<dataType::SegmentId
             typedSignal->ROI_ty = graphBase->ROI_ty;
             typedSignal->ROI_tz = graphBase->ROI_tz;
         }
+        refreshUiState();
     }
 }
 
 
 void SignalControl::loadMembraneProbability(QString fileName, QString displayedName) {
     std::cout << "Loading boundaries: " << fileName.toStdString() << "\n";
-    bool segmentsAreNotAdded = graphBase->pWorkingSegmentsImage == nullptr;
+    bool segmentsAreNotAdded = !hasWorkingSegments();
     QMessageBox::StandardButton reply = QMessageBox::Yes;
     if (segmentsAreNotAdded) {
         reply = QMessageBox::question(this,
-                                      "No Segmentation Added",
-                                      "No Segments added. Do you want to create empty segments based on the added boundary image?",
+                                      "No Supervoxels Loaded",
+                                      "No supervoxels are loaded. Do you want to create empty supervoxels from the loaded boundaries?",
                                       QMessageBox::Yes | QMessageBox::No);
     }
     if (!segmentsAreNotAdded || reply == QMessageBox::Yes) {
@@ -1097,8 +1450,13 @@ void SignalControl::loadMembraneProbability(QString fileName, QString displayedN
 }
 
 
-void SignalControl::createNewSegmentationVolume() {
+void SignalControl::createEmptySegmentation() {
     std::cout << "Adding Segmentation Volume\n";
+    if (!hasWorkingSegments()) {
+        showInfoMessage("Please load supervoxels first.");
+        return;
+    }
+
     // 3 indices:
     // signalIndexLocal = index inside <dtype> array
     // signalIndexGlobal = index inside allsignal array
@@ -1115,14 +1473,14 @@ void SignalControl::createNewSegmentationVolume() {
         auto dstSpacing = pImage->GetSpacing();
         auto dstOrigin = pImage->GetOrigin();
         auto dstDirection = pImage->GetDirection();
-        std::cout << "createNewSegmentationVolume: Source (pWorkingSegmentsImage):\n";
+        std::cout << "createEmptySegmentation: Source (pWorkingSegmentsImage):\n";
         std::cout << "  Spacing: [" << srcSpacing[0] << ", " << srcSpacing[1] << ", " << srcSpacing[2] << "]\n";
         std::cout << "  Origin:  [" << srcOrigin[0] << ", " << srcOrigin[1] << ", " << srcOrigin[2] << "]\n";
         std::cout << "  Direction: [["
                   << srcDirection[0][0] << ", " << srcDirection[0][1] << ", " << srcDirection[0][2] << "], ["
                   << srcDirection[1][0] << ", " << srcDirection[1][1] << ", " << srcDirection[1][2] << "], ["
                   << srcDirection[2][0] << ", " << srcDirection[2][1] << ", " << srcDirection[2][2] << "]]\n";
-        std::cout << "createNewSegmentationVolume: Destination (new segmentation):\n";
+        std::cout << "createEmptySegmentation: Destination (new segmentation):\n";
         std::cout << "  Spacing: [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
         std::cout << "  Origin:  [" << dstOrigin[0] << ", " << dstOrigin[1] << ", " << dstOrigin[2] << "]\n";
         std::cout << "  Direction: [["
@@ -1131,36 +1489,32 @@ void SignalControl::createNewSegmentationVolume() {
                   << dstDirection[2][0] << ", " << dstDirection[2][1] << ", " << dstDirection[2][2] << "]]\n";
     }
 
-    graphBase->pSelectedSegmentation = pImage;
-    graphBase->selectedSegmentationMaxSegmentId = 0;
-
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
     auto *typedSignal = pSignal2.get();
     size_t signalIndexGlobal = allSignalList.size();
     allSignalList.push_back(typedSignal);
     ownedSignals.push_back(std::move(pSignal2));
-    graphBase->pSelectedSegmentationSignal = typedSignal;
 
     allSignalList[signalIndexGlobal]->setLUTCategorical();
     allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
     allSignalList[signalIndexGlobal]->setName("Segmentation");
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
+    QTreeWidgetItem *newItem = segmentationTreeWidget->topLevelItem(segmentationTreeWidget->topLevelItemCount() - 1);
+    selectLoadedItemIfAppropriate(segmentationTreeWidget, newItem, lastAutoSelectedSegmentationItem);
 
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    selectSegmentationItem(segmentationTreeWidget->currentItem());
+    refreshUiState();
 }
 
 void SignalControl::loadSegmentationVolumePressed() {
     std::cout << "Loading Segmentation Volume\n";
-    // 3 indices:
-    // signalIndexLocal = index inside <dtype> array
-    // signalIndexGlobal = index inside allsignal array
-
     QSettings MySettings;
     const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
     QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
 
     QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Open Images"), default_load_dir);
+                                                    tr("Load Segmentation"), default_load_dir);
     if (!fileName.isEmpty()) {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
@@ -1168,65 +1522,61 @@ void SignalControl::loadSegmentationVolumePressed() {
     }
 }
 
-void SignalControl::loadSegmentationVolume(QString fileName, QString displayName) {
-    loadSegmentationVolumeAsync(fileName, displayName);
-}
-
-
 void SignalControl::addSegmentsPressed() {
-    if (graphBase->pWorkingSegmentsImage != nullptr) {
-        QMessageBox msgBox;
-        msgBox.setText("Segments were already added, please restart SegmentPuzzler for a new project.");
-        msgBox.exec();
+    if (hasWorkingSegments()) {
+        showInfoMessage("Supervoxels are already loaded, please restart SegmentPuzzler for a new project.");
         return;
     }
     QSettings MySettings;
     const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
     QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
     QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Open Segments"), default_load_dir);
+                                                    tr("Load Supervoxels"), default_load_dir);
     if (!fileName.isEmpty()) {
         askForBackgroundStrategy();
 
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
         addSegmentsGraph(fileName);
-
     }
-    signalInputButtonsLayout->removeWidget(addSegmentsButton);
 }
 
 
-void SignalControl::addRefinementWatershedPressed() {
+void SignalControl::loadRefinementPressed() {
     QSettings MySettings;
     const QString DEFAULT_LOAD_DIR_KEY("default_save_dir");
     QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
     QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Open Segments"), default_load_dir);
+                                                    tr("Load Refinement"), default_load_dir);
     if (!fileName.isEmpty()) {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        addRefinementWatershed(fileName);
+        loadRefinement(fileName);
     }
-
-
-
-//        addRefinementWatershed(fileName);
 }
 
-void SignalControl::mergeSegmentsWithRefinementWatershedClicked() {
+void SignalControl::mergeSupervoxelsByRefinementLabel() {
+    if (!hasSelectedRefinement()) {
+        showInfoMessage("Please load a refinement first.");
+        return;
+    }
+
     taskRunner->runWithLabel(
-        QStringLiteral("Merging segments with refinement watershed..."),
-        [this]() { graphBase->pGraph->mergeSegmentsWithRefinementWatershed(); },
+        QStringLiteral("Merging supervoxels that share a refinement label..."),
+        [this]() { graphBase->pGraph->mergeSegmentsWithRefinement(); },
         [this]() { refreshViewers(); });
 }
 
-void SignalControl::addRefinementWatershed(QString fileName) {
-    addRefinementWatershed(fileName, "");
+void SignalControl::loadRefinement(QString fileName) {
+    loadRefinement(fileName, "");
 }
 
-void SignalControl::addRefinementWatershed(QString fileName, QString displayedName) {
-    addRefinementWatershedAsync(fileName, displayedName);
+void SignalControl::loadRefinement(QString fileName, QString displayedName) {
+    if (!hasWorkingSegments()) {
+        showInfoMessage("Please load supervoxels first.");
+        return;
+    }
+    loadRefinementAsync(fileName, displayedName);
 }
 
 void SignalControl::askForBackgroundStrategy() {
@@ -1355,22 +1705,15 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
 }
 
 void SignalControl::addImagePressed() {
-
-    if (graphBase->pWorkingSegmentsImage == nullptr) {
-        QMessageBox msgBox;
-        msgBox.setText("Please add the segmentation first.");
-        msgBox.exec();
-    } else {
-        QSettings MySettings;
-        const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
-        QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
-        QString fileName = QFileDialog::getOpenFileName(this,
-                                                        tr("Open Images"), default_load_dir);
-        if (!fileName.isEmpty()) {
-            QDir CurrentDir;
-            MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-            addImage(fileName);
-        }
+    QSettings MySettings;
+    const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
+    QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
+    QString fileName = QFileDialog::getOpenFileName(this,
+                                                    tr("Load Image"), default_load_dir);
+    if (!fileName.isEmpty()) {
+        QDir CurrentDir;
+        MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
+        addImage(fileName);
     }
 }
 
@@ -1380,15 +1723,11 @@ void SignalControl::loadMembraneProbabilityPressed() {
     const QString DEFAULT_LOAD_DIR_KEY("default_save_dir");
     QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
     QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Open Images"), default_load_dir);
+                                                    tr("Load Boundaries"), default_load_dir);
     if (!fileName.isEmpty()) {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        if (graphBase->pWorkingSegmentsImage == nullptr) {
-            loadMembraneProbability(fileName);
-        } else {
-            loadMembraneProbability(fileName);
-        }
+        loadMembraneProbability(fileName);
     }
 }
 
@@ -1415,7 +1754,12 @@ bool SignalControl::getIsUChar(QTreeWidgetItem *item) {
 
 bool SignalControl::getIsSegments(QTreeWidgetItem *item) {
     QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    return baseItem->text(0) == "Segments";
+    if (baseItem == nullptr || segmentsGraph == nullptr) {
+        return false;
+    }
+
+    const unsigned int signalIndex = getSignalIndex(baseItem);
+    return signalIndex < allSignalList.size() && allSignalList[signalIndex] == segmentsGraph;
 }
 
 bool SignalControl::getIsEdge(QTreeWidgetItem *item) {

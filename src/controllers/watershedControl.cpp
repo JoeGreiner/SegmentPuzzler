@@ -18,8 +18,6 @@
 
 
 #include <QTreeWidget>
-#include <QMimeData>
-#include <QDragEnterEvent>
 #include <src/itkImageFilters/itkWatershedHelpers.h>
 #include <src/viewers/itkSignalThresholdPreview.h>
 #include <QtWidgets/QMessageBox>
@@ -42,7 +40,7 @@ void WatershedControl::setGuiBusy(bool busy) {
     calculateDistanceMapButton->setEnabled(!busy);
     calculateSeedsButton->setEnabled(!busy);
     runWatershedButton->setEnabled(!busy);
-    exportSegmentButton->setEnabled(!busy);
+    createRefinementButton->setEnabled(!busy);
     togglePaintBoundaryModeButton->setEnabled(!busy);
     thresholdValueSlider->setEnabled(!busy);
     checkBoxFiltering->setEnabled(!busy);
@@ -176,9 +174,9 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
         std::move(then));
 }
 
-void WatershedControl::exportSegmentsAsync(std::function<void()> then) {
+void WatershedControl::createRefinementAsync(std::function<void()> then) {
     taskRunner->runWithLabel(
-        QStringLiteral("Exporting segments..."),
+        QStringLiteral("Creating refinement..."),
         [this]() {
             if (!useROI) {
                 return graphBase->pWorkingSegmentsImage;
@@ -207,8 +205,8 @@ void WatershedControl::exportSegmentsAsync(std::function<void()> then) {
             pasteImageFilter->Update();
             return paddedWorkingSegmentsImage;
         },
-        [this](dataType::SegmentsImageType::Pointer exportedSegments) {
-            linkedSignalControl->receiveNewRefinementWatershed(exportedSegments);
+        [this](dataType::SegmentsImageType::Pointer createdRefinement) {
+            linkedSignalControl->receiveNewRefinement(createdRefinement);
             emit sendClosingSignal();
         },
         std::move(then));
@@ -306,7 +304,8 @@ void WatershedControl::setupThresholdWidget() {
     setupWidget(thresholdTreeWidget, thresholdButtonsWidget, thresholdButtonsLayout, calculateDistanceMapButton, "Threshold");
     connect(calculateDistanceMapButton, &QPushButton::clicked, this, &WatershedControl::calculateDistanceMapPressed);
 
-    togglePaintBoundaryModeButton = new QPushButton("Turn Paintmode On");
+    togglePaintBoundaryModeButton = new QPushButton(this);
+    updatePaintBoundaryModeButtonText();
     calculateDistanceMapButton->parentWidget()->layout()->addWidget(togglePaintBoundaryModeButton);
     connect(togglePaintBoundaryModeButton, &QPushButton::clicked, this, &WatershedControl::togglePaintBoundaryMode);
 }
@@ -399,9 +398,9 @@ void WatershedControl::setupWatershedWidget() {
 //    watershedTreeWidget->setAccessibleName("yellow");
     watershedButtonsWidget = new QWidget(this);
     watershedButtonsLayout = new QGridLayout();
-    exportSegmentButton = new QPushButton("Export Segments", this);
-    setupWidget(watershedTreeWidget, watershedButtonsWidget, watershedButtonsLayout, exportSegmentButton, "Watershed");
-    connect(exportSegmentButton, &QPushButton::clicked, this, &WatershedControl::exportSegmentsPressed);
+    createRefinementButton = new QPushButton("Create Refinement", this);
+    setupWidget(watershedTreeWidget, watershedButtonsWidget, watershedButtonsLayout, createRefinementButton, "Watershed");
+    connect(createRefinementButton, &QPushButton::clicked, this, &WatershedControl::createRefinementPressed);
 }
 
 
@@ -467,7 +466,7 @@ void WatershedControl::setDescription(QTreeWidgetItem *item) {
                                   &inputSuccessful);
 
     if (inputSuccessful) {
-        if (item->text(0) == "Segments") { // TODO: put some unique identifier besides name/descriptor for segments
+        if (getIsSegments(item)) { // TODO: put some unique identifier besides name/descriptor for segments
             std::cout << "TODO: Fix segment descriptor change!\n";
         } else {
             item->setText(0, newName);
@@ -476,25 +475,22 @@ void WatershedControl::setDescription(QTreeWidgetItem *item) {
     }
 }
 
-
-void WatershedControl::togglePaintMode() {
-//    if (togglePaintBrushButton->text() == "Turn Paintmode On") {
-//        togglePaintBrushButton->setText("Turn Paintmode Off");
-//    } else {
-//        togglePaintBrushButton->setText("Turn Paintmode On");
-//    }
-}
-
 void WatershedControl::togglePaintBoundaryMode() {
-    if (togglePaintBoundaryModeButton->text() == "Turn Paintmode On") {
-        togglePaintBoundaryModeButton->setText("Turn Paintmode Off");
-    } else {
-        togglePaintBoundaryModeButton->setText("Turn Paintmode On");
-    }
+    paintBoundaryModeActive = !paintBoundaryModeActive;
+    updatePaintBoundaryModeButtonText();
 
     orthoViewer->xy->togglePaintBoundaryMode();
     orthoViewer->zy->togglePaintBoundaryMode();
     orthoViewer->xz->togglePaintBoundaryMode();
+}
+
+void WatershedControl::updatePaintBoundaryModeButtonText() {
+    if (togglePaintBoundaryModeButton == nullptr) {
+        return;
+    }
+
+    togglePaintBoundaryModeButton->setText(paintBoundaryModeActive ? "Disable Paint Mode"
+                                                                   : "Enable Paint Mode");
 }
 
 
@@ -703,7 +699,7 @@ bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponent
 
 void WatershedControl::addImagePressed() {
     QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Open Images"));
+                                                    tr("Load Image"));
     if (!fileName.isEmpty()) {
         addImage(fileName);
     }
@@ -937,60 +933,14 @@ void WatershedControl::watershed() {
     this->setCurrentIndex(4);
 }
 
-void WatershedControl::exportSegmentsPressed() {
+void WatershedControl::createRefinementPressed() {
     if (graphBase->pWorkingSegmentsImage != nullptr) {
-        exportSegmentsAsync();
+        createRefinementAsync();
     } else {
         QMessageBox msgBox;
         msgBox.setText("Please generate a watershed first.");
         msgBox.exec();
     }
-}
-
-void WatershedControl::exportSegments() {
-    std::cout << "Exporting Segments!\n";
-    if (useROI) {
-        std::cout << "Padding exported image to match original shape!\n";
-
-        // create a new image with fitting size, spacing, and origin
-        dataType::SegmentsImageType::Pointer paddedWorkingSegmentsImage = dataType::SegmentsImageType::New();
-        paddedWorkingSegmentsImage->SetRegions(
-                linkedSignalControl->graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
-        paddedWorkingSegmentsImage->SetSpacing(linkedSignalControl->graphBase->pWorkingSegmentsImage->GetSpacing());
-        paddedWorkingSegmentsImage->SetOrigin(linkedSignalControl->graphBase->pWorkingSegmentsImage->GetOrigin());
-        paddedWorkingSegmentsImage->Allocate(true);
-
-        {
-            auto srcSpacing = linkedSignalControl->graphBase->pWorkingSegmentsImage->GetSpacing();
-            auto dstSpacing = paddedWorkingSegmentsImage->GetSpacing();
-            std::cout << "exportSegments (ROI): Source spacing: [" << srcSpacing[0] << ", " << srcSpacing[1] << ", " << srcSpacing[2] << "]\n";
-            std::cout << "exportSegments (ROI): Padded spacing: [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
-        }
-
-        // paste in the created watershed
-        using PasteImageFilterType = itk::PasteImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
-        PasteImageFilterType::Pointer pasteImageFilter = PasteImageFilterType::New();
-        pasteImageFilter->SetSourceImage(graphBase->pWorkingSegmentsImage);
-        pasteImageFilter->SetSourceRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
-        pasteImageFilter->SetDestinationImage(paddedWorkingSegmentsImage);
-
-        // set in correct starting index for the paste
-        dataType::SegmentsImageType::IndexType destinationIndex;
-        std::cout << "destination index: " << fx << " " << fy << " " << fz << " \n";
-        destinationIndex.at(0) = fx;
-        destinationIndex.at(1) = fy;
-        destinationIndex.at(2) = fz;
-        pasteImageFilter->SetDestinationIndex(destinationIndex);
-
-        paddedWorkingSegmentsImage = pasteImageFilter->GetOutput();
-        pasteImageFilter->Update();
-
-        linkedSignalControl->receiveNewRefinementWatershed(paddedWorkingSegmentsImage);
-    } else {
-        linkedSignalControl->receiveNewRefinementWatershed(graphBase->pWorkingSegmentsImage);
-    }
-
-    emit sendClosingSignal();
 }
 
 
@@ -1041,7 +991,12 @@ bool WatershedControl::getIsUChar(QTreeWidgetItem *item) {
 
 bool WatershedControl::getIsSegments(QTreeWidgetItem *item) {
     QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    return baseItem->text(0) == "Segments";
+    if (baseItem == nullptr || itkSignalSegmentsGraph == nullptr) {
+        return false;
+    }
+
+    const unsigned int signalIndex = getSignalIndex(baseItem);
+    return signalIndex < allSignalList.size() && allSignalList[signalIndex] == itkSignalSegmentsGraph;
 }
 
 bool WatershedControl::getIsEdge(QTreeWidgetItem *item) {

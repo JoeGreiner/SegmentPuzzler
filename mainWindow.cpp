@@ -4,8 +4,12 @@
 #include <QStatusBar>
 #include <QScreen>
 #include <QDialogButtonBox>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QLineEdit>
 #include <QLabel>
+#include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include "src/utils/utils.h"
@@ -14,6 +18,63 @@
 #include "src/qtUtils/TaskRunner.h"
 
 MainWindow::~MainWindow() = default;
+
+namespace {
+
+QStringList localFilesFromMimeData(const QMimeData *mimeData) {
+    QStringList localFiles;
+    if (mimeData == nullptr || !mimeData->hasUrls()) {
+        return localFiles;
+    }
+
+    for (const QUrl &url : mimeData->urls()) {
+        const QString fileName = url.toLocalFile();
+        if (!fileName.isEmpty()) {
+            localFiles.push_back(fileName);
+        }
+    }
+
+    return localFiles;
+}
+
+void showWindowWithinAvailableScreen(QMainWindow *window) {
+    if (window == nullptr) {
+        return;
+    }
+
+    window->show();
+    QTimer::singleShot(0, window, [window]() {
+        QScreen *screen = window->screen();
+        if (screen == nullptr) {
+            screen = QGuiApplication::primaryScreen();
+        }
+
+        if (screen == nullptr) {
+            return;
+        }
+
+        const QRect availableGeometry = screen->availableGeometry();
+        const QRect frameGeometry = window->frameGeometry();
+        const QRect contentGeometry = window->geometry();
+
+        const int leftFrameMargin = contentGeometry.left() - frameGeometry.left();
+        const int topFrameMargin = contentGeometry.top() - frameGeometry.top();
+        const int rightFrameMargin = frameGeometry.right() - contentGeometry.right();
+        const int bottomFrameMargin = frameGeometry.bottom() - contentGeometry.bottom();
+
+        QRect targetGeometry = availableGeometry.adjusted(leftFrameMargin,
+                                                          topFrameMargin,
+                                                          -rightFrameMargin,
+                                                          -bottomFrameMargin);
+        if (targetGeometry.width() < 1 || targetGeometry.height() < 1) {
+            targetGeometry = availableGeometry;
+        }
+
+        window->setGeometry(targetGeometry);
+    });
+}
+
+} // namespace
 
 MainWindow::MainWindow() {
 
@@ -71,15 +132,13 @@ MainWindow::MainWindow() {
 //    graphBase->ROI_ty = 255;
 //    graphBase->ROI_tz = 1;
 //    mySignalControl->runWatershed();
-//    mySignalControl->createNewSegmentationVolume();
 //    mySignalControl->addSegmentsGraph(fileName2);
 //    mySignalControl->addImage(fileName_dapi);
 //    mySignalControl->addImage(fileName_wga);
 //    mySignalControl->addImage(fileName_cx);
-//    mySignalControl->addRefinementWatershed(fileName2);
 //    mySignalControl->addImage(fileName2);
 
-//    graph.refineSegmentByPosition(440, 0, 159);
+//    graph.refineWithSelectedRefinementAtPosition(440, 0, 159);
 
     auto horizontalSplitter = new QSplitter();
     horizontalSplitter->addWidget(mySignalControl);
@@ -89,26 +148,27 @@ MainWindow::MainWindow() {
 
     setCentralWidget(horizontalSplitter);
 
-    QRect rec =    QGuiApplication::primaryScreen()->geometry();
-    unsigned int screenWidth = rec.width();
-    unsigned int screenHeight = rec.height();
-    printf("width: %d height: %d\n", screenWidth, screenHeight);
-    this->resize(static_cast<int>(0.9*screenWidth), static_cast<int>(0.9*screenHeight)); //have to do this
-    this->showMaximized();
-
-    sampleDataMenu = menuBar()->addMenu(tr("&Sample Data"));
-    loadSampleSegmentationAction = new QAction(tr("&Load Sample Data (100MB)"), this);
-    sampleDataMenu->addAction(loadSampleSegmentationAction);
-//    connect(loadSampleSegmentationAction, &QAction::triggered, this, &MainWindow::loadSegmentationSample);
+    addDataMenu = menuBar()->addMenu(tr("&Add Data"));
+    loadSampleSegmentationAction = new QAction(tr("&Download Sample Dataset (100 MB)"), this);
+    mySignalControl->populateAddDataMenu(addDataMenu, loadSampleSegmentationAction);
     connect(loadSampleSegmentationAction, &QAction::triggered, this, [this]() {
         QMetaObject::invokeMethod(this, "loadSegmentationSample", Qt::QueuedConnection);
     });
 
+    boundariesMenu = menuBar()->addMenu(tr("&Boundaries"));
+    mySignalControl->populateBoundariesMenu(boundariesMenu);
 
-    viewerMenu = menuBar()->addMenu(tr("&Views"));
+    refinementsMenu = menuBar()->addMenu(tr("&Refinements"));
+    mySignalControl->populateRefinementsMenu(refinementsMenu);
+
+    segmentationsMenu = menuBar()->addMenu(tr("&Segmentations"));
+    mySignalControl->populateSegmentationsMenu(segmentationsMenu);
+
+
+    goToMenu = menuBar()->addMenu(tr("&Go To"));
     QAction *openGoToCoordinatesAction = new QAction(tr("&Go to Coordinates"), this);
     openGoToCoordinatesAction->setShortcut(Qt::Key_F9);
-    viewerMenu->addAction(openGoToCoordinatesAction);
+    goToMenu->addAction(openGoToCoordinatesAction);
     connect(openGoToCoordinatesAction, &QAction::triggered, this, [this]() {
 //        open q box for three integers
         QDialog dialog(this);
@@ -147,18 +207,18 @@ MainWindow::MainWindow() {
         }
     });
 
-    QAction *openGoToLabelAction = new QAction(tr("&Go to Label"), this);
+    QAction *openGoToLabelAction = new QAction(tr("&Go to Label ID"), this);
     openGoToLabelAction->setShortcut(Qt::Key_F10);
-    viewerMenu->addAction(openGoToLabelAction);
+    goToMenu->addAction(openGoToLabelAction);
     connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
         if (graphBase->pSelectedSegmentation == nullptr) {
             std::cout << "No segmentation loaded.\n";
             return;
         }
         QDialog dialog(this);
-        dialog.setWindowTitle("Go to Label");
+        dialog.setWindowTitle("Go to Label ID");
         QFormLayout form(&dialog);
-        form.addRow(new QLabel("Label:"));
+        form.addRow(new QLabel("Label ID:"));
         QLineEdit labelEdit;
         form.addRow(&labelEdit);
 
@@ -170,7 +230,7 @@ MainWindow::MainWindow() {
 
         if (dialog.exec() == QDialog::Accepted) {
             int label = labelEdit.text().toInt();
-            std::cout << "Go to label: " << label << std::endl;
+            std::cout << "Go to label ID: " << label << std::endl;
             itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(graphBase->pSelectedSegmentation, graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
             std::vector<itk::Index<3>> indices;
             while (!it.IsAtEnd()) {
@@ -182,7 +242,7 @@ MainWindow::MainWindow() {
             }
 
             if (indices.empty()) {
-                std::cout << "Label not found.\n";
+                std::cout << "Label ID not found.\n";
                 return;
             }
 
@@ -229,12 +289,65 @@ MainWindow::MainWindow() {
 
 
     helpMenu = menuBar()->addMenu(tr("&Help"));
-    openHotkeysAction = new QAction(tr("&Show HotKeys"), this);
+    openHotkeysAction = new QAction(tr("&Show Hotkeys"), this);
     openHotkeysAction->setShortcut(Qt::Key_F1);
     helpMenu->addAction(openHotkeysAction);
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
+    installInitialFileDropHandling();
+    showWindowWithinAvailableScreen(this);
+}
+
+void MainWindow::installInitialFileDropHandling() {
+    // The main app window owns generic file drag-and-drop. We install it once
+    // for the initial widget tree here and intentionally leave the watershed
+    // workflow window out of this mechanism.
+    registerDropTarget(this);
+    const auto widgets = findChildren<QWidget *>();
+    for (QWidget *widget : widgets) {
+        registerDropTarget(widget);
+    }
+}
+
+void MainWindow::registerDropTarget(QWidget *widget) {
+    if (widget == nullptr) {
+        return;
+    }
+
+    widget->setAcceptDrops(true);
+    widget->installEventFilter(this);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+        auto *dropLikeEvent = static_cast<QDropEvent *>(event);
+        if (!localFilesFromMimeData(dropLikeEvent->mimeData()).isEmpty()) {
+            dropLikeEvent->acceptProposedAction();
+            return true;
+        }
+    }
+
+    if (event->type() == QEvent::Drop) {
+        auto *dropEvent = static_cast<QDropEvent *>(event);
+        const QStringList fileNames = localFilesFromMimeData(dropEvent->mimeData());
+        if (fileNames.isEmpty()) {
+            return QMainWindow::eventFilter(watched, event);
+        }
+
+        // Local-file drops are intentionally consumed at the main-window level.
+        // Child widgets inside this window should use this shared path instead
+        // of implementing their own file-drop behavior.
+        for (const QString &fileName : fileNames) {
+            QTimer::singleShot(0, mySignalControl, [this, fileName]() {
+                mySignalControl->handleDroppedFile(fileName);
+            });
+        }
+        dropEvent->acceptProposedAction();
+        return true;
+    }
+
+    return QMainWindow::eventFilter(watched, event);
 }
 
 
@@ -242,7 +355,6 @@ MainWindow::MainWindow() {
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QEventLoop>
-#include <QUrl>
 #include <QStandardPaths>
 #include <QDir>
 #include <QElapsedTimer>
@@ -345,7 +457,7 @@ void updateSampleDownloadProgress(QProgressDialog *progressDialog,
         value += static_cast<int>(progress * sampleDownloadProgressResolution);
     }
 
-    setSampleDownloadDialogState(progressDialog, "Downloading sample data", fileLabel, fileIndex, totalFiles, value);
+    setSampleDownloadDialogState(progressDialog, "Downloading sample dataset", fileLabel, fileIndex, totalFiles, value);
 }
 
 void markSampleDownloadComplete(QProgressDialog *progressDialog,
@@ -362,7 +474,7 @@ void markSampleDownloadComplete(QProgressDialog *progressDialog,
 
     if (isCached) {
         animateSampleDownloadProgress(progressDialog,
-                                      "Using cached sample data",
+                                      "Using cached sample dataset",
                                       fileLabel,
                                       fileIndex,
                                       totalFiles,
@@ -373,7 +485,7 @@ void markSampleDownloadComplete(QProgressDialog *progressDialog,
     }
 
     setSampleDownloadDialogState(progressDialog,
-                                 "Downloading sample data",
+                                 "Downloading sample dataset",
                                  fileLabel,
                                  fileIndex,
                                  totalFiles,
@@ -505,7 +617,7 @@ std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *pr
 
     QString outputFilePathMC = QDir(tempDir).filePath("Watershed_MC.tif");
     QString outputFilePathWGA = QDir(tempDir).filePath("WGA.nrrd");
-    QString outputFilePathWS = QDir(tempDir).filePath("Watershed.nrrd");
+    QString outputFilePathRefinement = QDir(tempDir).filePath("Watershed.nrrd");
     QString outputFilePathBnd = QDir(tempDir).filePath("BoundaryPrediction.tif");
 
     QString url_segments_mc = "https://drive.google.com/uc?export=download&id=18VtLYTFA0EVa_JLOVoSmXPjDJrW0Ievr";
@@ -554,18 +666,18 @@ std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *pr
                                    downloadedWGA.type == SampleDownloadResultType::Cached);
     }
 
-    SampleDownloadResult downloadedWS = downloadFile(url_segments_ws,
-                                                     outputFilePathWS,
+    SampleDownloadResult downloadedRefinement = downloadFile(url_segments_ws,
+                                                     outputFilePathRefinement,
                                                      "Watershed.nrrd",
                                                      2,
                                                      sampleDownloadCount,
                                                      progressCallback);
-    if (!downloadedWS.filePath.isEmpty()) {
+    if (!downloadedRefinement.filePath.isEmpty()) {
         markSampleDownloadComplete(progressDialog,
                                    "Watershed.nrrd",
                                    2,
                                    sampleDownloadCount,
-                                   downloadedWS.type == SampleDownloadResultType::Cached);
+                                   downloadedRefinement.type == SampleDownloadResultType::Cached);
     }
 
     SampleDownloadResult downloadedBnd = downloadFile(url_segments_bnd,
@@ -584,16 +696,16 @@ std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *pr
 
     return std::make_tuple(downloadedMC.filePath,
                            downloadedWGA.filePath,
-                           downloadedWS.filePath,
+                           downloadedRefinement.filePath,
                            downloadedBnd.filePath);
 }
 
 
 
 void MainWindow::loadSegmentationSample() {
-    if (graphBase->pWorkingSegmentsImage != nullptr) {
+    if (mySignalControl->hasWorkingSegments()) {
         QMessageBox msgBox;
-        msgBox.setText("Segments were already added, please restart Segmentocupler for a new project.");
+        msgBox.setText("Supervoxels are already loaded, please restart SegmentPuzzler for a new project.");
         msgBox.exec();
         return;
     }
@@ -626,7 +738,7 @@ void MainWindow::loadSegmentationSample() {
 //    msgBox.setText("Downloading sample data (100MB). This may take a while.");
 //    msgBox.exec();
 
-    QProgressDialog progressDialog("Downloading sample data, please wait...",
+    QProgressDialog progressDialog("Downloading sample dataset, please wait...",
                                    QString(),
                                    0,
                                    0,
@@ -634,7 +746,7 @@ void MainWindow::loadSegmentationSample() {
     progressDialog.setWindowModality(Qt::NonModal);
     progressDialog.setCancelButton(nullptr);
     progressDialog.setMinimumDuration(0);
-    progressDialog.setWindowTitle("Please Wait");
+    progressDialog.setWindowTitle("Downloading Sample Dataset");
     progressDialog.setAutoClose(false);
     progressDialog.setAutoReset(false);
     progressDialog.setRange(0, sampleDownloadCount * sampleDownloadProgressResolution);
@@ -643,8 +755,8 @@ void MainWindow::loadSegmentationSample() {
 
     QCoreApplication::processEvents();
 
-    QString downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd;
-    std::tie(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathWS, downloadedFilePathBnd) = downloadFiles(&progressDialog);
+    QString downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathRefinement, downloadedFilePathBnd;
+    std::tie(downloadedFilePathMC, downloadedFilePathWGA, downloadedFilePathRefinement, downloadedFilePathBnd) = downloadFiles(&progressDialog);
 
     progressDialog.close();
 
@@ -652,13 +764,13 @@ void MainWindow::loadSegmentationSample() {
         graph->setBackgroundIdStrategy("backgroundIsLowestId");
         mySignalControl->addSegmentsGraphAsync(
             downloadedFilePathMC,
-            [this, downloadedFilePathWS, downloadedFilePathWGA, downloadedFilePathBnd](
+            [this, downloadedFilePathRefinement, downloadedFilePathWGA, downloadedFilePathBnd](
                 SignalControl::LoadResult segmentsIndex) {
                 if (!segmentsIndex) {
                     return;
                 }
-                mySignalControl->addRefinementWatershedAsync(
-                    downloadedFilePathWS,
+                mySignalControl->loadRefinementAsync(
+                    downloadedFilePathRefinement,
                     "",
                     [this, downloadedFilePathWGA, downloadedFilePathBnd](SignalControl::LoadResult refinementIndex) {
                         if (!refinementIndex) {
@@ -722,19 +834,19 @@ void MainWindow::showHotkeys() {
 <body>
 
 <p class="bold_header">S + Click</p>
-<p>Transfer working [S]egment under cursor to currently active segmentation.</p>
+<p>Transfer the working [S]upervoxel under the cursor to the selected segmentation.</p>
 
 <p class="bold_header">D + Click</p>
-<p>[D]elete label under cursor in currently active segmentation.</p>
+<p>[D]elete the label under the cursor in the selected segmentation.</p>
 
 <p class="bold_header">C + Click</p>
-<p>[C]ut initial label under cursor from working node under the cursor.</p>
+<p>[C]ut the initial label under the cursor from the current working supervoxel.</p>
 
 <p class="bold_header">F + Click</p>
-<p>[F]ill holes in segmentation label with initial label under cursor.</p>
+<p>[F]ill holes in the segmentation label with the initial label under the cursor.</p>
 
 <p class="bold_header">G + Click</p>
-<p>[O]pening operation on segmentation label under cursor.</p>
+<p>Run an [O]pening operation on the segmentation label under the cursor.</p>
 
 <p class="bold_header">H + Click</p>
 <p>Insert Segment from Segmentation into initial nodes.</p>
@@ -746,10 +858,10 @@ void MainWindow::showHotkeys() {
 <p>Split working node into its initial nodes.</p>
 
 <p class="bold_header">Q + Click</p>
-<p>(For Paintmode) Set the brush to the color/id of the SEGMENTATION under the cursor.</p>
+<p>In paint mode, set the brush to the label ID of the segmentation under the cursor.</p>
 
-<p class="bold_header">Left/Right Click in Paintmode</p>
-<p>Left: Add to color/id. Right: Remove from color/id.</p>
+<p class="bold_header">Left/Right Click in Paint Mode</p>
+<p>Left: add to the current label ID. Right: remove from the current label ID.</p>
 
 <p class="bold_header">+/-</p>
 <p>Zoom to/away from cursor.</p>
@@ -767,10 +879,10 @@ void MainWindow::showHotkeys() {
 <p>Change brush size (1 smallest, 10 biggest).</p>
 
 <p class="bold_header">R</p>
-<p>[R]andom color scheme for working Segments.</p>
+<p>Apply a [R]andom color scheme to the working supervoxels.</p>
 
 <p class="bold_header">P + Click</p>
-<p>Refine by [P]osition of the cursor with currently active refinement watershed.</p>
+<p>Refine by [P]osition of the cursor with the selected refinement.</p>
 
 <p class="bold_header">CMD + Click</p>
 <p>Set other orthogonal views to slice through the point under the cursor.</p>
@@ -780,7 +892,7 @@ void MainWindow::showHotkeys() {
 )";
 
     QDialog dialog(this);
-    dialog.setWindowTitle("HotKeys");
+    dialog.setWindowTitle("Hotkeys");
     dialog.resize(800, 400);
 
     auto *layout = new QVBoxLayout(&dialog);

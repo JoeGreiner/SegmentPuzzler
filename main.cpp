@@ -203,7 +203,7 @@ int main(int argc, char *argv[]) {
 
                 auto loadRefinement = [myMainWindow, pathToRefinement, refinementName]() {
                     if (!pathToRefinement.isEmpty()) {
-                        myMainWindow->mySignalControl->addRefinementWatershed(pathToRefinement, refinementName);
+                        myMainWindow->mySignalControl->loadRefinement(pathToRefinement, refinementName);
                     }
                 };
 
@@ -225,7 +225,7 @@ int main(int argc, char *argv[]) {
 
                 auto loadSegmentation = [myMainWindow, pathToSegmentation, segmentationName, loadBoundary]() {
                     if (!pathToSegmentation.isEmpty()) {
-                        myMainWindow->mySignalControl->loadSegmentationVolumeAsync(
+                        myMainWindow->mySignalControl->loadSegmentationVolume(
                             pathToSegmentation,
                             segmentationName,
                             [loadBoundary](SignalControl::LoadResult segmentationIndex) {
