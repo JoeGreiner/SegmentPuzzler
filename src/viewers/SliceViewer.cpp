@@ -5,16 +5,73 @@
 #include <Qt>
 #include <QtWidgets>
 #include "src/segment_handling/graphBase.h"
+#include <QDebug>
+#include <QHash>
 #include <QPainter>
 #include "SliceViewer.h"
 #include "SliceViewerITKSignal.h"
 #include "src/utils/utils.h"
 #include <itkImageRegionConstIteratorWithIndex.h>
 #include <QWheelEvent>
+#include <algorithm>
+#include <cmath>
 #ifdef USE_OMP
 #include <omp.h>
 #endif
 #include <mutex>
+
+namespace {
+
+constexpr double kMaximumScaledSliceExtent = 8192.0;
+
+QString planeNameForSliceAxis(int sliceAxis) {
+    switch (sliceAxis) {
+        case 0:
+            return "YZ";
+        case 1:
+            return "XZ";
+        case 2:
+            return "XY";
+        default:
+            return "Unknown";
+    }
+}
+
+void logSliceViewerState(const QString &key, const QString &message) {
+    static QHash<QString, QString> lastLogs;
+    if (lastLogs.value(key) == message) {
+        return;
+    }
+
+    qInfo().noquote() << message;
+    lastLogs.insert(key, message);
+}
+
+QString summarizeActiveSignalImageRects(const std::vector<SliceViewerITKSignal *> &signalList) {
+    QStringList entries;
+    entries.reserve(static_cast<int>(signalList.size()));
+    for (auto *signal : signalList) {
+        if (signal == nullptr || !signal->getIsActive()) {
+            continue;
+        }
+
+        const QImage *image = signal->getAddressSliceQImage();
+        if (image == nullptr) {
+            entries << "null";
+            continue;
+        }
+
+        entries << QString("%1x%2").arg(image->width()).arg(image->height());
+    }
+
+    if (entries.isEmpty()) {
+        return "none";
+    }
+
+    return entries.join(",");
+}
+
+} // namespace
 
 
 SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent, bool verbose)
@@ -336,23 +393,45 @@ void SliceViewer::paintEvent(QPaintEvent *event) {
 
     QPainter painter(this);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    const QRect targetRect = rect();
+    const QRect eventRect = event != nullptr ? event->rect() : QRect();
     if (backGroundImage.isNull()) {
         qWarning() << "backGroundImage is not initialized!";
     }
     if (sliceIndicatorImage.isNull()) {
         qWarning() << "sliceIndicatorImage is not initialized!";
     }
-    painter.drawImage(event->rect(), backGroundImage, event->rect());
+    painter.drawImage(targetRect, backGroundImage, backGroundImage.rect());
     for (auto &signal : signalList) {
         if (signal->getIsActive()) {
             if (verbose) { std::cout << "Viewer: Painting new signal" << std::endl; }
             if (signal->getAddressSliceQImage() == nullptr) {
                 qWarning() << "signal->getAddressSliceQImage() is nullptr!";
             }
-            painter.drawImage(event->rect(), *(signal->getAddressSliceQImage()), event->rect());
+            painter.drawImage(targetRect,
+                              *(signal->getAddressSliceQImage()),
+                              signal->getAddressSliceQImage()->rect());
         }
     }
-    painter.drawImage(event->rect(), sliceIndicatorImage, event->rect());
+    painter.drawImage(targetRect, sliceIndicatorImage, sliceIndicatorImage.rect());
+
+    const QString planeName = planeNameForSliceAxis(sliceAxis);
+    const QString logKey = QString("SliceViewerPaint_%1").arg(planeName);
+    const QString message = QString("[SliceViewerPaint %1] eventRect=%2,%3 %4x%5 widgetRect=%6,%7 %8x%9 "
+                                    "widgetSize=%10x%11 fixedSize=%12x%13 zoom=%14 currentSlice=%15x%16 "
+                                    "background=%17x%18 sliceIndicator=%19x%20 activeSignalImages=%21")
+            .arg(planeName)
+            .arg(eventRect.x()).arg(eventRect.y()).arg(eventRect.width()).arg(eventRect.height())
+            .arg(targetRect.x()).arg(targetRect.y()).arg(targetRect.width()).arg(targetRect.height())
+            .arg(width()).arg(height())
+            .arg(minimumWidth()).arg(minimumHeight())
+            .arg(zoomFactor, 0, 'f', 6)
+            .arg(getCurrentSliceWidth()).arg(getCurrentSliceHeight())
+            .arg(backGroundImage.width()).arg(backGroundImage.height())
+            .arg(sliceIndicatorImage.width()).arg(sliceIndicatorImage.height())
+            .arg(summarizeActiveSignalImageRects(signalList));
+    logSliceViewerState(logKey, message);
+
     if (verbose) { utils::toc(tic, "Viewer: finished PaintEvent: ");}
 
 }
@@ -384,6 +463,17 @@ void SliceViewer::resetQImages() {
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0));
     setPixmap(QPixmap::fromImage(backGroundImage));
     syncViewerSizeToImage();
+
+    const QString planeName = planeNameForSliceAxis(sliceAxis);
+    const QString logKey = QString("SliceViewerReset_%1").arg(planeName);
+    const QString message = QString("[SliceViewerReset %1] zoom=%2 currentSlice=%3x%4 background=%5x%6 sliceIndicator=%7x%8 widgetSize=%9x%10")
+            .arg(planeName)
+            .arg(zoomFactor, 0, 'f', 6)
+            .arg(getCurrentSliceWidth()).arg(getCurrentSliceHeight())
+            .arg(backGroundImage.width()).arg(backGroundImage.height())
+            .arg(sliceIndicatorImage.width()).arg(sliceIndicatorImage.height())
+            .arg(width()).arg(height());
+    logSliceViewerState(logKey, message);
 }
 
 
@@ -567,15 +657,68 @@ std::vector<SliceViewer *> SliceViewer::getLinkedViewers() {
 
 void SliceViewer::modifyZoomInAllViewers(double factor) {
     auto *viewer = orthoViewer();
+    if (viewer == nullptr || viewer->xy == nullptr || viewer->xz == nullptr || viewer->zy == nullptr) {
+        return;
+    }
+
+    const double currentZoom = zoomFactor;
+    if (currentZoom <= 0.0) {
+        return;
+    }
+
+    const double fittedZoom = viewer->computeFittedZoom();
+    const double minimumZoom = fittedZoom;
+    const int maxSliceExtent = std::max(std::max(viewer->xy->getCurrentSliceWidth(),
+                                                 viewer->xy->getCurrentSliceHeight()),
+                                        std::max(std::max(viewer->xz->getCurrentSliceWidth(),
+                                                          viewer->xz->getCurrentSliceHeight()),
+                                                 std::max(viewer->zy->getCurrentSliceWidth(),
+                                                          viewer->zy->getCurrentSliceHeight())));
+    const double maximumZoom = std::max(minimumZoom,
+                                        kMaximumScaledSliceExtent / std::max(1, maxSliceExtent));
+    const double proposedZoom = currentZoom * factor;
+    const double clampedZoom = std::clamp(proposedZoom, minimumZoom, maximumZoom);
+    if (std::abs(clampedZoom - proposedZoom) > 1e-9) {
+        const QString message = QString("[SliceViewerZoomClamp] current=%1 proposed=%2 minimum=%3 maximum=%4 applied=%5 fitted=%6 maxSliceExtent=%7")
+                .arg(currentZoom, 0, 'f', 6)
+                .arg(proposedZoom, 0, 'f', 6)
+                .arg(minimumZoom, 0, 'f', 6)
+                .arg(maximumZoom, 0, 'f', 6)
+                .arg(clampedZoom, 0, 'f', 6)
+                .arg(fittedZoom, 0, 'f', 6)
+                .arg(maxSliceExtent);
+        logSliceViewerState("SliceViewerZoomClamp", message);
+    }
+    if (std::abs(clampedZoom - currentZoom) > 1e-9) {
+        factor = clampedZoom / currentZoom;
+        if (std::abs(factor - 1.0) < 1e-9) {
+            return;
+        }
+    } else {
+        return;
+    }
+
     viewer->zy->modifyZoom(factor);
     viewer->xz->modifyZoom(factor);
     viewer->xy->modifyZoom(factor);
-    viewer->updateMaximumSizes(zoomFactor);
+    viewer->refreshZoomLayout();
 }
 
 void SliceViewer::modifyZoom(double factor) {
+    const double oldZoom = zoomFactor;
     zoomFactor *= factor;
     syncViewerSizeToImage();
+
+    const QString planeName = planeNameForSliceAxis(sliceAxis);
+    const QString logKey = QString("SliceViewerZoom_%1").arg(planeName);
+    const QString message = QString("[SliceViewerZoom %1] factor=%2 oldZoom=%3 newZoom=%4 currentSlice=%5x%6 widgetSize=%7x%8")
+            .arg(planeName)
+            .arg(factor, 0, 'f', 6)
+            .arg(oldZoom, 0, 'f', 6)
+            .arg(zoomFactor, 0, 'f', 6)
+            .arg(getCurrentSliceWidth()).arg(getCurrentSliceHeight())
+            .arg(width()).arg(height());
+    logSliceViewerState(logKey, message);
 
     // update only xy view, it linked sliders will update other views
     if (sliceAxis == 2) {
@@ -609,7 +752,21 @@ OrthoViewer *SliceViewer::orthoViewer() const {
 void SliceViewer::syncViewerSizeToImage() {
     const int scaledWidth = std::max(1, static_cast<int>(std::lround(getCurrentSliceWidth() * zoomFactor)));
     const int scaledHeight = std::max(1, static_cast<int>(std::lround(getCurrentSliceHeight() * zoomFactor)));
+    const QSize oldSize = size();
     setFixedSize(scaledWidth, scaledHeight);
+
+    const QString planeName = planeNameForSliceAxis(sliceAxis);
+    const QString logKey = QString("SliceViewerSize_%1").arg(planeName);
+    const QString message = QString("[SliceViewerSize %1] zoom=%2 currentSlice=%3x%4 scaled=%5x%6 oldSize=%7x%8 newSize=%9x%10 min=%11x%12 max=%13x%14")
+            .arg(planeName)
+            .arg(zoomFactor, 0, 'f', 6)
+            .arg(getCurrentSliceWidth()).arg(getCurrentSliceHeight())
+            .arg(scaledWidth).arg(scaledHeight)
+            .arg(oldSize.width()).arg(oldSize.height())
+            .arg(width()).arg(height())
+            .arg(minimumWidth()).arg(minimumHeight())
+            .arg(maximumWidth()).arg(maximumHeight());
+    logSliceViewerState(logKey, message);
 }
 
 void SliceViewer::setUpCustomCursor() {

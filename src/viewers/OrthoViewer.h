@@ -9,13 +9,27 @@
 #include <QWheelEvent>
 #include <QSplitter>
 #include <QVBoxLayout>
+#include <QGridLayout>
+#include <QHash>
+#include <QSet>
 #include "src/viewers/AnnotationSliceViewer.h"
 #include "itkSignal.h"
 
 class TaskRunner;
+class VisibleRectOverlay;
+class ShortcutLegendWidget;
 
 class QScrollAreaNoWheel : public QScrollArea {
 Q_OBJECT
+public:
+    void setIndicatorMargins(int left, int top, int right, int bottom) {
+        setViewportMargins(left, top, right, bottom);
+    }
+
+    QMargins getIndicatorMargins() const {
+        return viewportMargins();
+    }
+
 protected:
     void wheelEvent(QWheelEvent *event) override {
         event->ignore();
@@ -51,7 +65,10 @@ public:
     bool isBusy() const;
     TaskRunner *getTaskRunner() const;
 
-    void updateMaximumSizes(double zoomFactor = 1.);
+    void refreshZoomLayout();
+    double computeFittedZoom() const;
+    void refreshInteractionModeIndicators();
+    void flashShortcutLegendKey(const QString &shortcutId);
 
 
     std::shared_ptr<GraphBase> graphBase;
@@ -82,8 +99,19 @@ public slots:
                                                        double yWanted,
                                                        double zoomFactor);
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void initialize();
+    void onViewportResized();
+    void placeSplittersForZoom(double zoom);
+    void reclaimBoundarySlack();
+    void adjustSplittersForCurrentZoom();
+    void updateExternalScrollBars();
+    void updatePlaneIndicators();
+    void schedulePlaneIndicatorRefresh();
+    bool hasCollapsedOrthoPane() const;
 
     bool initialized;
 
@@ -97,15 +125,36 @@ private:
     QWidget *viewXZ;
     QWidget *viewZY;
 
-    QHBoxLayout *layoutXY;
-    QHBoxLayout *layoutXZ;
-    QHBoxLayout *layoutZY;
+    QGridLayout *layoutXY;
+    QGridLayout *layoutXZ;
+    QGridLayout *layoutZY;
 
     QSlider *sliderXY;
     QSlider *sliderXZ;
     QSlider *sliderZY;
 
-    QWidget *dummyWidget;
+    QScrollBar *externalTopScrollBarXY;
+    QScrollBar *externalBottomScrollBarXY;
+    QScrollBar *externalLeftScrollBarXY;
+    QScrollBar *externalRightScrollBarXY;
+
+    QScrollBar *externalTopScrollBarXZ;
+    QScrollBar *externalBottomScrollBarXZ;
+    QScrollBar *externalLeftScrollBarXZ;
+    QScrollBar *externalRightScrollBarXZ;
+
+    QScrollBar *externalTopScrollBarZY;
+    QScrollBar *externalBottomScrollBarZY;
+    QScrollBar *externalLeftScrollBarZY;
+    QScrollBar *externalRightScrollBarZY;
+
+    ShortcutLegendWidget *shortcutLegendWidget;
+    VisibleRectOverlay *xyIndicator;
+    VisibleRectOverlay *xzIndicator;
+    VisibleRectOverlay *zyIndicator;
+    QSet<QString> flashedShortcutIds;
+    QHash<QString, int> shortcutFlashGenerations;
+    bool autoAdjustingSplitters = false;
 };
 
 

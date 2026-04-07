@@ -1,4 +1,6 @@
 #include <QPainter>
+#include <QDebug>
+#include <QHash>
 #include <QtWidgets>
 #ifdef USE_OMP
 #include <omp.h>
@@ -29,6 +31,56 @@ bool toolWorksWithoutWorkingSegments(SliceViewer::ToolMode tool) {
            tool == SliceViewer::ToolMode::Open;
 }
 
+void logAnnotationViewerState(const QString &key, const QString &message) {
+    static QHash<QString, QString> lastLogs;
+    if (lastLogs.value(key) == message) {
+        return;
+    }
+
+    qInfo().noquote() << message;
+    lastLogs.insert(key, message);
+}
+
+QString summarizeAnnotationSignalImageRects(const std::vector<SliceViewerITKSignal *> &signalList) {
+    QStringList entries;
+    entries.reserve(static_cast<int>(signalList.size()));
+    for (auto *signal : signalList) {
+        if (signal == nullptr || !signal->getIsActive()) {
+            continue;
+        }
+
+        const QImage *image = signal->getAddressSliceQImage();
+        if (image == nullptr) {
+            entries << "null";
+            continue;
+        }
+
+        entries << QString("%1x%2").arg(image->width()).arg(image->height());
+    }
+
+    if (entries.isEmpty()) {
+        return "none";
+    }
+
+    return entries.join(",");
+}
+
+void setLinkedToolMode(std::vector<SliceViewer *> &linkedViewerList, SliceViewer::ToolMode toolMode) {
+    for (auto *viewer : linkedViewerList) {
+        if (viewer != nullptr) {
+            viewer->activeTool = toolMode;
+        }
+    }
+}
+
+void clearMatchingLinkedToolMode(std::vector<SliceViewer *> &linkedViewerList, SliceViewer::ToolMode toolMode) {
+    for (auto *viewer : linkedViewerList) {
+        if (viewer != nullptr && viewer->activeTool == toolMode) {
+            viewer->activeTool = SliceViewer::ToolMode::None;
+        }
+    }
+}
+
 }
 
 
@@ -57,54 +109,67 @@ AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBas
 
 }
 
+void AnnotationSliceViewer::notifyOrthoViewerInteractionModeChanged() {
+    auto *viewer = orthoViewer();
+    if (viewer != nullptr) {
+        viewer->refreshInteractionModeIndicators();
+    }
+}
+
+// Keep the common key-driven tool transitions in one small path.
+// Paint and ROI mode toggles still notify explicitly in their own methods.
+void AnnotationSliceViewer::setLinkedToolModeAndNotify(std::vector<SliceViewer *> &viewerList, ToolMode toolMode) {
+    setLinkedToolMode(viewerList, toolMode);
+    notifyOrthoViewerInteractionModeChanged();
+}
+
 
 void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
     std::lock_guard<std::mutex> lock(signalListMutex);
 
-    int topLeftX = event->rect().topLeft().x();
-    int topLeftY = event->rect().topLeft().y();
-    int eventWidth = event->rect().width();
-    int eventHeight = event->rect().height();
-
     if (verbose) {
         std::cout << "AnnotationViewer: Paintevent triggered: " << event->rect().width()
                   << " x " << event->rect().height() << std::endl;
-        printf("x0: %d y0: %d x1: %d y1: %d\n", topLeftX, topLeftY, eventWidth, eventHeight);
+        printf("x0: %d y0: %d x1: %d y1: %d\n",
+               event->rect().topLeft().x(),
+               event->rect().topLeft().y(),
+               event->rect().width(),
+               event->rect().height());
     }
     double tic = utils::tic();
-//    QRectF sourceRect(topLeftX, topLeftY, eventWidth, eventHeight);
-//    QRectF targetRect = sourceRect;
-
 
     QPainter painter(this);
-    painter.scale(zoomFactor, zoomFactor);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    const QRect targetRect = rect();
+    const QRect sourceRect = backGroundImage.rect();
 
-//    painter.drawImage(targetRect, backGroundImage, sourceRect);
-    painter.drawImage(0, 0, backGroundImage);
+    painter.drawImage(targetRect, backGroundImage, sourceRect);
 
     for (auto &signal : signalList) {
         if (signal->getIsActive()) {
             if (verbose) { std::cout << "AnnotationViewer: Painting new signal" << std::endl; }
-//            painter.drawImage(targetRect, *(signal->getAddressSliceQImage()), sourceRect);
-            painter.drawImage(0, 0, *(signal->getAddressSliceQImage()));
+            painter.drawImage(targetRect,
+                              *(signal->getAddressSliceQImage()),
+                              signal->getAddressSliceQImage()->rect());
         }
     }
 
-//    painter.drawImage(targetRect, annotationImage, sourceRect);
-    painter.drawImage(0, 0, annotationImage);
-//        painter.drawImage(event->rect(), edgeImage, event->rect());
+    painter.drawImage(targetRect, annotationImage, annotationImage.rect());
 
     // update sliceIndicatorImage in own viewer (draw other indicator for other views in viewer)
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0)); // erase old slice indicator image!
     for (auto *viewer : linkedViewerList) {
         drawOtherViewerSliceIndicator(viewer->getSliceAxis(), viewer->getSliceIndex());
     }
-//    painter.drawImage(targetRect, sliceIndicatorImage, sourceRect);
-    painter.drawImage(0, 0, sliceIndicatorImage);
+    painter.drawImage(targetRect, sliceIndicatorImage, sliceIndicatorImage.rect());
 
-    qreal dotRadius = 5/zoomFactor;
+    const qreal scaleX = getCurrentSliceWidth() > 0 ? static_cast<qreal>(targetRect.width()) / static_cast<qreal>(getCurrentSliceWidth()) : 1.0;
+    const qreal scaleY = getCurrentSliceHeight() > 0 ? static_cast<qreal>(targetRect.height()) / static_cast<qreal>(getCurrentSliceHeight()) : 1.0;
+    const auto mapPointToDisplay = [scaleX, scaleY](qreal x, qreal y) {
+        return QPointF((x + 0.5) * scaleX, (y + 0.5) * scaleY);
+    };
+    const qreal dotRadius = 5.0;
     int dotAlpha = 255;
 
     QColor xy_red = QColor(255, 0, 0, dotAlpha);
@@ -115,25 +180,43 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
     switch (sliceAxis) {
         case 0:
             painter.setBrush(QBrush(xy_red));
-            painter.drawEllipse(QPointF(indexVerticalIndicator+0.5, lastMouseY+0.5), dotRadius, dotRadius);
+            painter.drawEllipse(mapPointToDisplay(indexVerticalIndicator, lastMouseY), dotRadius, dotRadius);
             painter.setBrush(QBrush(xz_green));
-            painter.drawEllipse(QPointF(lastMouseZ+0.5, indexHorizontalIndicator+0.5), dotRadius, dotRadius);
+            painter.drawEllipse(mapPointToDisplay(lastMouseZ, indexHorizontalIndicator), dotRadius, dotRadius);
             break;
         case 1:
             painter.setBrush(QBrush(yz_yellow));
-            painter.drawEllipse(QPointF(indexVerticalIndicator+0.5, lastMouseZ+0.5), dotRadius, dotRadius);
+            painter.drawEllipse(mapPointToDisplay(indexVerticalIndicator, lastMouseZ), dotRadius, dotRadius);
             painter.setBrush(QBrush(xy_red));
-            painter.drawEllipse(QPointF(lastMouseX+0.5, indexHorizontalIndicator+0.5), dotRadius, dotRadius);
+            painter.drawEllipse(mapPointToDisplay(lastMouseX, indexHorizontalIndicator), dotRadius, dotRadius);
             break;
         case 2:
             painter.setBrush(QBrush(yz_yellow));
-            painter.drawEllipse(QPointF(indexVerticalIndicator+0.5, lastMouseY+0.5), dotRadius, dotRadius);
+            painter.drawEllipse(mapPointToDisplay(indexVerticalIndicator, lastMouseY), dotRadius, dotRadius);
             painter.setBrush(QBrush(xz_green));
-            painter.drawEllipse(QPointF(lastMouseX+0.5, indexHorizontalIndicator+0.5), dotRadius, dotRadius);
+            painter.drawEllipse(mapPointToDisplay(lastMouseX, indexHorizontalIndicator), dotRadius, dotRadius);
             break;
         default:
             throw (std::logic_error("SliceAxis not implemented!"));
     }
+
+    const QString planeName = sliceAxis == 0 ? "YZ" : (sliceAxis == 1 ? "XZ" : "XY");
+    const QString logKey = QString("AnnotationViewerPaint_%1").arg(planeName);
+    const QString message = QString("[AnnotationViewerPaint %1] eventRect=%2,%3 %4x%5 widgetRect=%6,%7 %8x%9 "
+                                    "widgetSize=%10x%11 zoom=%12 currentSlice=%13x%14 background=%15x%16 annotation=%17x%18 "
+                                    "sliceIndicator=%19x%20 scale=%21x%22 activeSignalImages=%23")
+            .arg(planeName)
+            .arg(event->rect().x()).arg(event->rect().y()).arg(event->rect().width()).arg(event->rect().height())
+            .arg(targetRect.x()).arg(targetRect.y()).arg(targetRect.width()).arg(targetRect.height())
+            .arg(width()).arg(height())
+            .arg(zoomFactor, 0, 'f', 6)
+            .arg(getCurrentSliceWidth()).arg(getCurrentSliceHeight())
+            .arg(backGroundImage.width()).arg(backGroundImage.height())
+            .arg(annotationImage.width()).arg(annotationImage.height())
+            .arg(sliceIndicatorImage.width()).arg(sliceIndicatorImage.height())
+            .arg(scaleX, 0, 'f', 6).arg(scaleY, 0, 'f', 6)
+            .arg(summarizeAnnotationSignalImageRects(signalList));
+    logAnnotationViewerState(logKey, message);
 
 
     if (verbose) {    utils::toc(tic, "AnnotationViewer PaintEvent finished: ");}
@@ -148,6 +231,9 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
     }
 //    std::cout << event->key() << std::endl;
     if (event->key() == Qt::Key_R) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("r");
+        }
         if(graphBase->pWorkingSegments != nullptr) {
             graphBase->pWorkingSegments->randomizeCategoricalLUT();
             graphBase->pWorkingSegments->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
@@ -163,78 +249,111 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             viewer->recalculateQImages();
         }
     } else if (event->key() == Qt::Key_Plus) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("zoom");
+        }
         modifyZoomInAllViewers(2);
     } else if (event->key() == Qt::Key_Minus) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("zoom");
+        }
         modifyZoomInAllViewers(0.5);
     } else if (event->key() == Qt::Key_1) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(5);
     } else if (event->key() == Qt::Key_2) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(10);
     } else if (event->key() == Qt::Key_3) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(15);
     } else if (event->key() == Qt::Key_4) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(20);
     } else if (event->key() == Qt::Key_5) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(25);
     } else if (event->key() == Qt::Key_6) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(30);
     } else if (event->key() == Qt::Key_7) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(35);
     } else if (event->key() == Qt::Key_8) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(55);
     } else if (event->key() == Qt::Key_9) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(75);
     } else if (event->key() == Qt::Key_0) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
         updatePenWidthInAllViewers(100);
     } else if (event->key() == Qt::Key_Up) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("slice");
+        }
         incrementSliceIndex();
     } else if (event->key() == Qt::Key_Down) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("slice");
+        }
         decrementSliceIndex();
     } else if (event->key() == Qt::Key_X) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Split;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Split);
     } else if (event->key() == Qt::Key_C) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Cut;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Cut);
     } else if (event->key() == Qt::Key_Control) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Ctrl;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Ctrl);
     } else if (event->key() == Qt::Key_U) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("u");
+        }
         this->exportView();
     } else if (event->key() == Qt::Key_V) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("v");
+        }
         this->exportVideo();
     } else if (event->key() == Qt::Key_S) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Transfer;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Transfer);
     } else if (event->key() == Qt::Key_P) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Refine;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Refine);
     } else if (event->key() == Qt::Key_Q) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::SelectColor;
+        if (isPaintModeActive() || isPaintBoundaryModeActive()) {
+            setLinkedToolModeAndNotify(linkedViewerList, ToolMode::SelectColor);
         }
     } else if (event->key() == Qt::Key_D) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Delete;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Delete);
     } else if (event->key() == Qt::Key_F) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Fill;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Fill);
     } else if (event->key() == Qt::Key_G) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Open;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Open);
     } else if (event->key() == Qt::Key_H) {
-        for (auto *viewer : linkedViewerList) {
-            viewer->activeTool = ToolMode::Insert;
-        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Insert);
     } else if (event->key() == Qt::Key_E) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("e");
+        }
         exportDebugInformation();
 //        graphBase->pGraph->printMergeTreeToFile("mergeTree.txt");
 //        graphBase->pGraph->printEdgesToFile("edges.txt");
@@ -276,10 +395,8 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
     };
     auto it = keyToToolMode.find(event->key());
     if (it != keyToToolMode.end()) {
-        for (auto *viewer : linkedViewerList) {
-            if (viewer->activeTool == it->second)
-                viewer->activeTool = ToolMode::None;
-        }
+        clearMatchingLinkedToolMode(linkedViewerList, it->second);
+        notifyOrthoViewerInteractionModeChanged();
     }
 }
 
@@ -288,6 +405,15 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
     if (taskRunner != nullptr && taskRunner->isBusy()) {
         return;
     }
+
+    // Middle click is a general panning gesture across tools.
+    // The overlay badge describes the primary tool actions, while pan stays available separately.
+    if (event->button() == Qt::MiddleButton) {
+        old_middle_click_translate_x_pos = event->pos().x();
+        old_middle_click_translate_y_pos = event->pos().y();
+        return;
+    }
+
     if (graphBase->pWorkingSegmentsImage == nullptr && !toolWorksWithoutWorkingSegments(activeTool)) {
         return;
     }
@@ -309,9 +435,6 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
             rightClicked = true;
             scribbling = true;
             drawPoint(event->pos());
-        } else if (event->button() == Qt::MiddleButton) {
-            old_middle_click_translate_x_pos = event->pos().x();
-            old_middle_click_translate_y_pos = event->pos().y();
         }
         break;
     case ToolMode::Ctrl: {
@@ -335,7 +458,7 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         break;
     case ToolMode::Refine:
         refineSegmentByPosition(event->pos().x(), event->pos().y());
-        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
     case ToolMode::Transfer:
         transferWorkingNodeToSegmentation(event->pos().x(), event->pos().y());
@@ -354,15 +477,15 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         break;
     case ToolMode::Fill:
         runFillSegmentationLabel(event->pos().x(), event->pos().y());
-        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
     case ToolMode::Open:
         runOpenSegmentationLabel(event->pos().x(), event->pos().y());
-        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
     case ToolMode::Insert:
         runInsertSegmentationSegmentIntoInitialSegments(event->pos().x(), event->pos().y());
-        for (auto *viewer : linkedViewerList) { viewer->activeTool = ToolMode::None; }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
     }
 
@@ -734,6 +857,8 @@ void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
             drawLineTo(event->pos());
         }
     } else if (event->buttons() == Qt::MiddleButton) {
+        // Pan remains available independently of the active tool.
+        // The badge shows tool-specific actions; this branch handles the shared viewport drag gesture.
         int current_x = event->pos().x();
         int current_y = event->pos().y();
         double scaleFactor = 0.4;
@@ -835,6 +960,7 @@ void AnnotationSliceViewer::turnROISelectonModeInactive() {
     if (ROISelectionRubberBand != nullptr) {
         ROISelectionRubberBand->hide();
     }
+    notifyOrthoViewerInteractionModeChanged();
 }
 
 
@@ -843,6 +969,7 @@ void AnnotationSliceViewer::turnROISelectonModeActive() {
     if (ROISelectionRubberBand != nullptr) {
         ROISelectionRubberBand->show();
     }
+    notifyOrthoViewerInteractionModeChanged();
 }
 
 
@@ -1077,6 +1204,18 @@ void AnnotationSliceViewer::resetQImages() {
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0));
     setPixmap(QPixmap::fromImage(annotationImage));
     syncViewerSizeToImage();
+
+    const QString planeName = sliceAxis == 0 ? "YZ" : (sliceAxis == 1 ? "XZ" : "XY");
+    const QString logKey = QString("AnnotationViewerReset_%1").arg(planeName);
+    const QString message = QString("[AnnotationViewerReset %1] zoom=%2 currentSlice=%3x%4 background=%5x%6 annotation=%7x%8 sliceIndicator=%9x%10 widgetSize=%11x%12")
+            .arg(planeName)
+            .arg(zoomFactor, 0, 'f', 6)
+            .arg(getCurrentSliceWidth()).arg(getCurrentSliceHeight())
+            .arg(backGroundImage.width()).arg(backGroundImage.height())
+            .arg(annotationImage.width()).arg(annotationImage.height())
+            .arg(sliceIndicatorImage.width()).arg(sliceIndicatorImage.height())
+            .arg(width()).arg(height());
+    logAnnotationViewerState(logKey, message);
 }
 
 
@@ -1091,10 +1230,12 @@ void AnnotationSliceViewer::updateFunction() {
 
 void AnnotationSliceViewer::togglePaintMode() {
     paintModeIsActive = !paintModeIsActive;
+    notifyOrthoViewerInteractionModeChanged();
 }
 
 void AnnotationSliceViewer::togglePaintBoundaryMode() {
     paintBoundaryModeIsActive = !paintBoundaryModeIsActive;
+    notifyOrthoViewerInteractionModeChanged();
 }
 
 void AnnotationSliceViewer::setPaintId(dataType::SegmentIdType){

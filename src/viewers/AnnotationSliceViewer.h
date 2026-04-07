@@ -20,6 +20,10 @@ public:
 
     void togglePaintBoundaryMode();
 
+    bool isPaintModeActive() const { return paintModeIsActive; }
+    bool isPaintBoundaryModeActive() const { return paintBoundaryModeIsActive; }
+    bool isROISelectionModeActive() const { return ROISelectionModeIsActive; }
+
     itk::Image<unsigned char, 3>::Pointer pThresholdedBoundaries;
     itkSignalBase * pThresholdedBoundariesSignal;
 
@@ -104,6 +108,8 @@ private:
     QRubberBand *ROISelectionRubberBand;
 
     void getSegmentationLabelIdAtCursor(int x, int y);
+    void setLinkedToolModeAndNotify(std::vector<SliceViewer *> &viewerList, ToolMode toolMode);
+    void notifyOrthoViewerInteractionModeChanged();
     QPoint ROISelectionOrigin;
 
 };

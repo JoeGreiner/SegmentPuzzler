@@ -170,6 +170,11 @@ MainWindow::MainWindow() {
     openGoToCoordinatesAction->setShortcut(Qt::Key_F9);
     goToMenu->addAction(openGoToCoordinatesAction);
     connect(openGoToCoordinatesAction, &QAction::triggered, this, [this]() {
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->flashShortcutLegendKey("f9");
+        }
+    });
+    connect(openGoToCoordinatesAction, &QAction::triggered, this, [this]() {
 //        open q box for three integers
         QDialog dialog(this);
         dialog.setWindowTitle("Go to Coordinates");
@@ -210,6 +215,11 @@ MainWindow::MainWindow() {
     QAction *openGoToLabelAction = new QAction(tr("&Go to Label ID"), this);
     openGoToLabelAction->setShortcut(Qt::Key_F10);
     goToMenu->addAction(openGoToLabelAction);
+    connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->flashShortcutLegendKey("f10");
+        }
+    });
     connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
         if (graphBase->pSelectedSegmentation == nullptr) {
             std::cout << "No segmentation loaded.\n";
@@ -292,6 +302,11 @@ MainWindow::MainWindow() {
     openHotkeysAction = new QAction(tr("&Show Hotkeys"), this);
     openHotkeysAction->setShortcut(Qt::Key_F1);
     helpMenu->addAction(openHotkeysAction);
+    connect(openHotkeysAction, &QAction::triggered, this, [this]() {
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->flashShortcutLegendKey("f1");
+        }
+    });
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
