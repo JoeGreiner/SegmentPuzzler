@@ -166,6 +166,16 @@ MainWindow::MainWindow() {
 
     segmentationsMenu = menuBar()->addMenu(tr("&Segmentations"));
     mySignalControl->populateSegmentationsMenu(segmentationsMenu);
+    segmentationsMenu->addSeparator();
+    showSegmentTableAction = new QAction(tr("&Segment Feature Table"), this);
+    showSegmentTableAction->setShortcut(Qt::Key_F8);
+    segmentationsMenu->addAction(showSegmentTableAction);
+    connect(showSegmentTableAction, &QAction::triggered, this, [this]() {
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->flashShortcutLegendKey("f8");
+        }
+    });
+    connect(showSegmentTableAction, &QAction::triggered, this, &MainWindow::showSegmentTable);
 
     settingsMenu = menuBar()->addMenu(tr("&Settings"));
     QAction *setClosingRadiusAction = new QAction(tr("Set Closing Radius"), this);
@@ -238,6 +248,16 @@ MainWindow::MainWindow() {
         if (myOrthowindow != nullptr) {
             myOrthowindow->setMorphologyErosionRadius(radius);
         }
+    });
+
+    settingsMenu->addSeparator();
+    QAction *useSelectedSegmentationFor3DViewsAction =
+        new QAction(tr("Use Selected Segmentation For 3D Views"), this);
+    useSelectedSegmentationFor3DViewsAction->setCheckable(true);
+    useSelectedSegmentationFor3DViewsAction->setChecked(graphBase->useSelectedSegmentationFor3DView);
+    settingsMenu->addAction(useSelectedSegmentationFor3DViewsAction);
+    connect(useSelectedSegmentationFor3DViewsAction, &QAction::toggled, this, [this](bool checked) {
+        graphBase->useSelectedSegmentationFor3DView = checked;
     });
 
 
@@ -372,18 +392,6 @@ MainWindow::MainWindow() {
 
     }
     );
-
-
-    showSegmentTableAction = new QAction(tr("&Segment Feature Table"), this);
-    showSegmentTableAction->setShortcut(Qt::Key_F8);
-    goToMenu->addAction(showSegmentTableAction);
-    connect(showSegmentTableAction, &QAction::triggered, this, [this]() {
-        if (myOrthowindow != nullptr) {
-            myOrthowindow->flashShortcutLegendKey("f8");
-        }
-    });
-    connect(showSegmentTableAction, &QAction::triggered, this, &MainWindow::showSegmentTable);
-
     helpMenu = menuBar()->addMenu(tr("&Help"));
     openHotkeysAction = new QAction(tr("&Show Hotkeys"), this);
     openHotkeysAction->setShortcut(Qt::Key_F1);

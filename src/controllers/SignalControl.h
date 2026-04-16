@@ -222,8 +222,6 @@ private:
     QSplitter *sectionSplitter = nullptr;
     QPushButton *togglePaintBrushButton = nullptr;
     QPushButton *setPaintIdButton = nullptr;
-    QPushButton *dilateSegmentationButton = nullptr;
-    QPushButton *erodeSegmentationButton = nullptr;
     QPushButton *toggleROISelectionButton = nullptr;
     QPushButton *runWatershedButton = nullptr;
     QPushButton *exportSegmentationButton = nullptr;

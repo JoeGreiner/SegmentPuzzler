@@ -137,6 +137,26 @@ AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBas
 
 }
 
+dataType::SegmentsImageType::Pointer AnnotationSliceViewer::active3DViewSegmentsImage() const {
+    if (graphBase == nullptr) {
+        return nullptr;
+    }
+    if (graphBase->useSelectedSegmentationFor3DView) {
+        return graphBase->pSelectedSegmentation;
+    }
+    return graphBase->pWorkingSegmentsImage;
+}
+
+itkSignal<dataType::SegmentIdType> *AnnotationSliceViewer::active3DViewSignal() const {
+    if (graphBase == nullptr) {
+        return nullptr;
+    }
+    if (graphBase->useSelectedSegmentationFor3DView) {
+        return graphBase->pSelectedSegmentationSignal;
+    }
+    return graphBase->pWorkingSegments;
+}
+
 void AnnotationSliceViewer::notifyOrthoViewerInteractionModeChanged() {
     auto *viewer = orthoViewer();
     if (viewer != nullptr) {
@@ -410,11 +430,11 @@ void AnnotationSliceViewer::showPrepared3DView(
     std::vector<std::pair<dataType::SegmentIdType, quint32>> labels,
     const QString &progressText)
 {
-    if (graphBase->pWorkingSegmentsImage == nullptr || labels.empty()) {
+    const auto segImage = active3DViewSegmentsImage();
+    if (segImage == nullptr || labels.empty()) {
         return;
     }
 
-    const auto segImage = graphBase->pWorkingSegmentsImage;
     if (taskRunner == nullptr) {
         auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
         auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
@@ -436,38 +456,41 @@ void AnnotationSliceViewer::showPrepared3DView(
 }
 
 void AnnotationSliceViewer::show3DSegmentView(int posX, int posY) {
-    if (graphBase->pWorkingSegmentsImage == nullptr) return;
+    const auto segImage = active3DViewSegmentsImage();
+    if (segImage == nullptr) return;
 
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    const dataType::SegmentIdType label =
-        graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
+    const dataType::SegmentIdType label = segImage->GetPixel({x, y, z});
     if (label == 0) return;
 
     quint32 lutColor = 0xFFAAAAAA;
-    if (graphBase->pWorkingSegments != nullptr &&
-        label < static_cast<dataType::SegmentIdType>(graphBase->pWorkingSegments->LUT.size())) {
-        lutColor = graphBase->pWorkingSegments->LUT[label];
+    auto *activeSignal = active3DViewSignal();
+    if (activeSignal != nullptr &&
+        label < static_cast<dataType::SegmentIdType>(activeSignal->LUT.size())) {
+        lutColor = activeSignal->LUT[label];
     }
 
     showPrepared3DView({{label, lutColor}}, "Preparing 3D segment view...");
 }
 
 void AnnotationSliceViewer::show3DAllLabelsView() {
-    if (graphBase->pWorkingSegmentsImage == nullptr) return;
+    const auto segImage = active3DViewSegmentsImage();
+    if (segImage == nullptr) return;
 
-    const auto *buf = graphBase->pWorkingSegmentsImage->GetBufferPointer();
-    const auto &sz = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetSize();
+    const auto *buf = segImage->GetBufferPointer();
+    const auto &sz = segImage->GetLargestPossibleRegion().GetSize();
     const size_t total = sz[0] * sz[1] * sz[2];
+    auto *activeSignal = active3DViewSignal();
 
     std::unordered_map<dataType::SegmentIdType, quint32> labelColors;
     for (size_t i = 0; i < total; ++i) {
         const dataType::SegmentIdType id = buf[i];
         if (id == 0 || labelColors.count(id)) continue;
         quint32 color = 0xFFAAAAAA;
-        if (graphBase->pWorkingSegments != nullptr &&
-            id < static_cast<dataType::SegmentIdType>(graphBase->pWorkingSegments->LUT.size())) {
-            color = graphBase->pWorkingSegments->LUT[id];
+        if (activeSignal != nullptr &&
+            id < static_cast<dataType::SegmentIdType>(activeSignal->LUT.size())) {
+            color = activeSignal->LUT[id];
         }
         labelColors[id] = color;
     }
@@ -531,7 +554,10 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         return;
     }
 
-    if (graphBase->pWorkingSegmentsImage == nullptr && !toolWorksWithoutWorkingSegments(activeTool)) {
+    const bool needs3DSource = activeTool == ToolMode::View3D && active3DViewSegmentsImage() != nullptr;
+    if (graphBase->pWorkingSegmentsImage == nullptr &&
+        !toolWorksWithoutWorkingSegments(activeTool) &&
+        !needs3DSource) {
         return;
     }
     switch (activeTool) {

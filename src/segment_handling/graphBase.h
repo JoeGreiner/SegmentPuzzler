@@ -58,6 +58,7 @@ public:
     std::unordered_map<MappedEdgeIdType, char> edgeStatus;
 
     BoundaryImageType::Pointer pSelectedBoundary;
+    bool useSelectedSegmentationFor3DView;
 
     bool ROI_set;
     int ROI_fx, ROI_fy, ROI_fz, ROI_tx, ROI_ty, ROI_tz;
@@ -76,6 +77,7 @@ public:
         pSelectedSegmentationSignal = nullptr;
         selectedSegmentationMaxSegmentId = 0;
         pSelectedBoundary = nullptr;
+        useSelectedSegmentationFor3DView = true;
         ROI_fx = -1;
         ROI_fy = -1;
         ROI_fz = -1;

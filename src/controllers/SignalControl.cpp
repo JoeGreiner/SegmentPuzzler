@@ -1209,16 +1209,10 @@ void SignalControl::setupSegmentationTreeWidget() {
 
     togglePaintBrushButton = new QPushButton();
     setPaintIdButton = new QPushButton();
-    dilateSegmentationButton = new QPushButton();
-    erodeSegmentationButton = new QPushButton();
     togglePaintBrushButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     setPaintIdButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    dilateSegmentationButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    erodeSegmentationButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     segmentationButtonRow->addWidget(togglePaintBrushButton);
     segmentationButtonRow->addWidget(setPaintIdButton);
-    segmentationButtonRow->addWidget(dilateSegmentationButton);
-    segmentationButtonRow->addWidget(erodeSegmentationButton);
     segmentationButtonRow->addStretch();
 
     segmentationWidgetLayout->addLayout(segmentationButtonRow);
@@ -1228,8 +1222,6 @@ void SignalControl::setupSegmentationTreeWidget() {
     bindButtonToAction(exportSegmentationButton, exportSegmentationAction, tr("Export Selected"));
     bindButtonToAction(togglePaintBrushButton, togglePaintModeAction);
     bindButtonToAction(setPaintIdButton, setPaintIdAction);
-    bindButtonToAction(dilateSegmentationButton, dilateSegmentationAction, tr("Dilate"));
-    bindButtonToAction(erodeSegmentationButton, erodeSegmentationAction, tr("Erode"));
 
     connect(segmentationTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(segmentationTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::segmentationClicked);

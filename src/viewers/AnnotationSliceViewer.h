@@ -105,6 +105,8 @@ protected:
 
 
 private:
+    dataType::SegmentsImageType::Pointer active3DViewSegmentsImage() const;
+    itkSignal<dataType::SegmentIdType> *active3DViewSignal() const;
     std::vector<quint32> tmpImageEdge;
     QImage annotationImage, edgeImage;
 
