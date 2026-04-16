@@ -32,6 +32,17 @@ class QVBoxLayout;
 class SignalControl : public QWidget {
 Q_OBJECT
 public:
+    enum class BoundaryLoadMode {
+        BoundaryOnly,
+        CreateEmptySegments
+    };
+
+    enum class FloatBoundaryConversionMode {
+        CastValues,
+        ScaleMinMax,
+        ScaleZeroToOne
+    };
+
     //TODO: Fix file handling. dataype + signal index should be enough as an unique identifier.
     SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
                   OrthoViewer *orthoViewerIn,
@@ -96,9 +107,14 @@ public:
 
     void addImageAsync(QString fileName, QString displayedName, LoadCallback then = {});
     void loadSegmentationVolume(QString fileName, QString displayedName="", LoadCallback then = {});
-    void loadMembraneProbabilityAsync(QString fileName, QString displayedName, LoadCallback then = {});
+    void loadMembraneProbabilityAsync(QString fileName,
+                                      QString displayedName,
+                                      BoundaryLoadMode loadMode = BoundaryLoadMode::BoundaryOnly,
+                                      FloatBoundaryConversionMode floatConversionMode = FloatBoundaryConversionMode::CastValues,
+                                      LoadCallback then = {});
     void addSegmentsGraphAsync(QString fileName, LoadCallback then = {});
     void loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then = {});
+    void importGeneratedSegments(GraphSegmentImageType::Pointer pImage, const QString &name = QStringLiteral("Supervoxels"));
 
     bool hasWorkingSegments() const;
     void populateAddDataMenu(QMenu *menu, QAction *loadSampleDataAction);
@@ -272,6 +288,7 @@ private:
     bool hasSelectedSegmentation() const;
     bool hasSelectedRefinement() const;
     bool hasSelectedBoundary() const;
+    std::optional<FloatBoundaryConversionMode> askForFloatBoundaryConversionMode(const QString &fileName) const;
 
 
 
@@ -306,6 +323,7 @@ private:
     void registerBoundarySignal(size_t signalIndexGlobal, const QString &name);
     void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
     void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
+    void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage);
 
     template<typename T>
     bool insertTypedImage(
@@ -314,7 +332,9 @@ private:
         bool                                forceShapeOfSegments)
     {
         std::unique_ptr<itkSignal<T>> pSignal(new itkSignal<T>(pImage));
-        if (pSignal->isShapeMatched(segmentsGraph) | !forceShapeOfSegments) {
+        const bool shapeCheckPassed =
+            !forceShapeOfSegments || segmentsGraph == nullptr || pSignal->isShapeMatched(segmentsGraph);
+        if (shapeCheckPassed) {
             signalIndexGlobalOut = allSignalList.size();
             itkSignalBase *pRaw = pSignal.get();
             ownedSignals.push_back(std::move(pSignal));

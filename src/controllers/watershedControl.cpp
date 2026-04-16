@@ -176,9 +176,11 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
 
 void WatershedControl::createRefinementAsync(std::function<void()> then) {
     taskRunner->runWithLabel(
-        QStringLiteral("Creating refinement..."),
+        outputMode == OutputMode::Segments
+            ? QStringLiteral("Exporting segments...")
+            : QStringLiteral("Creating refinement..."),
         [this]() {
-            if (!useROI) {
+            if (!useROI || outputMode == OutputMode::Segments) {
                 return graphBase->pWorkingSegmentsImage;
             }
 
@@ -205,8 +207,16 @@ void WatershedControl::createRefinementAsync(std::function<void()> then) {
             pasteImageFilter->Update();
             return paddedWorkingSegmentsImage;
         },
-        [this](dataType::SegmentsImageType::Pointer createdRefinement) {
-            linkedSignalControl->receiveNewRefinement(createdRefinement);
+        [this](dataType::SegmentsImageType::Pointer createdOutput) {
+            if (linkedSignalControl == nullptr) {
+                throw std::logic_error("WatershedControl has no linked SignalControl.");
+            }
+
+            if (outputMode == OutputMode::Segments) {
+                linkedSignalControl->importGeneratedSegments(createdOutput);
+            } else {
+                linkedSignalControl->receiveNewRefinement(createdOutput);
+            }
             emit sendClosingSignal();
         },
         std::move(then));
@@ -246,6 +256,7 @@ void WatershedControl::addImage(QString fileName) {
 WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
                                    OrthoViewer *orthoViewerIn,
                                    TaskRunner *taskRunnerIn,
+                                   OutputMode outputModeIn,
                                    QWidget *parent,
                                    bool verboseIn) {
     setParent(parent);
@@ -253,6 +264,7 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     orthoViewer = orthoViewerIn;
     taskRunner = taskRunnerIn;
     verbose = verboseIn;
+    outputMode = outputModeIn;
     allSignalList.reserve(10);
     itkSignalSegmentsGraph = nullptr;
     pThresholdedMembrane = nullptr;
@@ -398,9 +410,11 @@ void WatershedControl::setupWatershedWidget() {
 //    watershedTreeWidget->setAccessibleName("yellow");
     watershedButtonsWidget = new QWidget(this);
     watershedButtonsLayout = new QGridLayout();
-    createRefinementButton = new QPushButton("Create Refinement", this);
+    createRefinementButton = new QPushButton(
+        outputMode == OutputMode::Segments ? "Export Segments" : "Create Refinement",
+        this);
     setupWidget(watershedTreeWidget, watershedButtonsWidget, watershedButtonsLayout, createRefinementButton, "Watershed");
-    connect(createRefinementButton, &QPushButton::clicked, this, &WatershedControl::createRefinementPressed);
+    connect(createRefinementButton, &QPushButton::clicked, this, &WatershedControl::finalizeOutputPressed);
 }
 
 
@@ -933,12 +947,14 @@ void WatershedControl::watershed() {
     this->setCurrentIndex(4);
 }
 
-void WatershedControl::createRefinementPressed() {
+void WatershedControl::finalizeOutputPressed() {
     if (graphBase->pWorkingSegmentsImage != nullptr) {
         createRefinementAsync();
     } else {
         QMessageBox msgBox;
-        msgBox.setText("Please generate a watershed first.");
+        msgBox.setText(outputMode == OutputMode::Segments
+                           ? "Please generate a watershed before exporting segments."
+                           : "Please generate a watershed first.");
         msgBox.exec();
     }
 }

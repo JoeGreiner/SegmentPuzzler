@@ -16,7 +16,8 @@ class TaskRunner;
 class MainWindowWatershedControl : public QMainWindow {
     Q_OBJECT
 public:
-    MainWindowWatershedControl();
+    explicit MainWindowWatershedControl(WatershedControl::OutputMode outputMode =
+                                            WatershedControl::OutputMode::Refinement);
     ~MainWindowWatershedControl() override;
     WatershedControl* myWatershedControl;
 

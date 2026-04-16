@@ -220,6 +220,8 @@ int main(int argc, char *argv[]) {
                         myMainWindow->mySignalControl->loadMembraneProbabilityAsync(
                             pathToBoundary,
                             boundaryName,
+                            SignalControl::BoundaryLoadMode::BoundaryOnly,
+                            SignalControl::FloatBoundaryConversionMode::CastValues,
                             [loadRefinement](SignalControl::LoadResult boundaryIndex) {
                                 if (!boundaryIndex) {
                                     return;

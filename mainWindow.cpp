@@ -8,6 +8,7 @@
 #include <QMimeData>
 #include <QLineEdit>
 #include <QLabel>
+#include <QInputDialog>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -872,6 +873,8 @@ void MainWindow::loadSegmentationSample() {
                                 mySignalControl->loadMembraneProbabilityAsync(
                                     downloadedFilePathBnd,
                                     "",
+                                    SignalControl::BoundaryLoadMode::BoundaryOnly,
+                                    SignalControl::FloatBoundaryConversionMode::CastValues,
                                     [this, imageIndex](SignalControl::LoadResult boundaryIndex) {
                                         if (!boundaryIndex) {
                                             return;

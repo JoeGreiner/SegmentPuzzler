@@ -24,10 +24,16 @@ class TaskRunner;
 class WatershedControl : public QTabWidget {
 Q_OBJECT
 public:
+    enum class OutputMode {
+        Refinement,
+        Segments
+    };
+
     //TODO: Fix file handling. dataype + signal index should be enough as an unique identifier.
     WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
                      OrthoViewer *orthoViewerIn,
                      TaskRunner *taskRunnerIn,
+                     OutputMode outputModeIn = OutputMode::Refinement,
                      QWidget *parent = 0,
                      bool verboseIn = true);
 
@@ -104,7 +110,7 @@ public slots:
 
     void watershedPressed();
 
-    void createRefinementPressed();
+    void finalizeOutputPressed();
 
     void addImage(QString fileName);
 
@@ -127,6 +133,7 @@ private:
                                 unsigned int &signalIndex);
 
     bool verbose;
+    OutputMode outputMode;
 
     bool useROI;
     size_t fx, fy, fz, tx, ty, tz;
@@ -194,7 +201,9 @@ private:
         bool                                forceShapeOfSegments)
     {
         std::unique_ptr<itkSignal<T>> pSignal(new itkSignal<T>(pImage));
-        if (pSignal->isShapeMatched(itkSignalSegmentsGraph) | !forceShapeOfSegments) {
+        const bool shapeCheckPassed =
+            !forceShapeOfSegments || itkSignalSegmentsGraph == nullptr || pSignal->isShapeMatched(itkSignalSegmentsGraph);
+        if (shapeCheckPassed) {
             signalIndexGlobalOut = allSignalList.size();
             itkSignalBase *pRaw = pSignal.get();
             ownedSignals.push_back(std::move(pSignal));

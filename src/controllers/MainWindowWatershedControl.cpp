@@ -61,7 +61,7 @@ void MainWindowWatershedControl::setLinkedSignalControl(SignalControl* linkedSig
     myWatershedControl->linkedSignalControl = linkedSignalControlIn;
 }
 
-MainWindowWatershedControl::MainWindowWatershedControl() {
+MainWindowWatershedControl::MainWindowWatershedControl(WatershedControl::OutputMode outputMode) {
 
     std::shared_ptr<GraphBase> graphBase = std::make_shared<GraphBase>();
 
@@ -78,7 +78,7 @@ MainWindowWatershedControl::MainWindowWatershedControl() {
     taskRunner = std::make_unique<TaskRunner>(this, this);
     myOrthowindow = new OrthoViewer(graphBase, taskRunner.get());
 
-    myWatershedControl = new WatershedControl(graphBase, myOrthowindow, taskRunner.get());
+    myWatershedControl = new WatershedControl(graphBase, myOrthowindow, taskRunner.get(), outputMode);
     auto horizontalSplitter = new QSplitter();
     horizontalSplitter->addWidget(myWatershedControl);
     horizontalSplitter->addWidget(myOrthowindow);

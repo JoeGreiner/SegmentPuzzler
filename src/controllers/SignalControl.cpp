@@ -21,7 +21,12 @@
 #include <QApplication>
 #include <QTimer>
 #include <clocale>
+#include <algorithm>
 #include <itkImageDuplicator.h>
+#include <itkImageRegionConstIterator.h>
+#include <itkImageRegionIterator.h>
+#include <limits>
+#include <cmath>
 
 namespace {
 
@@ -48,6 +53,73 @@ dataType::SegmentsImageType::Pointer duplicateSegmentsImage(
     duplicator->SetInputImage(sourceImage);
     duplicator->Update();
     return duplicator->GetOutput();
+}
+
+template<typename T>
+dataType::BoundaryImageType::Pointer convertFloatBoundaryImage(
+    const typename itk::Image<T, 3>::Pointer &sourceImage,
+    SignalControl::FloatBoundaryConversionMode conversionMode) {
+    auto convertedImage = dataType::BoundaryImageType::New();
+    convertedImage->SetRegions(sourceImage->GetLargestPossibleRegion());
+    convertedImage->SetSpacing(sourceImage->GetSpacing());
+    convertedImage->SetOrigin(sourceImage->GetOrigin());
+    convertedImage->SetDirection(sourceImage->GetDirection());
+    convertedImage->Allocate();
+
+    const double targetMax = static_cast<double>(std::numeric_limits<dataType::BoundaryVoxelType>::max());
+    double minValue = 0.0;
+    double maxValue = 0.0;
+
+    if (conversionMode == SignalControl::FloatBoundaryConversionMode::ScaleMinMax) {
+        itk::ImageRegionConstIterator<itk::Image<T, 3>> inputIt(sourceImage, sourceImage->GetLargestPossibleRegion());
+        bool firstFiniteValue = true;
+        for (inputIt.GoToBegin(); !inputIt.IsAtEnd(); ++inputIt) {
+            const double value = static_cast<double>(inputIt.Get());
+            if (!std::isfinite(value)) {
+                continue;
+            }
+            if (firstFiniteValue) {
+                minValue = value;
+                maxValue = value;
+                firstFiniteValue = false;
+            } else {
+                minValue = std::min(minValue, value);
+                maxValue = std::max(maxValue, value);
+            }
+        }
+        if (firstFiniteValue) {
+            minValue = 0.0;
+            maxValue = 0.0;
+        }
+    }
+
+    itk::ImageRegionConstIterator<itk::Image<T, 3>> inputIt(sourceImage, sourceImage->GetLargestPossibleRegion());
+    itk::ImageRegionIterator<dataType::BoundaryImageType> outputIt(convertedImage, convertedImage->GetLargestPossibleRegion());
+    for (inputIt.GoToBegin(), outputIt.GoToBegin(); !inputIt.IsAtEnd(); ++inputIt, ++outputIt) {
+        const double rawValue = static_cast<double>(inputIt.Get());
+        double convertedValue = 0.0;
+
+        if (std::isfinite(rawValue)) {
+            switch (conversionMode) {
+                case SignalControl::FloatBoundaryConversionMode::CastValues:
+                    convertedValue = rawValue;
+                    break;
+                case SignalControl::FloatBoundaryConversionMode::ScaleMinMax:
+                    if (maxValue > minValue) {
+                        convertedValue = ((rawValue - minValue) / (maxValue - minValue)) * targetMax;
+                    }
+                    break;
+                case SignalControl::FloatBoundaryConversionMode::ScaleZeroToOne:
+                    convertedValue = std::clamp(rawValue, 0.0, 1.0) * targetMax;
+                    break;
+            }
+        }
+
+        convertedValue = std::clamp(convertedValue, 0.0, targetMax);
+        outputIt.Set(static_cast<dataType::BoundaryVoxelType>(std::llround(convertedValue)));
+    }
+
+    return convertedImage;
 }
 
 QTreeWidgetItem *topLevelTreeItem(QTreeWidgetItem *item) {
@@ -103,10 +175,44 @@ SignalControl::~SignalControl() {
 
 }
 
+void SignalControl::prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage) {
+    graphBase->ignoredSegmentLabels.clear();
+    graphBase->edgeStatus.clear();
+    graphBase->colorLookUpEdgesStatus.clear();
+    graphBase->pGraph->setBackgroundIdStrategy("backgroundIsLowestId");
+    graphBase->pWorkingSegmentsImage = workingSegmentsImage;
+    graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graphBase->pGraph->constructFromVolume(workingSegmentsImage);
+}
+
 void SignalControl::showInfoMessage(const QString &message) const {
     QMessageBox msgBox;
     msgBox.setText(message);
     msgBox.exec();
+}
+
+std::optional<SignalControl::FloatBoundaryConversionMode> SignalControl::askForFloatBoundaryConversionMode(
+    const QString &fileName) const {
+    QMessageBox msgBox(const_cast<SignalControl *>(this));
+    msgBox.setWindowTitle(tr("Float Boundary Detected"));
+    msgBox.setText(tr("The loaded boundary is float-valued. How should it be converted to the boundary type?"));
+    msgBox.setInformativeText(QFileInfo(fileName).fileName());
+    QPushButton *scaleZeroToOneButton = msgBox.addButton(tr("Scale 0..1"), QMessageBox::AcceptRole);
+    QPushButton *scaleMinMaxButton = msgBox.addButton(tr("Scale Min-Max"), QMessageBox::ActionRole);
+    QPushButton *castValuesButton = msgBox.addButton(tr("Cast Values"), QMessageBox::DestructiveRole);
+    msgBox.addButton(QMessageBox::Cancel);
+    msgBox.exec();
+
+    if (msgBox.clickedButton() == scaleZeroToOneButton) {
+        return FloatBoundaryConversionMode::ScaleZeroToOne;
+    }
+    if (msgBox.clickedButton() == scaleMinMaxButton) {
+        return FloatBoundaryConversionMode::ScaleMinMax;
+    }
+    if (msgBox.clickedButton() == castValuesButton) {
+        return FloatBoundaryConversionMode::CastValues;
+    }
+    return std::nullopt;
 }
 
 bool SignalControl::hasWorkingSegments() const {
@@ -561,12 +667,7 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
 SignalControl::GraphSegmentImageType::Pointer SignalControl::duplicateSegmentationAndBuildWorkingSegments(
     const GraphSegmentImageType::Pointer &segmentationImage) {
     auto workingSegmentsImage = duplicateSegmentsImage(segmentationImage);
-    graphBase->ignoredSegmentLabels.clear();
-    graphBase->edgeStatus.clear();
-    graphBase->colorLookUpEdgesStatus.clear();
-    graphBase->pWorkingSegmentsImage = workingSegmentsImage;
-    graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graphBase->pGraph->constructFromVolume(workingSegmentsImage);
+    prepareWorkingSegmentsGraph(workingSegmentsImage);
     return workingSegmentsImage;
 }
 
@@ -681,18 +782,40 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
         });
 }
 
-void SignalControl::loadMembraneProbabilityAsync(QString fileName, QString displayedName, LoadCallback then) {
+void SignalControl::loadMembraneProbabilityAsync(QString fileName,
+                                                 QString displayedName,
+                                                 BoundaryLoadMode loadMode,
+                                                 FloatBoundaryConversionMode floatConversionMode,
+                                                 LoadCallback then) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
-    const bool createEmptySegments = !hasWorkingSegments();
+    const bool createEmptySegments = loadMode == BoundaryLoadMode::CreateEmptySegments;
     taskRunner->runWithLabel(
         QStringLiteral("Loading boundaries..."),
-        [this, fileName, createEmptySegments]() mutable {
+        [this, fileName, createEmptySegments, floatConversionMode]() mutable {
             BoundaryLoadResult result;
-            result.boundaryImage = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
+            unsigned int dimension = 0;
+            itk::ImageIOBase::IOComponentType boundaryDataType = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
+            getDimensionAndDataTypeOfFile(fileName, dimension, boundaryDataType);
+
+            switch (boundaryDataType) {
+                case itk::ImageIOBase::FLOAT:
+                    result.boundaryImage = convertFloatBoundaryImage<float>(
+                        ITKImageLoader<float>(fileName),
+                        floatConversionMode);
+                    break;
+                case itk::ImageIOBase::DOUBLE:
+                    result.boundaryImage = convertFloatBoundaryImage<double>(
+                        ITKImageLoader<double>(fileName),
+                        floatConversionMode);
+                    break;
+                default:
+                    result.boundaryImage = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
+                    break;
+            }
             if (createEmptySegments) {
                 result.emptySegmentsImage = dataType::SegmentsImageType::New();
                 result.emptySegmentsImage->SetRegions(result.boundaryImage->GetLargestPossibleRegion());
@@ -702,12 +825,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName, QString displ
 
                 // Modifies graphBase on the worker thread. Safe only because
                 // one task runs at a time and the owning window is blocked.
-                graphBase->ignoredSegmentLabels.clear();
-                graphBase->edgeStatus.clear();
-                graphBase->colorLookUpEdgesStatus.clear();
-                graphBase->pWorkingSegmentsImage = result.emptySegmentsImage;
-                graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-                graphBase->pGraph->constructFromVolume(result.emptySegmentsImage);
+                prepareWorkingSegmentsGraph(result.emptySegmentsImage);
                 result.createdEmptySegments = true;
             }
             return result;
@@ -1422,9 +1540,11 @@ void SignalControl::runWatershed() {
         return;
     }
 
-    auto *myMainWindow = new MainWindowWatershedControl();
+    auto *myMainWindow = new MainWindowWatershedControl(
+        hasWorkingSegments() ? WatershedControl::OutputMode::Refinement
+                             : WatershedControl::OutputMode::Segments);
     myMainWindow->setLinkedSignalControl(this);
-    if (graphBase->ROI_set) {
+    if (graphBase->ROI_set && hasWorkingSegments()) {
         myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary,
                                                         graphBase->ROI_fx, graphBase->ROI_tx,
                                                         graphBase->ROI_fy, graphBase->ROI_ty,
@@ -1472,19 +1592,73 @@ void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>:
     }
 }
 
+void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImage, const QString &name) {
+    if (pImage == nullptr) {
+        showInfoMessage("No watershed segments available for import.");
+        return;
+    }
+
+    size_t signalIndexGlobal = 0;
+    if (!insertImageSegmenttype(pImage, signalIndexGlobal, false)) {
+        showInfoMessage("Failed to import generated segments.");
+        return;
+    }
+
+    prepareWorkingSegmentsGraph(pImage);
+    registerSegmentsGraphSignal(signalIndexGlobal);
+    allSignalList[signalIndexGlobal]->setName(name);
+}
+
 
 void SignalControl::loadMembraneProbability(QString fileName, QString displayedName) {
     std::cout << "Loading boundaries: " << fileName.toStdString() << "\n";
-    bool segmentsAreNotAdded = !hasWorkingSegments();
-    QMessageBox::StandardButton reply = QMessageBox::Yes;
-    if (segmentsAreNotAdded) {
-        reply = QMessageBox::question(this,
-                                      "No Supervoxels Loaded",
-                                      "No supervoxels are loaded. Do you want to create empty supervoxels from the loaded boundaries?",
-                                      QMessageBox::Yes | QMessageBox::No);
+    unsigned int dimension = 0;
+    itk::ImageIOBase::IOComponentType boundaryDataType = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
+    getDimensionAndDataTypeOfFile(fileName, dimension, boundaryDataType);
+
+    FloatBoundaryConversionMode floatConversionMode = FloatBoundaryConversionMode::CastValues;
+    if (boundaryDataType == itk::ImageIOBase::FLOAT || boundaryDataType == itk::ImageIOBase::DOUBLE) {
+        auto selectedMode = askForFloatBoundaryConversionMode(fileName);
+        if (!selectedMode) {
+            return;
+        }
+        floatConversionMode = *selectedMode;
     }
-    if (!segmentsAreNotAdded || reply == QMessageBox::Yes) {
-        loadMembraneProbabilityAsync(fileName, displayedName);
+
+    if (hasWorkingSegments()) {
+        loadMembraneProbabilityAsync(fileName, displayedName, BoundaryLoadMode::BoundaryOnly, floatConversionMode);
+        return;
+    }
+
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle(tr("No Supervoxels Loaded"));
+    msgBox.setText(tr("No supervoxels are loaded. Do you want to create empty segments or run watershed?"));
+    QPushButton *emptyButton = msgBox.addButton(tr("Create Empty Segments"), QMessageBox::AcceptRole);
+    QPushButton *watershedButton = msgBox.addButton(tr("Run Watershed"), QMessageBox::ActionRole);
+    msgBox.addButton(QMessageBox::Cancel);
+    msgBox.exec();
+
+    if (msgBox.clickedButton() == emptyButton) {
+        loadMembraneProbabilityAsync(
+            fileName,
+            displayedName,
+            BoundaryLoadMode::CreateEmptySegments,
+            floatConversionMode);
+        return;
+    }
+
+    if (msgBox.clickedButton() == watershedButton) {
+        loadMembraneProbabilityAsync(
+            fileName,
+            displayedName,
+            BoundaryLoadMode::BoundaryOnly,
+            floatConversionMode,
+            [this](LoadResult boundaryIndex) {
+                if (!boundaryIndex) {
+                    return;
+                }
+                runWatershed();
+            });
     }
 }
 
