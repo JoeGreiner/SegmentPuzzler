@@ -93,6 +93,8 @@ signals:
 public slots:
     void receiveStatusMessage(QString string);
     void setViewToMiddleOfStack();
+    void setMorphologyOpenRadius(int radius);
+    void setMorphologyFillCloseRadius(int radius);
     void centerViewportsToXYZImageSpace(int x, int y, int z);
     void centerViewportsToXYViewportSpace(QScrollArea* scrollArea,
                                                        double xWanted,

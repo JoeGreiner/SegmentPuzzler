@@ -167,6 +167,23 @@ void SignalControl::setPaintModeActive(bool active) {
     orthoViewer->xz->togglePaintMode();
 }
 
+void SignalControl::setAnnotationToolMode(SliceViewer::ToolMode toolMode) {
+    if (orthoViewer == nullptr) {
+        return;
+    }
+
+    if (orthoViewer->xy != nullptr) {
+        orthoViewer->xy->activeTool = toolMode;
+    }
+    if (orthoViewer->xz != nullptr) {
+        orthoViewer->xz->activeTool = toolMode;
+    }
+    if (orthoViewer->zy != nullptr) {
+        orthoViewer->zy->activeTool = toolMode;
+    }
+    orthoViewer->refreshInteractionModeIndicators();
+}
+
 void SignalControl::refreshUiState() {
     const bool enabled = !guiBusy;
 
@@ -192,6 +209,8 @@ void SignalControl::refreshUiState() {
     toggleROISelectionAction->setEnabled(enabled);
     togglePaintModeAction->setEnabled(enabled && hasSelectedSegmentation());
     setPaintIdAction->setEnabled(enabled && hasSelectedSegmentation());
+    dilateSegmentationAction->setEnabled(enabled && hasSelectedSegmentation());
+    erodeSegmentationAction->setEnabled(enabled && hasSelectedSegmentation());
     transferWithVolumeAction->setEnabled(enabled && hasSelectedSegmentation());
     transferWithRefinementAction->setEnabled(enabled && hasSelectedSegmentation() && hasSelectedRefinement());
     transferAllAction->setEnabled(enabled && hasSelectedSegmentation());
@@ -773,6 +792,8 @@ void SignalControl::populateSegmentationsMenu(QMenu *menu) {
     menu->addSeparator();
     menu->addAction(togglePaintModeAction);
     menu->addAction(setPaintIdAction);
+    menu->addAction(dilateSegmentationAction);
+    menu->addAction(erodeSegmentationAction);
     menu->addSeparator();
     menu->addAction(transferWithVolumeAction);
     menu->addAction(transferAllAction);
@@ -798,6 +819,8 @@ void SignalControl::createMenuActions() {
     createAction(toggleROISelectionAction, QString(), &SignalControl::toggleROISelection);
     createAction(togglePaintModeAction, QString(), &SignalControl::togglePaintMode);
     createAction(setPaintIdAction, tr("Set Paint Label ID"), &SignalControl::setPaintId);
+    createAction(dilateSegmentationAction, tr("Dilate Label One Step"), &SignalControl::activateDilateTool);
+    createAction(erodeSegmentationAction, tr("Erode Label One Step"), &SignalControl::activateErodeTool);
     createAction(transferWithVolumeAction, tr("Transfer Supervoxels by Volume"), &SignalControl::transferSegmentsWithVolume);
     createAction(transferAllAction, tr("Transfer All Supervoxels"), &SignalControl::transferAllSegments);
     createAction(transferWithRefinementAction, tr("Transfer Supervoxels by Refinement Overlap"), &SignalControl::transferSupervoxelsByRefinementOverlap);
@@ -1068,10 +1091,16 @@ void SignalControl::setupSegmentationTreeWidget() {
 
     togglePaintBrushButton = new QPushButton();
     setPaintIdButton = new QPushButton();
+    dilateSegmentationButton = new QPushButton();
+    erodeSegmentationButton = new QPushButton();
     togglePaintBrushButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     setPaintIdButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    dilateSegmentationButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    erodeSegmentationButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     segmentationButtonRow->addWidget(togglePaintBrushButton);
     segmentationButtonRow->addWidget(setPaintIdButton);
+    segmentationButtonRow->addWidget(dilateSegmentationButton);
+    segmentationButtonRow->addWidget(erodeSegmentationButton);
     segmentationButtonRow->addStretch();
 
     segmentationWidgetLayout->addLayout(segmentationButtonRow);
@@ -1081,6 +1110,8 @@ void SignalControl::setupSegmentationTreeWidget() {
     bindButtonToAction(exportSegmentationButton, exportSegmentationAction, tr("Export Selected"));
     bindButtonToAction(togglePaintBrushButton, togglePaintModeAction);
     bindButtonToAction(setPaintIdButton, setPaintIdAction);
+    bindButtonToAction(dilateSegmentationButton, dilateSegmentationAction, tr("Dilate"));
+    bindButtonToAction(erodeSegmentationButton, erodeSegmentationAction, tr("Erode"));
 
     connect(segmentationTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(segmentationTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::segmentationClicked);
@@ -1265,6 +1296,14 @@ void SignalControl::setPaintId(){
 
 void SignalControl::togglePaintMode() {
     setPaintModeActive(!paintModeActive);
+}
+
+void SignalControl::activateDilateTool() {
+    setAnnotationToolMode(SliceViewer::ToolMode::Dilate);
+}
+
+void SignalControl::activateErodeTool() {
+    setAnnotationToolMode(SliceViewer::ToolMode::Erode);
 }
 
 

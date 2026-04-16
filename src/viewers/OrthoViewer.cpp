@@ -290,6 +290,10 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
             return createSingleActionWithPan("Fill", QColor("#72c46d"));
         case SliceViewer::ToolMode::Open:
             return createSingleActionWithPan("Open", QColor("#58b8d6"));
+        case SliceViewer::ToolMode::Dilate:
+            return createSingleActionWithPan("Dilate", QColor("#7ed957"));
+        case SliceViewer::ToolMode::Erode:
+            return createSingleActionWithPan("Erode", QColor("#4fa3d1"));
         case SliceViewer::ToolMode::Insert:
             return createSingleActionWithPan("Insert", QColor("#e0a35c"));
         case SliceViewer::ToolMode::View3D:
@@ -328,6 +332,12 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("g", "G", "Open",
                            "Hold G and click to run a morphological opening on the segmentation label under the cursor.",
                            activeTool == SliceViewer::ToolMode::Open || isFlashed("g")),
+        createShortcutHint("j", "J", "Dilate",
+                           "Hold J and click to dilate the segmentation label under the cursor by one step.",
+                           activeTool == SliceViewer::ToolMode::Dilate || isFlashed("j")),
+        createShortcutHint("k", "K", "Erode",
+                           "Hold K and click to erode the segmentation label under the cursor by one step.",
+                           activeTool == SliceViewer::ToolMode::Erode || isFlashed("k")),
         createShortcutHint("h", "H", "Insert",
                            "Hold H and click to insert the clicked segmentation segment into the initial nodes.",
                            activeTool == SliceViewer::ToolMode::Insert || isFlashed("h")),
@@ -1238,6 +1248,30 @@ void OrthoViewer::addSignal(itkSignalBase *signal) {
 
 void OrthoViewer::receiveStatusMessage(QString string) {
     emit sendStatusMessage(string);
+}
+
+void OrthoViewer::setMorphologyOpenRadius(int radius) {
+    if (xy != nullptr) {
+        xy->setOpenRadius(radius);
+    }
+    if (xz != nullptr) {
+        xz->setOpenRadius(radius);
+    }
+    if (zy != nullptr) {
+        zy->setOpenRadius(radius);
+    }
+}
+
+void OrthoViewer::setMorphologyFillCloseRadius(int radius) {
+    if (xy != nullptr) {
+        xy->setFillCloseRadius(radius);
+    }
+    if (xz != nullptr) {
+        xz->setFillCloseRadius(radius);
+    }
+    if (zy != nullptr) {
+        zy->setFillCloseRadius(radius);
+    }
 }
 
 void OrthoViewer::initialize() {

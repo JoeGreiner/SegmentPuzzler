@@ -40,6 +40,7 @@ private:
     QMenu *boundariesMenu;
     QMenu *refinementsMenu;
     QMenu *segmentationsMenu;
+    QMenu *settingsMenu;
     QMenu *helpMenu;
     QMenu *goToMenu;
 

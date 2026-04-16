@@ -16,6 +16,7 @@
 #include <QHBoxLayout>
 #include <QTreeWidget>
 #include <itkImageIOBase.h>
+#include "src/viewers/SliceViewer.h"
 #include "src/file_definitions/dataTypes.h"
 #include "src/segment_handling/graphBase.h"
 
@@ -120,6 +121,8 @@ public slots:
     void exportSelectedSegmentation();
 
     void togglePaintMode();
+    void activateDilateTool();
+    void activateErodeTool();
 
     void loadMembraneProbability(QString fileName, QString displayedName="");
 
@@ -203,6 +206,8 @@ private:
     QSplitter *sectionSplitter = nullptr;
     QPushButton *togglePaintBrushButton = nullptr;
     QPushButton *setPaintIdButton = nullptr;
+    QPushButton *dilateSegmentationButton = nullptr;
+    QPushButton *erodeSegmentationButton = nullptr;
     QPushButton *toggleROISelectionButton = nullptr;
     QPushButton *runWatershedButton = nullptr;
     QPushButton *exportSegmentationButton = nullptr;
@@ -229,6 +234,8 @@ private:
     QAction *toggleROISelectionAction = nullptr;
     QAction *togglePaintModeAction = nullptr;
     QAction *setPaintIdAction = nullptr;
+    QAction *dilateSegmentationAction = nullptr;
+    QAction *erodeSegmentationAction = nullptr;
 
     QAction *transferWithVolumeAction = nullptr;
     QAction *transferAllAction = nullptr;
@@ -254,6 +261,7 @@ private:
     void updateModeActionTexts();
     void setROISelectionActive(bool active);
     void setPaintModeActive(bool active);
+    void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
     void refreshUiState();
     void updateSelectionLabel(QTreeWidget *tree, QLabel *label);
     void selectLoadedItemIfAppropriate(QTreeWidget *tree, QTreeWidgetItem *newItem, QTreeWidgetItem *&lastAutoSelectedItem);

@@ -17,6 +17,7 @@
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
+#include "src/qtUtils/SegmentTableDialog.h"
 
 MainWindow::~MainWindow() = default;
 
@@ -164,6 +165,43 @@ MainWindow::MainWindow() {
 
     segmentationsMenu = menuBar()->addMenu(tr("&Segmentations"));
     mySignalControl->populateSegmentationsMenu(segmentationsMenu);
+
+    settingsMenu = menuBar()->addMenu(tr("&Settings"));
+    QAction *setFillCloseRadiusAction = new QAction(tr("Set Fill/Close Radius"), this);
+    settingsMenu->addAction(setFillCloseRadiusAction);
+    connect(setFillCloseRadiusAction, &QAction::triggered, this, [this]() {
+        const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
+                                      ? myOrthowindow->xy->getFillCloseRadius()
+                                      : 8;
+        const int radius = QInputDialog::getInt(
+            this,
+            tr("Fill/Close Radius"),
+            tr("Radius for fill/close morphology:"),
+            currentRadius,
+            0,
+            100);
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->setMorphologyFillCloseRadius(radius);
+        }
+    });
+
+    QAction *setOpenRadiusAction = new QAction(tr("Set Open/Erode Radius"), this);
+    settingsMenu->addAction(setOpenRadiusAction);
+    connect(setOpenRadiusAction, &QAction::triggered, this, [this]() {
+        const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
+                                      ? myOrthowindow->xy->getOpenRadius()
+                                      : 3;
+        const int radius = QInputDialog::getInt(
+            this,
+            tr("Open/Erode Radius"),
+            tr("Radius for open/erode morphology:"),
+            currentRadius,
+            0,
+            100);
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->setMorphologyOpenRadius(radius);
+        }
+    });
 
 
     goToMenu = menuBar()->addMenu(tr("&Go To"));
@@ -941,6 +979,12 @@ void MainWindow::showHotkeys() {
 
 <p class="bold_header">P + Click</p>
 <p>Refine by [P]osition of the cursor with the selected refinement.</p>
+
+<p class="bold_header">J + Click</p>
+<p>Dilate the clicked segmentation label by one step.</p>
+
+<p class="bold_header">K + Click</p>
+<p>Erode the clicked segmentation label by one step.</p>
 
 <p class="bold_header">CMD + Click</p>
 <p>Set other orthogonal views to slice through the point under the cursor.</p>

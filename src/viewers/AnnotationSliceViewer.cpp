@@ -10,11 +10,14 @@
 #include <itkLabelGeometryImageFilter.h>
 #include <itkRegionOfInterestImageFilter.h>
 #include <itkBinaryBallStructuringElement.h>
+#include <itkBinaryDilateImageFilter.h>
+#include <itkBinaryErodeImageFilter.h>
 #include <itkBinaryMorphologicalClosingImageFilter.h>
 #include <itkBinaryMorphologicalOpeningImageFilter.h>
 #include <itkBinaryThresholdImageFunction.h>
 #include <itkFloodFilledImageFunctionConditionalIterator.h>
 #include "AnnotationSliceViewer.h"
+#include "Segment3DViewerDialog.h"
 #include "itkImageRegionIteratorWithIndex.h"
 #include <unordered_map>
 #include "src/utils/utils.h"
@@ -373,6 +376,10 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Fill);
     } else if (event->key() == Qt::Key_G) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Open);
+    } else if (event->key() == Qt::Key_J) {
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Dilate);
+    } else if (event->key() == Qt::Key_K) {
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Erode);
     } else if (event->key() == Qt::Key_H) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Insert);
     } else if (event->key() == Qt::Key_E) {
@@ -498,6 +505,8 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
         {Qt::Key_Q,       ToolMode::SelectColor},
         {Qt::Key_F,       ToolMode::Fill},
         {Qt::Key_G,       ToolMode::Open},
+        {Qt::Key_J,       ToolMode::Dilate},
+        {Qt::Key_K,       ToolMode::Erode},
         {Qt::Key_H,       ToolMode::Insert},
         {Qt::Key_M,       ToolMode::View3D},
     };
@@ -591,6 +600,14 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         runOpenSegmentationLabel(event->pos().x(), event->pos().y());
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
+    case ToolMode::Dilate:
+        runDilateSegmentationLabel(event->pos().x(), event->pos().y());
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
+        break;
+    case ToolMode::Erode:
+        runErodeSegmentationLabel(event->pos().x(), event->pos().y());
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
+        break;
     case ToolMode::Insert:
         runInsertSegmentationSegmentIntoInitialSegments(event->pos().x(), event->pos().y());
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
@@ -634,6 +651,17 @@ void AnnotationSliceViewer::runFillSegmentationLabel(int posX, int posY){
         });
 }
 
+void AnnotationSliceViewer::runDilateSegmentationLabel(int posX, int posY) {
+    taskRunner->run(
+        [this, posX, posY]() { dilateSegmentationLabel(posX, posY); },
+        [this]() {
+            orthoViewer()->refreshViewers();
+        });
+}
+
+void AnnotationSliceViewer::runErodeSegmentationLabel(int posX, int posY) {
+    taskRunner->run(
+        [this, posX, posY]() { erodeSegmentationLabel(posX, posY); },
         [this]() {
             orthoViewer()->refreshViewers();
         });
@@ -695,7 +723,7 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     double time_second_part = utils::tic("OpenSegmentationLabel second part started: ");
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType , dataType::Dimension>;
     StructuringElementType structuringElement;
-    structuringElement.SetRadius(3);
+    structuringElement.SetRadius(openRadius);
     structuringElement.CreateStructuringElement();
 
     using BinaryMorphologicalOpeningImageFilterType =
@@ -826,7 +854,7 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
 
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType , dataType::Dimension>;
     StructuringElementType structuringElement;
-    structuringElement.SetRadius(8);
+    structuringElement.SetRadius(fillCloseRadius);
     structuringElement.CreateStructuringElement();
 
     using BinaryMorphologicalClosingImageFilterType =
@@ -870,6 +898,123 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
     }
 
     utils::toc(tic, "FillSegmentationLabel finished: ");
+}
+
+void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
+    if (graphBase->pSelectedSegmentation == nullptr) {
+        return;
+    }
+
+    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    const dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+    if (labelAtClickPosition == backgroundLabel) {
+        return;
+    }
+
+    const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, 1);
+    using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
+    auto roiExtractionFilter = ROIExtractionFilterType::New();
+    roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
+    roiExtractionFilter->SetRegionOfInterest(roi);
+    auto extractedCell = roiExtractionFilter->GetOutput();
+    roiExtractionFilter->Update();
+
+    using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType, dataType::Dimension>;
+    StructuringElementType structuringElement;
+    structuringElement.SetRadius(1);
+    structuringElement.CreateStructuringElement();
+
+    using BinaryDilateImageFilterType =
+        itk::BinaryDilateImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType, StructuringElementType>;
+    auto dilateFilter = BinaryDilateImageFilterType::New();
+    dilateFilter->SetInput(extractedCell);
+    dilateFilter->SetKernel(structuringElement);
+    dilateFilter->SetForegroundValue(labelAtClickPosition);
+    dilateFilter->Update();
+    auto dilatedCell = dilateFilter->GetOutput();
+
+    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(dilatedCell, dilatedCell->GetLargestPossibleRegion());
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+        if (it.Get() != labelAtClickPosition) {
+            continue;
+        }
+
+        dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
+        newIndex[0] += roi.GetIndex()[0];
+        newIndex[1] += roi.GetIndex()[1];
+        newIndex[2] += roi.GetIndex()[2];
+
+        const auto existingLabel = graphBase->pSelectedSegmentation->GetPixel(newIndex);
+        if (existingLabel == backgroundLabel || existingLabel == labelAtClickPosition) {
+            graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
+        }
+    }
+}
+
+void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
+    if (graphBase->pSelectedSegmentation == nullptr) {
+        return;
+    }
+
+    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    const dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+    if (labelAtClickPosition == backgroundLabel) {
+        return;
+    }
+
+    const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, 1);
+    using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
+    auto roiExtractionFilter = ROIExtractionFilterType::New();
+    roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
+    roiExtractionFilter->SetRegionOfInterest(roi);
+    auto extractedCell = roiExtractionFilter->GetOutput();
+    roiExtractionFilter->Update();
+
+    using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType, dataType::Dimension>;
+    StructuringElementType structuringElement;
+    structuringElement.SetRadius(1);
+    structuringElement.CreateStructuringElement();
+
+    using BinaryErodeImageFilterType =
+        itk::BinaryErodeImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType, StructuringElementType>;
+    auto erodeFilter = BinaryErodeImageFilterType::New();
+    erodeFilter->SetInput(extractedCell);
+    erodeFilter->SetKernel(structuringElement);
+    erodeFilter->SetForegroundValue(labelAtClickPosition);
+    erodeFilter->Update();
+    auto erodedCell = erodeFilter->GetOutput();
+
+    itk::ImageRegionIterator<dataType::SegmentsImageType> deleteIt(graphBase->pSelectedSegmentation, roi);
+    for (deleteIt.GoToBegin(); !deleteIt.IsAtEnd(); ++deleteIt) {
+        if (deleteIt.Get() == labelAtClickPosition) {
+            deleteIt.Set(backgroundLabel);
+        }
+    }
+
+    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(erodedCell, erodedCell->GetLargestPossibleRegion());
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+        if (it.Get() != labelAtClickPosition) {
+            continue;
+        }
+
+        dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
+        newIndex[0] += roi.GetIndex()[0];
+        newIndex[1] += roi.GetIndex()[1];
+        newIndex[2] += roi.GetIndex()[2];
+        graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
+    }
+}
+
+void AnnotationSliceViewer::setOpenRadius(int radius) {
+    openRadius = std::max(0, radius);
+}
+
+void AnnotationSliceViewer::setFillCloseRadius(int radius) {
+    fillCloseRadius = std::max(0, radius);
 }
 
 

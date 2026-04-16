@@ -97,7 +97,9 @@ public:
         Refine,      // P: inject refinement segment (clears after click)
         Fill,        // F: morphological fill/close (clears after click)
         Open,        // G: morphological open/erode (clears after click)
-        Insert       // H: insert segmentation segment into initial segments (clears after click)
+        Dilate,      // J: single-step dilation on the clicked segmentation label
+        Erode,       // K: single-step erosion on the clicked segmentation label
+        Insert,      // H: insert segmentation segment into initial segments (clears after click)
         View3D       // M: open a 3D view for the clicked segment (clears after click)
     };
     ToolMode activeTool = ToolMode::None;

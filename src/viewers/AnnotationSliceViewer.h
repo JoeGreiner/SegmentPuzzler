@@ -46,13 +46,25 @@ public slots:
 
     void runFillSegmentationLabel(int posX, int posY);
 
+    void runDilateSegmentationLabel(int posX, int posY);
+
+    void runErodeSegmentationLabel(int posX, int posY);
+
     void openSegmentationLabel(int posX, int posY);
 
     void fillSegmentationLabel(int posX, int posY);
 
+    void dilateSegmentationLabel(int posX, int posY);
+
+    void erodeSegmentationLabel(int posX, int posY);
+
     void exportDebugInformation();
 
     void setPaintId(dataType::SegmentIdType);
+    void setOpenRadius(int radius);
+    void setFillCloseRadius(int radius);
+    int getOpenRadius() const { return openRadius; }
+    int getFillCloseRadius() const { return fillCloseRadius; }
 
 
 protected:
@@ -115,6 +127,8 @@ private:
     void show3DSegmentView(int posX, int posY);
     void show3DAllLabelsView();
     QPoint ROISelectionOrigin;
+    int openRadius = 3;
+    int fillCloseRadius = 8;
 
 };
 
