@@ -49,6 +49,15 @@ endif()
 # Append Qt's lib folder which is two levels above Qt5Widgets_DIR
 list(APPEND DIRS "${Qt5Widgets_DIR}/../..")
 
+foreach(extraDir
+        "/usr/local/lib"
+        "/opt/homebrew/lib"
+        "/opt/homebrew/opt/libomp/lib")
+    if (EXISTS "${extraDir}")
+        list(APPEND DIRS "${extraDir}")
+    endif ()
+endforeach()
+
 #install(FILES "sampleData/Stack.nrrd" DESTINATION "SegmentPuzzler.app/sampleData")
 #SegmentPuzzler.app: unsealed contents present in the bundle root
 # --> all files need to be in Contents!

@@ -4,6 +4,9 @@
 # then it should run on newer versions as well. if you build on a newer version, it might not run on older versions,
 # e.g. because of libc version mismatch
 
+SCRIPT_DIR=${0:A:h}
+cd "$SCRIPT_DIR"
+
 setopt nullglob
 list=(_CPack_Packages build CMakeFiles ITKFactoryRegistration SegmentPuzzler.app SegmentPuzzler_autogen *.cmake CMakeCache.txt Makefile qt.conf install_manifest*.txt)
 unsetopt nullglob
