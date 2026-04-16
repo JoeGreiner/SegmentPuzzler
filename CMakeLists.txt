@@ -202,6 +202,7 @@ set(SRC_UTILS
         src/utils/voxel.cpp
         src/utils/utils.cpp
         src/utils/PCA.cxx
+        src/utils/systemStats.cpp
         )
 
 set(SRC_SEGMENTHANDLERS
