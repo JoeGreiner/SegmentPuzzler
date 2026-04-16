@@ -65,7 +65,10 @@ int main(int argc, char *argv[]) {
     #endif
 
 #ifdef USE_OMP
-    omp_set_nested(0);
+    omp_set_max_active_levels(1);
+    std::cout << "OpenMP enabled, max threads: " << omp_get_max_threads() << std::endl;
+#else
+    std::cout << "OpenMP disabled" << std::endl;
 #endif
     qRegisterMetaType<QVector<int> >("QVector<int>");
     qRegisterMetaType<QItemSelection>("QItemSelection");

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10.0)
+cmake_minimum_required(VERSION 3.12)
 project(SegmentPuzzler LANGUAGES CXX VERSION 0.2.2)
 string(TOLOWER "${PROJECT_NAME}" PROJECT_NAME_LOWER)
 set(CMAKE_CXX_STANDARD 17)
@@ -18,7 +18,18 @@ option(BUILD_TESTING "Enable testing" FALSE)
 option(RUN_WITH_ASAN "Enable Address Sanitizer" FALSE)
 option(RUN_WITH_TSAN "Enable Thread Sanitizer" FALSE)
 option(ADD_DEBUG_SYMBOL_O0 "Add debug symbols and O0" FALSE)
-option(USE_OMP "Enable OpenMP" FALSE)
+option(USE_OMP "Enable OpenMP" TRUE)
+
+if (USE_OMP)
+    if (APPLE AND NOT OpenMP_ROOT)
+        if (EXISTS "/opt/homebrew/opt/libomp")
+            set(OpenMP_ROOT "/opt/homebrew/opt/libomp")
+        elseif (EXISTS "/usr/local/opt/libomp")
+            set(OpenMP_ROOT "/usr/local/opt/libomp")
+        endif ()
+    endif ()
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
+endif ()
 
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -64,18 +75,9 @@ if (MSVC)
         add_compile_options(/Ox)
     endif ()
     add_compile_options(/F 8388608)
-    if (USE_OMP)
-        add_compile_options(/openmp)
-    endif ()
 endif ()
 
 ### Linux compile options
-if (UNIX)
-    if (USE_OMP)
-        add_compile_options(-fopenmp)
-    endif ()
-endif ()
-
 if (UNIX AND RELEASE)
     add_compile_options(-Ofast)
     if (LINK_TIME_OPTIMIZATION)
@@ -192,6 +194,7 @@ set(SRC_VIEWERS
         src/viewers/SliceViewer.cpp
         src/viewers/AnnotationSliceViewer.cpp
         src/viewers/OrthoViewer.cpp
+        src/viewers/Segment3DViewerDialog.cpp
         )
 
 set(SRC_UTILS
@@ -237,6 +240,10 @@ endif ()
 
 
 target_link_libraries(SegmentPuzzler ${ITK_LIBRARIES} Qt5::Widgets Qt5::Network ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+if (USE_OMP)
+    target_compile_definitions(SegmentPuzzler PRIVATE USE_OMP)
+    target_link_libraries(SegmentPuzzler OpenMP::OpenMP_CXX)
+endif ()
 
 if (MSVC)
     file(GLOB OPENSSL_DLLS "${OPENSSL_BIN_DIR}/*.dll")
@@ -268,6 +275,14 @@ if (BUILD_TESTING)
     target_link_libraries(profile_SliceViewer ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
     target_link_libraries(test_SliceViewer ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
     target_link_libraries(test_OrthoViewer ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+    if (USE_OMP)
+        target_compile_definitions(profile_SliceViewer PRIVATE USE_OMP)
+        target_compile_definitions(test_SliceViewer PRIVATE USE_OMP)
+        target_compile_definitions(test_OrthoViewer PRIVATE USE_OMP)
+        target_link_libraries(profile_SliceViewer OpenMP::OpenMP_CXX)
+        target_link_libraries(test_SliceViewer OpenMP::OpenMP_CXX)
+        target_link_libraries(test_OrthoViewer OpenMP::OpenMP_CXX)
+    endif ()
 #    target_link_libraries(test_customwatershed ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershed ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershedControl ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
