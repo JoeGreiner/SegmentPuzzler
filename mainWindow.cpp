@@ -168,39 +168,75 @@ MainWindow::MainWindow() {
     mySignalControl->populateSegmentationsMenu(segmentationsMenu);
 
     settingsMenu = menuBar()->addMenu(tr("&Settings"));
-    QAction *setFillCloseRadiusAction = new QAction(tr("Set Fill/Close Radius"), this);
-    settingsMenu->addAction(setFillCloseRadiusAction);
-    connect(setFillCloseRadiusAction, &QAction::triggered, this, [this]() {
+    QAction *setClosingRadiusAction = new QAction(tr("Set Closing Radius"), this);
+    settingsMenu->addAction(setClosingRadiusAction);
+    connect(setClosingRadiusAction, &QAction::triggered, this, [this]() {
         const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
-                                      ? myOrthowindow->xy->getFillCloseRadius()
+                                      ? myOrthowindow->xy->getClosingRadius()
                                       : 8;
         const int radius = QInputDialog::getInt(
             this,
-            tr("Fill/Close Radius"),
-            tr("Radius for fill/close morphology:"),
+            tr("Closing Radius"),
+            tr("Radius for the fill/close action (F):"),
             currentRadius,
             0,
             100);
         if (myOrthowindow != nullptr) {
-            myOrthowindow->setMorphologyFillCloseRadius(radius);
+            myOrthowindow->setMorphologyClosingRadius(radius);
         }
     });
 
-    QAction *setOpenRadiusAction = new QAction(tr("Set Open/Erode Radius"), this);
-    settingsMenu->addAction(setOpenRadiusAction);
-    connect(setOpenRadiusAction, &QAction::triggered, this, [this]() {
+    QAction *setOpeningRadiusAction = new QAction(tr("Set Opening Radius"), this);
+    settingsMenu->addAction(setOpeningRadiusAction);
+    connect(setOpeningRadiusAction, &QAction::triggered, this, [this]() {
         const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
-                                      ? myOrthowindow->xy->getOpenRadius()
+                                      ? myOrthowindow->xy->getOpeningRadius()
                                       : 3;
         const int radius = QInputDialog::getInt(
             this,
-            tr("Open/Erode Radius"),
-            tr("Radius for open/erode morphology:"),
+            tr("Opening Radius"),
+            tr("Radius for the open action (G):"),
             currentRadius,
             0,
             100);
         if (myOrthowindow != nullptr) {
-            myOrthowindow->setMorphologyOpenRadius(radius);
+            myOrthowindow->setMorphologyOpeningRadius(radius);
+        }
+    });
+
+    QAction *setDilationRadiusAction = new QAction(tr("Set Dilation Radius"), this);
+    settingsMenu->addAction(setDilationRadiusAction);
+    connect(setDilationRadiusAction, &QAction::triggered, this, [this]() {
+        const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
+                                      ? myOrthowindow->xy->getDilationRadius()
+                                      : 1;
+        const int radius = QInputDialog::getInt(
+            this,
+            tr("Dilation Radius"),
+            tr("Radius for the dilate action (J):"),
+            currentRadius,
+            0,
+            100);
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->setMorphologyDilationRadius(radius);
+        }
+    });
+
+    QAction *setErosionRadiusAction = new QAction(tr("Set Erosion Radius"), this);
+    settingsMenu->addAction(setErosionRadiusAction);
+    connect(setErosionRadiusAction, &QAction::triggered, this, [this]() {
+        const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
+                                      ? myOrthowindow->xy->getErosionRadius()
+                                      : 1;
+        const int radius = QInputDialog::getInt(
+            this,
+            tr("Erosion Radius"),
+            tr("Radius for the erode action (K):"),
+            currentRadius,
+            0,
+            100);
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->setMorphologyErosionRadius(radius);
         }
     });
 

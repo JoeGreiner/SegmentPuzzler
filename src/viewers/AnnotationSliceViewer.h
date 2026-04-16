@@ -61,10 +61,14 @@ public slots:
     void exportDebugInformation();
 
     void setPaintId(dataType::SegmentIdType);
-    void setOpenRadius(int radius);
-    void setFillCloseRadius(int radius);
-    int getOpenRadius() const { return openRadius; }
-    int getFillCloseRadius() const { return fillCloseRadius; }
+    void setOpeningRadius(int radius);
+    void setClosingRadius(int radius);
+    void setDilationRadius(int radius);
+    void setErosionRadius(int radius);
+    int getOpeningRadius() const { return openingRadius; }
+    int getClosingRadius() const { return closingRadius; }
+    int getDilationRadius() const { return dilationRadius; }
+    int getErosionRadius() const { return erosionRadius; }
 
 
 protected:
@@ -127,8 +131,10 @@ private:
     void show3DSegmentView(int posX, int posY);
     void show3DAllLabelsView();
     QPoint ROISelectionOrigin;
-    int openRadius = 3;
-    int fillCloseRadius = 8;
+    int openingRadius = 3;
+    int closingRadius = 8;
+    int dilationRadius = 1;
+    int erosionRadius = 1;
 
 };
 

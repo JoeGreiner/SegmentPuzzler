@@ -723,7 +723,7 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     double time_second_part = utils::tic("OpenSegmentationLabel second part started: ");
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType , dataType::Dimension>;
     StructuringElementType structuringElement;
-    structuringElement.SetRadius(openRadius);
+    structuringElement.SetRadius(openingRadius);
     structuringElement.CreateStructuringElement();
 
     using BinaryMorphologicalOpeningImageFilterType =
@@ -854,7 +854,7 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
 
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType , dataType::Dimension>;
     StructuringElementType structuringElement;
-    structuringElement.SetRadius(fillCloseRadius);
+    structuringElement.SetRadius(closingRadius);
     structuringElement.CreateStructuringElement();
 
     using BinaryMorphologicalClosingImageFilterType =
@@ -913,7 +913,8 @@ void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
         return;
     }
 
-    const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, 1);
+    const int radius = std::max(0, dilationRadius);
+    const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, radius);
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     auto roiExtractionFilter = ROIExtractionFilterType::New();
     roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
@@ -923,7 +924,7 @@ void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
 
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType, dataType::Dimension>;
     StructuringElementType structuringElement;
-    structuringElement.SetRadius(1);
+    structuringElement.SetRadius(radius);
     structuringElement.CreateStructuringElement();
 
     using BinaryDilateImageFilterType =
@@ -966,7 +967,8 @@ void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
         return;
     }
 
-    const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, 1);
+    const int radius = std::max(0, erosionRadius);
+    const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, radius);
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     auto roiExtractionFilter = ROIExtractionFilterType::New();
     roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
@@ -976,7 +978,7 @@ void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
 
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType, dataType::Dimension>;
     StructuringElementType structuringElement;
-    structuringElement.SetRadius(1);
+    structuringElement.SetRadius(radius);
     structuringElement.CreateStructuringElement();
 
     using BinaryErodeImageFilterType =
@@ -1009,12 +1011,20 @@ void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
     }
 }
 
-void AnnotationSliceViewer::setOpenRadius(int radius) {
-    openRadius = std::max(0, radius);
+void AnnotationSliceViewer::setOpeningRadius(int radius) {
+    openingRadius = std::max(0, radius);
 }
 
-void AnnotationSliceViewer::setFillCloseRadius(int radius) {
-    fillCloseRadius = std::max(0, radius);
+void AnnotationSliceViewer::setClosingRadius(int radius) {
+    closingRadius = std::max(0, radius);
+}
+
+void AnnotationSliceViewer::setDilationRadius(int radius) {
+    dilationRadius = std::max(0, radius);
+}
+
+void AnnotationSliceViewer::setErosionRadius(int radius) {
+    erosionRadius = std::max(0, radius);
 }
 
 

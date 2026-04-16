@@ -1250,27 +1250,51 @@ void OrthoViewer::receiveStatusMessage(QString string) {
     emit sendStatusMessage(string);
 }
 
-void OrthoViewer::setMorphologyOpenRadius(int radius) {
+void OrthoViewer::setMorphologyOpeningRadius(int radius) {
     if (xy != nullptr) {
-        xy->setOpenRadius(radius);
+        xy->setOpeningRadius(radius);
     }
     if (xz != nullptr) {
-        xz->setOpenRadius(radius);
+        xz->setOpeningRadius(radius);
     }
     if (zy != nullptr) {
-        zy->setOpenRadius(radius);
+        zy->setOpeningRadius(radius);
     }
 }
 
-void OrthoViewer::setMorphologyFillCloseRadius(int radius) {
+void OrthoViewer::setMorphologyClosingRadius(int radius) {
     if (xy != nullptr) {
-        xy->setFillCloseRadius(radius);
+        xy->setClosingRadius(radius);
     }
     if (xz != nullptr) {
-        xz->setFillCloseRadius(radius);
+        xz->setClosingRadius(radius);
     }
     if (zy != nullptr) {
-        zy->setFillCloseRadius(radius);
+        zy->setClosingRadius(radius);
+    }
+}
+
+void OrthoViewer::setMorphologyDilationRadius(int radius) {
+    if (xy != nullptr) {
+        xy->setDilationRadius(radius);
+    }
+    if (xz != nullptr) {
+        xz->setDilationRadius(radius);
+    }
+    if (zy != nullptr) {
+        zy->setDilationRadius(radius);
+    }
+}
+
+void OrthoViewer::setMorphologyErosionRadius(int radius) {
+    if (xy != nullptr) {
+        xy->setErosionRadius(radius);
+    }
+    if (xz != nullptr) {
+        xz->setErosionRadius(radius);
+    }
+    if (zy != nullptr) {
+        zy->setErosionRadius(radius);
     }
 }
 
