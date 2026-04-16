@@ -98,6 +98,7 @@ public:
         Fill,        // F: morphological fill/close (clears after click)
         Open,        // G: morphological open/erode (clears after click)
         Insert       // H: insert segmentation segment into initial segments (clears after click)
+        View3D       // M: open a 3D view for the clicked segment (clears after click)
     };
     ToolMode activeTool = ToolMode::None;
 

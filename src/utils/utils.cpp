@@ -1,15 +1,12 @@
 #include "utils.h"
 #include <string>
 #include <QString>
-
-
+#include <itkImageRegionConstIterator.h>
 
 #ifdef USE_OMP
 #include <omp.h>
 #else
 #include <chrono>
-#include <itkImageRegionConstIterator.h>
-
 #endif
 
 

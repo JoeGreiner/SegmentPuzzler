@@ -1,4 +1,7 @@
 #include <QApplication>
+#include <QSurfaceFormat>
+#include <QVTKOpenGLNativeWidget.h>
+#include <itkImage.h>
 #include <iostream>
 #include <exception>
 #include <QFile>
@@ -46,6 +49,8 @@ std::string getEnvVar(const char* name) {
 
 
 int main(int argc, char *argv[]) {
+    QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
+    QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
     QApplication a(argc, argv);
 
     std::setlocale(LC_NUMERIC, "C");

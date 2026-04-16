@@ -110,6 +110,10 @@ private:
     void getSegmentationLabelIdAtCursor(int x, int y);
     void setLinkedToolModeAndNotify(std::vector<SliceViewer *> &viewerList, ToolMode toolMode);
     void notifyOrthoViewerInteractionModeChanged();
+    void showPrepared3DView(std::vector<std::pair<dataType::SegmentIdType, quint32>> labels,
+                            const QString &progressText);
+    void show3DSegmentView(int posX, int posY);
+    void show3DAllLabelsView();
     QPoint ROISelectionOrigin;
 
 };

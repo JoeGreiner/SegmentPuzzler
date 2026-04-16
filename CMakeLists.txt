@@ -132,6 +132,15 @@ if (NOT ITK_FOUND)
 endif ()
 include(${ITK_USE_FILE})
 
+find_package(VTK REQUIRED COMPONENTS
+        CommonCore CommonDataModel
+        FiltersCore FiltersGeneral FiltersSources
+        ImagingCore ImagingGeneral
+        RenderingCore RenderingOpenGL2 RenderingAnnotation
+        InteractionStyle InteractionWidgets
+        GUISupportQt)
+MESSAGE(STATUS "VTK_DIR: " ${VTK_DIR})
+
 if (MSVC) # not needed for Mac
     find_package(OpenSSL QUIET)
     if (NOT OpenSSL_FOUND)
@@ -241,11 +250,12 @@ else ()
 endif ()
 
 
-target_link_libraries(SegmentPuzzler ${ITK_LIBRARIES} Qt5::Widgets Qt5::Network ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+target_link_libraries(SegmentPuzzler ${ITK_LIBRARIES} Qt5::Widgets Qt5::Network ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)
     target_compile_definitions(SegmentPuzzler PRIVATE USE_OMP)
     target_link_libraries(SegmentPuzzler OpenMP::OpenMP_CXX)
 endif ()
+vtk_module_autoinit(TARGETS SegmentPuzzler MODULES ${VTK_LIBRARIES})
 
 if (MSVC)
     file(GLOB OPENSSL_DLLS "${OPENSSL_BIN_DIR}/*.dll")

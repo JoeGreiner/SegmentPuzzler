@@ -1,4 +1,5 @@
 #include <itkImageRegionConstIterator.h>
+#include <itkImageRegionIterator.h>
 #ifdef USE_OMP
 #include <omp.h>
 #endif
@@ -1251,6 +1252,19 @@ void Graph::exportDebugInformation(){
                                                                 "initialEdges.nrrd");
     ITKImageWriter<dataType::SegmentsImageType>(graphBase->pWorkingSegmentsImage,
                                                                     "workingSegments.nrrd");
+}
+
+
+void Graph::deleteSegmentationLabel(SegmentIdType label) {
+    if (graphBase->pSelectedSegmentation == nullptr) { return; }
+    itk::ImageRegionIterator<SegmentsImageType> it(
+        graphBase->pSelectedSegmentation,
+        graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+        if (it.Get() == label) {
+            it.Set(backgroundId);
+        }
+    }
 }
 
 

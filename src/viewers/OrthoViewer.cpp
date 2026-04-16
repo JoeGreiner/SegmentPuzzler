@@ -292,6 +292,8 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
             return createSingleActionWithPan("Open", QColor("#58b8d6"));
         case SliceViewer::ToolMode::Insert:
             return createSingleActionWithPan("Insert", QColor("#e0a35c"));
+        case SliceViewer::ToolMode::View3D:
+            return createSingleActionWithPan("3D View", QColor("#8ccf5f"));
         case SliceViewer::ToolMode::None:
         default:
             return createDualActionWithPan("Merge", "Unmerge", QColor("#7b8ea1"));
@@ -359,12 +361,21 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("f10", "F10", "Go To ID",
                            "Press F10 to find a label ID and center the viewers on it.",
                            isFlashed("f10")),
+        createShortcutHint("f8", "F8", "Feature Table",
+                           "Press F8 to open the segment feature table: shape features for all labels, sortable and color-coded.",
+                           isFlashed("f8")),
         createShortcutHint("f1", "F1", "Hotkeys",
                            "Press F1 to open the full hotkey reference dialog.",
                            isFlashed("f1")),
         createShortcutHint("e", "E", "Debug",
                            "Press E to export debug graph and image information to files.",
                            isFlashed("e")),
+        createShortcutHint("m", "M", "3D View",
+                           "Hold M and click to open a 3D surface view of the clicked segment.",
+                           activeTool == SliceViewer::ToolMode::View3D || isFlashed("m")),
+        createShortcutHint("n", "N", "3D All",
+                           "Press N to open a 3D surface view of all segments at once.",
+                           isFlashed("n")),
     };
 }
 

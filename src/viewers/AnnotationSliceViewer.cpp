@@ -6,6 +6,7 @@
 #include <omp.h>
 #endif
 #include <Qt>
+#include <algorithm>
 #include <itkLabelGeometryImageFilter.h>
 #include <itkRegionOfInterestImageFilter.h>
 #include <itkBinaryBallStructuringElement.h>
@@ -29,6 +30,30 @@ bool toolWorksWithoutWorkingSegments(SliceViewer::ToolMode tool) {
            tool == SliceViewer::ToolMode::SelectColor ||
            tool == SliceViewer::ToolMode::Fill ||
            tool == SliceViewer::ToolMode::Open;
+}
+
+dataType::SegmentsImageType::RegionType paddedLabelRegion(
+    dataType::SegmentsImageType::Pointer image,
+    dataType::SegmentIdType label,
+    int padding) {
+    auto [fx, fy, fz, tx, ty, tz] = utils::calculateBoundingBoxForLabel(image, label);
+    const auto fullRegion = image->GetLargestPossibleRegion();
+    const auto fullIndex = fullRegion.GetIndex();
+    const auto fullSize = fullRegion.GetSize();
+
+    dataType::SegmentsImageType::IndexType roiIndex;
+    dataType::SegmentsImageType::SizeType roiSize;
+    roiIndex[0] = std::max<int>(fullIndex[0], fx - padding);
+    roiIndex[1] = std::max<int>(fullIndex[1], fy - padding);
+    roiIndex[2] = std::max<int>(fullIndex[2], fz - padding);
+
+    const int maxX = std::min<int>(fullIndex[0] + static_cast<int>(fullSize[0]) - 1, tx + padding);
+    const int maxY = std::min<int>(fullIndex[1] + static_cast<int>(fullSize[1]) - 1, ty + padding);
+    const int maxZ = std::min<int>(fullIndex[2] + static_cast<int>(fullSize[2]) - 1, tz + padding);
+    roiSize[0] = std::max<dataType::SegmentsImageType::SizeType::SizeValueType>(1, maxX - roiIndex[0] + 1);
+    roiSize[1] = std::max<dataType::SegmentsImageType::SizeType::SizeValueType>(1, maxY - roiIndex[1] + 1);
+    roiSize[2] = std::max<dataType::SegmentsImageType::SizeType::SizeValueType>(1, maxZ - roiIndex[2] + 1);
+    return {roiIndex, roiSize};
 }
 
 void logAnnotationViewerState(const QString &key, const QString &message) {
@@ -361,7 +386,89 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
 //        graphBase->pGraph->writeInitialEdgesToFile("initialEdges.nrrd");
 //    } else if(event->key() == Qt::Key_F) {
 //        graphBase->pGraph->printMergeTreeToFile("mergeTree.txt");
+    } else if (event->key() == Qt::Key_M) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("m");
+        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::View3D);
+    } else if (event->key() == Qt::Key_N) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("n");
+        }
+        show3DAllLabelsView();
     }
+}
+
+void AnnotationSliceViewer::showPrepared3DView(
+    std::vector<std::pair<dataType::SegmentIdType, quint32>> labels,
+    const QString &progressText)
+{
+    if (graphBase->pWorkingSegmentsImage == nullptr || labels.empty()) {
+        return;
+    }
+
+    const auto segImage = graphBase->pWorkingSegmentsImage;
+    if (taskRunner == nullptr) {
+        auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
+        auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+        return;
+    }
+
+    taskRunner->runWithLabel(
+        progressText,
+        [segImage, labels]() mutable {
+            return Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
+        },
+        [this](Segment3DViewerDialog::PreparedScene preparedScene) {
+            auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            dialog->show();
+        });
+}
+
+void AnnotationSliceViewer::show3DSegmentView(int posX, int posY) {
+    if (graphBase->pWorkingSegmentsImage == nullptr) return;
+
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    const dataType::SegmentIdType label =
+        graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
+    if (label == 0) return;
+
+    quint32 lutColor = 0xFFAAAAAA;
+    if (graphBase->pWorkingSegments != nullptr &&
+        label < static_cast<dataType::SegmentIdType>(graphBase->pWorkingSegments->LUT.size())) {
+        lutColor = graphBase->pWorkingSegments->LUT[label];
+    }
+
+    showPrepared3DView({{label, lutColor}}, "Preparing 3D segment view...");
+}
+
+void AnnotationSliceViewer::show3DAllLabelsView() {
+    if (graphBase->pWorkingSegmentsImage == nullptr) return;
+
+    const auto *buf = graphBase->pWorkingSegmentsImage->GetBufferPointer();
+    const auto &sz = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetSize();
+    const size_t total = sz[0] * sz[1] * sz[2];
+
+    std::unordered_map<dataType::SegmentIdType, quint32> labelColors;
+    for (size_t i = 0; i < total; ++i) {
+        const dataType::SegmentIdType id = buf[i];
+        if (id == 0 || labelColors.count(id)) continue;
+        quint32 color = 0xFFAAAAAA;
+        if (graphBase->pWorkingSegments != nullptr &&
+            id < static_cast<dataType::SegmentIdType>(graphBase->pWorkingSegments->LUT.size())) {
+            color = graphBase->pWorkingSegments->LUT[id];
+        }
+        labelColors[id] = color;
+    }
+
+    if (labelColors.empty()) return;
+
+    std::vector<std::pair<dataType::SegmentIdType, quint32>> labels(labelColors.begin(), labelColors.end());
+    showPrepared3DView(std::move(labels), "Preparing 3D view for all segments...");
 }
 
 void AnnotationSliceViewer::exportDebugInformation() {
@@ -392,6 +499,7 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
         {Qt::Key_F,       ToolMode::Fill},
         {Qt::Key_G,       ToolMode::Open},
         {Qt::Key_H,       ToolMode::Insert},
+        {Qt::Key_M,       ToolMode::View3D},
     };
     auto it = keyToToolMode.find(event->key());
     if (it != keyToToolMode.end()) {
@@ -487,6 +595,10 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         runInsertSegmentationSegmentIntoInitialSegments(event->pos().x(), event->pos().y());
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
+    case ToolMode::View3D:
+        show3DSegmentView(event->pos().x(), event->pos().y());
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
+        break;
     }
 
 }
@@ -517,6 +629,11 @@ void AnnotationSliceViewer::runOpenSegmentationLabel(int posX, int posY){
 void AnnotationSliceViewer::runFillSegmentationLabel(int posX, int posY){
     taskRunner->run(
         [this, posX, posY]() { fillSegmentationLabel(posX, posY); },
+        [this]() {
+            orthoViewer()->refreshViewers();
+        });
+}
+
         [this]() {
             orthoViewer()->refreshViewers();
         });
@@ -799,20 +916,11 @@ void AnnotationSliceViewer::transferWorkingNodeToSegmentation(int posX, int posY
 
 void AnnotationSliceViewer::deleteConnectedLabelFromSegmentation(int posX, int posY) {
     double tic = utils::tic();
-    int x, y, z;
-    if (graphBase->pSelectedSegmentation != nullptr) {
-        const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    if (graphBase->pSelectedSegmentation != nullptr && graphBase->pGraph != nullptr) {
+        int x, y, z;
         getXYZfromPixmapPos(posX, posY, x, y, z);
-        dataType::SegmentIdType labelAtPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
-        itk::ImageRegionIterator<dataType::SegmentsImageType> it(graphBase->pSelectedSegmentation,
-                                                                  graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-        it.GoToBegin();
-        while (!it.IsAtEnd()) {
-            if (it.Get() == labelAtPosition) {
-                it.Set(backgroundLabel);
-            }
-            ++it;
-        }
+        const dataType::SegmentIdType labelAtPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+        graphBase->pGraph->deleteSegmentationLabel(labelAtPosition);
     }
     utils::toc(tic, "DeleteConnectedLabelFromSegmentation finished: ");
 }

@@ -5,12 +5,14 @@
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPointer>
 #include <memory>
 
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
 
 class TaskRunner;
+class SegmentTableDialog;
 
 class MainWindow : public QMainWindow {
 Q_OBJECT
@@ -30,6 +32,7 @@ public slots:
 
 private slots:
     void showHotkeys();
+    void showSegmentTable();
 
 private:
     OrthoViewer *myOrthowindow;
@@ -42,9 +45,11 @@ private:
 
     QAction *openHotkeysAction;
     QAction *loadSampleSegmentationAction;
+    QAction *showSegmentTableAction = nullptr;
     std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
     std::unique_ptr<TaskRunner> taskRunner;
+    QPointer<SegmentTableDialog> segmentTableDialog;
 
     void installInitialFileDropHandling();
     void registerDropTarget(QWidget *widget);

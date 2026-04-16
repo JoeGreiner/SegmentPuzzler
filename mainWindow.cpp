@@ -299,6 +299,16 @@ MainWindow::MainWindow() {
     );
 
 
+    showSegmentTableAction = new QAction(tr("&Segment Feature Table"), this);
+    showSegmentTableAction->setShortcut(Qt::Key_F8);
+    goToMenu->addAction(showSegmentTableAction);
+    connect(showSegmentTableAction, &QAction::triggered, this, [this]() {
+        if (myOrthowindow != nullptr) {
+            myOrthowindow->flashShortcutLegendKey("f8");
+        }
+    });
+    connect(showSegmentTableAction, &QAction::triggered, this, &MainWindow::showSegmentTable);
+
     helpMenu = menuBar()->addMenu(tr("&Help"));
     openHotkeysAction = new QAction(tr("&Show Hotkeys"), this);
     openHotkeysAction->setShortcut(Qt::Key_F1);
@@ -848,6 +858,16 @@ void MainWindow::loadSegmentationSample() {
     }
 }
 
+void MainWindow::showSegmentTable() {
+    if (!segmentTableDialog) {
+        segmentTableDialog = new SegmentTableDialog(graphBase, myOrthowindow, this);
+        segmentTableDialog->setAttribute(Qt::WA_DeleteOnClose);
+    }
+    segmentTableDialog->show();
+    segmentTableDialog->raise();
+    segmentTableDialog->activateWindow();
+}
+
 void MainWindow::showHotkeys() {
     QString hotKeyText = R"(
 <html>
@@ -924,6 +944,21 @@ void MainWindow::showHotkeys() {
 
 <p class="bold_header">CMD + Click</p>
 <p>Set other orthogonal views to slice through the point under the cursor.</p>
+
+<p class="bold_header">F8</p>
+<p>Open the Segment Feature Table: shape features for all labels in the selected segmentation, sortable and color-coded. Click a row to navigate to that label.</p>
+
+<p class="bold_header">F9</p>
+<p>Jump to explicit X, Y, Z coordinates.</p>
+
+<p class="bold_header">F10</p>
+<p>Jump to a label ID in the selected segmentation.</p>
+
+<p class="bold_header">M</p>
+<p>Hold [M] and click a segment to open its 3D surface mesh view.</p>
+
+<p class="bold_header">N</p>
+<p>Open a 3D surface view of all segments at once.</p>
 
 </body>
 </html>

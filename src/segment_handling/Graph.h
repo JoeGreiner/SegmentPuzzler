@@ -144,6 +144,9 @@ public:
 
     void transferWorkingNodeToSegmentation(SegmentIdType labelOfNodeToTransfer);
 
+    // Delete all pixels with the given label from pSelectedSegmentation (sets them to backgroundId).
+    void deleteSegmentationLabel(SegmentIdType label);
+
     void transferSegmentsWithVolumeCriterion(double volumeThreshold=50000);
 
     void transferSegmentsWithRefinementOverlap();
