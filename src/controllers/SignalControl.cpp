@@ -28,6 +28,8 @@
 #include <limits>
 #include <cmath>
 
+#include "src/utils/SignalNameUtils.h"
+
 namespace {
 
 constexpr int kSectionSpacing = 4;
@@ -414,10 +416,8 @@ void SignalControl::refreshViewers() {
 }
 
 QString SignalControl::resolvedDisplayName(const QString &fileName, const QString &displayedName) const {
-    if (!displayedName.isEmpty()) {
-        return displayedName;
-    }
-    return QFileInfo(fileName).baseName();
+    const QString requestedName = !displayedName.isEmpty() ? displayedName : QFileInfo(fileName).baseName();
+    return signal_name_utils::makeUniqueSignalName(allSignalList, requestedName);
 }
 
 void SignalControl::invokeLoadCallbackLater(LoadCallback then, LoadResult result) {
@@ -570,14 +570,14 @@ bool SignalControl::insertLoadedImage(const LoadedImageData &loadedImage,
 
 void SignalControl::registerImageSignal(size_t signalIndexGlobal, const QString &name) {
     allSignalList[signalIndexGlobal]->setLUTContinuous();
-    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
 }
 
 void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const QString &name) {
     allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(true);
@@ -591,7 +591,7 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
 
 void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QString &name) {
     allSignalList[signalIndexGlobal]->setLUTContinuous();
-    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
     QTreeWidgetItem *newItem = probabilityTreeWidget->topLevelItem(probabilityTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(probabilityTreeWidget, newItem, lastAutoSelectedBoundaryItem);
@@ -602,7 +602,7 @@ void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QStri
 
 void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QString &name) {
     allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(false);
     int lastItemIndex = refinementTreeWidget->topLevelItemCount() - 1;
@@ -619,7 +619,8 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     segmentsGraph = allSignalList[signalIndexGlobal];
     auto *typedSegmentsSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(segmentsGraph);
     allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setName("Supervoxels");
+    allSignalList[signalIndexGlobal]->setName(
+        signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Supervoxels")));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
 
     graphBase->pWorkingSegments = typedSegmentsSignal;
@@ -628,7 +629,8 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     allSignalList[signalIndexGlobal]->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
 
-    graphBase->pEdgesInitialSegmentsITKSignal->setName("Edges");
+    graphBase->pEdgesInitialSegmentsITKSignal->setName(
+        signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Edges")));
     graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
@@ -1557,7 +1559,8 @@ void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>:
     if (loadSuccessFull) {
         auto *typedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndexGlobal]);
         allSignalList[signalIndexGlobal]->setLUTCategorical();
-        allSignalList[signalIndexGlobal]->setName("Refinement");
+        allSignalList[signalIndexGlobal]->setName(
+            signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Refinement")));
         allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
         allSignalList[signalIndexGlobal]->setIsActive(false);
         allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
@@ -1598,7 +1601,7 @@ void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImag
 
     prepareWorkingSegmentsGraph(pImage);
     registerSegmentsGraphSignal(signalIndexGlobal);
-    allSignalList[signalIndexGlobal]->setName(name);
+    allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
 }
 
 
@@ -1702,7 +1705,8 @@ void SignalControl::createEmptySegmentation() {
 
     allSignalList[signalIndexGlobal]->setLUTCategorical();
     allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
-    allSignalList[signalIndexGlobal]->setName("Segmentation");
+    allSignalList[signalIndexGlobal]->setName(
+        signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Segmentation")));
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
     QTreeWidgetItem *newItem = segmentationTreeWidget->topLevelItem(segmentationTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(segmentationTreeWidget, newItem, lastAutoSelectedSegmentationItem);
