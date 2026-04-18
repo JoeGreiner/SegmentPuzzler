@@ -219,6 +219,10 @@ set(SRC_UTILS
         src/utils/WatershedRagAgglomeration.cpp
         )
 
+set(SRC_ITKIMAGEFILTERS
+        src/itkImageFilters/itkWatershedHelpers.cpp
+        )
+
 set(SRC_SEGMENTHANDLERS
         src/segment_handling/graph.cpp
         src/segment_handling/graphBase.cpp
@@ -236,7 +240,7 @@ set(QT_RESOURCES
         resources/icon.qrc
         qdarkstyle/dark/style.qrc
         )
-set(SRC_CORRECT_ORDER ${SRC_UTILS} ${SRC_SEGMENTHANDLERS} ${SRC_VIEWERS} ${SRCS} ${QT_RESOURCES})
+set(SRC_CORRECT_ORDER ${SRC_UTILS} ${SRC_ITKIMAGEFILTERS} ${SRC_SEGMENTHANDLERS} ${SRC_VIEWERS} ${SRCS} ${QT_RESOURCES})
 
 
 
