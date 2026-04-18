@@ -123,16 +123,9 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
 
 
 bool SliceViewer::isSliceIndexValid(int proposedSliceIndex) {
-    switch (sliceAxis) {
-        case 0:
-            return proposedSliceIndex < dimX && proposedSliceIndex >= 0;
-        case 1:
-            return proposedSliceIndex < dimY && proposedSliceIndex >= 0;
-        case 2:
-            return proposedSliceIndex < dimZ && proposedSliceIndex >= 0;
-        default:
-            throw std::logic_error("SliceAxis not implemented!");
-    }
+    return proposedSliceIndex >= 0 &&
+           static_cast<unsigned long>(proposedSliceIndex) <
+               slice_geometry::sliceLimit(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 void SliceViewer::setAllViewersToXYZCoordinates(int posX, int posY) {
@@ -354,35 +347,11 @@ void SliceViewer::addSignal(SliceViewerITKSignal *signal) {
 
 
 int SliceViewer::getCurrentSliceWidth() {
-    switch (sliceAxis) {
-        case 0: {
-            return dimZ;
-        }
-        case 1: {
-            return dimX;
-        }
-        case 2: {
-            return dimX;
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
+    return slice_geometry::sliceWidth(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 int SliceViewer::getCurrentSliceHeight() {
-    switch (sliceAxis) {
-        case 0: {
-            return dimY;
-        }
-        case 1: {
-            return dimZ;
-        }
-        case 2: {
-            return dimY;
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
+    return slice_geometry::sliceHeight(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 void SliceViewer::paintEvent(QPaintEvent *event) {

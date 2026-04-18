@@ -697,36 +697,15 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
                                               std::vector<quint32> *sliceBuffer) {
     // attention! slicebuffer has to be valid the whole time the qimage is used, therefore it is passed into the function
     // TODO: handle floats
-    SignalImageIndexType index;
-    SignalImageSizeType size;
     unsigned int width, height;
-
-    switch (sliceAxis) {
-        case 0: {
-            index = {sliceIndex, 0, 0};
-            size = {1, static_cast<unsigned long>(dimY), static_cast<unsigned long>(dimZ)};
-            width = dimZ;
-            height = dimY;
-            break;
-        }
-        case 1: {
-            index = {0, sliceIndex, 0};
-            size = {static_cast<unsigned long>(dimX), 1, static_cast<unsigned long>(dimZ)};
-            width = dimX;
-            height = dimZ;
-            break;
-        }
-        case 2: {
-            index = {0, 0, sliceIndex};
-            size = {static_cast<unsigned long>(dimX), static_cast<unsigned long>(dimY), 1};
-            width = dimX;
-            height = dimY;
-            break;
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
-    SignalImageRegionType region(index, size);
+    const auto dims = slice_geometry::makeDimensions(dimX, dimY, dimZ);
+    SignalImageRegionType region = slice_geometry::makeSliceRegion<SignalImageIndexType,
+                                                                   SignalImageSizeType,
+                                                                   SignalImageRegionType>(sliceIndex,
+                                                                                          sliceAxis,
+                                                                                          dims,
+                                                                                          width,
+                                                                                          height);
 
 //    std::fill(sliceBuffer.begin(), sliceBuffer.end(), 0);
 
@@ -895,19 +874,7 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
 template<typename dType>
 inline
 unsigned long itkSignal<dType>::getPixMapIndex(itk::Index<3> coords, unsigned int sliceAxis) {
-    switch (sliceAxis) {
-        case 0: {
-            return coords[2] + coords[1] * dimZ;
-        }
-        case 1: {
-            return coords[0] + coords[2] * dimX;
-        }
-        case 2: {
-            return coords[0] + coords[1] * dimX;
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
+    return slice_geometry::pixmapIndex(coords, sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 template<typename dType>

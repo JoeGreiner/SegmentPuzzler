@@ -37,35 +37,15 @@ QImage itkSignalThresholdPreview<dType>::calculateSliceQImage(unsigned int slice
                                               std::vector<quint32> *sliceBuffer) {
     // attention! slicebuffer has to be valid the whole time the qimage is used, therefore it is passed into the function
     // TODO: handle floats
-    SignalImageIndexType index;
-    SignalImageSizeType size;
     unsigned int width, height;
-    switch (sliceAxis) {
-        case 0: {
-            index = {sliceIndex, 0, 0};
-            size = {1, static_cast<unsigned long>(this->dimY), static_cast<unsigned long>(this->dimZ)};
-            width = this->dimZ;
-            height = this->dimY;
-            break;
-        }
-        case 1: {
-            index = {0, sliceIndex, 0};
-            size = {static_cast<unsigned long>(this->dimX), 1, static_cast<unsigned long>(this->dimZ)};
-            width = this->dimX;
-            height = this->dimZ;
-            break;
-        }
-        case 2: {
-            index = {0, 0, sliceIndex};
-            size = {static_cast<unsigned long>(this->dimX), static_cast<unsigned long>(this->dimY), 1};
-            width = this->dimX;
-            height = this->dimY;
-            break;
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
-    SignalImageRegionType region(index, size);
+    const auto dims = slice_geometry::makeDimensions(this->dimX, this->dimY, this->dimZ);
+    SignalImageRegionType region = slice_geometry::makeSliceRegion<SignalImageIndexType,
+                                                                   SignalImageSizeType,
+                                                                   SignalImageRegionType>(sliceIndex,
+                                                                                          sliceAxis,
+                                                                                          dims,
+                                                                                          width,
+                                                                                          height);
 
 //    std::fill(sliceBuffer.begin(), sliceBuffer.end(), 0);
 

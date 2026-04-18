@@ -100,48 +100,15 @@ void SliceViewerITKSignal::setSliceAxis(int proposedSliceAxis) {
 
 
 bool SliceViewerITKSignal::isValidSliceIndex(unsigned int proposedSliceIndex) {
-    switch (sliceAxis) {
-        case 0:
-            return proposedSliceIndex < dimX;
-        case 1:
-            return proposedSliceIndex < dimY;
-        case 2:
-            return proposedSliceIndex < dimZ;
-        default:
-            throw std::logic_error("SliceAxis not implemented!");
-    }
+    return proposedSliceIndex < slice_geometry::sliceLimit(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 int SliceViewerITKSignal::getCurrentSliceWidth() {
-    switch (sliceAxis) {
-        case 0: {
-            return static_cast<int>(dimZ);
-        }
-        case 1: {
-            return static_cast<int>(dimX);
-        }
-        case 2: {
-            return static_cast<int>(dimX);
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
+    return slice_geometry::sliceWidth(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 int SliceViewerITKSignal::getCurrentSliceHeight() {
-    switch (sliceAxis) {
-        case 0: {
-            return static_cast<int>(dimY);
-        }
-        case 1: {
-            return static_cast<int>(dimZ);
-        }
-        case 2: {
-            return static_cast<int>(dimY);
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
+    return slice_geometry::sliceHeight(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 unsigned long SliceViewerITKSignal::getDimX() {
@@ -157,19 +124,7 @@ unsigned long SliceViewerITKSignal::getDimZ() {
 }
 
 unsigned long SliceViewerITKSignal::getPixMapIndex(itk::Index<3> coords) {
-    switch (sliceAxis) {
-        case 0: { // yz
-            return coords[2] + coords[1] * dimZ;
-        }
-        case 1: { // z x
-            return coords[0] + coords[2] * dimX;
-        }
-        case 2: { // x y
-            return coords[0] + coords[1] * dimX;
-        }
-        default:
-            throw (std::logic_error("sliceAxis not implemented!"));
-    }
+    return slice_geometry::pixmapIndex(coords, sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
 QImage *SliceViewerITKSignal::getAddressSliceQImage() {
