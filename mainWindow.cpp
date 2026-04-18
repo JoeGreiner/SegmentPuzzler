@@ -15,6 +15,7 @@
 #include <QFormLayout>
 #include "src/utils/utils.h"
 #include "src/utils/systemStats.h"
+#include "src/qtUtils/WindowStats.h"
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
@@ -406,26 +407,8 @@ MainWindow::MainWindow() {
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
     installInitialFileDropHandling();
 
-    // Title-bar system stats (CPU + RAM + swap), updated every 2 seconds.
-    // Seed the CPU delta counter so the first tick shows real usage.
-    systemStats::query();
-    auto *statsTimer = new QTimer(this);
-    connect(statsTimer, &QTimer::timeout, this, [this]() {
-        const SystemStats s = systemStats::query();
-        const int cpuUsed = std::max(0, std::min(static_cast<int>(s.cpuTotalPercent + 0.5),
-                                                  s.numCores * 100));
-        const int cpuMax  = s.numCores * 100;
-        QString title = QStringLiteral("SegmentPuzzler")
-                        + QString("  |  CPU %1/%2%").arg(cpuUsed).arg(cpuMax)
-                        + QString("  |  RAM %1/%2 GB").arg(s.memTotalGB - s.memAvailGB, 0, 'f', 1).arg(static_cast<int>(s.memTotalGB + 0.5));
-        if (s.swapTotalGB > 0.1) {
-            title += QString("  |  Swap %1/%2 GB")
-                         .arg(s.swapUsedGB, 0, 'f', 1)
-                         .arg(static_cast<int>(s.swapTotalGB + 0.5));
-        }
-        setWindowTitle(title);
-    });
-    statsTimer->start(500);
+    // Title-bar system stats (CPU + RAM + swap), updated every 500 ms.
+    windowStats::setupWindowTitleStatsTimer(this, "SegmentPuzzler");
 
     showWindowWithinAvailableScreen(this);
 }

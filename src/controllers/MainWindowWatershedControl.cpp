@@ -5,6 +5,7 @@
 #include <QScreen>
 #include <QTimer>
 #include "src/qtUtils/TaskRunner.h"
+#include "src/qtUtils/WindowStats.h"
 
 MainWindowWatershedControl::~MainWindowWatershedControl() = default;
 
@@ -151,5 +152,6 @@ MainWindowWatershedControl::MainWindowWatershedControl(WatershedControl::OutputM
 
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindowWatershedControl::receiveStatusMessage);
     connect(myWatershedControl, &WatershedControl::sendClosingSignal, this, &MainWindowWatershedControl::closeFromExternalSignal);
+    windowStats::setupWindowTitleStatsTimer(this, "SegmentPuzzler Watershed");
     showWindowWithinAvailableScreen(this);
 }
