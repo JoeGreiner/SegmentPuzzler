@@ -305,12 +305,13 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
 }
 
 std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const AnnotationSliceViewer *viewer,
-                                                                     const QSet<QString> &flashedShortcutIds) {
+                                                                     const QSet<QString> &flashedShortcutIds,
+                                                                     OrthoViewer::ShortcutLegendProfile profile) {
     const auto isFlashed = [&flashedShortcutIds](const QString &id) {
         return flashedShortcutIds.contains(id);
     };
     const auto activeTool = viewer != nullptr ? viewer->activeTool : SliceViewer::ToolMode::None;
-    return {
+    std::vector<ShortcutHintPresentation> hints{
         createShortcutHint("s", "S", "Transfer",
                            "Hold S and click to transfer the working supervoxel under the cursor to the selected segmentation.",
                            activeTool == SliceViewer::ToolMode::Transfer || isFlashed("s")),
@@ -387,6 +388,31 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
                            "Press N to open a 3D surface view of all segments at once.",
                            isFlashed("n")),
     };
+
+    if (profile != OrthoViewer::ShortcutLegendProfile::Watershed) {
+        return hints;
+    }
+
+    static const QSet<QString> watershedShortcutIds{
+        "q",
+        "r",
+        "ctrl",
+        "zoom",
+        "slice",
+        "brush",
+        "u",
+        "v",
+        "e",
+    };
+
+    std::vector<ShortcutHintPresentation> filteredHints;
+    filteredHints.reserve(hints.size());
+    for (const auto &hint : hints) {
+        if (watershedShortcutIds.contains(hint.id)) {
+            filteredHints.push_back(hint);
+        }
+    }
+    return filteredHints;
 }
 
 std::vector<MouseActionPresentation> currentMouseActionPresentation(const AnnotationSliceViewer *viewer) {
@@ -581,18 +607,26 @@ public:
             return;
         }
 
+        QSet<QString> visibleIds;
         for (int index = 0; index < static_cast<int>(hints.size()); ++index) {
             const auto &hint = hints[index];
             ShortcutHintChip *chip = chips.value(hint.id, nullptr);
             if (chip == nullptr) {
                 chip = new ShortcutHintChip(this);
                 chips.insert(hint.id, chip);
-                const int row = index / kShortcutLegendColumnCount;
-                const int column = index % kShortcutLegendColumnCount;
-                gridLayout->addWidget(chip, row, column);
             }
+            const int row = index / kShortcutLegendColumnCount;
+            const int column = index % kShortcutLegendColumnCount;
+            gridLayout->addWidget(chip, row, column);
             chip->setPresentation(hint);
             chip->show();
+            visibleIds.insert(hint.id);
+        }
+
+        for (auto it = chips.begin(); it != chips.end(); ++it) {
+            if (!visibleIds.contains(it.key())) {
+                it.value()->hide();
+            }
         }
 
         const int stretchRow = (static_cast<int>(hints.size()) + kShortcutLegendColumnCount - 1) / kShortcutLegendColumnCount;
@@ -1599,7 +1633,7 @@ void OrthoViewer::refreshInteractionModeIndicators() {
     }
 
     shortcutLegendWidget->setMouseActions(currentMouseActionPresentation(xy));
-    shortcutLegendWidget->setHints(currentShortcutHintPresentation(xy, flashedShortcutIds));
+    shortcutLegendWidget->setHints(currentShortcutHintPresentation(xy, flashedShortcutIds, shortcutLegendProfile));
 }
 
 void OrthoViewer::flashShortcutLegendKey(const QString &shortcutId) {
@@ -1619,6 +1653,15 @@ void OrthoViewer::flashShortcutLegendKey(const QString &shortcutId) {
         flashedShortcutIds.remove(shortcutId);
         refreshInteractionModeIndicators();
     });
+}
+
+void OrthoViewer::setShortcutLegendProfile(ShortcutLegendProfile profile) {
+    if (shortcutLegendProfile == profile) {
+        return;
+    }
+
+    shortcutLegendProfile = profile;
+    refreshInteractionModeIndicators();
 }
 
 void OrthoViewer::centerViewportsToXYZImageSpace(int x, int y, int z) {

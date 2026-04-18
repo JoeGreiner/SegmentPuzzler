@@ -44,6 +44,18 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
         }
 
         window->setGeometry(targetGeometry);
+
+        auto orthoViewer = window->findChild<OrthoViewer *>();
+        if (orthoViewer) {
+            const double fittedZoom = orthoViewer->computeFittedZoom();
+            if (fittedZoom > 0) {
+                const double initialZoom = fittedZoom;
+                orthoViewer->xy->setZoom(initialZoom);
+                orthoViewer->xz->setZoom(initialZoom);
+                orthoViewer->zy->setZoom(initialZoom);
+            }
+            orthoViewer->refreshZoomLayout();
+        }
     });
 }
 
@@ -77,6 +89,7 @@ MainWindowWatershedControl::MainWindowWatershedControl(WatershedControl::OutputM
 
     taskRunner = std::make_unique<TaskRunner>(this, this);
     myOrthowindow = new OrthoViewer(graphBase, taskRunner.get());
+    myOrthowindow->setShortcutLegendProfile(OrthoViewer::ShortcutLegendProfile::Watershed);
 
     myWatershedControl = new WatershedControl(graphBase, myOrthowindow, taskRunner.get(), outputMode);
     auto horizontalSplitter = new QSplitter();

@@ -56,6 +56,11 @@ public slots:
 class OrthoViewer : public QWidget {
 Q_OBJECT
 public:
+    enum class ShortcutLegendProfile {
+        Default,
+        Watershed
+    };
+
     OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn, QWidget *parent = 0);
 
     ~OrthoViewer();
@@ -70,6 +75,7 @@ public:
     double computeFittedZoom() const;
     void refreshInteractionModeIndicators();
     void flashShortcutLegendKey(const QString &shortcutId);
+    void setShortcutLegendProfile(ShortcutLegendProfile profile);
 
 
     std::shared_ptr<GraphBase> graphBase;
@@ -159,6 +165,7 @@ private:
     VisibleRectOverlay *zyIndicator;
     QSet<QString> flashedShortcutIds;
     QHash<QString, int> shortcutFlashGenerations;
+    ShortcutLegendProfile shortcutLegendProfile = ShortcutLegendProfile::Default;
     bool autoAdjustingSplitters = false;
 };
 
