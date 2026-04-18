@@ -19,22 +19,55 @@
 
 #include <QTreeWidget>
 #include <src/itkImageFilters/itkWatershedHelpers.h>
+#include <src/utils/utils.h>
+#include <itkMultiThreaderBase.h>
+#include <QThread>
 #include <src/viewers/itkSignalThresholdPreview.h>
 #include <QtWidgets/QMessageBox>
 #include <QCheckBox>
 #include <QSpinBox>
+#include <QSignalBlocker>
+#include <itkCastImageFilter.h>
 #include "src/qtUtils/TaskRunner.h"
+#include "src/utils/SignalNameUtils.h"
+#include <algorithm>
+
+namespace {
+
+int defaultWatershedThreadCount() {
+    const int idealThreadCount = QThread::idealThreadCount();
+    return idealThreadCount > 0 ? idealThreadCount : 1;
+}
+
+int clampWatershedThreadCount(int requestedThreadCount) {
+    const int idealThreadCount = QThread::idealThreadCount();
+    if (idealThreadCount > 0) {
+        return std::clamp(requestedThreadCount, 1, idealThreadCount);
+    }
+    return std::max(1, requestedThreadCount);
+}
+
+} // namespace
 
 WatershedControl::~WatershedControl() {
+}
 
+void WatershedControl::setThreadCount(int n) {
+    workerThreadCount = clampWatershedThreadCount(n);
+}
+
+void WatershedControl::setWatershedAlgorithm(WatershedAlgorithm algorithm) {
+    const int count = watershedAlgorithmComboBox->count();
+    for (int i = 0; i < count; ++i) {
+        if (watershedAlgorithmComboBox->itemData(i).toInt() == static_cast<int>(algorithm)) {
+            watershedAlgorithmComboBox->setCurrentIndex(i);
+            return;
+        }
+    }
 }
 
 void WatershedControl::setGuiBusy(bool busy) {
     signalTreeWidget->setEnabled(!busy);
-    thresholdTreeWidget->setEnabled(!busy);
-    distanceMapTreeWidget->setEnabled(!busy);
-    seedsTreeWidget->setEnabled(!busy);
-    watershedTreeWidget->setEnabled(!busy);
 
     thresholdBoundariesButton->setEnabled(!busy);
     calculateDistanceMapButton->setEnabled(!busy);
@@ -43,31 +76,57 @@ void WatershedControl::setGuiBusy(bool busy) {
     createRefinementButton->setEnabled(!busy);
     togglePaintBoundaryModeButton->setEnabled(!busy);
     thresholdValueSlider->setEnabled(!busy);
+    thresholdValueSpinBox->setEnabled(!busy);
     checkBoxFiltering->setEnabled(!busy);
     sizeFilteringInput->setEnabled(!busy);
+    thresholdAlgorithmComboBox->setEnabled(!busy);
+    distanceMapAlgorithmComboBox->setEnabled(!busy);
+    seedAlgorithmComboBox->setEnabled(!busy);
+    watershedAlgorithmComboBox->setEnabled(!busy);
+    boundaryInputComboBox->setEnabled(!busy);
+    thresholdInputComboBox->setEnabled(!busy);
+    distanceMapInputComboBox->setEnabled(!busy);
+    watershedDistanceMapInputComboBox->setEnabled(!busy);
+    watershedSeedsInputComboBox->setEnabled(!busy);
+    watershedThresholdInputComboBox->setEnabled(!busy);
+    finalOutputInputComboBox->setEnabled(!busy);
+    if (!busy) {
+        updateStepEnablement();
+    }
 }
 
 void WatershedControl::refreshViewers() {
     orthoViewer->refreshViewers();
 }
 
+
 void WatershedControl::thresholdBoundariesAsync(std::function<void()> then) {
     const int thresholdValue = thresholdValueSlider->value();
+    const ThresholdAlgorithm thresholdAlgorithm = selectedThresholdAlgorithm();
+    const dataType::BoundaryImageType::Pointer thresholdInput = selectedBoundaryInput();
+    const QString signalName =
+        QString("Thresholded Boundaries [%1]").arg(thresholdAlgorithmLabel(thresholdAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Thresholding boundaries..."),
-        [this, thresholdValue]() {
-            dataType::BoundaryImageType::Pointer thresholdInput = pBoundaries;
+        [thresholdValue, thresholdAlgorithm, thresholdInput]() {
+            auto thresholdInputCopy = thresholdInput;
             itk::Image<unsigned char, 3>::Pointer thresholded;
-            binaryThresholdImageFilterFloat(thresholdInput, thresholded, thresholdValue);
+            double t = utils::tic("Threshold boundaries");
+            switch (thresholdAlgorithm) {
+                case ThresholdAlgorithm::BinaryThreshold:
+                    binaryThresholdImageFilterFloat(thresholdInputCopy, thresholded, thresholdValue);
+                    break;
+            }
+            utils::toc(t, "Threshold boundaries done:");
             return thresholded;
         },
-        [this](itk::Image<unsigned char, 3>::Pointer thresholded) {
+        [this, signalName](itk::Image<unsigned char, 3>::Pointer thresholded) {
             pThresholdedMembrane = thresholded;
             auto pThresholdedMembraneSignal = std::make_unique<itkSignal<unsigned char>>(pThresholdedMembrane);
             itkSignalBase *pSignal = pThresholdedMembraneSignal.get();
             registerSignal(std::move(pThresholdedMembraneSignal),
-                           thresholdTreeWidget,
-                           "Thresholded Boundaries",
+                           SignalStage::Threshold,
+                           signalName,
                            /*categorical=*/true,
                            /*transparentZero=*/true);
             orthoViewer->xy->pThresholdedBoundaries = pThresholdedMembrane;
@@ -77,43 +136,62 @@ void WatershedControl::thresholdBoundariesAsync(std::function<void()> then) {
             orthoViewer->xz->pThresholdedBoundariesSignal = pSignal;
             orthoViewer->zy->pThresholdedBoundariesSignal = pSignal;
             orthoViewer->setViewToMiddleOfStack();
-            setCurrentIndex(1);
+            updateStepEnablement();
+            if (boundarySignalIndex >= 0)
+                deactivateSignalsByIndices({static_cast<size_t>(boundarySignalIndex)});
         },
         std::move(then));
 }
 
 void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
+    const DistanceMapAlgorithm distanceMapAlgorithm = selectedDistanceMapAlgorithm();
+    const itk::Image<unsigned char, 3>::Pointer thresholdInput = selectedThresholdInput();
+    const QString signalName =
+        QString("Distance Map [%1]").arg(distanceMapAlgorithmLabel(distanceMapAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Calculating distance map..."),
-        [this]() {
+        [thresholdInput, distanceMapAlgorithm, threadCount = workerThreadCount]() {
+            itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
+            auto thresholdInputCopy = thresholdInput;
             itk::Image<float, 3>::Pointer distanceMap;
-            generateDistanceMap(pThresholdedMembrane, distanceMap, 0);
+            double t = utils::tic("Generate distance map");
+            generateDistanceMap(thresholdInputCopy, distanceMap, 0, distanceMapAlgorithm, threadCount);
+            utils::toc(t, "Generate distance map done:");
             return distanceMap;
         },
-        [this](itk::Image<float, 3>::Pointer distanceMap) {
+        [this, signalName](itk::Image<float, 3>::Pointer distanceMap) {
             pDistanceMap = distanceMap;
-            registerSignal(std::make_unique<itkSignal<float>>(pDistanceMap), distanceMapTreeWidget, "Distance Map");
-            setCurrentIndex(2);
+            registerSignal(std::make_unique<itkSignal<float>>(pDistanceMap), SignalStage::DistanceMap, signalName);
+            updateStepEnablement();
+            deactivateSignalsByIndices(thresholdOutputSignalIndices);
         },
         std::move(then));
 }
 
 void WatershedControl::extractSeedsAsync(std::function<void()> then) {
+    const distance_map_benchmark::SeedExtractorKind seedAlgorithm = selectedSeedAlgorithm();
+    const itk::Image<float, 3>::Pointer distanceMapInput = selectedDistanceMapInput();
+    const QString signalName = QString("Seeds [%1]").arg(seedAlgorithmLabel(seedAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Extracting seeds..."),
-        [this]() {
+        [distanceMapInput, seedAlgorithm, threadCount = workerThreadCount]() {
+            itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
+            auto distanceMapInputCopy = distanceMapInput;
             itk::Image<unsigned int, 3>::Pointer seeds;
-            extractMinimaFromDistanceMap(pDistanceMap, seeds, 1);
+            double t = utils::tic("Extract seeds");
+            extractMinimaFromDistanceMap(distanceMapInputCopy, seeds, 1, seedAlgorithm);
+            utils::toc(t, "Extract seeds done:");
             return seeds;
         },
-        [this](itk::Image<unsigned int, 3>::Pointer seeds) {
+        [this, signalName](itk::Image<unsigned int, 3>::Pointer seeds) {
             pSeeds = seeds;
             registerSignal(std::make_unique<itkSignal<unsigned int>>(pSeeds),
-                           seedsTreeWidget,
-                           "Seeds",
+                           SignalStage::Seeds,
+                           signalName,
                            /*categorical=*/true,
                            /*transparentZero=*/true);
-            setCurrentIndex(3);
+            updateStepEnablement();
+            deactivateSignalsByIndices(distanceMapOutputSignalIndices);
         },
         std::move(then));
 }
@@ -121,67 +199,71 @@ void WatershedControl::extractSeedsAsync(std::function<void()> then) {
 void WatershedControl::watershedAsync(std::function<void()> then) {
     const bool filterEnabled = checkBoxFiltering->isChecked();
     const int minSegmentSize = sizeFilteringInput->value();
+    const WatershedAlgorithm watershedAlgorithm = selectedWatershedAlgorithm();
+    const itk::Image<float, 3>::Pointer distanceMapInput = selectedWatershedDistanceMapInput();
+    const itk::Image<unsigned int, 3>::Pointer seedsInput = selectedWatershedSeedsInput();
+    const itk::Image<unsigned char, 3>::Pointer thresholdInput = selectedWatershedThresholdInput();
+    const QString signalName =
+        QString("Watershed [%1]").arg(watershedAlgorithmLabel(watershedAlgorithm));
+
+    removeRegisteredEdgeSignal();
+
     taskRunner->runWithLabel(
         QStringLiteral("Running watershed..."),
-        [this, filterEnabled, minSegmentSize]() {
+        [filterEnabled, minSegmentSize, watershedAlgorithm, distanceMapInput, seedsInput, thresholdInput, threadCount = workerThreadCount]() {
+            itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
+            auto distanceMapInputCopy = distanceMapInput;
+            auto thresholdInputCopy = thresholdInput;
+            WatershedRunOptions watershedOptions;
+            watershedOptions.algorithm = watershedAlgorithm;
             itk::Image<float, 3>::Pointer invertedDistanceMap = itk::Image<float, 3>::New();
-            invertDistanceMap(pDistanceMap, invertedDistanceMap);
+            double t = utils::tic("Invert distance map");
+            invertDistanceMap(distanceMapInputCopy, invertedDistanceMap);
+            utils::toc(t, "Invert distance map done:");
 
             itk::Image<unsigned int, 3>::Pointer watershedImage;
-            runWatershed(invertedDistanceMap, pSeeds, watershedImage);
+            itk::Image<unsigned int, 3>::Pointer seedsForWatershed = seedsInput;
+            t = utils::tic("Run watershed");
+            runWatershed(invertedDistanceMap, seedsForWatershed, watershedImage, watershedOptions);
+            utils::toc(t, "Run watershed done:");
 
             if (filterEnabled) {
-                filterSmallSegmentSeeds(watershedImage, pSeeds, minSegmentSize);
-                runWatershed(invertedDistanceMap, pSeeds, watershedImage);
+                t = utils::tic("Filter small seeds");
+                filterSmallSegmentSeeds(watershedImage, seedsForWatershed, minSegmentSize);
+                utils::toc(t, "Filter small seeds done:");
+                t = utils::tic("Run watershed (filtered)");
+                runWatershed(invertedDistanceMap, seedsForWatershed, watershedImage, watershedOptions);
+                utils::toc(t, "Run watershed (filtered) done:");
             }
 
-            insertBoundariesIntoWatershed(watershedImage, pThresholdedMembrane);
-
-            // Modifies graphBase on the worker thread. Safe only because
-            // one task runs at a time and the owning window is blocked.
-            graphBase->ignoredSegmentLabels.clear();
-            graphBase->edgeStatus.clear();
-            graphBase->colorLookUpEdgesStatus.clear();
-            graphBase->pWorkingSegmentsImage = watershedImage;
-            graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-            graphBase->pGraph->constructFromVolume(watershedImage);
-
+            t = utils::tic("Insert boundaries");
+            insertBoundariesIntoWatershed(watershedImage, thresholdInputCopy);
+            utils::toc(t, "Insert boundaries done:");
             return watershedImage;
         },
-        [this](itk::Image<unsigned int, 3>::Pointer watershedImage) {
+        [this, signalName](itk::Image<unsigned int, 3>::Pointer watershedImage) {
             pWatershed = watershedImage;
             auto pSignal2 = std::make_unique<itkSignal<unsigned int>>(pWatershed);
-            itkSignalBase *pSignal = pSignal2.get();
-            registerSignal(std::move(pSignal2), watershedTreeWidget, "Watershed", /*categorical=*/true);
-
-            itkSignalSegmentsGraph = dynamic_cast<itkSignal<GraphSegmentType> *>(pSignal);
-            graphBase->pWorkingSegments = itkSignalSegmentsGraph;
-            graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
-            pSignal->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
-
-            graphBase->pEdgesInitialSegmentsITKSignal->setName("Edges");
-            graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
-            graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-            graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
-            int lastItemIndex = signalTreeWidget->topLevelItemCount() - 1;
-            signalTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-            signalTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-            allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
-            orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
-            orthoViewer->setViewToMiddleOfStack();
-            setCurrentIndex(4);
+            auto *watershedSignal = pSignal2.get();
+            registerSignal(std::move(pSignal2), SignalStage::Watershed, signalName, /*categorical=*/true);
+            rebuildGraphFromSegmentsImage(pWatershed);
+            attachSegmentsSignalToGraph(watershedSignal);
+            updateStepEnablement();
+            deactivateSignalsByIndices(seedOutputSignalIndices);
         },
         std::move(then));
 }
 
+
 void WatershedControl::createRefinementAsync(std::function<void()> then) {
+    const dataType::SegmentsImageType::Pointer selectedOutput = selectedFinalOutputInput();
     taskRunner->runWithLabel(
         outputMode == OutputMode::Segments
             ? QStringLiteral("Exporting segments...")
             : QStringLiteral("Creating refinement..."),
-        [this]() {
+        [this, selectedOutput]() {
             if (!useROI || outputMode == OutputMode::Segments) {
-                return graphBase->pWorkingSegmentsImage;
+                return selectedOutput;
             }
 
             dataType::SegmentsImageType::Pointer paddedWorkingSegmentsImage = dataType::SegmentsImageType::New();
@@ -193,8 +275,8 @@ void WatershedControl::createRefinementAsync(std::function<void()> then) {
 
             using PasteImageFilterType = itk::PasteImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
             PasteImageFilterType::Pointer pasteImageFilter = PasteImageFilterType::New();
-            pasteImageFilter->SetSourceImage(graphBase->pWorkingSegmentsImage);
-            pasteImageFilter->SetSourceRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
+            pasteImageFilter->SetSourceImage(selectedOutput);
+            pasteImageFilter->SetSourceRegion(selectedOutput->GetLargestPossibleRegion());
             pasteImageFilter->SetDestinationImage(paddedWorkingSegmentsImage);
 
             dataType::SegmentsImageType::IndexType destinationIndex;
@@ -223,17 +305,41 @@ void WatershedControl::createRefinementAsync(std::function<void()> then) {
 }
 
 
-size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, QTreeWidget *tree,
-                                        const QString &name, bool categorical, bool transparentZero) {
+size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, SignalStage stage,
+                                        const QString &name, bool categorical, bool transparentZero, bool active) {
     size_t idx = allSignalList.size();
     itkSignalBase *raw = sig.get();
     ownedSignals.push_back(std::move(sig));
     allSignalList.push_back(raw);
-    raw->setName(name);
-    raw->setupTreeWidget(tree, idx);
+    raw->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
+    raw->setupTreeWidget(signalTreeWidget, idx);
     if (categorical) raw->setLUTCategorical(); else raw->setLUTContinuous();
     if (transparentZero) raw->setLUTValueToTransparent(0);
     orthoViewer->addSignal(raw);
+
+    if (!active) {
+        setSignalActive(idx, false);
+    }
+
+    switch (stage) {
+        case SignalStage::Threshold:
+            thresholdOutputSignalIndices.push_back(idx);
+            break;
+        case SignalStage::DistanceMap:
+            distanceMapOutputSignalIndices.push_back(idx);
+            break;
+        case SignalStage::Seeds:
+            seedOutputSignalIndices.push_back(idx);
+            break;
+        case SignalStage::Watershed:
+            watershedOutputSignalIndices.push_back(idx);
+            break;
+        case SignalStage::None:
+            break;
+    }
+
+    refreshInputSelectors();
+    updateStepEnablement();
     return idx;
 }
 
@@ -246,7 +352,8 @@ void WatershedControl::addImage(QString fileName) {
         bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false);
         if (loadSuccessFull) {
             allSignalList[signalIndexGlobal]->setLUTContinuous();
-            allSignalList[signalIndexGlobal]->setName(QFileInfo(fileName).baseName());
+            allSignalList[signalIndexGlobal]->setName(
+                signal_name_utils::makeUniqueSignalName(allSignalList, QFileInfo(fileName).baseName()));
             allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
             orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
         }
@@ -268,7 +375,23 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     allSignalList.reserve(10);
     itkSignalSegmentsGraph = nullptr;
     pThresholdedMembrane = nullptr;
-    setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::MinimumExpanding);
+    pWatershed = nullptr;
+    pThresholdPreviewSignal = nullptr;
+    thresholdAlgorithmComboBox = nullptr;
+    thresholdValueSlider = nullptr;
+    thresholdValueSpinBox = nullptr;
+    distanceMapAlgorithmComboBox = nullptr;
+    seedAlgorithmComboBox = nullptr;
+    watershedAlgorithmComboBox = nullptr;
+    boundaryInputComboBox = nullptr;
+    thresholdInputComboBox = nullptr;
+    distanceMapInputComboBox = nullptr;
+    watershedDistanceMapInputComboBox = nullptr;
+    watershedSeedsInputComboBox = nullptr;
+    watershedThresholdInputComboBox = nullptr;
+    finalOutputInputComboBox = nullptr;
+    workerThreadCount = defaultWatershedThreadCount();
+    setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
 
     useROI = false;
     fx = 0;
@@ -278,144 +401,528 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     ty = 0;
     tz = 0;
 
-
-    this->setTabPosition(QTabWidget::South);
-
-    setupSignalTreeWidget();
-    setupThresholdWidget();
-    setupDistanceMapWidget();
-    setupSeedWidget();
-    setupWatershedWidget();
+    setupWorkflowUi();
+    setupAlgorithmComboBoxes();
+    refreshInputSelectors();
+    updateStepEnablement();
 
     connect(taskRunner, &TaskRunner::busyChanged, this, &WatershedControl::setGuiBusy);
 }
 
-void WatershedControl::setupSignalTreeWidget() {
-    signalTreeWidget = new QTreeWidget(this);
-    signalInputButtonsWidget = new QWidget(this);
-    signalInputButtonsLayout = new QGridLayout();
-    thresholdBoundariesButton = new QPushButton("Threshold Boundaries");
-    setupWidget(signalTreeWidget, signalInputButtonsWidget, signalInputButtonsLayout, thresholdBoundariesButton, "Boundaries");
-    connect(thresholdBoundariesButton, &QPushButton::clicked, this, &WatershedControl::thresholdBoundariesPressed);
-    thresholdValueSlider = new QSlider(Qt::Horizontal, this);
-//    thresholdValueSlider->setRange(0, 3000);
-    thresholdBoundariesButton->parentWidget()->layout()->addWidget(thresholdValueSlider);
-    connect(thresholdValueSlider, &QSlider::valueChanged, this, &WatershedControl::forwardValueChangedSignal);
-}
-void WatershedControl::forwardValueChangedSignal(int value) {
-    std::cout << value << "\n";
-    pBoundariesSignal->thresholdValue = value;
-    refreshViewers();
-}
+void WatershedControl::setupWorkflowUi() {
+    signalControlLayout = new QVBoxLayout(this);
+    signalControlLayout->setContentsMargins(0, 0, 0, 0);
+    signalControlLayout->setSpacing(0);
 
-void WatershedControl::setupThresholdWidget() {
-    thresholdTreeWidget = new QTreeWidget(this);
-    thresholdButtonsWidget = new QWidget(this);
-    thresholdButtonsLayout = new QGridLayout();
-    calculateDistanceMapButton = new QPushButton("Calculate Distancemap");
-    setupWidget(thresholdTreeWidget, thresholdButtonsWidget, thresholdButtonsLayout, calculateDistanceMapButton, "Threshold");
-    connect(calculateDistanceMapButton, &QPushButton::clicked, this, &WatershedControl::calculateDistanceMapPressed);
+    workflowScrollArea = new QScrollArea(this);
+    workflowScrollArea->setWidgetResizable(true);
+    workflowScrollArea->setFrameShape(QFrame::NoFrame);
 
-    togglePaintBoundaryModeButton = new QPushButton(this);
-    updatePaintBoundaryModeButtonText();
-    calculateDistanceMapButton->parentWidget()->layout()->addWidget(togglePaintBoundaryModeButton);
-    connect(togglePaintBoundaryModeButton, &QPushButton::clicked, this, &WatershedControl::togglePaintBoundaryMode);
+    workflowContentWidget = new QWidget(workflowScrollArea);
+    workflowLayout = new QVBoxLayout(workflowContentWidget);
+    workflowLayout->setContentsMargins(8, 8, 8, 8);
+    workflowLayout->setSpacing(8);
+
+    setupSignalTreeWidget();
+
+    setupThresholdWidget();
+    setupDistanceMapWidget();
+    setupSeedWidget();
+    setupWatershedWidget();
+    setupFinalizeWidget();
+
+    workflowLayout->addStretch(1);
+    workflowScrollArea->setWidget(workflowContentWidget);
+    signalControlLayout->addWidget(workflowScrollArea);
 }
 
-
-void WatershedControl::setupDistanceMapWidget() {
-    distanceMapTreeWidget = new QTreeWidget(this);
-    distanceMapButtonsWidget = new QWidget(this);
-    distanceMapButtonsLayout = new QGridLayout(this);
-    calculateSeedsButton = new QPushButton("Extract Seeds");
-    setupWidget(distanceMapTreeWidget, distanceMapButtonsWidget, distanceMapButtonsLayout, calculateSeedsButton, "DistanceMap");
-    connect(calculateSeedsButton, &QPushButton::clicked, this, &WatershedControl::extractSeedsPressed);
-
+QGroupBox *WatershedControl::createStepGroup(const QString &title) const {
+    auto *groupBox = new QGroupBox(title, workflowContentWidget);
+    auto *layout = new QVBoxLayout(groupBox);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+    return groupBox;
 }
 
-void WatershedControl::setupWidget(QTreeWidget *treeWidget, QWidget *buttonsWidget, QGridLayout *buttonsLayout, QPushButton *button, QString tabName){
-    QWidget *mainWidget = new QWidget(this);
-    QVBoxLayout *mainWidgetLayout = new QVBoxLayout();
-    mainWidget->setLayout(mainWidgetLayout);
+QWidget *WatershedControl::createLabeledInputRow(const QString &labelText, QComboBox *comboBox) const {
+    return createLabeledInputRow(labelText, static_cast<QWidget *>(comboBox));
+}
 
+QWidget *WatershedControl::createLabeledInputRow(const QString &labelText, QWidget *widget) const {
+    auto *rowWidget = new QWidget(workflowContentWidget);
+    auto *rowLayout = new QHBoxLayout(rowWidget);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(6);
+    auto *label = new QLabel(labelText, rowWidget);
+    label->setMinimumWidth(80);
+    rowLayout->addWidget(label);
+    rowLayout->addWidget(widget, 1);
+    return rowWidget;
+}
+
+QWidget *WatershedControl::createSliderWithSpinBox(QSlider *&slider, QSpinBox *&spinBox) {
+    auto *rowWidget = new QWidget(workflowContentWidget);
+    auto *rowLayout = new QHBoxLayout(rowWidget);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(6);
+
+    slider = new QSlider(Qt::Horizontal, rowWidget);
+    spinBox = new QSpinBox(rowWidget);
+    spinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    spinBox->setFixedWidth(50);
+    spinBox->setAlignment(Qt::AlignRight);
+
+    rowLayout->addWidget(slider, 1);
+    rowLayout->addWidget(spinBox, 0);
+
+    connect(slider, &QSlider::valueChanged, spinBox, &QSpinBox::setValue);
+    connect(spinBox, qOverload<int>(&QSpinBox::valueChanged), slider, &QSlider::setValue);
+
+    return rowWidget;
+}
+
+void WatershedControl::addStepSection(QGroupBox *groupBox, QWidget *controlsWidget, QWidget *actionWidget) {
+    auto *layout = qobject_cast<QVBoxLayout *>(groupBox->layout());
+    if (controlsWidget != nullptr) {
+        layout->addWidget(controlsWidget);
+    }
+    if (actionWidget != nullptr) {
+        layout->addWidget(actionWidget);
+    }
+    workflowLayout->addWidget(groupBox, 0);
+}
+
+void WatershedControl::setupTreeWidget(QTreeWidget *treeWidget) {
     treeWidget->setFocusPolicy(Qt::NoFocus);
     treeWidget->setColumnCount(2);
     treeWidget->setHeaderLabels({"Name", "Properties"});
     treeWidget->header()->setStretchLastSection(false);
     treeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    mainWidgetLayout->addWidget(treeWidget);
-
-    mainWidgetLayout->addWidget(buttonsWidget);
-    buttonsWidget->setLayout(buttonsLayout);
-    buttonsLayout->addWidget(button);
-
+    treeWidget->setUniformRowHeights(true);
+    setTreeVisibleRows(treeWidget, 2);
     connect(treeWidget, &QTreeWidget::itemDoubleClicked, this, &WatershedControl::treeDoubleClicked);
     connect(treeWidget, &QTreeWidget::itemClicked, this, &WatershedControl::treeClicked);
+}
 
-    this->addTab(mainWidget, tabName);
+void WatershedControl::setupSignalTreeWidget() {
+    signalTreeWidget = new QTreeWidget(this);
+    setupTreeWidget(signalTreeWidget);
+    setTreeVisibleRows(signalTreeWidget, 8);
+    auto *groupBox = createStepGroup("Available Signals");
+    auto *layout = qobject_cast<QVBoxLayout *>(groupBox->layout());
+    layout->addWidget(signalTreeWidget);
+    workflowLayout->addWidget(groupBox, 0);
+}
+void WatershedControl::forwardValueChangedSignal(int value) {
+    std::cout << value << "\n";
+    if (pThresholdPreviewSignal) {
+        pThresholdPreviewSignal->thresholdValue = value;
+    }
+    refreshViewers();
+}
+
+void WatershedControl::setupThresholdWidget() {
+    thresholdBoundariesButton = new QPushButton("Threshold Boundaries", this);
+    boundaryInputComboBox = new QComboBox(this);
+    thresholdAlgorithmComboBox = new QComboBox(this);
+    auto *thresholdControl = createSliderWithSpinBox(thresholdValueSlider, thresholdValueSpinBox);
+    thresholdValueSlider->setEnabled(false);
+    thresholdValueSpinBox->setEnabled(false);
+    configureInputCombo(boundaryInputComboBox);
+
+    auto *controlsWidget = new QWidget(this);
+    auto *controlsLayout = new QVBoxLayout(controlsWidget);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+    controlsLayout->addWidget(createLabeledInputRow("Boundary", boundaryInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Algorithm", thresholdAlgorithmComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Threshold", thresholdControl));
+
+    auto *groupBox = createStepGroup("1. Threshold");
+    addStepSection(groupBox, controlsWidget, thresholdBoundariesButton);
+
+    connect(thresholdBoundariesButton, &QPushButton::clicked, this, &WatershedControl::thresholdBoundariesPressed);
+    connect(thresholdValueSlider, &QSlider::valueChanged, this, &WatershedControl::forwardValueChangedSignal);
+    connect(boundaryInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+}
+
+
+void WatershedControl::setupDistanceMapWidget() {
+    calculateDistanceMapButton = new QPushButton("Calculate Distancemap", this);
+    thresholdInputComboBox = new QComboBox(this);
+    distanceMapAlgorithmComboBox = new QComboBox(this);
+    togglePaintBoundaryModeButton = new QPushButton(this);
+    configureInputCombo(thresholdInputComboBox);
+    updatePaintBoundaryModeButtonText();
+
+    auto *controlsWidget = new QWidget(this);
+    auto *controlsLayout = new QVBoxLayout(controlsWidget);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+    controlsLayout->addWidget(createLabeledInputRow("Thresholded Boundaries", thresholdInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Algorithm", distanceMapAlgorithmComboBox));
+
+    auto *actionRow = new QWidget(this);
+    auto *actionLayout = new QHBoxLayout(actionRow);
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(6);
+    actionLayout->addWidget(togglePaintBoundaryModeButton);
+    actionLayout->addStretch(1);
+    actionLayout->addWidget(calculateDistanceMapButton);
+    controlsLayout->addWidget(actionRow);
+
+    auto *groupBox = createStepGroup("2. Distance Map");
+    addStepSection(groupBox, controlsWidget);
+
+    connect(calculateDistanceMapButton, &QPushButton::clicked, this, &WatershedControl::calculateDistanceMapPressed);
+    connect(togglePaintBoundaryModeButton, &QPushButton::clicked, this, &WatershedControl::togglePaintBoundaryMode);
+    connect(thresholdInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
 }
 
 void WatershedControl::setupSeedWidget() {
-    seedsTreeWidget = new QTreeWidget(this);
-    seedsButtonsWidget = new QWidget(this);
-    seedsButtonsLayout = new QGridLayout();
+    calculateSeedsButton = new QPushButton("Extract Seeds", this);
+    distanceMapInputComboBox = new QComboBox(this);
+    seedAlgorithmComboBox = new QComboBox(this);
+    configureInputCombo(distanceMapInputComboBox);
+
+    auto *controlsWidget = new QWidget(this);
+    auto *controlsLayout = new QVBoxLayout(controlsWidget);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+    controlsLayout->addWidget(createLabeledInputRow("Distance Map", distanceMapInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Algorithm", seedAlgorithmComboBox));
+
+    auto *groupBox = createStepGroup("3. Seeds");
+    addStepSection(groupBox, controlsWidget, calculateSeedsButton);
+
+    connect(calculateSeedsButton, &QPushButton::clicked, this, &WatershedControl::extractSeedsPressed);
+    connect(distanceMapInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+}
+
+
+void WatershedControl::setupWatershedWidget() {
     runWatershedButton = new QPushButton("Run Watershed", this);
-
-
-
-//    setupWidget(seedsTreeWidget, seedsButtonsWidget, seedsButtonsLayout, runWatershedButton, "Seeds");
-    QWidget *mainWidget = new QWidget(this);
-    QVBoxLayout *mainWidgetLayout = new QVBoxLayout();
-    mainWidget->setLayout(mainWidgetLayout);
-
-    seedsTreeWidget->setFocusPolicy(Qt::NoFocus);
-    seedsTreeWidget->setColumnCount(2);
-    seedsTreeWidget->setHeaderLabels({"Name", "Properties"});
-    seedsTreeWidget->header()->setStretchLastSection(false);
-    seedsTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    mainWidgetLayout->addWidget(seedsTreeWidget);
-
-    mainWidgetLayout->addWidget(seedsButtonsWidget);
-
+    watershedDistanceMapInputComboBox = new QComboBox(this);
+    watershedSeedsInputComboBox = new QComboBox(this);
+    watershedThresholdInputComboBox = new QComboBox(this);
+    watershedAlgorithmComboBox = new QComboBox(this);
+    configureInputCombo(watershedDistanceMapInputComboBox);
+    configureInputCombo(watershedSeedsInputComboBox);
+    configureInputCombo(watershedThresholdInputComboBox);
     checkBoxFiltering = new QCheckBox("Activate Segment Size Filtering", this);
-    checkBoxFiltering->setChecked(true);
-    seedsButtonsLayout->addWidget(checkBoxFiltering);
-
-    sizeFilteringInput = new QSpinBox(mainWidget);
+    checkBoxFiltering->setChecked(false);
+    sizeFilteringInput = new QSpinBox(this);
     sizeFilteringInput->setMinimum(100);
     sizeFilteringInput->setMaximum(10000000);
     sizeFilteringInput->setValue(5000);
     sizeFilteringInput->setStepType(QAbstractSpinBox::AdaptiveDecimalStepType);
 
-    seedsButtonsLayout->addWidget(sizeFilteringInput);
+    auto *filterRow = new QWidget(this);
+    auto *filterLayout = new QHBoxLayout(filterRow);
+    filterLayout->setContentsMargins(0, 0, 0, 0);
+    filterLayout->setSpacing(6);
+    filterLayout->addWidget(checkBoxFiltering);
+    filterLayout->addWidget(sizeFilteringInput);
+    filterLayout->addStretch(1);
 
+    auto *controlsWidget = new QWidget(this);
+    auto *controlsLayout = new QVBoxLayout(controlsWidget);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+    controlsLayout->addWidget(createLabeledInputRow("Distance Map", watershedDistanceMapInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Seeds", watershedSeedsInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Thresholded Boundaries", watershedThresholdInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Algorithm", watershedAlgorithmComboBox));
+    controlsLayout->addWidget(filterRow);
 
-    seedsButtonsWidget->setLayout(seedsButtonsLayout);
-    seedsButtonsLayout->addWidget(runWatershedButton);
-
-
-
-    connect(seedsTreeWidget, &QTreeWidget::itemDoubleClicked, this, &WatershedControl::treeDoubleClicked);
-    connect(seedsTreeWidget, &QTreeWidget::itemClicked, this, &WatershedControl::treeClicked);
-
-    this->addTab(mainWidget, "Seeds");
-
+    auto *groupBox = createStepGroup("4. Watershed");
+    addStepSection(groupBox, controlsWidget, runWatershedButton);
 
     connect(runWatershedButton, &QPushButton::clicked, this, &WatershedControl::watershedPressed);
+    connect(watershedDistanceMapInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+    connect(watershedSeedsInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+    connect(watershedThresholdInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
 }
 
 
-void WatershedControl::setupWatershedWidget() {
-    watershedTreeWidget = new QTreeWidget(this);
-//    watershedTreeWidget->setAccessibleName("yellow");
-    watershedButtonsWidget = new QWidget(this);
-    watershedButtonsLayout = new QGridLayout();
+void WatershedControl::setupFinalizeWidget() {
     createRefinementButton = new QPushButton(
         outputMode == OutputMode::Segments ? "Export Segments" : "Create Refinement",
         this);
-    setupWidget(watershedTreeWidget, watershedButtonsWidget, watershedButtonsLayout, createRefinementButton, "Watershed");
+    finalOutputInputComboBox = new QComboBox(this);
+    configureInputCombo(finalOutputInputComboBox);
+
+    auto *controlsWidget = new QWidget(this);
+    auto *controlsLayout = new QVBoxLayout(controlsWidget);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+    controlsLayout->addWidget(createLabeledInputRow("Watershed", finalOutputInputComboBox));
+
+    auto *groupBox = createStepGroup(
+        outputMode == OutputMode::Segments ? "5. Export Segments" : "5. Create Refinement");
+    auto *layout = qobject_cast<QVBoxLayout *>(groupBox->layout());
+    layout->addWidget(controlsWidget);
+    layout->addWidget(createRefinementButton);
+    workflowLayout->addWidget(groupBox, 0);
+
     connect(createRefinementButton, &QPushButton::clicked, this, &WatershedControl::finalizeOutputPressed);
+    connect(finalOutputInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
 }
+
+void WatershedControl::setupAlgorithmComboBoxes() {
+    configureAlgorithmCombo(thresholdAlgorithmComboBox);
+    thresholdAlgorithmComboBox->addItem(
+        thresholdAlgorithmLabel(ThresholdAlgorithm::BinaryThreshold),
+        static_cast<int>(ThresholdAlgorithm::BinaryThreshold));
+    thresholdAlgorithmComboBox->setCurrentIndex(0);
+
+    configureAlgorithmCombo(distanceMapAlgorithmComboBox);
+    distanceMapAlgorithmComboBox->addItem(
+        distanceMapAlgorithmLabel(DistanceMapAlgorithm::Maurer),
+        static_cast<int>(DistanceMapAlgorithm::Maurer));
+    distanceMapAlgorithmComboBox->addItem(
+        distanceMapAlgorithmLabel(DistanceMapAlgorithm::FH),
+        static_cast<int>(DistanceMapAlgorithm::FH));
+    distanceMapAlgorithmComboBox->setCurrentIndex(0);
+
+    configureAlgorithmCombo(seedAlgorithmComboBox);
+    seedAlgorithmComboBox->addItem(
+        seedAlgorithmLabel(distance_map_benchmark::SeedExtractorKind::LocalMaxima),
+        static_cast<int>(distance_map_benchmark::SeedExtractorKind::LocalMaxima));
+    seedAlgorithmComboBox->addItem(
+        seedAlgorithmLabel(distance_map_benchmark::SeedExtractorKind::HConvex),
+        static_cast<int>(distance_map_benchmark::SeedExtractorKind::HConvex));
+    seedAlgorithmComboBox->setCurrentIndex(0);
+
+    configureAlgorithmCombo(watershedAlgorithmComboBox);
+    watershedAlgorithmComboBox->addItem(
+        watershedAlgorithmLabel(WatershedAlgorithm::MorphologicalWatershedFromMarkers),
+        static_cast<int>(WatershedAlgorithm::MorphologicalWatershedFromMarkers));
+    watershedAlgorithmComboBox->addItem(
+        watershedAlgorithmLabel(WatershedAlgorithm::FastMarkerWatershed),
+        static_cast<int>(WatershedAlgorithm::FastMarkerWatershed));
+    watershedAlgorithmComboBox->setCurrentIndex(1);
+}
+
+void WatershedControl::configureInputCombo(QComboBox *comboBox) const {
+    comboBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    comboBox->setMaxVisibleItems(8);
+    comboBox->setStyleSheet(
+        "QComboBox { combobox-popup: 0; }"
+        "QComboBox QAbstractItemView { padding: 0px; margin: 0px; outline: 0; }"
+        "QComboBox QAbstractItemView::item { margin: 0px; padding: 0px; min-height: 0px; }");
+
+    auto *view = new QListView(comboBox);
+    view->setUniformItemSizes(true);
+    view->setSpacing(0);
+    comboBox->setView(view);
+}
+
+void WatershedControl::configureAlgorithmCombo(QComboBox *comboBox) const {
+    configureInputCombo(comboBox);
+}
+
+void WatershedControl::setTreeVisibleRows(QTreeWidget *treeWidget, int rows) const {
+    if (treeWidget == nullptr) {
+        return;
+    }
+
+    const int rowHeight = treeWidget->fontMetrics().height() + 6;
+    const int headerHeight = treeWidget->header() != nullptr ? treeWidget->header()->sizeHint().height() : 0;
+    const int frameHeight = treeWidget->frameWidth() * 2;
+    const int targetHeight = headerHeight + frameHeight + (std::max(0, rows) * rowHeight);
+    treeWidget->setMinimumHeight(targetHeight);
+    treeWidget->setMaximumHeight(targetHeight);
+}
+
+void WatershedControl::refreshComboSelection(QComboBox *comboBox, const std::vector<size_t> &signalIndices) {
+    QVariant currentData = comboBox->currentData();
+    const QSignalBlocker blocker(comboBox);
+    comboBox->clear();
+    for (size_t signalIndex : signalIndices) {
+        if (signalIndex < allSignalList.size() && allSignalList[signalIndex] != nullptr) {
+            comboBox->addItem(allSignalList[signalIndex]->name, static_cast<int>(signalIndex));
+        }
+    }
+
+    if (comboBox->count() == 0) {
+        return;
+    }
+
+    const int preservedIndex = comboBox->findData(currentData);
+    comboBox->setCurrentIndex(preservedIndex >= 0 ? preservedIndex : comboBox->count() - 1);
+}
+
+void WatershedControl::refreshInputSelectors() {
+    if (boundaryInputComboBox != nullptr) {
+        const QSignalBlocker blocker(boundaryInputComboBox);
+        const QVariant currentData = boundaryInputComboBox->currentData();
+        boundaryInputComboBox->clear();
+        if (boundarySignalIndex >= 0 && boundarySignalIndex < static_cast<int>(allSignalList.size())) {
+            boundaryInputComboBox->addItem(allSignalList[boundarySignalIndex]->name, boundarySignalIndex);
+        }
+        if (boundaryInputComboBox->count() > 0) {
+            const int preservedIndex = boundaryInputComboBox->findData(currentData);
+            boundaryInputComboBox->setCurrentIndex(preservedIndex >= 0 ? preservedIndex : 0);
+        }
+    }
+
+    refreshComboSelection(thresholdInputComboBox, thresholdOutputSignalIndices);
+    refreshComboSelection(distanceMapInputComboBox, distanceMapOutputSignalIndices);
+    refreshComboSelection(watershedThresholdInputComboBox, thresholdOutputSignalIndices);
+    refreshComboSelection(watershedDistanceMapInputComboBox, distanceMapOutputSignalIndices);
+    refreshComboSelection(watershedSeedsInputComboBox, seedOutputSignalIndices);
+    refreshComboSelection(finalOutputInputComboBox, watershedOutputSignalIndices);
+}
+
+bool WatershedControl::comboHasValidSelection(const QComboBox *comboBox) const {
+    return comboBox != nullptr && comboBox->currentIndex() >= 0;
+}
+
+size_t WatershedControl::selectedSignalIndex(const QComboBox *comboBox) const {
+    if (!comboHasValidSelection(comboBox)) {
+        throw std::logic_error("Selected input is not available.");
+    }
+    return static_cast<size_t>(comboBox->currentData().toInt());
+}
+
+dataType::BoundaryImageType::Pointer WatershedControl::selectedBoundaryInput() const {
+    if (!comboHasValidSelection(boundaryInputComboBox) || pBoundaries.IsNull()) {
+        return nullptr;
+    }
+    return pBoundaries;
+}
+
+itk::Image<unsigned char, 3>::Pointer WatershedControl::selectedThresholdInput() const {
+    if (!comboHasValidSelection(thresholdInputComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<unsigned char> *>(allSignalList[selectedSignalIndex(thresholdInputComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+itk::Image<float, 3>::Pointer WatershedControl::selectedDistanceMapInput() const {
+    if (!comboHasValidSelection(distanceMapInputComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<float> *>(allSignalList[selectedSignalIndex(distanceMapInputComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+itk::Image<unsigned int, 3>::Pointer WatershedControl::selectedSeedsInput() const {
+    if (!comboHasValidSelection(watershedSeedsInputComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<unsigned int> *>(allSignalList[selectedSignalIndex(watershedSeedsInputComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+itk::Image<float, 3>::Pointer WatershedControl::selectedWatershedDistanceMapInput() const {
+    if (!comboHasValidSelection(watershedDistanceMapInputComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<float> *>(allSignalList[selectedSignalIndex(watershedDistanceMapInputComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+itk::Image<unsigned int, 3>::Pointer WatershedControl::selectedWatershedSeedsInput() const {
+    if (!comboHasValidSelection(watershedSeedsInputComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<unsigned int> *>(allSignalList[selectedSignalIndex(watershedSeedsInputComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+itk::Image<unsigned char, 3>::Pointer WatershedControl::selectedWatershedThresholdInput() const {
+    if (!comboHasValidSelection(watershedThresholdInputComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<unsigned char> *>(allSignalList[selectedSignalIndex(watershedThresholdInputComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+dataType::SegmentsImageType::Pointer WatershedControl::selectedFinalOutputInput() const {
+    if (!comboHasValidSelection(finalOutputInputComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<GraphSegmentType> *>(allSignalList[selectedSignalIndex(finalOutputInputComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+
+void WatershedControl::updateStepEnablement() {
+    const bool hasBoundary = selectedBoundaryInput().IsNotNull();
+    const bool hasThreshold = selectedThresholdInput().IsNotNull();
+    const bool hasDistanceMap = selectedDistanceMapInput().IsNotNull();
+    const bool hasWatershedDistanceMap = selectedWatershedDistanceMapInput().IsNotNull();
+    const bool hasWatershedSeeds = selectedWatershedSeedsInput().IsNotNull();
+    const bool hasWatershedThreshold = selectedWatershedThresholdInput().IsNotNull();
+    const bool hasFinalOutput = selectedFinalOutputInput().IsNotNull();
+
+    thresholdBoundariesButton->setEnabled(hasBoundary);
+    thresholdValueSlider->setEnabled(hasBoundary);
+    calculateDistanceMapButton->setEnabled(hasThreshold);
+    calculateSeedsButton->setEnabled(hasDistanceMap);
+    runWatershedButton->setEnabled(hasWatershedDistanceMap && hasWatershedSeeds && hasWatershedThreshold);
+    createRefinementButton->setEnabled(hasFinalOutput);
+}
+
+WatershedControl::ThresholdAlgorithm WatershedControl::selectedThresholdAlgorithm() const {
+    return static_cast<ThresholdAlgorithm>(thresholdAlgorithmComboBox->currentData().toInt());
+}
+
+DistanceMapAlgorithm WatershedControl::selectedDistanceMapAlgorithm() const {
+    return static_cast<DistanceMapAlgorithm>(distanceMapAlgorithmComboBox->currentData().toInt());
+}
+
+distance_map_benchmark::SeedExtractorKind WatershedControl::selectedSeedAlgorithm() const {
+    return static_cast<distance_map_benchmark::SeedExtractorKind>(seedAlgorithmComboBox->currentData().toInt());
+}
+
+WatershedAlgorithm WatershedControl::selectedWatershedAlgorithm() const {
+    return static_cast<WatershedAlgorithm>(watershedAlgorithmComboBox->currentData().toInt());
+}
+
+QString WatershedControl::thresholdAlgorithmLabel(ThresholdAlgorithm algorithm) const {
+    switch (algorithm) {
+        case ThresholdAlgorithm::BinaryThreshold:
+            return "Binary Threshold";
+    }
+    return "Binary Threshold";
+}
+
+QString WatershedControl::distanceMapAlgorithmLabel(DistanceMapAlgorithm algorithm) const {
+    switch (algorithm) {
+        case DistanceMapAlgorithm::Maurer:
+            return "Maurer";
+        case DistanceMapAlgorithm::FH:
+            return "FH";
+    }
+    return "Maurer";
+}
+
+QString WatershedControl::seedAlgorithmLabel(distance_map_benchmark::SeedExtractorKind algorithm) const {
+    switch (algorithm) {
+        case distance_map_benchmark::SeedExtractorKind::LocalMaxima:
+            return "Local Maxima";
+        case distance_map_benchmark::SeedExtractorKind::HConvex:
+            return "H-Convex";
+        case distance_map_benchmark::SeedExtractorKind::All:
+            return "All";
+    }
+    return "Local Maxima";
+}
+
+QString WatershedControl::watershedAlgorithmLabel(WatershedAlgorithm algorithm) const {
+    switch (algorithm) {
+        case WatershedAlgorithm::MorphologicalWatershedFromMarkers:
+            return "Morphological Watershed";
+        case WatershedAlgorithm::FastMarkerWatershed:
+            return "Fast Marker Watershed";
+    }
+    return "Morphological Watershed";
+}
+
 
 
 void WatershedControl::treeDoubleClicked(QTreeWidgetItem *item, int) {
@@ -444,11 +951,9 @@ void WatershedControl::treeClicked(QTreeWidgetItem *item, int) {
 }
 
 void WatershedControl::setUserColor(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        printf("Setting Color: short: %d uChar: %d segments: %d %i", isShort, isUChar, isSegments, signalIndex);
+        std::cout << "Setting Color for signal " << signalIndex << std::endl;
     }
 
     QColor newColor = QColorDialog::getColor();
@@ -467,11 +972,9 @@ void WatershedControl::setUserColor(QTreeWidgetItem *item) {
 }
 
 void WatershedControl::setDescription(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        printf("Setting Name: short: %d uChar: %d segments: %d %i", isShort, isUChar, isSegments, signalIndex);
+        std::cout << "Setting Name for signal " << signalIndex << std::endl;
     }
 
     bool inputSuccessful;
@@ -480,7 +983,7 @@ void WatershedControl::setDescription(QTreeWidgetItem *item) {
                                   &inputSuccessful);
 
     if (inputSuccessful) {
-        if (getIsSegments(item)) { // TODO: put some unique identifier besides name/descriptor for segments
+        if (isSegmentsItem(item)) { // TODO: put some unique identifier besides name/descriptor for segments
             std::cout << "TODO: Fix segment descriptor change!\n";
         } else {
             item->setText(0, newName);
@@ -509,11 +1012,28 @@ void WatershedControl::updatePaintBoundaryModeButtonText() {
 
 
 
+void WatershedControl::setSignalActive(size_t signalIdx, bool active) {
+    for (int i = 0; i < signalTreeWidget->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *treeItem = signalTreeWidget->topLevelItem(i);
+        if (treeItem->data(0, Qt::UserRole).toULongLong() == static_cast<qulonglong>(signalIdx)) {
+            if ((treeItem->checkState(0) == Qt::Checked) != active) {
+                treeItem->setCheckState(0, active ? Qt::Checked : Qt::Unchecked);
+                setIsActive(treeItem, active);
+            }
+            break;
+        }
+    }
+}
+
+void WatershedControl::deactivateSignalsByIndices(const std::vector<size_t> &signalIndices) {
+    for (const size_t signalIdx : signalIndices) {
+        setSignalActive(signalIdx, false);
+    }
+}
+
 void WatershedControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
     if (verbose) { std::cout << "Setting item isActive to: " << isActiveIn << std::endl; }
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
 
     if (isActiveIn) {
         item->setText(1, "active");
@@ -530,20 +1050,8 @@ void WatershedControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
 
 }
 
-void WatershedControl::getSignalPropsFromItem(QTreeWidgetItem *item, bool &isShort, bool &isUChar, bool &isSegments,
-                                           bool &isEdge,
-                                           unsigned int &signalIndex) {
-    isShort = getIsShort(item);
-    isUChar = getIsUChar(item);
-    isSegments = getIsSegments(item);
-    isEdge = getIsEdge(item);
-    signalIndex = getSignalIndex(item);
-}
-
 void WatershedControl::setUserNorm(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
 
 //        std::string test item->get;
     std::cout << "index: " << signalIndex << std::endl;
@@ -559,9 +1067,7 @@ void WatershedControl::setUserNorm(QTreeWidgetItem *item) {
 }
 
 void WatershedControl::setUserAlpha(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
 
     unsigned char alpha = QInputDialog::getInt(this, "Alpha", "Alpha", 255, 0, 255);
 
@@ -576,30 +1082,68 @@ void WatershedControl::setUserAlpha(QTreeWidgetItem *item) {
 
 void WatershedControl::transferWatershedToGraph() {
     auto pSignal2 = std::make_unique<itkSignal<unsigned int>>(pWatershed);
-    itkSignalBase *pSignal = pSignal2.get();
-    registerSignal(std::move(pSignal2), watershedTreeWidget, "Watershed", /*categorical=*/true);
+    auto *watershedSignal = pSignal2.get();
+    registerSignal(std::move(pSignal2), SignalStage::Watershed, "Watershed", /*categorical=*/true);
 
-    itkSignalSegmentsGraph = dynamic_cast<itkSignal<GraphSegmentType>*>(pSignal);
-    graphBase->pWorkingSegments = itkSignalSegmentsGraph;
-    graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
-
-    graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graphBase->pGraph->constructFromVolume(itkSignalSegmentsGraph->pImage);
+    rebuildGraphFromSegmentsImage(watershedSignal->pImage);
     //TODO: Add feature calculation
 //    graphBase->pGraph->calculateNodeFeatures();
 //    if(FeatureList::GroundTruthLabelComputed) graphBase->pGraph->propagateMergeFlagToEdges();
 //    graphBase->pGraph->calculateEdgeFeatures();
 //    graphBase->pGraph->calculateUnionFeatures();
-    // set highestid/background to black
-    pSignal->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
+    attachSegmentsSignalToGraph(watershedSignal);
+}
 
-    graphBase->pEdgesInitialSegmentsITKSignal->setName("Edges");
+void WatershedControl::removeRegisteredEdgeSignal() {
+    if (registeredEdgeSignalIndex < 0) {
+        return;
+    }
+    itkSignalBase *oldEdge = allSignalList[static_cast<size_t>(registeredEdgeSignalIndex)];
+    orthoViewer->removeSignal(oldEdge);
+    allSignalList[static_cast<size_t>(registeredEdgeSignalIndex)] = nullptr;
+    for (int i = 0; i < signalTreeWidget->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *treeItem = signalTreeWidget->topLevelItem(i);
+        if (treeItem->data(0, Qt::UserRole).toULongLong() ==
+                static_cast<qulonglong>(registeredEdgeSignalIndex)) {
+            delete signalTreeWidget->takeTopLevelItem(i);
+            break;
+        }
+    }
+    registeredEdgeSignalIndex = -1;
+}
+
+void WatershedControl::rebuildGraphFromSegmentsImage(dataType::SegmentsImageType::Pointer segmentsImage) {
+    graphBase->ignoredSegmentLabels.clear();
+    graphBase->edgeStatus.clear();
+    graphBase->colorLookUpEdgesStatus.clear();
+    graphBase->pWorkingSegmentsImage = segmentsImage;
+    graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    double t = utils::tic("Build graph from volume");
+    graphBase->pGraph->constructFromVolume(segmentsImage);
+    utils::toc(t, "Build graph from volume done:");
+}
+
+void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *segmentsSignal) {
+    if (segmentsSignal == nullptr) {
+        throw std::logic_error("Segments signal is null.");
+    }
+
+    itkSignalSegmentsGraph = segmentsSignal;
+    graphBase->pWorkingSegments = itkSignalSegmentsGraph;
+    graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
+    if (!graphBase->ignoredSegmentLabels.empty()) {
+        segmentsSignal->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
+    }
+
+    graphBase->pEdgesInitialSegmentsITKSignal->setName(
+        signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Edges")));
     graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
     int lastItemIndex = signalTreeWidget->topLevelItemCount() - 1;
     signalTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
     signalTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
+    registeredEdgeSignalIndex = static_cast<int>(allSignalList.size());
     allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
     orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
     orthoViewer->setViewToMiddleOfStack();
@@ -828,39 +1372,35 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     }
     std::cout << "Min: " << min << " Max: " << max << "\n";
 
-    if (min == 0 && max == 1){
-        std::cout << "Resizing to 0 ... 2\n";
-        it = itk::ImageRegionIterator<dataType::BoundaryImageType>(pBoundariesROIImage, pBoundariesROIImage->GetLargestPossibleRegion());
-        while(!it.IsAtEnd()){
-            it.Set(it.Get() * 2);
-            ++it;
-        }
-    }
-
     addBoundaries(pBoundariesROIImage);
 }
 
 void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn) {
-    size_t signalIndexGlobal = allSignalList.size();
-
-    std::unique_ptr<itkSignalThresholdPreview<dataType::BoundaryVoxelType>> pBoundariesSignalTmp(
-        new itkSignalThresholdPreview<dataType::BoundaryVoxelType>(pBoundariesIn));
-    pBoundariesSignal = std::move(pBoundariesSignalTmp);
-
     pBoundaries = pBoundariesIn;
-    allSignalList.push_back(pBoundariesSignal.get());
 
-    allSignalList[signalIndexGlobal]->setLUTContinuous();
-    allSignalList[signalIndexGlobal]->setName("Boundaries");
-    allSignalList[signalIndexGlobal]->setNorm(0,1);
-    allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
-    orthoViewer->addSignal(allSignalList.at(signalIndexGlobal));
-    orthoViewer->setViewToMiddleOfStack();
+    // 1. Raw Boundaries Signal
+    auto rawSignal = std::make_unique<itkSignal<dataType::BoundaryVoxelType>>(pBoundaries);
+    rawSignal->setMainColor(0, 255, 0); // Green
+    const int rawIdx = static_cast<int>(registerSignal(
+        std::move(rawSignal), SignalStage::None, "Boundaries", false, false, false));
+    boundarySignalIndex = rawIdx;
 
-    int minValue = pBoundariesSignal->minimumValue;
-    int maxValue = pBoundariesSignal->maximumValue;
+    // 2. Live Threshold Preview Signal
+    auto previewSignal = std::make_unique<itkSignalThresholdPreview<dataType::BoundaryVoxelType>>(pBoundaries);
+    pThresholdPreviewSignal = previewSignal.get();
+    pThresholdPreviewSignal->setMainColor(0, 255, 255); // Cyan
+    const int previewIdx = static_cast<int>(registerSignal(
+        std::move(previewSignal), SignalStage::None, "Threshold Preview", false, true));
+
+    int minValue = pThresholdPreviewSignal->getMinimumValue();
+    int maxValue = pThresholdPreviewSignal->getMaximumValue();
+
     thresholdValueSlider->setRange(minValue, maxValue);
+    thresholdValueSpinBox->setRange(minValue, maxValue);
     thresholdValueSlider->setValue(static_cast<int>((minValue + maxValue)/2));
+    
+    refreshInputSelectors();
+    updateStepEnablement();
 }
 
 
@@ -868,29 +1408,8 @@ void WatershedControl::thresholdBoundariesPressed() {
     thresholdBoundariesAsync();
 }
 
-void WatershedControl::thresholdBoundaries() {
-    std::cout << "Thresholding!\n";
-//    int thresholdValue = QInputDialog::getInt(this, "Threshold Value", "Threshold Value", 0);
-
-    binaryThresholdImageFilterFloat(pBoundaries, pThresholdedMembrane, thresholdValueSlider->value());
-
-    auto pThresholdedMembraneSignal = std::make_unique<itkSignal<unsigned char>>(pThresholdedMembrane);
-    itkSignalBase *pSignal = pThresholdedMembraneSignal.get();
-    registerSignal(std::move(pThresholdedMembraneSignal), thresholdTreeWidget, "Thresholded Boundaries", /*categorical=*/true, /*transparentZero=*/true);
-    orthoViewer->xy->pThresholdedBoundaries = pThresholdedMembrane;
-    orthoViewer->xz->pThresholdedBoundaries = pThresholdedMembrane;
-    orthoViewer->zy->pThresholdedBoundaries = pThresholdedMembrane;
-    orthoViewer->xy->pThresholdedBoundariesSignal = pSignal;
-    orthoViewer->xz->pThresholdedBoundariesSignal = pSignal;
-    orthoViewer->zy->pThresholdedBoundariesSignal = pSignal;
-    orthoViewer->setViewToMiddleOfStack();
-
-    // automatically set it to the next tab
-    this->setCurrentIndex(1);
-}
-
 void WatershedControl::extractSeedsPressed() {
-    if (pDistanceMap != nullptr) {
+    if (selectedDistanceMapInput() != nullptr) {
         extractSeedsAsync();
     } else {
         QMessageBox msgBox;
@@ -898,21 +1417,11 @@ void WatershedControl::extractSeedsPressed() {
         msgBox.exec();
     }
 }
-void WatershedControl::extractSeeds() {
-    std::cout << "Extracting Seeds!\n";
-
-    double minimalMinimaHeight = 1;
-    extractMinimaFromDistanceMap(pDistanceMap, pSeeds, minimalMinimaHeight);
-
-    registerSignal(std::make_unique<itkSignal<unsigned int>>(pSeeds), seedsTreeWidget, "Seeds", /*categorical=*/true, /*transparentZero=*/true);
-
-
-    // automatically set it to the next tab
-    this->setCurrentIndex(3);
-}
 
 void WatershedControl::watershedPressed() {
-    if (pSeeds != nullptr) {
+    if (selectedWatershedDistanceMapInput() != nullptr &&
+        selectedWatershedSeedsInput() != nullptr &&
+        selectedWatershedThresholdInput() != nullptr) {
         watershedAsync();
     } else {
         QMessageBox msgBox;
@@ -921,34 +1430,9 @@ void WatershedControl::watershedPressed() {
     }
 }
 
-void WatershedControl::watershed() {
-    std::cout << "Running Watershed!\n";
-
-    // the inverted distancemap serves as an input for the watershed algorithm
-    itk::Image<float, 3>::Pointer invertedDistanceMap = itk::Image<float, 3>::New();
-    invertDistanceMap(pDistanceMap, invertedDistanceMap);
-
-    // run watershed on seeds
-    runWatershed(invertedDistanceMap, pSeeds, pWatershed);
-
-    if (checkBoxFiltering->isChecked()){
-        std::cout << "Filtering Segments!\n";
-        std::cout << "Minimum Size: " << sizeFilteringInput->value();
-        filterSmallSegmentSeeds(pWatershed, pSeeds, sizeFilteringInput->value());
-        runWatershed(invertedDistanceMap, pSeeds, pWatershed);
-    }
-
-
-    insertBoundariesIntoWatershed(pWatershed, pThresholdedMembrane);
-
-    transferWatershedToGraph();
-
-    // automatically set it to the next tab
-    this->setCurrentIndex(4);
-}
 
 void WatershedControl::finalizeOutputPressed() {
-    if (graphBase->pWorkingSegmentsImage != nullptr) {
+    if (selectedFinalOutputInput() != nullptr) {
         createRefinementAsync();
     } else {
         QMessageBox msgBox;
@@ -958,10 +1442,11 @@ void WatershedControl::finalizeOutputPressed() {
         msgBox.exec();
     }
 }
+}
 
 
 void WatershedControl::calculateDistanceMapPressed() {
-    if (pThresholdedMembrane != nullptr) {
+    if (selectedThresholdInput() != nullptr) {
         calculateDistanceMapAsync();
     } else {
         QMessageBox msgBox;
@@ -969,63 +1454,30 @@ void WatershedControl::calculateDistanceMapPressed() {
         msgBox.exec();
     }
 }
-void WatershedControl::calculateDistanceMap() {
-    std::cout << "Calculating DistanceMap!\n";
 
-//    setBoundariesToValue(pThresholdedMembrane, 1);
 
-    double distanceMapSmoothingVariance = 0;
-    generateDistanceMap(pThresholdedMembrane, pDistanceMap, distanceMapSmoothingVariance);
-
-    registerSignal(std::make_unique<itkSignal<float>>(pDistanceMap), distanceMapTreeWidget, "Distance Map");
-
-    // automatically set it to the next tab
-    this->setCurrentIndex(2);
+QTreeWidgetItem *WatershedControl::topLevelItem(QTreeWidgetItem *item) const {
+    return item != nullptr && item->parent() != nullptr ? item->parent() : item;
 }
 
-
-unsigned int WatershedControl::getSignalIndex(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    for (int i = 0; i < baseItem->childCount(); ++i) {
-        if (baseItem->child(i)->text(0) == "SignalIndex") {
-            return baseItem->child(i)->text(1).toInt();
-        }
-    }
-    throw std::logic_error("signal index not found!");
-    return 0;
-}
-
-bool WatershedControl::getIsUChar(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    for (int i = 0; i < baseItem->childCount(); ++i) {
-        if (baseItem->child(i)->text(0) == "data type") {
-            return baseItem->child(i)->text(1) == "char";
-        }
-    }
-    return false;
-}
-
-bool WatershedControl::getIsSegments(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    if (baseItem == nullptr || itkSignalSegmentsGraph == nullptr) {
-        return false;
+size_t WatershedControl::signalIndexForItem(QTreeWidgetItem *item) const {
+    QTreeWidgetItem *baseItem = topLevelItem(item);
+    if (baseItem == nullptr) {
+        throw std::logic_error("signal item not found!");
     }
 
-    const unsigned int signalIndex = getSignalIndex(baseItem);
-    return signalIndex < allSignalList.size() && allSignalList[signalIndex] == itkSignalSegmentsGraph;
-}
-
-bool WatershedControl::getIsEdge(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    return baseItem->text(0) == "Edges";
-}
-
-bool WatershedControl::getIsShort(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    for (int i = 0; i < baseItem->childCount(); ++i) {
-        if (baseItem->child(i)->text(0) == "data type") {
-            return baseItem->child(i)->text(1) == "short";
-        }
+    const qulonglong signalIndex = baseItem->data(0, Qt::UserRole).toULongLong();
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        throw std::logic_error("signal index not found!");
     }
-    return false;
+
+    return static_cast<size_t>(signalIndex);
+}
+
+itkSignalBase *WatershedControl::signalForItem(QTreeWidgetItem *item) const {
+    return allSignalList[signalIndexForItem(item)];
+}
+
+bool WatershedControl::isSegmentsItem(QTreeWidgetItem *item) const {
+    return itkSignalSegmentsGraph != nullptr && signalForItem(item) == itkSignalSegmentsGraph;
 }

@@ -151,6 +151,11 @@ void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode
 
 void SegmentManager::clearAndReserveInitialNodes(int numberOfNodesToReserveFor) {
     pInitialNodes->clear();
+    pInitialOneSidedEdges->clear();
+    pInitialTwoSidedEdges->clear();
+    pInitialEdgeIdLookUp->clear();
+    pWorkingNodes->clear();
+    pWorkingEdges->clear();
     if (numberOfNodesToReserveFor > 0) {
         pInitialNodes->reserve(numberOfNodesToReserveFor);
     }
