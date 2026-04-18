@@ -213,6 +213,7 @@ set(SRC_UTILS
         src/utils/utils.cpp
         src/utils/PCA.cxx
         src/utils/systemStats.cpp
+        src/utils/FastMarkerWatershed3D.cpp
         )
 
 set(SRC_SEGMENTHANDLERS

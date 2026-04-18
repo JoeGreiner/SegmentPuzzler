@@ -16,6 +16,18 @@
 #include <itkLabelGeometryImageFilter.h>
 #include <itkChangeLabelImageFilter.h>
 
+#include "src/utils/FastMarkerWatershed3D.h"
+
+enum class WatershedAlgorithm {
+    MorphologicalWatershedFromMarkers,
+    FastMarkerWatershed
+};
+
+struct WatershedRunOptions {
+    WatershedAlgorithm algorithm = WatershedAlgorithm::MorphologicalWatershedFromMarkers;
+    bool showWatershedLines = false;
+    bool fullyConnected = false;
+};
 
 void binaryThresholdImageFilterFloat(itk::Image<unsigned short, 3> ::Pointer &inputImage,
                                      itk::Image<unsigned char, 3> ::Pointer &outputImage,
@@ -145,15 +157,30 @@ void invertDistanceMap(itk::Image<float, 3> ::Pointer &distanceMap, itk::Image<f
 void runWatershed(itk::Image<float, 3> ::Pointer &invertedDistanceMap,
                   itk::Image<unsigned int, 3> ::Pointer &seeds,
                   itk::Image<unsigned int, 3> ::Pointer &watershedOut,
-                  bool showWatershedLines=false){
+                  const WatershedRunOptions &options = WatershedRunOptions(),
+                  segment_puzzler::FastMarkerWatershedMetrics *fastMetrics = nullptr){
     std::cout << "Run watershed ...\n";
-    typedef itk::MorphologicalWatershedFromMarkersImageFilter<itk::Image<float, 3> ,itk::Image<unsigned int, 3> > WatershedFilterType;
-    typename WatershedFilterType::Pointer watershedFilter = WatershedFilterType::New();
-    watershedFilter->SetMarkWatershedLine(showWatershedLines);
-    watershedFilter->SetInput1(invertedDistanceMap);
-    watershedFilter->SetInput2(seeds);
-    watershedFilter->Update();
-    watershedOut = watershedFilter->GetOutput();
+    switch (options.algorithm) {
+        case WatershedAlgorithm::MorphologicalWatershedFromMarkers: {
+            typedef itk::MorphologicalWatershedFromMarkersImageFilter<itk::Image<float, 3> ,itk::Image<unsigned int, 3> > WatershedFilterType;
+            typename WatershedFilterType::Pointer watershedFilter = WatershedFilterType::New();
+            watershedFilter->SetMarkWatershedLine(options.showWatershedLines);
+            watershedFilter->SetFullyConnected(options.fullyConnected);
+            watershedFilter->SetInput1(invertedDistanceMap);
+            watershedFilter->SetInput2(seeds);
+            watershedFilter->Update();
+            watershedOut = watershedFilter->GetOutput();
+            return;
+        }
+        case WatershedAlgorithm::FastMarkerWatershed: {
+            segment_puzzler::FastMarkerWatershedOptions fastOptions;
+            fastOptions.fullyConnected = options.fullyConnected;
+            fastOptions.markWatershedLine = options.showWatershedLines;
+            watershedOut = segment_puzzler::runFastMarkerWatershed3D(
+                invertedDistanceMap, seeds, fastOptions, fastMetrics);
+            return;
+        }
+    }
 }
 
 void insertBoundariesIntoWatershed(itk::Image<unsigned int, 3> ::Pointer &watershed,
