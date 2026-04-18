@@ -16,7 +16,14 @@
 #include <itkLabelGeometryImageFilter.h>
 #include <itkChangeLabelImageFilter.h>
 
+#include "src/utils/DistanceMapFH3D.h"
+#include "src/utils/DistanceMapSeedExtractors.h"
 #include "src/utils/FastMarkerWatershed3D.h"
+
+enum class DistanceMapAlgorithm {
+    Maurer,
+    FH
+};
 
 enum class WatershedAlgorithm {
     MorphologicalWatershedFromMarkers,
@@ -97,33 +104,81 @@ void setBoundariesToValue(itk::Image<unsigned char, 3>::Pointer &CharImage, unsi
 }
 
 
-void generateDistanceMap( itk::Image<unsigned char, 3>::Pointer &edgeImage, itk::Image<float, 3>::Pointer &distanceMap,
-                          double varianceGaussianFilter){
+void generateDistanceMap(itk::Image<unsigned char, 3>::Pointer &edgeImage,
+                         itk::Image<float, 3>::Pointer &distanceMap,
+                         double varianceGaussianFilter,
+                         DistanceMapAlgorithm algorithm = DistanceMapAlgorithm::Maurer,
+                         int threadCount = 1){
     // calculation of the distance map
     std::cout << "Generate Distance Map" << std::endl;
 
+    if (algorithm == DistanceMapAlgorithm::FH) {
+        const auto region = edgeImage->GetLargestPossibleRegion();
+        const auto size = region.GetSize();
+        const std::array<int, 3> dims = {
+            static_cast<int>(size[0]),
+            static_cast<int>(size[1]),
+            static_cast<int>(size[2])
+        };
 
-    //TODO: does the signed distance really make sense here? - experiment with squared distance/chessmap distancemap
-    typedef itk::SignedMaurerDistanceMapImageFilter<itk::Image<unsigned char, 3> ,itk::Image<float, 3> > SignedMaurerDistanceMapImageFilterType;
-    SignedMaurerDistanceMapImageFilterType::Pointer distanceFilter = SignedMaurerDistanceMapImageFilterType::New();
-    distanceFilter->SetInput(edgeImage);
-    distanceFilter->SetBackgroundValue(0);
-    distanceFilter->SquaredDistanceOff();
-    distanceFilter->UseImageSpacingOff();
+        std::vector<distance_map_benchmark::BinaryVoxelType> mask;
+        mask.reserve(region.GetNumberOfPixels());
+        itk::ImageRegionConstIterator<itk::Image<unsigned char, 3>> iterator(edgeImage, region);
+        for (iterator.GoToBegin(); !iterator.IsAtEnd(); ++iterator) {
+            mask.push_back(iterator.Get());
+        }
+
+        const auto fhBackground = distance_map_benchmark::runBoundaryAwareSquaredEdt(
+            mask, dims, {1.0, 1.0, 1.0}, threadCount);
+
+        std::vector<distance_map_benchmark::BinaryVoxelType> invertedMask(mask.size());
+        for (std::size_t i = 0; i < mask.size(); ++i) {
+            invertedMask[i] = (mask[i] == 0) ? 1 : 0;
+        }
+        const auto fhForeground = distance_map_benchmark::runBoundaryAwareSquaredEdt(
+            invertedMask, dims, {1.0, 1.0, 1.0}, threadCount);
+
+        distanceMap = itk::Image<float, 3>::New();
+        distanceMap->SetRegions(region);
+        distanceMap->SetSpacing(edgeImage->GetSpacing());
+        distanceMap->SetOrigin(edgeImage->GetOrigin());
+        distanceMap->SetDirection(edgeImage->GetDirection());
+        distanceMap->Allocate();
+
+        itk::ImageRegionIterator<itk::Image<float, 3>> outIterator(distanceMap, region);
+        std::size_t outputIndex = 0;
+        for (outIterator.GoToBegin(); !outIterator.IsAtEnd(); ++outIterator, ++outputIndex) {
+            if (mask[outputIndex] == 0) {
+                const float sq = fhBackground.distances[outputIndex];
+                outIterator.Set(sq <= 0.0f ? 0.0f
+                    : static_cast<float>(std::sqrt(static_cast<double>(sq))));
+            } else {
+                const float sq = fhForeground.distances[outputIndex];
+                outIterator.Set(sq <= 0.0f ? 0.0f
+                    : -static_cast<float>(std::sqrt(static_cast<double>(sq))));
+            }
+        }
+    } else {
+        typedef itk::SignedMaurerDistanceMapImageFilter<itk::Image<unsigned char, 3> ,itk::Image<float, 3> > SignedMaurerDistanceMapImageFilterType;
+        SignedMaurerDistanceMapImageFilterType::Pointer distanceFilter = SignedMaurerDistanceMapImageFilterType::New();
+        distanceFilter->SetInput(edgeImage);
+        distanceFilter->SetBackgroundValue(0);
+        distanceFilter->SquaredDistanceOff();
+        distanceFilter->UseImageSpacingOff();
+
+        distanceMap = distanceFilter->GetOutput();
+        distanceFilter->Update();
+    }
 
     if (varianceGaussianFilter > 0) {
-        //Smoothing of the Distance Map
         typedef itk::DiscreteGaussianImageFilter<itk::Image<float, 3> , itk::Image<float, 3> > GaussianFilterType;
         GaussianFilterType::Pointer gaussianFilter = GaussianFilterType::New();
         gaussianFilter->SetVariance(varianceGaussianFilter);
-        gaussianFilter->SetInput(distanceFilter->GetOutput());
+        gaussianFilter->SetInput(distanceMap);
         gaussianFilter->SetUseImageSpacingOff();
 
         distanceMap = gaussianFilter->GetOutput();
         gaussianFilter->Update();
-    } else {
-        distanceMap = distanceFilter->GetOutput();
-        distanceFilter->Update();
     }
 }
 
@@ -243,25 +298,13 @@ void connectedComponentCharToUInt(itk::Image<unsigned char, 3> ::Pointer &inputI
 }
 
 
-void extractMinimaFromDistanceMap(itk::Image<float, 3> ::Pointer &distanceMap, itk::Image<unsigned int, 3> ::Pointer &seeds, double minimalHeight=1) {
+void extractMinimaFromDistanceMap(itk::Image<float, 3> ::Pointer &distanceMap,
+                                  itk::Image<unsigned int, 3> ::Pointer &seeds,
+                                  double minimalHeight=1,
+                                  distance_map_benchmark::SeedExtractorKind seedExtractorKind =
+                                      distance_map_benchmark::SeedExtractorKind::HConvex) {
     std::cout << "Extracting minima ...\n";
-    typedef itk::HConvexImageFilter<itk::Image<float, 3> , itk::Image<float, 3> > HConvexImageFilterType;
-    HConvexImageFilterType::Pointer hConvexImageFilter = HConvexImageFilterType::New();
-    hConvexImageFilter->SetInput(distanceMap);
-    hConvexImageFilter->SetHeight(minimalHeight);
-    hConvexImageFilter->SetFullyConnected(true);
-
-    itk::Image<float, 3> ::Pointer filteredDistanceMap = itk::Image<float, 3> ::New();
-    filteredDistanceMap = hConvexImageFilter->GetOutput();
-    hConvexImageFilter->Update();
-
-    itk::Image<float, 3> ::Pointer thresholdedDistanceMapFloat = itk::Image<float, 3> ::New();
-    itk::Image<unsigned char, 3> ::Pointer thresholdedDistanceMapChar = itk::Image<unsigned char, 3> ::New();
-    binaryThresholdImageFilterFloat(filteredDistanceMap, thresholdedDistanceMapFloat, 0.1);
-    castFloatToChar(thresholdedDistanceMapFloat, thresholdedDistanceMapChar);
-
-
-    connectedComponentCharToUInt(thresholdedDistanceMapChar, seeds);
+    seeds = distance_map_benchmark::extractSeedsFromDistanceImage(distanceMap, seedExtractorKind, minimalHeight);
     std::cout << "Number of seeds: " << getMaximumOfUIntImage(seeds) << std::endl;
 }
 

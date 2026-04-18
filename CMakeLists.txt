@@ -214,6 +214,8 @@ set(SRC_UTILS
         src/utils/PCA.cxx
         src/utils/systemStats.cpp
         src/utils/FastMarkerWatershed3D.cpp
+        src/utils/DistanceMapFH3D.cpp
+        src/utils/DistanceMapSeedExtractors.cpp
         )
 
 set(SRC_SEGMENTHANDLERS
