@@ -3,13 +3,17 @@
 #ifdef USE_OMP
 #include <omp.h>
 #endif
+#include <cmath>
 #include <fstream>
 #include "Graph.h"
 #include <itkImageFileWriter.h>
+#include <algorithm>
 #include <queue>
+#include <unordered_set>
 #include <itkNeighborhoodIterator.h>
 #include <itkBinaryThresholdImageFunction.h>
 #include <QMessageBox>
+#include <chrono>
 #include "src/utils/utils.h"
 #include "graphBase.h"
 
@@ -37,6 +41,275 @@ Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn) {
                                     &workingNodes, &workingEdges,
                                     pIgnoredSegmentLabels, &nextFreeId);
 }
+
+namespace {
+
+struct StrokeSegmentInfo {
+    std::array<double, 2> start;
+    std::array<double, 2> end;
+    double minX = 0.0;
+    double maxX = 0.0;
+    double minY = 0.0;
+    double maxY = 0.0;
+};
+
+struct StrokeMask {
+    int width = 0;
+    int height = 0;
+    std::vector<unsigned char> pixels;
+
+    bool contains(double displayX, double displayY) const {
+        if (pixels.empty() || width <= 0 || height <= 0) {
+            return false;
+        }
+        const int pixelX = std::clamp(static_cast<int>(displayX), 0, width - 1);
+        const int pixelY = std::clamp(static_cast<int>(displayY), 0, height - 1);
+        return pixels[static_cast<std::size_t>(pixelY) * static_cast<std::size_t>(width) +
+                      static_cast<std::size_t>(pixelX)] != 0;
+    }
+};
+
+struct LocalVoxelGrid {
+    int minX = 0;
+    int minY = 0;
+    int minZ = 0;
+    int sizeX = 0;
+    int sizeY = 0;
+    int sizeZ = 0;
+    std::vector<int> voxelIndices;
+
+    bool contains(int x, int y, int z) const {
+        return x >= minX && y >= minY && z >= minZ &&
+               x < minX + sizeX &&
+               y < minY + sizeY &&
+               z < minZ + sizeZ;
+    }
+
+    std::size_t linearIndex(int x, int y, int z) const {
+        return static_cast<std::size_t>(z - minZ) * static_cast<std::size_t>(sizeY) * static_cast<std::size_t>(sizeX) +
+               static_cast<std::size_t>(y - minY) * static_cast<std::size_t>(sizeX) +
+               static_cast<std::size_t>(x - minX);
+    }
+
+    int lookup(int x, int y, int z) const {
+        if (!contains(x, y, z)) {
+            return -1;
+        }
+        return voxelIndices[linearIndex(x, y, z)];
+    }
+
+    template<typename Fn>
+    void forEachPresentNeighborIndex(const Voxel &voxel, Fn &&fn) const {
+        const int localX = voxel.x - minX;
+        const int localY = voxel.y - minY;
+        const int localZ = voxel.z - minZ;
+        const std::size_t strideY = static_cast<std::size_t>(sizeX);
+        const std::size_t strideZ = strideY * static_cast<std::size_t>(sizeY);
+        const std::size_t localIndex =
+            static_cast<std::size_t>(localZ) * strideZ +
+            static_cast<std::size_t>(localY) * strideY +
+            static_cast<std::size_t>(localX);
+
+        if (localX + 1 < sizeX) {
+            const int neighborIndex = voxelIndices[localIndex + 1];
+            if (neighborIndex >= 0) {
+                fn(neighborIndex);
+            }
+        }
+        if (localX > 0) {
+            const int neighborIndex = voxelIndices[localIndex - 1];
+            if (neighborIndex >= 0) {
+                fn(neighborIndex);
+            }
+        }
+        if (localY + 1 < sizeY) {
+            const int neighborIndex = voxelIndices[localIndex + strideY];
+            if (neighborIndex >= 0) {
+                fn(neighborIndex);
+            }
+        }
+        if (localY > 0) {
+            const int neighborIndex = voxelIndices[localIndex - strideY];
+            if (neighborIndex >= 0) {
+                fn(neighborIndex);
+            }
+        }
+        if (localZ + 1 < sizeZ) {
+            const int neighborIndex = voxelIndices[localIndex + strideZ];
+            if (neighborIndex >= 0) {
+                fn(neighborIndex);
+            }
+        }
+        if (localZ > 0) {
+            const int neighborIndex = voxelIndices[localIndex - strideZ];
+            if (neighborIndex >= 0) {
+                fn(neighborIndex);
+            }
+        }
+    }
+};
+
+struct ReplacementInitialComponent {
+    int finalComponentId = -1;
+    std::vector<int> voxelIndices;
+};
+
+struct NeighborWorkingGroup {
+    Graph::SegmentIdType workingLabel = 0;
+    std::vector<Graph::SegmentIdType> initialLabels;
+};
+
+struct ProjectedDisplayTransform {
+    std::array<double, 4> clipXCoefficients{0.0, 0.0, 0.0, 0.0};
+    std::array<double, 4> clipYCoefficients{0.0, 0.0, 0.0, 0.0};
+    std::array<double, 4> clipWCoefficients{0.0, 0.0, 0.0, 1.0};
+    int viewportWidth = 0;
+    int viewportHeight = 0;
+};
+
+std::array<double, 4> buildProjectionRowCoefficients(const std::array<double, 16> &matrix,
+                                                     int row,
+                                                     const Graph::SegmentsImageType::SpacingType &spacing,
+                                                     const Graph::SegmentsImageType::PointType &origin)
+{
+    const double centeredOriginX = origin[0] + 0.5 * spacing[0];
+    const double centeredOriginY = origin[1] + 0.5 * spacing[1];
+    const double centeredOriginZ = origin[2] + 0.5 * spacing[2];
+    const std::size_t rowOffset = static_cast<std::size_t>(row) * 4;
+    return {
+        matrix[rowOffset + 0] * spacing[0],
+        matrix[rowOffset + 1] * spacing[1],
+        matrix[rowOffset + 2] * spacing[2],
+        matrix[rowOffset + 0] * centeredOriginX +
+        matrix[rowOffset + 1] * centeredOriginY +
+        matrix[rowOffset + 2] * centeredOriginZ +
+        matrix[rowOffset + 3]
+    };
+}
+
+ProjectedDisplayTransform buildProjectedDisplayTransform(
+    const Graph::SegmentsImageType::SpacingType &spacing,
+    const Graph::SegmentsImageType::PointType &origin,
+    const Projected3DCutRequest &request)
+{
+    ProjectedDisplayTransform transform;
+    transform.clipXCoefficients = buildProjectionRowCoefficients(request.worldToNdcMatrix, 0, spacing, origin);
+    transform.clipYCoefficients = buildProjectionRowCoefficients(request.worldToNdcMatrix, 1, spacing, origin);
+    transform.clipWCoefficients = buildProjectionRowCoefficients(request.worldToNdcMatrix, 3, spacing, origin);
+    transform.viewportWidth = request.viewportSize[0];
+    transform.viewportHeight = request.viewportSize[1];
+    return transform;
+}
+
+std::array<double, 2> projectVoxelCenterToDisplay(const Voxel &voxel,
+                                                  const ProjectedDisplayTransform &transform)
+{
+    const double x = static_cast<double>(voxel.x);
+    const double y = static_cast<double>(voxel.y);
+    const double z = static_cast<double>(voxel.z);
+    const double clipX =
+        transform.clipXCoefficients[0] * x +
+        transform.clipXCoefficients[1] * y +
+        transform.clipXCoefficients[2] * z +
+        transform.clipXCoefficients[3];
+    const double clipY =
+        transform.clipYCoefficients[0] * x +
+        transform.clipYCoefficients[1] * y +
+        transform.clipYCoefficients[2] * z +
+        transform.clipYCoefficients[3];
+    const double clipW =
+        transform.clipWCoefficients[0] * x +
+        transform.clipWCoefficients[1] * y +
+        transform.clipWCoefficients[2] * z +
+        transform.clipWCoefficients[3];
+
+    double ndcX = 0.0;
+    double ndcY = 0.0;
+    if (std::abs(clipW) > 1e-9) {
+        ndcX = clipX / clipW;
+        ndcY = clipY / clipW;
+    }
+
+    return {
+        (ndcX * 0.5 + 0.5) * static_cast<double>(transform.viewportWidth),
+        (1.0 - (ndcY * 0.5 + 0.5)) * static_cast<double>(transform.viewportHeight)
+    };
+}
+
+double distanceSquaredToSegment(const std::array<double, 2> &point,
+                                const std::array<double, 2> &segA,
+                                const std::array<double, 2> &segB)
+{
+    const double vx = segB[0] - segA[0];
+    const double vy = segB[1] - segA[1];
+    const double wx = point[0] - segA[0];
+    const double wy = point[1] - segA[1];
+    const double denom = vx * vx + vy * vy;
+    if (denom <= 1e-9) {
+        return wx * wx + wy * wy;
+    }
+
+    const double t = std::clamp((wx * vx + wy * vy) / denom, 0.0, 1.0);
+    const double dx = point[0] - (segA[0] + t * vx);
+    const double dy = point[1] - (segA[1] + t * vy);
+    return dx * dx + dy * dy;
+}
+
+std::vector<StrokeSegmentInfo> buildStrokeSegments(const Projected3DCutRequest &request) {
+    std::vector<StrokeSegmentInfo> segments;
+    if (request.strokePixels.size() < 2) {
+        return segments;
+    }
+
+    segments.reserve(request.strokePixels.size() - 1);
+    for (std::size_t index = 1; index < request.strokePixels.size(); ++index) {
+        StrokeSegmentInfo segment;
+        segment.start = request.strokePixels[index - 1];
+        segment.end = request.strokePixels[index];
+        segment.minX = std::min(segment.start[0], segment.end[0]) - request.strokeWidthPixels;
+        segment.maxX = std::max(segment.start[0], segment.end[0]) + request.strokeWidthPixels;
+        segment.minY = std::min(segment.start[1], segment.end[1]) - request.strokeWidthPixels;
+        segment.maxY = std::max(segment.start[1], segment.end[1]) + request.strokeWidthPixels;
+        segments.push_back(segment);
+    }
+    return segments;
+}
+
+StrokeMask rasterizeStrokeMask(const Projected3DCutRequest &request,
+                               const std::vector<StrokeSegmentInfo> &segments)
+{
+    StrokeMask mask;
+    mask.width = request.viewportSize[0];
+    mask.height = request.viewportSize[1];
+    if (mask.width <= 0 || mask.height <= 0) {
+        return mask;
+    }
+
+    mask.pixels.assign(static_cast<std::size_t>(mask.width) * static_cast<std::size_t>(mask.height), 0);
+    const double maxDistanceSquared = request.strokeWidthPixels * request.strokeWidthPixels;
+
+    for (const auto &segment : segments) {
+        const int minX = std::clamp(static_cast<int>(std::floor(segment.minX)), 0, mask.width - 1);
+        const int maxX = std::clamp(static_cast<int>(std::ceil(segment.maxX)), 0, mask.width - 1);
+        const int minY = std::clamp(static_cast<int>(std::floor(segment.minY)), 0, mask.height - 1);
+        const int maxY = std::clamp(static_cast<int>(std::ceil(segment.maxY)), 0, mask.height - 1);
+
+        for (int pixelY = minY; pixelY <= maxY; ++pixelY) {
+            for (int pixelX = minX; pixelX <= maxX; ++pixelX) {
+                const std::array<double, 2> pixelCenter{
+                    static_cast<double>(pixelX) + 0.5,
+                    static_cast<double>(pixelY) + 0.5};
+                if (distanceSquaredToSegment(pixelCenter, segment.start, segment.end) <= maxDistanceSquared) {
+                    mask.pixels[static_cast<std::size_t>(pixelY) * static_cast<std::size_t>(mask.width) +
+                                static_cast<std::size_t>(pixelX)] = 1;
+                }
+            }
+        }
+    }
+    return mask;
+}
+
+} // namespace
 
 
 void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
@@ -1065,6 +1338,425 @@ void Graph::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit)
     }
     if (verbose) { utils::toc(t, "Graph::splitWorkingNodeIntoInitialNodes finished"); }
 
+}
+
+bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &request,
+                                             Projected3DCutProfile *profileOut) {
+    using Clock = std::chrono::steady_clock;
+    const auto durationMs = [](const Clock::time_point &start, const Clock::time_point &end) {
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    };
+    if (profileOut != nullptr) {
+        *profileOut = Projected3DCutProfile{};
+    }
+    const auto totalStart = Clock::now();
+    const auto finish = [&](bool mutated) {
+        if (profileOut != nullptr) {
+            profileOut->totalMs = durationMs(totalStart, Clock::now());
+        }
+        return mutated;
+    };
+
+    if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr) {
+        return finish(false);
+    }
+    if (request.targetWorkingLabel == 0 || request.strokePixels.size() < 2 ||
+        request.viewportSize[0] <= 0 || request.viewportSize[1] <= 0) {
+        return finish(false);
+    }
+
+    const auto workingNodeIt = workingNodes.find(request.targetWorkingLabel);
+    if (workingNodeIt == workingNodes.end() || workingNodeIt->second == nullptr) {
+        return finish(false);
+    }
+
+    const auto targetWorkingNode = workingNodeIt->second;
+    const auto spacing = graphBase->pWorkingSegmentsImage->GetSpacing();
+    const auto origin = graphBase->pWorkingSegmentsImage->GetOrigin();
+    auto *workingSegmentsBuffer = graphBase->pWorkingSegmentsImage->GetBufferPointer();
+    const auto workingSegmentsSize = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetSize();
+    const unsigned long strideZ = workingSegmentsSize[1] * workingSegmentsSize[0];
+    const unsigned long strideY = workingSegmentsSize[0];
+    const auto workingSegmentsLinearIndex = [strideY, strideZ](const Voxel &voxel) {
+        return static_cast<unsigned long>(voxel.z) * strideZ +
+               static_cast<unsigned long>(voxel.y) * strideY +
+               static_cast<unsigned long>(voxel.x);
+    };
+    const Roi targetRoi = targetWorkingNode->roi;
+
+    std::vector<Voxel> targetVoxels;
+    std::vector<SegmentIdType> targetInitialLabels;
+    std::vector<int> targetComponentIds;
+    std::vector<unsigned char> targetProvisionalCut;
+    std::vector<SegmentIdType> originalInitialLabels;
+    std::unordered_map<SegmentIdType, std::vector<int>> voxelIndicesByInitialLabel;
+
+    std::size_t totalVoxelCount = 0;
+    for (const auto &initialNodeEntry : targetWorkingNode->subInitialNodes) {
+        if (initialNodeEntry.second == nullptr) {
+            continue;
+        }
+        originalInitialLabels.push_back(initialNodeEntry.first);
+        totalVoxelCount += initialNodeEntry.second->voxels.size();
+    }
+    if (totalVoxelCount == 0) {
+        return finish(false);
+    }
+
+    targetVoxels.reserve(totalVoxelCount);
+    targetInitialLabels.reserve(totalVoxelCount);
+    targetComponentIds.reserve(totalVoxelCount);
+    targetProvisionalCut.reserve(totalVoxelCount);
+    voxelIndicesByInitialLabel.reserve(targetWorkingNode->subInitialNodes.size());
+    LocalVoxelGrid voxelGrid;
+    voxelGrid.minX = targetRoi.minX;
+    voxelGrid.minY = targetRoi.minY;
+    voxelGrid.minZ = targetRoi.minZ;
+    voxelGrid.sizeX = targetRoi.maxX - targetRoi.minX + 1;
+    voxelGrid.sizeY = targetRoi.maxY - targetRoi.minY + 1;
+    voxelGrid.sizeZ = targetRoi.maxZ - targetRoi.minZ + 1;
+    voxelGrid.voxelIndices.assign(
+        static_cast<std::size_t>(voxelGrid.sizeX) *
+        static_cast<std::size_t>(voxelGrid.sizeY) *
+        static_cast<std::size_t>(voxelGrid.sizeZ),
+        -1);
+    const auto strokeSegments = buildStrokeSegments(request);
+    const auto rasterizeStrokeMaskStart = Clock::now();
+    const StrokeMask strokeMask = rasterizeStrokeMask(request, strokeSegments);
+    const double rasterizeStrokeMaskMs = durationMs(rasterizeStrokeMaskStart, Clock::now());
+    const auto projectedDisplayTransform = buildProjectedDisplayTransform(spacing, origin, request);
+    bool anyProvisionalCut = false;
+    std::size_t provisionalCutVoxelCount = 0;
+
+    const auto collectTargetVoxelsStart = Clock::now();
+    for (const auto &initialNodeEntry : targetWorkingNode->subInitialNodes) {
+        const SegmentIdType initialLabel = initialNodeEntry.first;
+        const auto &voxels = initialNodeEntry.second->voxels;
+        auto &indices = voxelIndicesByInitialLabel[initialLabel];
+        indices.reserve(voxels.size());
+        for (const Voxel &voxel : voxels) {
+            const std::array<double, 2> projectedPoint =
+                projectVoxelCenterToDisplay(voxel, projectedDisplayTransform);
+            const bool provisionalCut = strokeMask.contains(projectedPoint[0], projectedPoint[1]);
+            anyProvisionalCut = anyProvisionalCut || provisionalCut;
+            provisionalCutVoxelCount += provisionalCut ? 1 : 0;
+            targetVoxels.push_back(voxel);
+            targetInitialLabels.push_back(initialLabel);
+            targetComponentIds.push_back(-1);
+            targetProvisionalCut.push_back(provisionalCut ? 1U : 0U);
+            const int voxelIndex = static_cast<int>(targetVoxels.size()) - 1;
+            indices.push_back(voxelIndex);
+            voxelGrid.voxelIndices[voxelGrid.linearIndex(voxel.x, voxel.y, voxel.z)] = voxelIndex;
+        }
+    }
+    if (profileOut != nullptr) {
+        profileOut->targetVoxelCount = targetVoxels.size();
+        profileOut->provisionalCutVoxelCount = provisionalCutVoxelCount;
+        profileOut->rasterizeStrokeMaskMs = rasterizeStrokeMaskMs;
+        profileOut->projectAndClassifyTargetVoxelsMs = durationMs(collectTargetVoxelsStart, Clock::now());
+        profileOut->collectTargetVoxelsMs =
+            profileOut->rasterizeStrokeMaskMs + profileOut->projectAndClassifyTargetVoxelsMs;
+    }
+
+    if (!anyProvisionalCut) {
+        return finish(false);
+    }
+
+    int nextComponentId = 0;
+    std::vector<int> openVoxelIndices;
+    openVoxelIndices.reserve(targetVoxels.size());
+    const auto connectedComponentsStart = Clock::now();
+    for (int voxelIndex = 0; voxelIndex < static_cast<int>(targetVoxels.size()); ++voxelIndex) {
+        if (targetProvisionalCut[static_cast<std::size_t>(voxelIndex)] != 0 ||
+            targetComponentIds[static_cast<std::size_t>(voxelIndex)] != -1) {
+            continue;
+        }
+
+        targetComponentIds[static_cast<std::size_t>(voxelIndex)] = nextComponentId;
+        openVoxelIndices.clear();
+        openVoxelIndices.push_back(voxelIndex);
+
+        for (std::size_t queueIndex = 0; queueIndex < openVoxelIndices.size(); ++queueIndex) {
+            const int activeIndex = openVoxelIndices[queueIndex];
+            const Voxel &activeVoxel = targetVoxels[static_cast<std::size_t>(activeIndex)];
+
+            voxelGrid.forEachPresentNeighborIndex(activeVoxel, [&](int neighborIndex) {
+                if (targetProvisionalCut[static_cast<std::size_t>(neighborIndex)] != 0 ||
+                    targetComponentIds[static_cast<std::size_t>(neighborIndex)] != -1) {
+                    return;
+                }
+                targetComponentIds[static_cast<std::size_t>(neighborIndex)] = nextComponentId;
+                openVoxelIndices.push_back(neighborIndex);
+            });
+        }
+
+        ++nextComponentId;
+    }
+    if (profileOut != nullptr) {
+        profileOut->finalComponentCount = nextComponentId;
+        profileOut->connectedComponentsMs = durationMs(connectedComponentsStart, Clock::now());
+    }
+
+    if (nextComponentId < 2) {
+        return finish(false);
+    }
+
+    std::vector<int> reassignQueue;
+    reassignQueue.reserve(targetVoxels.size());
+    const auto reassignCutVoxelsStart = Clock::now();
+    for (int voxelIndex = 0; voxelIndex < static_cast<int>(targetVoxels.size()); ++voxelIndex) {
+        if (targetComponentIds[static_cast<std::size_t>(voxelIndex)] != -1) {
+            reassignQueue.push_back(voxelIndex);
+        }
+    }
+
+    for (std::size_t queueIndex = 0; queueIndex < reassignQueue.size(); ++queueIndex) {
+        const int activeIndex = reassignQueue[queueIndex];
+        const Voxel &activeVoxel = targetVoxels[static_cast<std::size_t>(activeIndex)];
+        const int componentId = targetComponentIds[static_cast<std::size_t>(activeIndex)];
+
+        voxelGrid.forEachPresentNeighborIndex(activeVoxel, [&](int neighborIndex) {
+            if (targetComponentIds[static_cast<std::size_t>(neighborIndex)] != -1) {
+                return;
+            }
+            targetComponentIds[static_cast<std::size_t>(neighborIndex)] = componentId;
+            reassignQueue.push_back(neighborIndex);
+        });
+    }
+    if (profileOut != nullptr) {
+        profileOut->reassignCutVoxelsMs = durationMs(reassignCutVoxelsStart, Clock::now());
+    }
+
+    std::vector<ReplacementInitialComponent> replacementInitialComponents;
+    replacementInitialComponents.reserve(targetVoxels.size());
+    std::vector<unsigned char> replacementVisited(targetVoxels.size(), 0);
+    std::vector<int> initialQueue;
+    initialQueue.reserve(targetVoxels.size());
+    const auto splitReplacementInitialsStart = Clock::now();
+    for (const auto &initialEntry : voxelIndicesByInitialLabel) {
+        const SegmentIdType initialLabel = initialEntry.first;
+        for (const int seedVoxelIndex : initialEntry.second) {
+            if (replacementVisited[static_cast<std::size_t>(seedVoxelIndex)] != 0) {
+                continue;
+            }
+
+            ReplacementInitialComponent component;
+            component.finalComponentId = targetComponentIds[static_cast<std::size_t>(seedVoxelIndex)];
+            initialQueue.clear();
+            initialQueue.push_back(seedVoxelIndex);
+            replacementVisited[static_cast<std::size_t>(seedVoxelIndex)] = 1;
+
+            for (std::size_t queueIndex = 0; queueIndex < initialQueue.size(); ++queueIndex) {
+                const int activeIndex = initialQueue[queueIndex];
+                const Voxel &activeVoxel = targetVoxels[static_cast<std::size_t>(activeIndex)];
+                component.voxelIndices.push_back(activeIndex);
+
+                voxelGrid.forEachPresentNeighborIndex(activeVoxel, [&](int neighborIndex) {
+                    if (replacementVisited[static_cast<std::size_t>(neighborIndex)] != 0) {
+                        return;
+                    }
+                    if (targetInitialLabels[static_cast<std::size_t>(neighborIndex)] != initialLabel ||
+                        targetComponentIds[static_cast<std::size_t>(neighborIndex)] != component.finalComponentId) {
+                        return;
+                    }
+
+                    replacementVisited[static_cast<std::size_t>(neighborIndex)] = 1;
+                    initialQueue.push_back(neighborIndex);
+                });
+            }
+
+            if (!component.voxelIndices.empty()) {
+                replacementInitialComponents.push_back(std::move(component));
+            }
+        }
+    }
+    if (profileOut != nullptr) {
+        profileOut->replacementInitialCount = replacementInitialComponents.size();
+        profileOut->splitReplacementInitialsMs = durationMs(splitReplacementInitialsStart, Clock::now());
+    }
+
+    if (replacementInitialComponents.empty()) {
+        return finish(false);
+    }
+
+    std::vector<NeighborWorkingGroup> neighborGroups;
+    neighborGroups.reserve(targetWorkingNode->twosidedEdges.size());
+    const auto collectNeighborGroupsStart = Clock::now();
+    for (const auto &edgeEntry : targetWorkingNode->twosidedEdges) {
+        const auto neighborIt = workingNodes.find(edgeEntry.first);
+        if (neighborIt == workingNodes.end() || neighborIt->second == nullptr) {
+            continue;
+        }
+
+        NeighborWorkingGroup group;
+        group.workingLabel = edgeEntry.first;
+        group.initialLabels.reserve(neighborIt->second->subInitialNodes.size());
+        for (const auto &initialEntry : neighborIt->second->subInitialNodes) {
+            group.initialLabels.push_back(initialEntry.first);
+        }
+        neighborGroups.push_back(std::move(group));
+    }
+    if (profileOut != nullptr) {
+        profileOut->collectNeighborGroupsMs = durationMs(collectNeighborGroupsStart, Clock::now());
+    }
+
+    const auto splitWorkingNodesStart = Clock::now();
+    splitWorkingNodeIntoInitialNodes(request.targetWorkingLabel);
+    for (const auto &neighborGroup : neighborGroups) {
+        if (neighborGroup.initialLabels.size() > 1 && workingNodes.count(neighborGroup.workingLabel) > 0) {
+            splitWorkingNodeIntoInitialNodes(neighborGroup.workingLabel);
+        }
+    }
+    if (profileOut != nullptr) {
+        profileOut->splitWorkingNodesMs = durationMs(splitWorkingNodesStart, Clock::now());
+    }
+
+    const auto removeOriginalNodesStart = Clock::now();
+    for (const SegmentIdType initialLabel : originalInitialLabels) {
+        if (workingNodes.count(initialLabel) > 0) {
+            segmentManager.removeWorkingNode(workingNodes.at(initialLabel).get());
+        }
+        if (initialNodes.count(initialLabel) > 0) {
+            segmentManager.removeInitialNode(initialLabel);
+        }
+    }
+    if (profileOut != nullptr) {
+        profileOut->removeOriginalNodesMs = durationMs(removeOriginalNodesStart, Clock::now());
+    }
+
+    const auto clearTargetRegionStart = Clock::now();
+    for (const auto &voxel : targetVoxels) {
+        workingSegmentsBuffer[workingSegmentsLinearIndex(voxel)] = backgroundId;
+    }
+    if (profileOut != nullptr) {
+        profileOut->clearTargetRegionMs = durationMs(clearTargetRegionStart, Clock::now());
+    }
+
+    std::vector<std::vector<SegmentIdType>> replacementInitialLabelsByComponent(
+        static_cast<std::size_t>(nextComponentId));
+    std::vector<std::size_t> replacementVoxelCountsByComponent(
+        static_cast<std::size_t>(nextComponentId), 0);
+    std::vector<SegmentIdType> replacementInitialLabels;
+    replacementInitialLabels.reserve(replacementInitialComponents.size());
+
+    const auto createReplacementInitialsStart = Clock::now();
+    double materializeReplacementVoxelListsMs = 0.0;
+    for (auto &replacementComponent : replacementInitialComponents) {
+        const SegmentIdType replacementInitialLabel = nextFreeId;
+        ++nextFreeId;
+
+        auto *replacementInitialNode =
+            new InitialNode(graphBase, graphBase->pWorkingSegmentsImage, replacementInitialLabel);
+        replacementInitialNode->voxels.reserve(replacementComponent.voxelIndices.size());
+        const auto materializeReplacementVoxelListStart = Clock::now();
+        for (const int voxelIndex : replacementComponent.voxelIndices) {
+            replacementInitialNode->voxels.push_back(targetVoxels[static_cast<std::size_t>(voxelIndex)]);
+        }
+        materializeReplacementVoxelListsMs +=
+            durationMs(materializeReplacementVoxelListStart, Clock::now());
+        replacementInitialNode->roi.updateBoundingRoi(replacementInitialNode->voxels);
+        segmentManager.addInitialNode(replacementInitialNode);
+
+        replacementInitialLabelsByComponent[static_cast<std::size_t>(replacementComponent.finalComponentId)].push_back(
+            replacementInitialLabel);
+        replacementVoxelCountsByComponent[static_cast<std::size_t>(replacementComponent.finalComponentId)] +=
+            replacementComponent.voxelIndices.size();
+        replacementInitialLabels.push_back(replacementInitialLabel);
+
+        for (const auto &voxel : replacementInitialNode->voxels) {
+            workingSegmentsBuffer[workingSegmentsLinearIndex(voxel)] = replacementInitialLabel;
+        }
+    }
+    if (profileOut != nullptr) {
+        profileOut->createReplacementInitialsMs = durationMs(createReplacementInitialsStart, Clock::now());
+        profileOut->materializeReplacementVoxelListsMs = materializeReplacementVoxelListsMs;
+    }
+
+    const auto recomputeInitialEdgesStart = Clock::now();
+    for (const SegmentIdType initialLabel : replacementInitialLabels) {
+        segmentManager.computeSurfaceAndOneSidedEdgesOnInitialNode(initialNodes.at(initialLabel).get());
+    }
+    for (const SegmentIdType initialLabel : replacementInitialLabels) {
+        segmentManager.computeCorrospondingOneSidedInitialEdges(initialNodes.at(initialLabel).get());
+    }
+    segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
+    if (profileOut != nullptr) {
+        profileOut->recomputeInitialEdgesMs = durationMs(recomputeInitialEdgesStart, Clock::now());
+    }
+
+    std::unordered_set<SegmentIdType> touchedWorkingLabels;
+    touchedWorkingLabels.reserve(neighborGroups.size() + replacementInitialLabelsByComponent.size() + 4);
+
+    const auto rebuildWorkingNodesStart = Clock::now();
+    for (const auto &neighborGroup : neighborGroups) {
+        if (neighborGroup.initialLabels.size() > 1) {
+            for (const SegmentIdType initialLabel : neighborGroup.initialLabels) {
+                if (workingNodes.count(initialLabel) > 0) {
+                    segmentManager.removeWorkingNode(workingNodes.at(initialLabel).get());
+                }
+            }
+            auto *rebuiltNeighborNode =
+                new WorkingNode(neighborGroup.initialLabels, neighborGroup.workingLabel, initialNodes);
+            segmentManager.addWorkingNode(rebuiltNeighborNode);
+        }
+        touchedWorkingLabels.insert(neighborGroup.workingLabel);
+    }
+
+    std::vector<int> componentOrder;
+    componentOrder.reserve(static_cast<std::size_t>(nextComponentId));
+    for (int componentId = 0; componentId < nextComponentId; ++componentId) {
+        componentOrder.push_back(componentId);
+    }
+    std::sort(componentOrder.begin(), componentOrder.end(), [&replacementVoxelCountsByComponent](int lhs, int rhs) {
+        const std::size_t lhsCount = replacementVoxelCountsByComponent[static_cast<std::size_t>(lhs)];
+        const std::size_t rhsCount = replacementVoxelCountsByComponent[static_cast<std::size_t>(rhs)];
+        if (lhsCount != rhsCount) {
+            return lhsCount > rhsCount;
+        }
+        return lhs < rhs;
+    });
+
+    for (std::size_t orderIndex = 0; orderIndex < componentOrder.size(); ++orderIndex) {
+        const int componentId = componentOrder[orderIndex];
+        auto &componentLabels = replacementInitialLabelsByComponent[static_cast<std::size_t>(componentId)];
+        if (componentLabels.empty()) {
+            continue;
+        }
+
+        const SegmentIdType workingLabel =
+            orderIndex == 0 ? request.targetWorkingLabel : nextFreeId++;
+        auto *replacementWorkingNode =
+            new WorkingNode(componentLabels, workingLabel, initialNodes);
+        segmentManager.addWorkingNode(replacementWorkingNode);
+        touchedWorkingLabels.insert(workingLabel);
+    }
+    if (profileOut != nullptr) {
+        profileOut->rebuildWorkingNodesMs = durationMs(rebuildWorkingNodesStart, Clock::now());
+    }
+
+    const auto recalculateWorkingEdgesStart = Clock::now();
+    for (const SegmentIdType workingLabel : touchedWorkingLabels) {
+        if (workingNodes.count(workingLabel) == 0) {
+            continue;
+        }
+        segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(workingLabel).get());
+    }
+    if (profileOut != nullptr) {
+        profileOut->recalculateWorkingEdgesMs = durationMs(recalculateWorkingEdgesStart, Clock::now());
+    }
+
+    const auto rewriteWorkingImageStart = Clock::now();
+    for (const SegmentIdType workingLabel : touchedWorkingLabels) {
+        if (workingNodes.count(workingLabel) == 0) {
+            continue;
+        }
+        insertWorkingNodeInSegmentImage(*workingNodes.at(workingLabel));
+    }
+    if (profileOut != nullptr) {
+        profileOut->rewriteWorkingImageMs = durationMs(rewriteWorkingImageStart, Clock::now());
+    }
+
+    return finish(true);
 }
 
 
