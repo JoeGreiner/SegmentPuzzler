@@ -28,6 +28,13 @@ PERFETTO_DEFINE_CATEGORIES(
     perfetto::Category("agglomeration.rag_build"),
     perfetto::Category("agglomeration.projection"),
     perfetto::Category("compare"));
+#else
+#define TRACE_EVENT(...)
+#define TRACE_EVENT_BEGIN(...)
+#define TRACE_EVENT_END(...)
+#define TRACE_EVENT_INSTANT(...)
+#define TRACE_COUNTER(...)
+#define TRACE_EVENT_CATEGORY_ENABLED(...) false
 #endif
 
 namespace benchmark_tracing {

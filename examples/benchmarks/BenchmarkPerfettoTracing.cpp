@@ -45,8 +45,9 @@ std::once_flag perfettoInitFlag;
 } // namespace
 
 PerfettoTraceSession::PerfettoTraceSession(PerfettoTraceSession &&other) noexcept
+    :
 #if SEGMENT_PUZZLER_HAS_PERFETTO
-    : session_(std::move(other.session_)),
+      session_(std::move(other.session_)),
 #endif
       traceFd_(other.traceFd_),
       outputPath_(std::move(other.outputPath_)) {

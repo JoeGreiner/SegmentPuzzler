@@ -29,7 +29,7 @@ namespace {
 constexpr std::uint8_t kFar = 0;
 constexpr std::uint8_t kInQueue = 1;
 constexpr std::uint8_t kDone = 2;
-constexpr int kBucketCount = 65536;
+constexpr int kMaxBucketCount = 65536;
 constexpr std::size_t kFloodCounterSampleInterval = 4096;
 constexpr double kSlowFloodLevelThresholdMs = 5.0;
 
@@ -64,12 +64,15 @@ struct BucketQueueSet {
     };
 
     std::vector<Bucket> buckets;
+    int levelCount = 0;
     int currentLevel = 0;
     std::size_t queueDepth = 0;
     std::size_t maxQueueDepth = 0;
     std::size_t maxBucketOccupancy = 0;
 
-    BucketQueueSet() : buckets(kBucketCount) {}
+    explicit BucketQueueSet(int levels)
+        : buckets(static_cast<std::size_t>(std::max(1, levels))),
+          levelCount(std::max(1, levels)) {}
 
     void push(int level, std::uint32_t idx) {
         Bucket &bucket = buckets[static_cast<std::size_t>(level)];
@@ -84,11 +87,11 @@ struct BucketQueueSet {
     }
 
     bool pop(int &levelOut, std::uint32_t &idxOut) {
-        while (currentLevel < kBucketCount && buckets[currentLevel].empty()) {
-            buckets[currentLevel].clear();
+        while (currentLevel < levelCount && buckets[static_cast<std::size_t>(currentLevel)].empty()) {
+            buckets[static_cast<std::size_t>(currentLevel)].clear();
             ++currentLevel;
         }
-        if (currentLevel >= kBucketCount) {
+        if (currentLevel >= levelCount) {
             return false;
         }
         levelOut = currentLevel;
@@ -119,7 +122,7 @@ void enqueueOrMove(BucketQueueSet &queues,
                    FastMarkerWatershedMetrics &metrics);
 
 bool advanceToNextBucketLevel(BucketQueueSet &queues, int &levelOut) {
-    while (queues.currentLevel < kBucketCount) {
+    while (queues.currentLevel < queues.levelCount) {
         auto &bucket = queues.buckets[static_cast<std::size_t>(queues.currentLevel)];
         if (bucket.readHead < bucket.items.size()) {
             levelOut = queues.currentLevel;
@@ -389,8 +392,37 @@ std::uint16_t quantizeCostValue(float value, const CostRange &range, double scal
     }
 
     const double normalized = (static_cast<double>(value) - static_cast<double>(range.minValue)) * scale;
-    const double clamped = std::max(0.0, std::min(static_cast<double>(kBucketCount - 1), normalized));
+    const double clamped = std::max(0.0, std::min(static_cast<double>(kMaxBucketCount - 1), normalized));
     return static_cast<std::uint16_t>(std::llround(clamped));
+}
+
+int compactQuantizedLevels(std::vector<std::uint16_t> &paddedCosts,
+                           const std::array<int, 3> &dims,
+                           const std::array<int, 3> &paddedDims,
+                           const std::array<std::uint8_t, kMaxBucketCount> &usedLevels) {
+    std::array<std::uint16_t, kMaxBucketCount> remap{};
+    int compactLevelCount = 0;
+    for (int level = 0; level < kMaxBucketCount; ++level) {
+        if (usedLevels[static_cast<std::size_t>(level)] == 0) {
+            continue;
+        }
+        remap[static_cast<std::size_t>(level)] = static_cast<std::uint16_t>(compactLevelCount++);
+    }
+
+    if (compactLevelCount <= 1 || compactLevelCount == kMaxBucketCount) {
+        return std::max(1, compactLevelCount);
+    }
+
+    for (int z = 0; z < dims[2]; ++z) {
+        for (int y = 0; y < dims[1]; ++y) {
+            for (int x = 0; x < dims[0]; ++x) {
+                const std::size_t paddedIdx = flattenIndex(x + 1, y + 1, z + 1, paddedDims);
+                paddedCosts[paddedIdx] = remap[paddedCosts[paddedIdx]];
+            }
+        }
+    }
+
+    return compactLevelCount;
 }
 
 // Keep Perfetto queue counters gated here instead of branching queue bookkeeping in push/pop.
@@ -480,12 +512,12 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     std::vector<std::uint16_t> bestLevel(paddedVoxelCount, std::numeric_limits<std::uint16_t>::max());
     std::vector<std::uint8_t> state(paddedVoxelCount, kDone);
     std::vector<std::uint32_t> seedIndices;
-    BucketQueueSet queues;
     const int neighborCount = options.fullyConnected ? 26 : 6;
+    std::array<std::uint8_t, kMaxBucketCount> usedLevels{};
 
     const double initStart = wallTimeSeconds();
     const double quantizeScale = costRange.hasFiniteSpread()
-        ? static_cast<double>(kBucketCount - 1) / static_cast<double>(costRange.maxValue - costRange.minValue)
+        ? static_cast<double>(kMaxBucketCount - 1) / static_cast<double>(costRange.maxValue - costRange.minValue)
         : 0.0;
     itk::ImageRegionConstIterator<FastMarkerWatershedCostImage> costIt(costImage, region);
     itk::ImageRegionConstIterator<FastMarkerWatershedLabelImage> markerIt(markers, region);
@@ -500,7 +532,9 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
             for (int y = 0; y < dims[1]; ++y) {
                 for (int x = 0; x < dims[0]; ++x, ++costIt, ++markerIt) {
                     const std::size_t paddedIdx = flattenIndex(x + 1, y + 1, z + 1, paddedDims);
-                    paddedCosts[paddedIdx] = quantizeCostValue(costIt.Get(), costRange, quantizeScale);
+                    const std::uint16_t level = quantizeCostValue(costIt.Get(), costRange, quantizeScale);
+                    paddedCosts[paddedIdx] = level;
+                    usedLevels[static_cast<std::size_t>(level)] = 1;
                     state[paddedIdx] = kFar;
                     const std::uint32_t label = markerIt.Get();
                     if (label > 0) {
@@ -513,11 +547,13 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
             }
         }
     }
+    const int compactBucketCount = compactQuantizedLevels(paddedCosts, dims, paddedDims, usedLevels);
+    BucketQueueSet queues(compactBucketCount);
     localMetrics.seedCount = seedIndices.size();
 
     const double seedFrontierStart = wallTimeSeconds();
-    // Reusing one shared neighbor table for both seed-frontier and flood was
-    // benchmarked here and regressed, so keep these local constructions.
+    // Densifying the actually-used quantized levels preserves order while
+    // cutting down the empty-bucket scans in the flood loop.
     {
         TRACE_EVENT("watershed", "fast_marker_seed_frontier");
         if (options.fullyConnected) {
@@ -585,7 +621,7 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     localMetrics.writebackMs = (writebackEnd - writebackStart) * 1000.0;
 
     localMetrics.elapsedMs = (wallTimeSeconds() - totalStart) * 1000.0;
-    localMetrics.bucketBytes = kBucketCount * sizeof(std::vector<std::uint32_t>);
+    localMetrics.bucketBytes = static_cast<std::size_t>(queues.levelCount) * sizeof(std::vector<std::uint32_t>);
     localMetrics.scratchBytes =
         paddedCosts.size() * sizeof(std::uint16_t) +
         owner.size() * sizeof(std::uint32_t) +
