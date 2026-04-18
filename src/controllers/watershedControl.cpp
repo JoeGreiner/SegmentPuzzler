@@ -50,6 +50,7 @@ int clampWatershedThreadCount(int requestedThreadCount) {
 } // namespace
 
 WatershedControl::~WatershedControl() {
+    clearAgglomertionPreview();
 }
 
 void WatershedControl::setThreadCount(int n) {
@@ -89,9 +90,21 @@ void WatershedControl::setGuiBusy(bool busy) {
     watershedDistanceMapInputComboBox->setEnabled(!busy);
     watershedSeedsInputComboBox->setEnabled(!busy);
     watershedThresholdInputComboBox->setEnabled(!busy);
+    agglomertionInputComboBox->setEnabled(!busy);
+    agglomertionThresholdMaskComboBox->setEnabled(!busy);
+    agglomertionStrategyComboBox->setEnabled(!busy);
+    agglomertionLinkageComboBox->setEnabled(!busy);
+    agglomertionBoundaryModeComboBox->setEnabled(!busy);
+    agglomertionBiasSlider->setEnabled(!busy);
+    agglomertionBiasSpinBox->setEnabled(!busy);
+    agglomertionPreviewCheckBox->setEnabled(!busy);
+    agglomertionApproximatePreviewCheckBox->setEnabled(!busy);
+    agglomertionPreviewBoundariesCheckBox->setEnabled(!busy);
+    runAgglomertionButton->setEnabled(!busy);
     finalOutputInputComboBox->setEnabled(!busy);
     if (!busy) {
         updateStepEnablement();
+        agglomertionPreviewSettingsChanged();
     }
 }
 
@@ -99,6 +112,135 @@ void WatershedControl::refreshViewers() {
     orthoViewer->refreshViewers();
 }
 
+void WatershedControl::clearAgglomertionPreview() {
+    if (agglomertionPreviewTimer != nullptr) {
+        agglomertionPreviewTimer->stop();
+    }
+    if (pAgglomertionPreviewSignal) {
+        pAgglomertionPreviewSignal->setIsActive(false);
+        refreshViewers();
+    }
+}
+
+void WatershedControl::scheduleAgglomertionPreviewRefresh() {
+    if (agglomertionPreviewTimer == nullptr || taskRunner->isBusy()) {
+        return;
+    }
+    agglomertionPreviewTimer->start();
+}
+
+void WatershedControl::agglomertionPreviewSettingsChanged() {
+    if (agglomertionBiasValueLabel != nullptr) {
+        agglomertionBiasValueLabel->setText(agglomertionBiasLabelText());
+    }
+    
+    const bool showPreview = agglomertionPreviewCheckBox != nullptr && agglomertionPreviewCheckBox->isChecked();
+
+    if (comboHasValidSelection(agglomertionInputComboBox)) {
+        size_t watershedIdx = selectedSignalIndex(agglomertionInputComboBox);
+        setSignalActive(watershedIdx, !showPreview);
+    }
+
+    if (!showPreview) {
+        clearAgglomertionPreview();
+        return;
+    }
+    scheduleAgglomertionPreviewRefresh();
+}
+
+void WatershedControl::agglomertionPreviewSliceChanged(int, int) {
+    if (agglomertionPreviewCheckBox != nullptr && agglomertionPreviewCheckBox->isChecked()) {
+        const bool approximate = agglomertionApproximatePreviewCheckBox != nullptr && agglomertionApproximatePreviewCheckBox->isChecked();
+        if (approximate) {
+            scheduleAgglomertionPreviewRefresh();
+        }
+    }
+}
+
+void WatershedControl::connectAgglomertionPreviewSignals() {
+    if (orthoViewer == nullptr || orthoViewer->xy == nullptr || orthoViewer->xz == nullptr || orthoViewer->zy == nullptr) {
+        return;
+    }
+    connect(orthoViewer->xy, &SliceViewer::sliceIndexChanged, this, &WatershedControl::agglomertionPreviewSliceChanged);
+    connect(orthoViewer->xz, &SliceViewer::sliceIndexChanged, this, &WatershedControl::agglomertionPreviewSliceChanged);
+    connect(orthoViewer->zy, &SliceViewer::sliceIndexChanged, this, &WatershedControl::agglomertionPreviewSliceChanged);
+}
+
+void WatershedControl::refreshAgglomertionPreview() {
+    const bool showPreview = agglomertionPreviewCheckBox != nullptr && agglomertionPreviewCheckBox->isChecked();
+    const bool approximate = agglomertionApproximatePreviewCheckBox != nullptr && agglomertionApproximatePreviewCheckBox->isChecked();
+
+    if (taskRunner->isBusy() || !showPreview) {
+        clearAgglomertionPreview();
+        return;
+    }
+
+    const dataType::SegmentsImageType::Pointer watershedInput = selectedAgglomertionInput();
+    const dataType::BoundaryImageType::Pointer boundaryInput = selectedBoundaryInput();
+    const itk::Image<unsigned char, 3>::Pointer thresholdMask = selectedAgglomertionThresholdMask();
+    if (watershedInput.IsNull() || boundaryInput.IsNull()) {
+        clearAgglomertionPreview();
+        return;
+    }
+    if (agglomertionNeedsThresholdMask() && thresholdMask.IsNull()) {
+        clearAgglomertionPreview();
+        return;
+    }
+
+    using CastFilterType = itk::CastImageFilter<dataType::BoundaryImageType, segment_puzzler::BoundaryFloatImageType>;
+    auto castFilter = CastFilterType::New();
+    castFilter->SetInput(boundaryInput);
+    castFilter->Update();
+
+    segment_puzzler::WatershedRagAgglomerationOptions options;
+    options.linkage = selectedAgglomertionLinkage();
+    options.boundaryNormalization = selectedAgglomertionBoundaryNormalization();
+    options.boundaryEvidenceStrategy = selectedAgglomertionBoundaryEvidenceStrategy();
+    options.tau = selectedAgglomertionTau();
+    options.threadCount = workerThreadCount;
+
+    itk::Image<unsigned int, 3>::Pointer previewLabels;
+
+    if (!approximate) {
+        auto result = segment_puzzler::runWatershedRagAgglomeration(
+            watershedInput,
+            castFilter->GetOutput(),
+            thresholdMask,
+            options);
+        previewLabels = result.agglomeratedLabels;
+    } else {
+        segment_puzzler::OrthoPlanePreviewSelection previewSelection;
+        previewSelection.sliceIndices = {{
+            orthoViewer->zy->getSliceIndex(),
+            orthoViewer->xz->getSliceIndex(),
+            orthoViewer->xy->getSliceIndex()
+        }};
+        auto result = segment_puzzler::runWatershedRagAgglomerationPreview(
+            watershedInput,
+            castFilter->GetOutput(),
+            previewSelection,
+            thresholdMask,
+            options);
+        previewLabels = result.agglomeratedLabels;
+    }
+
+    if (agglomertionPreviewBoundariesCheckBox != nullptr &&
+        agglomertionPreviewBoundariesCheckBox->isChecked() &&
+        pThresholdedMembrane.IsNotNull()) {
+        insertBoundariesIntoWatershed(previewLabels, pThresholdedMembrane);
+    }
+
+    if (pAgglomertionPreviewSignal == nullptr) {
+        auto previewSignal = std::make_unique<itkSignal<unsigned int>>(previewLabels);
+        pAgglomertionPreviewSignal = previewSignal.get();
+        pAgglomertionPreviewSignal->setMainColor(255, 0, 255); // Magenta
+        registerSignal(std::move(previewSignal), SignalStage::None, "Agglomertion Preview", true, true);
+    } else {
+        pAgglomertionPreviewSignal->updateImage(previewLabels);
+        pAgglomertionPreviewSignal->setIsActive(true);
+    }
+    refreshViewers();
+}
 
 void WatershedControl::thresholdBoundariesAsync(std::function<void()> then) {
     const int thresholdValue = thresholdValueSlider->value();
@@ -210,7 +352,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
 
     taskRunner->runWithLabel(
         QStringLiteral("Running watershed..."),
-        [filterEnabled, minSegmentSize, watershedAlgorithm, distanceMapInput, seedsInput, thresholdInput, threadCount = workerThreadCount]() {
+        [this, filterEnabled, minSegmentSize, watershedAlgorithm, distanceMapInput, seedsInput, thresholdInput, threadCount = workerThreadCount]() {
             itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto distanceMapInputCopy = distanceMapInput;
             auto thresholdInputCopy = thresholdInput;
@@ -221,31 +363,44 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
             invertDistanceMap(distanceMapInputCopy, invertedDistanceMap);
             utils::toc(t, "Invert distance map done:");
 
-            itk::Image<unsigned int, 3>::Pointer watershedImage;
+            itk::Image<unsigned int, 3>::Pointer watershedFragments;
             itk::Image<unsigned int, 3>::Pointer seedsForWatershed = seedsInput;
             t = utils::tic("Run watershed");
-            runWatershed(invertedDistanceMap, seedsForWatershed, watershedImage, watershedOptions);
+            runWatershed(invertedDistanceMap, seedsForWatershed, watershedFragments, watershedOptions);
             utils::toc(t, "Run watershed done:");
 
             if (filterEnabled) {
                 t = utils::tic("Filter small seeds");
-                filterSmallSegmentSeeds(watershedImage, seedsForWatershed, minSegmentSize);
+                filterSmallSegmentSeeds(watershedFragments, seedsForWatershed, minSegmentSize);
                 utils::toc(t, "Filter small seeds done:");
                 t = utils::tic("Run watershed (filtered)");
-                runWatershed(invertedDistanceMap, seedsForWatershed, watershedImage, watershedOptions);
+                runWatershed(invertedDistanceMap, seedsForWatershed, watershedFragments, watershedOptions);
                 utils::toc(t, "Run watershed (filtered) done:");
             }
 
+            auto watershedDisplay = itk::Image<unsigned int, 3>::New();
+            watershedDisplay->SetRegions(watershedFragments->GetLargestPossibleRegion());
+            watershedDisplay->SetSpacing(watershedFragments->GetSpacing());
+            watershedDisplay->SetOrigin(watershedFragments->GetOrigin());
+            watershedDisplay->SetDirection(watershedFragments->GetDirection());
+            watershedDisplay->Allocate();
+            std::copy(watershedFragments->GetBufferPointer(),
+                      watershedFragments->GetBufferPointer() + watershedFragments->GetLargestPossibleRegion().GetNumberOfPixels(),
+                      watershedDisplay->GetBufferPointer());
+
             t = utils::tic("Insert boundaries");
-            insertBoundariesIntoWatershed(watershedImage, thresholdInputCopy);
+            insertBoundariesIntoWatershed(watershedDisplay, thresholdInputCopy);
             utils::toc(t, "Insert boundaries done:");
-            return watershedImage;
+
+            return std::make_pair(watershedFragments, watershedDisplay);
         },
-        [this, signalName](itk::Image<unsigned int, 3>::Pointer watershedImage) {
-            pWatershed = watershedImage;
+        [this, signalName](const std::pair<itk::Image<unsigned int, 3>::Pointer, itk::Image<unsigned int, 3>::Pointer> &watershedOutputs) {
+            pWatershedFragments = watershedOutputs.first;
+            pWatershed = watershedOutputs.second;
             auto pSignal2 = std::make_unique<itkSignal<unsigned int>>(pWatershed);
             auto *watershedSignal = pSignal2.get();
-            registerSignal(std::move(pSignal2), SignalStage::Watershed, signalName, /*categorical=*/true);
+            const size_t signalIndex = registerSignal(std::move(pSignal2), SignalStage::Watershed, signalName, /*categorical=*/true);
+            fragmentSignalImages[signalIndex] = pWatershedFragments;
             rebuildGraphFromSegmentsImage(pWatershed);
             attachSegmentsSignalToGraph(watershedSignal);
             updateStepEnablement();
@@ -254,6 +409,81 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
         std::move(then));
 }
 
+void WatershedControl::agglomertionAsync(std::function<void()> then) {
+    const dataType::SegmentsImageType::Pointer watershedInput = selectedAgglomertionInput();
+    const dataType::BoundaryImageType::Pointer boundaryInput = selectedBoundaryInput();
+    const itk::Image<unsigned char, 3>::Pointer thresholdInput = selectedWatershedThresholdInput();
+    const itk::Image<unsigned char, 3>::Pointer thresholdMask = selectedAgglomertionThresholdMask();
+    const segment_puzzler::RagLinkage linkage = selectedAgglomertionLinkage();
+    const segment_puzzler::BoundaryNormalizationMode boundaryMode = selectedAgglomertionBoundaryNormalization();
+    const segment_puzzler::BoundaryEvidenceStrategy boundaryStrategy = selectedAgglomertionBoundaryEvidenceStrategy();
+    const double tau = selectedAgglomertionTau();
+    const QString signalName =
+        QString("Agglomertion [%1 | %2 | %3 | tau=%4]")
+            .arg(agglomertionBoundaryEvidenceStrategyLabel(boundaryStrategy))
+            .arg(agglomertionLinkageLabel(linkage))
+            .arg(agglomertionBoundaryModeLabel(boundaryMode))
+            .arg(tau, 0, 'f', 2);
+
+    clearAgglomertionPreview();
+    removeRegisteredEdgeSignal();
+
+    taskRunner->runWithLabel(
+        QStringLiteral("Running agglomertion..."),
+        [watershedInput, boundaryInput, thresholdInput, thresholdMask, linkage, boundaryMode, boundaryStrategy, tau, this]() {
+            using CastFilterType = itk::CastImageFilter<dataType::BoundaryImageType, segment_puzzler::BoundaryFloatImageType>;
+            auto castFilter = CastFilterType::New();
+            castFilter->SetInput(boundaryInput);
+            castFilter->Update();
+
+            segment_puzzler::WatershedRagAgglomerationOptions options;
+            options.linkage = linkage;
+            options.boundaryNormalization = boundaryMode;
+            options.boundaryEvidenceStrategy = boundaryStrategy;
+            options.tau = tau;
+            options.threadCount = workerThreadCount;
+            auto agglomerationResult = segment_puzzler::runWatershedRagAgglomeration(
+                watershedInput,
+                castFilter->GetOutput(),
+                thresholdMask,
+                options);
+
+            auto agglomertionDisplay = itk::Image<unsigned int, 3>::New();
+            agglomertionDisplay->SetRegions(agglomerationResult.agglomeratedLabels->GetLargestPossibleRegion());
+            agglomertionDisplay->SetSpacing(agglomerationResult.agglomeratedLabels->GetSpacing());
+            agglomertionDisplay->SetOrigin(agglomerationResult.agglomeratedLabels->GetOrigin());
+            agglomertionDisplay->SetDirection(agglomerationResult.agglomeratedLabels->GetDirection());
+            agglomertionDisplay->Allocate();
+            std::copy(agglomerationResult.agglomeratedLabels->GetBufferPointer(),
+                      agglomerationResult.agglomeratedLabels->GetBufferPointer() +
+                          agglomerationResult.agglomeratedLabels->GetLargestPossibleRegion().GetNumberOfPixels(),
+                      agglomertionDisplay->GetBufferPointer());
+
+            if (thresholdInput.IsNotNull()) {
+                auto thresholdCopy = thresholdInput;
+                insertBoundariesIntoWatershed(agglomertionDisplay, thresholdCopy);
+            }
+
+            return std::make_pair(agglomerationResult.agglomeratedLabels, agglomertionDisplay);
+        },
+        [this, signalName](const std::pair<itk::Image<unsigned int, 3>::Pointer, itk::Image<unsigned int, 3>::Pointer> &agglomertionOutputs) {
+            pAgglomertionFragments = agglomertionOutputs.first;
+            pAgglomertion = agglomertionOutputs.second;
+            auto pSignal = std::make_unique<itkSignal<unsigned int>>(pAgglomertion);
+            auto *agglomertionSignal = pSignal.get();
+            const auto previousWatershedIndices = watershedOutputSignalIndices;
+            const size_t signalIndex = registerSignal(std::move(pSignal), SignalStage::Agglomertion, signalName, /*categorical=*/true);
+            fragmentSignalImages[signalIndex] = pAgglomertionFragments;
+            rebuildGraphFromSegmentsImage(pAgglomertion);
+            attachSegmentsSignalToGraph(agglomertionSignal);
+            scheduleAgglomertionPreviewRefresh();
+            updateStepEnablement();
+            deactivateSignalsByIndices(previousWatershedIndices);
+            const int agglomComboIdx = finalOutputInputComboBox->findData(static_cast<int>(signalIndex));
+            if (agglomComboIdx >= 0) finalOutputInputComboBox->setCurrentIndex(agglomComboIdx);
+        },
+        std::move(then));
+}
 
 void WatershedControl::createRefinementAsync(std::function<void()> then) {
     const dataType::SegmentsImageType::Pointer selectedOutput = selectedFinalOutputInput();
@@ -316,7 +546,7 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
     if (categorical) raw->setLUTCategorical(); else raw->setLUTContinuous();
     if (transparentZero) raw->setLUTValueToTransparent(0);
     orthoViewer->addSignal(raw);
-
+    
     if (!active) {
         setSignalActive(idx, false);
     }
@@ -332,6 +562,10 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
             seedOutputSignalIndices.push_back(idx);
             break;
         case SignalStage::Watershed:
+            watershedOutputSignalIndices.push_back(idx);
+            agglomertionInputSignalIndices.push_back(idx);
+            break;
+        case SignalStage::Agglomertion:
             watershedOutputSignalIndices.push_back(idx);
             break;
         case SignalStage::None:
@@ -376,7 +610,11 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     itkSignalSegmentsGraph = nullptr;
     pThresholdedMembrane = nullptr;
     pWatershed = nullptr;
+    pWatershedFragments = nullptr;
+    pAgglomertion = nullptr;
+    pAgglomertionFragments = nullptr;
     pThresholdPreviewSignal = nullptr;
+    pAgglomertionPreviewSignal = nullptr;
     thresholdAlgorithmComboBox = nullptr;
     thresholdValueSlider = nullptr;
     thresholdValueSpinBox = nullptr;
@@ -389,6 +627,18 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     watershedDistanceMapInputComboBox = nullptr;
     watershedSeedsInputComboBox = nullptr;
     watershedThresholdInputComboBox = nullptr;
+    runAgglomertionButton = nullptr;
+    agglomertionInputComboBox = nullptr;
+    agglomertionThresholdMaskComboBox = nullptr;
+    agglomertionLinkageComboBox = nullptr;
+    agglomertionBoundaryModeComboBox = nullptr;
+    agglomertionStrategyComboBox = nullptr;
+    agglomertionBiasSlider = nullptr;
+    agglomertionBiasSpinBox = nullptr;
+    agglomertionBiasValueLabel = nullptr;
+    agglomertionPreviewCheckBox = nullptr;
+    agglomertionApproximatePreviewCheckBox = nullptr;
+    agglomertionPreviewBoundariesCheckBox = nullptr;
     finalOutputInputComboBox = nullptr;
     workerThreadCount = defaultWatershedThreadCount();
     setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
@@ -401,12 +651,18 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     ty = 0;
     tz = 0;
 
+
     setupWorkflowUi();
     setupAlgorithmComboBoxes();
+    connectAgglomertionPreviewSignals();
     refreshInputSelectors();
     updateStepEnablement();
 
     connect(taskRunner, &TaskRunner::busyChanged, this, &WatershedControl::setGuiBusy);
+    agglomertionPreviewTimer = new QTimer(this);
+    agglomertionPreviewTimer->setSingleShot(true);
+    agglomertionPreviewTimer->setInterval(120);
+    connect(agglomertionPreviewTimer, &QTimer::timeout, this, &WatershedControl::refreshAgglomertionPreview);
 }
 
 void WatershedControl::setupWorkflowUi() {
@@ -429,6 +685,7 @@ void WatershedControl::setupWorkflowUi() {
     setupDistanceMapWidget();
     setupSeedWidget();
     setupWatershedWidget();
+    setupAgglomertionWidget();
     setupFinalizeWidget();
 
     workflowLayout->addStretch(1);
@@ -644,6 +901,99 @@ void WatershedControl::setupWatershedWidget() {
     connect(watershedThresholdInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
 }
 
+void WatershedControl::setupAgglomertionWidget() {
+    runAgglomertionButton = new QPushButton("Run", this);
+    agglomertionInputComboBox = new QComboBox(this);
+    agglomertionThresholdMaskComboBox = new QComboBox(this);
+    agglomertionLinkageComboBox = new QComboBox(this);
+    agglomertionBoundaryModeComboBox = new QComboBox(this);
+    agglomertionStrategyComboBox = new QComboBox(this);
+    auto *biasControl = createSliderWithSpinBox(agglomertionBiasSlider, agglomertionBiasSpinBox);
+    agglomertionBiasValueLabel = new QLabel(this);
+    agglomertionPreviewCheckBox = new QCheckBox("Live Preview", this);
+    agglomertionPreviewCheckBox->setChecked(true);
+    agglomertionApproximatePreviewCheckBox = new QCheckBox("Fast Approx.", this);
+    agglomertionApproximatePreviewCheckBox->setChecked(false);
+    agglomertionPreviewBoundariesCheckBox = new QCheckBox("Inject Boundaries", this);
+    agglomertionPreviewBoundariesCheckBox->setChecked(true);
+    configureInputCombo(agglomertionInputComboBox);
+    configureInputCombo(agglomertionThresholdMaskComboBox);
+    agglomertionBiasSlider->setRange(0, 100);
+    agglomertionBiasSpinBox->setRange(0, 100);
+    agglomertionBiasSlider->setValue(50);
+    agglomertionBiasValueLabel->setText(agglomertionBiasLabelText());
+
+    auto *biasWidget = new QWidget(this);
+    auto *biasLayout = new QVBoxLayout(biasWidget);
+    biasLayout->setContentsMargins(0, 0, 0, 0);
+    biasLayout->setSpacing(4);
+    biasLayout->addWidget(biasControl);
+    auto *biasLabelsLayout = new QHBoxLayout();
+    biasLabelsLayout->setContentsMargins(0, 0, 0, 0);
+    biasLabelsLayout->addWidget(new QLabel("Over", this));
+    biasLabelsLayout->addStretch(1);
+    biasLabelsLayout->addWidget(agglomertionBiasValueLabel);
+    biasLabelsLayout->addStretch(1);
+    biasLabelsLayout->addWidget(new QLabel("Under", this));
+    biasLayout->addLayout(biasLabelsLayout);
+
+    auto *controlsWidget = new QWidget(this);
+    auto *controlsLayout = new QVBoxLayout(controlsWidget);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(6);
+    controlsLayout->addWidget(createLabeledInputRow("Watershed", agglomertionInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Threshold Mask", agglomertionThresholdMaskComboBox));
+    {
+        auto *scoringRow = new QWidget(workflowContentWidget);
+        auto *scoringLayout = new QHBoxLayout(scoringRow);
+        scoringLayout->setContentsMargins(0, 0, 0, 0);
+        scoringLayout->setSpacing(6);
+        auto *scoringLabel = new QLabel("Scoring Strategy", scoringRow);
+        scoringLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+        auto *helpLabel = new QLabel("?", scoringRow);
+        helpLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+        helpLabel->setStyleSheet(
+            "QLabel { color: white; background-color: #666; border-radius: 8px; "
+            "font-weight: bold; font-size: 11px; min-width: 16px; min-height: 16px; "
+            "max-width: 16px; max-height: 16px; padding: 0px; qproperty-alignment: AlignCenter; }");
+        helpLabel->setToolTip(
+            "<b>Raw Interface Mean</b>: Mean boundary intensity across the full interface "
+            "between two fragments. Does not require a threshold mask.<br><br>"
+            "<b>Open Interface Mean</b>: Mean boundary intensity at open (non-thresholded) "
+            "faces only. Requires a threshold mask.<br><br>"
+            "<b>Open Fraction Weighted</b>: Open face mean weighted by total interface "
+            "support. Best for detecting weak boundaries missed by thresholding. "
+            "Requires a threshold mask. <i>(Default)</i>");
+        agglomertionStrategyComboBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        scoringLayout->addWidget(scoringLabel);
+        scoringLayout->addWidget(helpLabel);
+        scoringLayout->addWidget(agglomertionStrategyComboBox, 1);
+        controlsLayout->addWidget(scoringRow);
+    }
+    controlsLayout->addWidget(createLabeledInputRow("Linkage", agglomertionLinkageComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Boundary Scale", agglomertionBoundaryModeComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Merge Bias", biasWidget));
+    controlsLayout->addWidget(agglomertionPreviewCheckBox);
+    controlsLayout->addWidget(agglomertionApproximatePreviewCheckBox);
+    controlsLayout->addWidget(agglomertionPreviewBoundariesCheckBox);
+
+    auto *groupBox = createStepGroup("5. Agglomertion");
+    addStepSection(groupBox, controlsWidget, runAgglomertionButton);
+
+    connect(runAgglomertionButton, &QPushButton::clicked, this, &WatershedControl::agglomertionPressed);
+    connect(agglomertionInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+    connect(agglomertionInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionThresholdMaskComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+    connect(agglomertionThresholdMaskComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionStrategyComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+    connect(agglomertionStrategyComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionLinkageComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionBoundaryModeComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionBiasSlider, &QSlider::valueChanged, this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionPreviewCheckBox, &QCheckBox::toggled, this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionApproximatePreviewCheckBox, &QCheckBox::toggled, this, &WatershedControl::agglomertionPreviewSettingsChanged);
+    connect(agglomertionPreviewBoundariesCheckBox, &QCheckBox::toggled, this, &WatershedControl::agglomertionPreviewSettingsChanged);
+}
 
 void WatershedControl::setupFinalizeWidget() {
     createRefinementButton = new QPushButton(
@@ -656,10 +1006,10 @@ void WatershedControl::setupFinalizeWidget() {
     auto *controlsLayout = new QVBoxLayout(controlsWidget);
     controlsLayout->setContentsMargins(0, 0, 0, 0);
     controlsLayout->setSpacing(6);
-    controlsLayout->addWidget(createLabeledInputRow("Watershed", finalOutputInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Agglomertion", finalOutputInputComboBox));
 
     auto *groupBox = createStepGroup(
-        outputMode == OutputMode::Segments ? "5. Export Segments" : "5. Create Refinement");
+        outputMode == OutputMode::Segments ? "6. Export Segments" : "6. Create Refinement");
     auto *layout = qobject_cast<QVBoxLayout *>(groupBox->layout());
     layout->addWidget(controlsWidget);
     layout->addWidget(createRefinementButton);
@@ -702,6 +1052,45 @@ void WatershedControl::setupAlgorithmComboBoxes() {
         watershedAlgorithmLabel(WatershedAlgorithm::FastMarkerWatershed),
         static_cast<int>(WatershedAlgorithm::FastMarkerWatershed));
     watershedAlgorithmComboBox->setCurrentIndex(1);
+
+    configureAlgorithmCombo(agglomertionLinkageComboBox);
+    agglomertionLinkageComboBox->addItem(
+        agglomertionLinkageLabel(segment_puzzler::RagLinkage::Average),
+        static_cast<int>(segment_puzzler::RagLinkage::Average));
+    agglomertionLinkageComboBox->addItem(
+        agglomertionLinkageLabel(segment_puzzler::RagLinkage::Sum),
+        static_cast<int>(segment_puzzler::RagLinkage::Sum));
+    agglomertionLinkageComboBox->setCurrentIndex(0);
+
+    configureAlgorithmCombo(agglomertionStrategyComboBox);
+    agglomertionStrategyComboBox->addItem(
+        agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy::OpenFractionWeighted),
+        static_cast<int>(segment_puzzler::BoundaryEvidenceStrategy::OpenFractionWeighted));
+    agglomertionStrategyComboBox->addItem(
+        agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy::OpenInterfaceMean),
+        static_cast<int>(segment_puzzler::BoundaryEvidenceStrategy::OpenInterfaceMean));
+    agglomertionStrategyComboBox->addItem(
+        agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy::RawInterfaceMean),
+        static_cast<int>(segment_puzzler::BoundaryEvidenceStrategy::RawInterfaceMean));
+    agglomertionStrategyComboBox->setCurrentIndex(0);
+
+    configureAlgorithmCombo(agglomertionBoundaryModeComboBox);
+    agglomertionBoundaryModeComboBox->addItem(
+        agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode::AutoDetect),
+        static_cast<int>(segment_puzzler::BoundaryNormalizationMode::AutoDetect));
+    agglomertionBoundaryModeComboBox->addItem(
+        agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToOne),
+        static_cast<int>(segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToOne));
+    agglomertionBoundaryModeComboBox->addItem(
+        agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToTwo),
+        static_cast<int>(segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToTwo));
+    agglomertionBoundaryModeComboBox->addItem(
+        agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode::UInt8FullRange),
+        static_cast<int>(segment_puzzler::BoundaryNormalizationMode::UInt8FullRange));
+    agglomertionBoundaryModeComboBox->addItem(
+        agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode::UInt16FullRange),
+        static_cast<int>(segment_puzzler::BoundaryNormalizationMode::UInt16FullRange));
+    agglomertionBoundaryModeComboBox->setCurrentIndex(0);
 }
 
 void WatershedControl::configureInputCombo(QComboBox *comboBox) const {
@@ -772,7 +1161,10 @@ void WatershedControl::refreshInputSelectors() {
     refreshComboSelection(watershedThresholdInputComboBox, thresholdOutputSignalIndices);
     refreshComboSelection(watershedDistanceMapInputComboBox, distanceMapOutputSignalIndices);
     refreshComboSelection(watershedSeedsInputComboBox, seedOutputSignalIndices);
+    refreshComboSelection(agglomertionInputComboBox, agglomertionInputSignalIndices);
+    refreshComboSelection(agglomertionThresholdMaskComboBox, thresholdOutputSignalIndices);
     refreshComboSelection(finalOutputInputComboBox, watershedOutputSignalIndices);
+    scheduleAgglomertionPreviewRefresh();
 }
 
 bool WatershedControl::comboHasValidSelection(const QComboBox *comboBox) const {
@@ -849,6 +1241,42 @@ dataType::SegmentsImageType::Pointer WatershedControl::selectedFinalOutputInput(
     return signal ? signal->pImage : nullptr;
 }
 
+dataType::SegmentsImageType::Pointer WatershedControl::selectedAgglomertionInput() const {
+    if (!comboHasValidSelection(agglomertionInputComboBox)) {
+        return nullptr;
+    }
+    const size_t signalIndex = selectedSignalIndex(agglomertionInputComboBox);
+    auto it = fragmentSignalImages.find(signalIndex);
+    return it != fragmentSignalImages.end() ? it->second : nullptr;
+}
+
+itk::Image<unsigned char, 3>::Pointer WatershedControl::selectedAgglomertionThresholdMask() const {
+    if (!comboHasValidSelection(agglomertionThresholdMaskComboBox)) {
+        return nullptr;
+    }
+    auto *signal = dynamic_cast<itkSignal<unsigned char> *>(allSignalList[selectedSignalIndex(agglomertionThresholdMaskComboBox)]);
+    return signal ? signal->pImage : nullptr;
+}
+
+segment_puzzler::RagLinkage WatershedControl::selectedAgglomertionLinkage() const {
+    return static_cast<segment_puzzler::RagLinkage>(agglomertionLinkageComboBox->currentData().toInt());
+}
+
+segment_puzzler::BoundaryNormalizationMode WatershedControl::selectedAgglomertionBoundaryNormalization() const {
+    return static_cast<segment_puzzler::BoundaryNormalizationMode>(agglomertionBoundaryModeComboBox->currentData().toInt());
+}
+
+segment_puzzler::BoundaryEvidenceStrategy WatershedControl::selectedAgglomertionBoundaryEvidenceStrategy() const {
+    return static_cast<segment_puzzler::BoundaryEvidenceStrategy>(agglomertionStrategyComboBox->currentData().toInt());
+}
+
+double WatershedControl::selectedAgglomertionTau() const {
+    return static_cast<double>(agglomertionBiasSlider->value()) / 100.0;
+}
+
+bool WatershedControl::agglomertionNeedsThresholdMask() const {
+    return selectedAgglomertionBoundaryEvidenceStrategy() != segment_puzzler::BoundaryEvidenceStrategy::RawInterfaceMean;
+}
 
 void WatershedControl::updateStepEnablement() {
     const bool hasBoundary = selectedBoundaryInput().IsNotNull();
@@ -857,6 +1285,9 @@ void WatershedControl::updateStepEnablement() {
     const bool hasWatershedDistanceMap = selectedWatershedDistanceMapInput().IsNotNull();
     const bool hasWatershedSeeds = selectedWatershedSeedsInput().IsNotNull();
     const bool hasWatershedThreshold = selectedWatershedThresholdInput().IsNotNull();
+    const bool hasAgglomertionInput = selectedAgglomertionInput().IsNotNull();
+    const bool hasAgglomertionThresholdMask = selectedAgglomertionThresholdMask().IsNotNull();
+    const bool hasRequiredAgglomertionMask = !agglomertionNeedsThresholdMask() || hasAgglomertionThresholdMask;
     const bool hasFinalOutput = selectedFinalOutputInput().IsNotNull();
 
     thresholdBoundariesButton->setEnabled(hasBoundary);
@@ -864,7 +1295,13 @@ void WatershedControl::updateStepEnablement() {
     calculateDistanceMapButton->setEnabled(hasThreshold);
     calculateSeedsButton->setEnabled(hasDistanceMap);
     runWatershedButton->setEnabled(hasWatershedDistanceMap && hasWatershedSeeds && hasWatershedThreshold);
+    runAgglomertionButton->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask);
+    agglomertionPreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
+    agglomertionApproximatePreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
     createRefinementButton->setEnabled(hasFinalOutput);
+    if (!(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask)) {
+        clearAgglomertionPreview();
+    }
 }
 
 WatershedControl::ThresholdAlgorithm WatershedControl::selectedThresholdAlgorithm() const {
@@ -923,6 +1360,48 @@ QString WatershedControl::watershedAlgorithmLabel(WatershedAlgorithm algorithm) 
     return "Morphological Watershed";
 }
 
+QString WatershedControl::agglomertionLinkageLabel(segment_puzzler::RagLinkage linkage) const {
+    switch (linkage) {
+        case segment_puzzler::RagLinkage::Average:
+            return "Average";
+        case segment_puzzler::RagLinkage::Sum:
+            return "Sum";
+    }
+    return "Average";
+}
+
+QString WatershedControl::agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode mode) const {
+    switch (mode) {
+        case segment_puzzler::BoundaryNormalizationMode::AutoDetect:
+            return "Auto Detect";
+        case segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToOne:
+            return "0..1 Probability";
+        case segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToTwo:
+            return "0..2 Probability";
+        case segment_puzzler::BoundaryNormalizationMode::UInt8FullRange:
+            return "UInt8 Full Range";
+        case segment_puzzler::BoundaryNormalizationMode::UInt16FullRange:
+            return "UInt16 Full Range";
+    }
+    return "UInt16 Full Range";
+}
+
+QString WatershedControl::agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy strategy) const {
+    switch (strategy) {
+        case segment_puzzler::BoundaryEvidenceStrategy::RawInterfaceMean:
+            return "Raw Interface Mean";
+        case segment_puzzler::BoundaryEvidenceStrategy::OpenInterfaceMean:
+            return "Open Interface Mean";
+        case segment_puzzler::BoundaryEvidenceStrategy::OpenFractionWeighted:
+            return "Open Fraction Weighted";
+    }
+    return "Open Fraction Weighted";
+}
+
+QString WatershedControl::agglomertionBiasLabelText() const {
+    const double tau = selectedAgglomertionTau();
+    return QString("tau %1").arg(tau, 0, 'f', 2);
+}
 
 
 void WatershedControl::treeDoubleClicked(QTreeWidgetItem *item, int) {
@@ -1430,6 +1909,15 @@ void WatershedControl::watershedPressed() {
     }
 }
 
+void WatershedControl::agglomertionPressed() {
+    if (selectedAgglomertionInput() != nullptr && selectedBoundaryInput() != nullptr) {
+        agglomertionAsync();
+    } else {
+        QMessageBox msgBox;
+        msgBox.setText("Please generate a watershed first.");
+        msgBox.exec();
+    }
+}
 
 void WatershedControl::finalizeOutputPressed() {
     if (selectedFinalOutputInput() != nullptr) {
@@ -1437,11 +1925,10 @@ void WatershedControl::finalizeOutputPressed() {
     } else {
         QMessageBox msgBox;
         msgBox.setText(outputMode == OutputMode::Segments
-                           ? "Please generate a watershed before exporting segments."
-                           : "Please generate a watershed first.");
+                           ? "Please generate a watershed or agglomertion before exporting segments."
+                           : "Please generate a watershed or agglomertion first.");
         msgBox.exec();
     }
-}
 }
 
 

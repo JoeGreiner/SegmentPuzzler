@@ -28,6 +28,7 @@
 
 #include "src/itkImageFilters/itkWatershedHelpers.h"
 #include "src/utils/DistanceMapSeedExtractors.h"
+#include "src/utils/WatershedRagAgglomeration.h"
 
 class OrthoViewer;
 class TaskRunner;
@@ -88,6 +89,11 @@ public:
     itk::Image<float, 3>::Pointer pDistanceMap;
     itk::Image<unsigned int, 3>::Pointer pSeeds;
     itk::Image<unsigned int, 3>::Pointer pWatershed;
+    itk::Image<unsigned int, 3>::Pointer pWatershedFragments;
+    itk::Image<unsigned int, 3>::Pointer pAgglomertion;
+    itk::Image<unsigned int, 3>::Pointer pAgglomertionFragments;
+
+    itkSignal<unsigned int> *pAgglomertionPreviewSignal;
 
     bool loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
                size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
@@ -114,6 +120,7 @@ public slots:
     void calculateDistanceMapAsync(std::function<void()> then = {});
     void extractSeedsAsync(std::function<void()> then = {});
     void watershedAsync(std::function<void()> then = {});
+    void agglomertionAsync(std::function<void()> then = {});
     void createRefinementAsync(std::function<void()> then = {});
 
     void thresholdBoundariesPressed();
@@ -124,6 +131,7 @@ public slots:
 
 
     void watershedPressed();
+    void agglomertionPressed();
 
     void finalizeOutputPressed();
 
@@ -140,6 +148,7 @@ private:
         DistanceMap,
         Seeds,
         Watershed,
+        Agglomertion
     };
 
     QTreeWidgetItem *topLevelItem(QTreeWidgetItem *item) const;
@@ -183,6 +192,18 @@ private:
     QComboBox *watershedThresholdInputComboBox;
     QComboBox *watershedAlgorithmComboBox;
 
+    QPushButton *runAgglomertionButton;
+    QComboBox *agglomertionInputComboBox;
+    QComboBox *agglomertionThresholdMaskComboBox;
+    QComboBox *agglomertionLinkageComboBox;
+    QComboBox *agglomertionBoundaryModeComboBox;
+    QComboBox *agglomertionStrategyComboBox;
+    QSlider *agglomertionBiasSlider;
+    QSpinBox *agglomertionBiasSpinBox;
+    QLabel *agglomertionBiasValueLabel;
+    QCheckBox *agglomertionPreviewCheckBox;
+    QCheckBox *agglomertionApproximatePreviewCheckBox;
+    QCheckBox *agglomertionPreviewBoundariesCheckBox;
 
     QPushButton *createRefinementButton;
     QComboBox *finalOutputInputComboBox;
@@ -190,10 +211,13 @@ private:
     int registeredEdgeSignalIndex = -1;
     int workerThreadCount = 1;
     int boundarySignalIndex = -1;
+    QTimer *agglomertionPreviewTimer = nullptr;
     std::vector<size_t> thresholdOutputSignalIndices;
     std::vector<size_t> distanceMapOutputSignalIndices;
     std::vector<size_t> seedOutputSignalIndices;
     std::vector<size_t> watershedOutputSignalIndices;
+    std::vector<size_t> agglomertionInputSignalIndices;
+    std::unordered_map<size_t, dataType::SegmentsImageType::Pointer> fragmentSignalImages;
 
     void transferWatershedToGraph();
     void setupWorkflowUi();
@@ -202,6 +226,7 @@ private:
     void setupDistanceMapWidget();
     void setupSeedWidget();
     void setupWatershedWidget();
+    void setupAgglomertionWidget();
     void setupFinalizeWidget();
     QGroupBox *createStepGroup(const QString &title) const;
     QWidget *createLabeledInputRow(const QString &labelText, QComboBox *comboBox) const;
@@ -226,6 +251,12 @@ private:
     itk::Image<float, 3>::Pointer selectedWatershedDistanceMapInput() const;
     itk::Image<unsigned int, 3>::Pointer selectedWatershedSeedsInput() const;
     itk::Image<unsigned char, 3>::Pointer selectedWatershedThresholdInput() const;
+    dataType::SegmentsImageType::Pointer selectedAgglomertionInput() const;
+    itk::Image<unsigned char, 3>::Pointer selectedAgglomertionThresholdMask() const;
+    segment_puzzler::RagLinkage selectedAgglomertionLinkage() const;
+    segment_puzzler::BoundaryNormalizationMode selectedAgglomertionBoundaryNormalization() const;
+    segment_puzzler::BoundaryEvidenceStrategy selectedAgglomertionBoundaryEvidenceStrategy() const;
+    double selectedAgglomertionTau() const;
     dataType::SegmentsImageType::Pointer selectedFinalOutputInput() const;
 
     ThresholdAlgorithm selectedThresholdAlgorithm() const;
@@ -237,10 +268,23 @@ private:
     QString distanceMapAlgorithmLabel(DistanceMapAlgorithm algorithm) const;
     QString seedAlgorithmLabel(distance_map_benchmark::SeedExtractorKind algorithm) const;
     QString watershedAlgorithmLabel(WatershedAlgorithm algorithm) const;
+    QString agglomertionLinkageLabel(segment_puzzler::RagLinkage linkage) const;
+    QString agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode mode) const;
+    QString agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy strategy) const;
+    QString agglomertionBiasLabelText() const;
+    bool agglomertionNeedsThresholdMask() const;
 
     bool getDimensionMatchWithSegmentImage();
     void setGuiBusy(bool busy);
     void refreshViewers();
+    void refreshAgglomertionPreview();
+    void scheduleAgglomertionPreviewRefresh();
+    void clearAgglomertionPreview();
+    void connectAgglomertionPreviewSignals();
+
+private slots:
+    void agglomertionPreviewSettingsChanged();
+    void agglomertionPreviewSliceChanged(int sliceAxis, int sliceIndex);
 
 private:
     void removeRegisteredEdgeSignal();
