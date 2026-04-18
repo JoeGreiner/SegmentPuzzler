@@ -513,17 +513,27 @@ void AnnotationSliceViewer::show3DAllLabelsView() {
 }
 
 void AnnotationSliceViewer::exportDebugInformation() {
+    if (graphBase == nullptr || graphBase->pGraph == nullptr ||
+        graphBase->pEdgesInitialSegmentsImage == nullptr ||
+        graphBase->pWorkingSegmentsImage == nullptr) {
+        QMessageBox::information(this,
+                                 tr("Debug Export Unavailable"),
+                                 tr("Load supervoxels before exporting debug information."));
+        return;
+    }
+
+    const auto reply = QMessageBox::question(
+        this,
+        tr("Export Debug Information"),
+        tr("This can export a lot of debug information into several files. Do you want to continue?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (reply != QMessageBox::Yes) {
+        return;
+    }
+
     std::cout << "Exporting Debug Information from AnnotationsliceViewer\n";
-    graphBase->pGraph->printEdgeIdLookUpToFile("edgeIdLookup.txt");
-    graphBase->pGraph->printWorkingNodesToFile("workingNodes.txt");
-    graphBase->pGraph->printWorkingEdgesToFile("workingEdges.txt");
-    graphBase->pGraph->printInitialNodesToFile("initialNodes.txt");
-    graphBase->pGraph->printInitialTwoSidedEdgesToFile("initialTwoSidedEdges.txt");
-    graphBase->pGraph->printInitialOneSidedEdgesToFile("initialOneSidedEdges.txt");
-    graphBase->pGraph->ITKImageWriter<dataType::EdgeImageType>(graphBase->pEdgesInitialSegmentsImage,
-                                                                "initialEdges.nrrd");
-    graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(graphBase->pWorkingSegmentsImage,
-                                                                    "workingSegments.nrrd");
+    graphBase->pGraph->exportDebugInformation();
 }
 
 void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
@@ -658,11 +668,26 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
 }
 
 void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int posX, int posY){
+    if (graphBase == nullptr || graphBase->pGraph == nullptr || graphBase->pSelectedSegmentation == nullptr) {
+        QMessageBox::information(this,
+                                 tr("Insert Unavailable"),
+                                 tr("Load and select a segmentation before inserting a segment into the supervoxels."));
+        return;
+    }
+
     std::cout << "Running InsertSegmentationSegmentIntoInitialSegments\n";
     std::cout << "AnnotationSliceViewer::InsertSegmentationSegmentIntoInitialSegments called" << std::endl;
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
     printf("Insert segment at position: %d %d %d\n", x, y, z);
+
+    if (taskRunner == nullptr) {
+        graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z);
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->refreshViewers();
+        }
+        return;
+    }
 
     taskRunner->run(
         [this, x, y, z]() { graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z); },
@@ -1539,6 +1564,11 @@ void AnnotationSliceViewer::togglePaintBoundaryMode() {
 }
 
 void AnnotationSliceViewer::setPaintId(dataType::SegmentIdType){
+    if (graphBase == nullptr || graphBase->pSelectedSegmentationSignal == nullptr ||
+        labelOfClickedSegmentation >= static_cast<dataType::SegmentIdType>(graphBase->pSelectedSegmentationSignal->LUT.size())) {
+        return;
+    }
+
     quint32 colorOfClickedSegment = graphBase->pSelectedSegmentationSignal->LUT[labelOfClickedSegmentation];
     unsigned char red, green, blue;
     red = (unsigned char) (colorOfClickedSegment >> 16);
@@ -1550,10 +1580,14 @@ void AnnotationSliceViewer::setPaintId(dataType::SegmentIdType){
 
 void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
     if (paintModeIsActive) {
-        if (graphBase->pSelectedSegmentation != nullptr) {
+        if (graphBase->pSelectedSegmentation != nullptr && graphBase->pSelectedSegmentationSignal != nullptr) {
             int xWorld, yWorld, zWorld;
             getXYZfromPixmapPos(x, y, xWorld, yWorld, zWorld);
             labelOfClickedSegmentation = graphBase->pSelectedSegmentation->GetPixel({xWorld, yWorld, zWorld});
+            if (labelOfClickedSegmentation >=
+                static_cast<dataType::SegmentIdType>(graphBase->pSelectedSegmentationSignal->LUT.size())) {
+                return;
+            }
             quint32 colorOfClickedSegment = graphBase->pSelectedSegmentationSignal->LUT[labelOfClickedSegmentation];
             unsigned char red, green, blue;
             red = (unsigned char) (colorOfClickedSegment >> 16);
@@ -1564,10 +1598,14 @@ void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
             setUpCustomCursor();
         }
     } else if (paintBoundaryModeIsActive){
-        if(pThresholdedBoundaries != nullptr) {
+        if(pThresholdedBoundaries != nullptr && pThresholdedBoundariesSignal != nullptr) {
             int xWorld, yWorld, zWorld;
             getXYZfromPixmapPos(x, y, xWorld, yWorld, zWorld);
             labelOfClickedSegmentation = pThresholdedBoundaries->GetPixel({xWorld, yWorld, zWorld});
+            if (labelOfClickedSegmentation >=
+                static_cast<dataType::SegmentIdType>(pThresholdedBoundariesSignal->LUT.size())) {
+                return;
+            }
             quint32 colorOfClickedSegment = pThresholdedBoundariesSignal->LUT[labelOfClickedSegmentation];
             unsigned char red, green, blue;
             red = (unsigned char) (colorOfClickedSegment >> 16);

@@ -1271,6 +1271,14 @@ void Graph::deleteSegmentationLabel(SegmentIdType label) {
 void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
 // high level workflow: create volume with just the one segment in background
 // treat that new segment as a normal refinement segmentation call
+    if (graphBase->pSelectedSegmentation == nullptr) {
+        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: no selected segmentation loaded\n";
+        return;
+    }
+    if (graphBase->pWorkingSegmentsImage == nullptr) {
+        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: no working segments loaded\n";
+        return;
+    }
 
     auto label = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
     const SegmentIdType backgroundLabel = backgroundId;
@@ -1588,7 +1596,9 @@ void Graph::transferWorkingNodeToSegmentation(SegmentIdType labelOfNodeToTransfe
             }
         }
     }
-    graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
+    if (graphBase->pSelectedSegmentationSignal != nullptr) {
+        graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
+    }
 }
 
 
