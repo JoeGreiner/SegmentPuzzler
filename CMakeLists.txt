@@ -216,6 +216,7 @@ set(SRC_UTILS
         src/utils/FastMarkerWatershed3D.cpp
         src/utils/DistanceMapFH3D.cpp
         src/utils/DistanceMapSeedExtractors.cpp
+        src/utils/WatershedRagAgglomeration.cpp
         )
 
 set(SRC_SEGMENTHANDLERS
