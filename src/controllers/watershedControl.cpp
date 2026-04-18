@@ -29,6 +29,7 @@
 #include <QSignalBlocker>
 #include <itkCastImageFilter.h>
 #include "src/qtUtils/TaskRunner.h"
+#include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/utils/SignalNameUtils.h"
 #include <algorithm>
 
@@ -1405,20 +1406,30 @@ QString WatershedControl::agglomertionBiasLabelText() const {
 
 
 void WatershedControl::treeDoubleClicked(QTreeWidgetItem *item, int) {
-    if (item->text(0) == "Color") {
-        setUserColor(item);
-    } else if (item->text(0) == "Norm") {
-        setUserNorm(item);
-    } else if (item->text(0) == "Alpha") {
-        setUserAlpha(item);
-    } else if ((item->text(1) == "active") || (item->text(1) == "inactive")) {
-        setDescription(item);
-
+    switch (signal_tree::rowKind(item)) {
+        case signal_tree::RowKind::Color:
+            setUserColor(item);
+            break;
+        case signal_tree::RowKind::Norm:
+            setUserNorm(item);
+            break;
+        case signal_tree::RowKind::Alpha:
+            setUserAlpha(item);
+            break;
+        case signal_tree::RowKind::Root:
+            setDescription(item);
+            break;
+        case signal_tree::RowKind::DataType:
+            break;
     }
 }
 
 
 void WatershedControl::treeClicked(QTreeWidgetItem *item, int) {
+    if (signal_tree::rowKind(item) != signal_tree::RowKind::Root) {
+        return;
+    }
+
     std::string itemText = item->text(1).toStdString();
     if ((itemText == "active") || (itemText == "inactive")) {
         if (itemText == "inactive" && (item->checkState(0) == Qt::CheckState::Checked)) {
@@ -1494,7 +1505,7 @@ void WatershedControl::updatePaintBoundaryModeButtonText() {
 void WatershedControl::setSignalActive(size_t signalIdx, bool active) {
     for (int i = 0; i < signalTreeWidget->topLevelItemCount(); ++i) {
         QTreeWidgetItem *treeItem = signalTreeWidget->topLevelItem(i);
-        if (treeItem->data(0, Qt::UserRole).toULongLong() == static_cast<qulonglong>(signalIdx)) {
+        if (signal_tree::signalIndex(treeItem) == signalIdx) {
             if ((treeItem->checkState(0) == Qt::Checked) != active) {
                 treeItem->setCheckState(0, active ? Qt::Checked : Qt::Unchecked);
                 setIsActive(treeItem, active);
@@ -1582,8 +1593,7 @@ void WatershedControl::removeRegisteredEdgeSignal() {
     allSignalList[static_cast<size_t>(registeredEdgeSignalIndex)] = nullptr;
     for (int i = 0; i < signalTreeWidget->topLevelItemCount(); ++i) {
         QTreeWidgetItem *treeItem = signalTreeWidget->topLevelItem(i);
-        if (treeItem->data(0, Qt::UserRole).toULongLong() ==
-                static_cast<qulonglong>(registeredEdgeSignalIndex)) {
+        if (signal_tree::signalIndex(treeItem) == static_cast<size_t>(registeredEdgeSignalIndex)) {
             delete signalTreeWidget->takeTopLevelItem(i);
             break;
         }
@@ -1944,21 +1954,20 @@ void WatershedControl::calculateDistanceMapPressed() {
 
 
 QTreeWidgetItem *WatershedControl::topLevelItem(QTreeWidgetItem *item) const {
-    return item != nullptr && item->parent() != nullptr ? item->parent() : item;
+    return signal_tree::topLevelSignalItem(item);
 }
 
 size_t WatershedControl::signalIndexForItem(QTreeWidgetItem *item) const {
-    QTreeWidgetItem *baseItem = topLevelItem(item);
-    if (baseItem == nullptr) {
+    if (topLevelItem(item) == nullptr) {
         throw std::logic_error("signal item not found!");
     }
 
-    const qulonglong signalIndex = baseItem->data(0, Qt::UserRole).toULongLong();
+    const size_t signalIndex = signal_tree::signalIndex(item);
     if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
         throw std::logic_error("signal index not found!");
     }
 
-    return static_cast<size_t>(signalIndex);
+    return signalIndex;
 }
 
 itkSignalBase *WatershedControl::signalForItem(QTreeWidgetItem *item) const {

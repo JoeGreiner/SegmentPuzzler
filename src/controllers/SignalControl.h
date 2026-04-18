@@ -203,18 +203,9 @@ private:
         GraphSegmentImageType::Pointer workingSegmentsImage;
     };
 
-    unsigned int getSignalIndex(QTreeWidgetItem *item);
-
-    bool getIsUChar(QTreeWidgetItem *item);
-
-    bool getIsShort(QTreeWidgetItem *item);
-
-    bool getIsEdge(QTreeWidgetItem *item);
-
-    bool getIsSegments(QTreeWidgetItem *item);
-
-    void getSignalPropsFromItem(QTreeWidgetItem *item, bool &isShort, bool &isUChar, bool &isSegments, bool &isEdge,
-                                unsigned int &signalIndex);
+    size_t signalIndexForItem(QTreeWidgetItem *item) const;
+    itkSignalBase *signalForItem(QTreeWidgetItem *item) const;
+    bool isSegmentsItem(QTreeWidgetItem *item) const;
 
     bool verbose;
     bool guiBusy = false;

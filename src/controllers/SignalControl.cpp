@@ -4,6 +4,7 @@
 #include "MainWindowWatershedControl.h"
 #include "src/viewers/OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
+#include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include <itkImage.h>
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
@@ -122,10 +123,6 @@ dataType::BoundaryImageType::Pointer convertFloatBoundaryImage(
     }
 
     return convertedImage;
-}
-
-QTreeWidgetItem *topLevelTreeItem(QTreeWidgetItem *item) {
-    return (item != nullptr && item->parent() != nullptr) ? item->parent() : item;
 }
 
 void bindButtonToAction(QPushButton *button, QAction *action, const QString &buttonText = QString()) {
@@ -336,7 +333,7 @@ void SignalControl::updateSelectionLabel(QTreeWidget *tree, QLabel *label) {
 
     // The label is a read-only view of the tree selection. Load/click paths are
     // responsible for keeping the current item set.
-    QTreeWidgetItem *currentItem = topLevelTreeItem(tree->currentItem());
+    QTreeWidgetItem *currentItem = signal_tree::topLevelSignalItem(tree->currentItem());
     if (currentItem == nullptr) {
         currentItem = tree->topLevelItem(tree->topLevelItemCount() - 1);
     }
@@ -354,7 +351,7 @@ void SignalControl::selectLoadedItemIfAppropriate(QTreeWidget *tree,
     // Each section auto-follows the latest loaded item until the user clicks a
     // different current item. The trees are append-only in the current UI, so
     // tracking the last auto-selected item is enough here.
-    QTreeWidgetItem *currentItem = topLevelTreeItem(tree->currentItem());
+    QTreeWidgetItem *currentItem = signal_tree::topLevelSignalItem(tree->currentItem());
     if (currentItem == nullptr || currentItem == lastAutoSelectedItem) {
         tree->setCurrentItem(newItem);
         lastAutoSelectedItem = newItem;
@@ -362,26 +359,24 @@ void SignalControl::selectLoadedItemIfAppropriate(QTreeWidget *tree,
 }
 
 void SignalControl::selectBoundaryItem(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = topLevelTreeItem(item);
-    if (baseItem == nullptr) {
+    if (signal_tree::topLevelSignalItem(item) == nullptr) {
         graphBase->pSelectedBoundary = nullptr;
         return;
     }
 
-    unsigned int signalIndex = getSignalIndex(baseItem);
+    const size_t signalIndex = signalIndexForItem(item);
     graphBase->pSelectedBoundary = dynamic_cast<dataType::BoundaryImageType *>(
         allSignalList[signalIndex]->getImageBase().GetPointer());
 }
 
 void SignalControl::selectRefinementItem(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = topLevelTreeItem(item);
-    if (baseItem == nullptr) {
+    if (signal_tree::topLevelSignalItem(item) == nullptr) {
         graphBase->pSelectedRefinement = nullptr;
         graphBase->pSelectedRefinementSignal = nullptr;
         return;
     }
 
-    unsigned int signalIndex = getSignalIndex(baseItem);
+    const size_t signalIndex = signalIndexForItem(item);
     graphBase->pSelectedRefinement = dynamic_cast<GraphSegmentImageType *>(
         allSignalList[signalIndex]->getImageBase().GetPointer());
     graphBase->pSelectedRefinementSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
@@ -389,15 +384,14 @@ void SignalControl::selectRefinementItem(QTreeWidgetItem *item) {
 }
 
 void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = topLevelTreeItem(item);
-    if (baseItem == nullptr) {
+    if (signal_tree::topLevelSignalItem(item) == nullptr) {
         graphBase->pSelectedSegmentation = nullptr;
         graphBase->pSelectedSegmentationSignal = nullptr;
         graphBase->selectedSegmentationMaxSegmentId = 0;
         return;
     }
 
-    unsigned int signalIndex = getSignalIndex(baseItem);
+    const size_t signalIndex = signalIndexForItem(item);
     graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType *>(
         allSignalList[signalIndex]->getImageBase().GetPointer());
     graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
@@ -1231,20 +1225,30 @@ void SignalControl::setupSegmentationTreeWidget() {
 
 
 void SignalControl::treeDoubleClicked(QTreeWidgetItem *item, int) {
-    if (item->text(0) == "Color") {
-        setUserColor(item);
-    } else if (item->text(0) == "Norm") {
-        setUserNorm(item);
-    } else if (item->text(0) == "Alpha") {
-        setUserAlpha(item);
-    } else if ((item->text(1) == "active") || (item->text(1) == "inactive")) {
-        setDescription(item);
-
+    switch (signal_tree::rowKind(item)) {
+        case signal_tree::RowKind::Color:
+            setUserColor(item);
+            break;
+        case signal_tree::RowKind::Norm:
+            setUserNorm(item);
+            break;
+        case signal_tree::RowKind::Alpha:
+            setUserAlpha(item);
+            break;
+        case signal_tree::RowKind::Root:
+            setDescription(item);
+            break;
+        case signal_tree::RowKind::DataType:
+            break;
     }
 }
 
 
 void SignalControl::treeClicked(QTreeWidgetItem *item, int) {
+    if (signal_tree::rowKind(item) != signal_tree::RowKind::Root) {
+        return;
+    }
+
     std::string itemText = item->text(1).toStdString();
     if ((itemText == "active") || (itemText == "inactive")) {
         if (itemText == "inactive" && (item->checkState(0) == Qt::CheckState::Checked)) {
@@ -1292,11 +1296,9 @@ void SignalControl::segmentationClicked(QTreeWidgetItem *item, int index) {
 }
 
 void SignalControl::setUserColor(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        printf("Setting Color: short: %d uChar: %d segments: %d %i", isShort, isUChar, isSegments, signalIndex);
+        std::cout << "Setting Color for signal " << signalIndex << std::endl;
     }
 
     QColor newColor = QColorDialog::getColor();
@@ -1315,11 +1317,9 @@ void SignalControl::setUserColor(QTreeWidgetItem *item) {
 }
 
 void SignalControl::setDescription(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        printf("Setting Name: short: %d uChar: %d segments: %d %i", isShort, isUChar, isSegments, signalIndex);
+        std::cout << "Setting Name for signal " << signalIndex << std::endl;
     }
 
     bool inputSuccessful;
@@ -1328,7 +1328,7 @@ void SignalControl::setDescription(QTreeWidgetItem *item) {
                                   &inputSuccessful);
 
     if (inputSuccessful) {
-        if (getIsSegments(item)) { // TODO: put some unique identifier besides name/descriptor for segments
+        if (isSegmentsItem(item)) { // TODO: put some unique identifier besides name/descriptor for segments
             std::cout << "TODO: Fix segment descriptor change!\n";
         } else {
             item->setText(0, newName);
@@ -1421,9 +1421,7 @@ void SignalControl::activateErodeTool() {
 
 void SignalControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
     if (verbose) { std::cout << "Setting item isActive to: " << isActiveIn << std::endl; }
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
 
     if (isActiveIn) {
         item->setText(1, "active");
@@ -1440,20 +1438,8 @@ void SignalControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
 
 }
 
-void SignalControl::getSignalPropsFromItem(QTreeWidgetItem *item, bool &isShort, bool &isUChar, bool &isSegments,
-                                           bool &isEdge,
-                                           unsigned int &signalIndex) {
-    isShort = getIsShort(item);
-    isUChar = getIsUChar(item);
-    isSegments = getIsSegments(item);
-    isEdge = getIsEdge(item);
-    signalIndex = getSignalIndex(item);
-}
-
 void SignalControl::setUserNorm(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
 
 //        std::string test item->get;
     std::cout << "index: " << signalIndex << std::endl;
@@ -1469,9 +1455,7 @@ void SignalControl::setUserNorm(QTreeWidgetItem *item) {
 }
 
 void SignalControl::setUserAlpha(QTreeWidgetItem *item) {
-    bool isShort, isUChar, isSegments, isEdge;
-    unsigned int signalIndex;
-    getSignalPropsFromItem(item, isShort, isUChar, isSegments, isEdge, signalIndex);
+    const size_t signalIndex = signalIndexForItem(item);
 
     unsigned char alpha = QInputDialog::getInt(this, "Alpha", "Alpha", 255, 0, 255);
 
@@ -1940,48 +1924,21 @@ void SignalControl::loadMembraneProbabilityPressed() {
     }
 }
 
-unsigned int SignalControl::getSignalIndex(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    for (int i = 0; i < baseItem->childCount(); ++i) {
-        if (baseItem->child(i)->text(0) == "SignalIndex") {
-            return baseItem->child(i)->text(1).toInt();
-        }
+size_t SignalControl::signalIndexForItem(QTreeWidgetItem *item) const {
+    const size_t signalIndex = signal_tree::signalIndex(item);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        throw std::logic_error("signal index not found!");
     }
-    throw std::logic_error("signal index not found!");
-    return 0;
+    return signalIndex;
 }
 
-bool SignalControl::getIsUChar(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    for (int i = 0; i < baseItem->childCount(); ++i) {
-        if (baseItem->child(i)->text(0) == "data type") {
-            return baseItem->child(i)->text(1) == "char";
-        }
-    }
-    return false;
+itkSignalBase *SignalControl::signalForItem(QTreeWidgetItem *item) const {
+    return allSignalList[signalIndexForItem(item)];
 }
 
-bool SignalControl::getIsSegments(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    if (baseItem == nullptr || segmentsGraph == nullptr) {
+bool SignalControl::isSegmentsItem(QTreeWidgetItem *item) const {
+    if (signal_tree::topLevelSignalItem(item) == nullptr || segmentsGraph == nullptr) {
         return false;
     }
-
-    const unsigned int signalIndex = getSignalIndex(baseItem);
-    return signalIndex < allSignalList.size() && allSignalList[signalIndex] == segmentsGraph;
-}
-
-bool SignalControl::getIsEdge(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    return baseItem->text(0) == "Edges";
-}
-
-bool SignalControl::getIsShort(QTreeWidgetItem *item) {
-    QTreeWidgetItem *baseItem = (item->parent() != nullptr) ? item->parent() : item;
-    for (int i = 0; i < baseItem->childCount(); ++i) {
-        if (baseItem->child(i)->text(0) == "data type") {
-            return baseItem->child(i)->text(1) == "short";
-        }
-    }
-    return false;
+    return signalForItem(item) == segmentsGraph;
 }

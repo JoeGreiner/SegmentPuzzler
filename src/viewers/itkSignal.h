@@ -10,6 +10,7 @@
 #include "itkImageRegionConstIteratorWithIndex.h"
 #include <unordered_map>
 #include "src/file_definitions/dataTypes.h"
+#include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/utils/utils.h"
 //#include "graphBase.h"
 
@@ -20,6 +21,7 @@
 #endif
 
 #include <iostream>
+#include <type_traits>
 
 #include <itkMinimumMaximumImageCalculator.h>
 #include <itkImageToHistogramFilter.h>
@@ -67,6 +69,7 @@ public:
         computeExtrema();
         calculateLUT();
     }
+
 
     void calculateImageSize() override;
 
@@ -161,37 +164,44 @@ public:
     long unsigned int dimX, dimY, dimZ;
 
     // default values for initialization of LUTs
-    QRgb mainColor;
-    unsigned char alpha;
-    double normLower, normUpper;
+    QRgb mainColor = qRgba(255, 255, 255, 255);
+    unsigned char alpha = 150;
+    double normLower = 0.0;
+    double normUpper = 0.0;
 
     // decides if a continuous LUT (i.e., intensity of a staining)
     // or a categorical LUT (i.e. segments) should be used
-    bool isCategorical;
+    bool isCategorical = false;
 
     // flag if signal should be drawn or not
-    bool isActive;
+    bool isActive = true;
 
     // useLookUp for calculation
-    bool isEdge;
-
-    bool isFloatingPoint;
+    bool isEdge = false;
 
     // true once the LUT has been built as categorical at least once;
     // false forces a full rebuild when first switching from continuous to categorical
     bool categoricalLUTInitialized = false;
 
 
-    std::unordered_map<unsigned int, char> *labelToStatus;
-    std::unordered_map<char, std::vector<unsigned char>> *statusToColor;
+    std::unordered_map<unsigned int, char> *labelToStatus = nullptr;
+    std::unordered_map<char, std::vector<unsigned char>> *statusToColor = nullptr;
 
-    bool ROI_set;
-    int ROI_fx, ROI_fy, ROI_fz, ROI_tx, ROI_ty, ROI_tz;
+    bool ROI_set = false;
+    int ROI_fx = -1;
+    int ROI_fy = -1;
+    int ROI_fz = -1;
+    int ROI_tx = -1;
+    int ROI_ty = -1;
+    int ROI_tz = -1;
 
 
     bool verbose;
 
 //    QString name;
+
+private:
+    static QString displayDataTypeName();
 
 };
 
@@ -302,30 +312,45 @@ dType itkSignal<dType>::getMaximumValue() {
 };
 
 template<typename dType>
+QString itkSignal<dType>::displayDataTypeName() {
+    if constexpr (std::is_same_v<dType, short>) {
+        return QStringLiteral("short");
+    } else if constexpr (std::is_same_v<dType, unsigned char>) {
+        return QStringLiteral("unsigned char");
+    } else if constexpr (std::is_same_v<dType, unsigned short>) {
+        return QStringLiteral("unsigned short");
+    } else if constexpr (std::is_same_v<dType, unsigned int>) {
+        return QStringLiteral("unsigned int");
+    } else if constexpr (std::is_same_v<dType, int>) {
+        return QStringLiteral("int");
+    } else if constexpr (std::is_same_v<dType, unsigned long>) {
+        return QStringLiteral("unsigned long");
+    } else if constexpr (std::is_same_v<dType, long>) {
+        return QStringLiteral("long");
+    } else if constexpr (std::is_same_v<dType, unsigned long long>) {
+        return QStringLiteral("unsigned long long");
+    } else if constexpr (std::is_same_v<dType, long long>) {
+        return QStringLiteral("long long");
+    } else if constexpr (std::is_same_v<dType, float>) {
+        return QStringLiteral("float");
+    } else if constexpr (std::is_same_v<dType, double>) {
+        return QStringLiteral("double");
+    } else if constexpr (std::is_same_v<dType, char>) {
+        return QStringLiteral("char");
+    } else {
+        throw std::logic_error("itkSignal::dataTypeName Unknown type!");
+    }
+}
+
+template<typename dType>
 itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, bool verboseIn):
         pImage{pointerToImage}, verbose{verboseIn} {
     // sets dimX, dimY, dimZ
 
     calculateImageSize();
-
-    // set default LUT values
-    mainColor = qRgba(255, 255, 255, 255);
     computeExtrema();
     normLower = minimumValue;
     normUpper = maximumValue;
-    alpha = 150;
-    isCategorical = false;
-    isEdge = false;
-    name = "";
-    isActive = true;
-
-    ROI_set = false;
-    ROI_fx = -1;
-    ROI_fy = -1;
-    ROI_fz = -1;
-    ROI_tx = -1;
-    ROI_ty = -1;
-    ROI_tz = -1;
 
     // calculate LUT
     calculateLUT();
@@ -333,32 +358,14 @@ itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, bool verboseI
 
 template<typename dType>
 itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, QTreeWidget *motherTreeWidget, size_t signalIndex,
-                            QString fileName, bool verboseIn) {
-    pImage = pointerToImage;
-    verbose = verboseIn;
+                            QString fileName, bool verboseIn)
+    : pImage{pointerToImage}, verbose{verboseIn} {
     // sets dimX, dimY, dimZ
     calculateImageSize();
-
-    // set default LUT values
-    mainColor = qRgba(255, 255, 255, 255);
     computeExtrema();
     normLower = minimumValue;
-//    normLower = q01;
-//    normUpper = q95;
     normUpper = maximumValue;
-    alpha = 150;
-    isCategorical = false;
-    isEdge = false;
     name = fileName;
-    isActive = true;
-
-    ROI_set = false;
-    ROI_fx = -1;
-    ROI_fy = -1;
-    ROI_fz = -1;
-    ROI_tx = -1;
-    ROI_ty = -1;
-    ROI_tz = -1;
 
     setupTreeWidget(motherTreeWidget, signalIndex);
 
@@ -379,72 +386,41 @@ void itkSignal<dType>::setupTreeWidget(QTreeWidget *motherTreeWidget, size_t sig
     QImage colorIcon = QImage(30, 30, QImage::Format_RGBA8888);
     colorIcon.fill(mainColor);
 
-    auto treeWidget = new QTreeWidgetItem();
+    auto *treeWidget = new QTreeWidgetItem(motherTreeWidget);
     treeWidget->setText(0, name);
     treeWidget->setText(1, "active");
     treeWidget->setIcon(1, QPixmap::fromImage(colorIcon));
     treeWidget->setCheckState(0, Qt::CheckState::Checked);
+    treeWidget->setData(0, signal_tree::SignalIndexRole, static_cast<qulonglong>(signalIndex));
+    treeWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Root));
 
 
-    auto colorWidget = new QTreeWidgetItem();
+    auto *colorWidget = new QTreeWidgetItem(treeWidget);
     colorWidget->setIcon(1, QPixmap::fromImage(colorIcon));
     colorWidget->setText(0, "Color");
+    colorWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Color));
     std::string colorString = std::to_string(qRed(mainColor))
                               + " " + std::to_string(qGreen(mainColor))
                               + " " + std::to_string(qBlue(mainColor));
     colorWidget->setText(1, QString::fromStdString(colorString));
-    treeWidget->addChild(colorWidget);
 
-    auto normWidget = new QTreeWidgetItem();
+    auto *normWidget = new QTreeWidgetItem(treeWidget);
     normWidget->setText(0, "Norm");
+    normWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Norm));
     QString normString = QString("%1").arg(normLower) + " " + QString("%1").arg(normUpper);
     normWidget->setText(1, normString);
-    treeWidget->addChild(normWidget);
 
-    auto alphaWidget = new QTreeWidgetItem();
+    auto *alphaWidget = new QTreeWidgetItem(treeWidget);
     alphaWidget->setText(0, "Alpha");
+    alphaWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Alpha));
     std::string alphaString = std::to_string(alpha);
     alphaWidget->setText(1, QString::fromStdString(alphaString));
-    treeWidget->addChild(alphaWidget);
-
-    auto signalIndexWidget = new QTreeWidgetItem();
-    signalIndexWidget->setText(0, "SignalIndex");
-    std::string indexString = std::to_string(signalIndex);
-    signalIndexWidget->setText(1, QString::fromStdString(indexString));
-    treeWidget->addChild(signalIndexWidget);
 
 
-    auto dataTypeWidget = new QTreeWidgetItem();
+    auto *dataTypeWidget = new QTreeWidgetItem(treeWidget);
     dataTypeWidget->setText(0, "data type");
-    std::string dataTypeString = "";
-    std::cout << typeid(dType).name() << std::endl;
-    if ((std::strcmp(typeid(dType).name(), "s") == 0) || (std::strcmp(typeid(dType).name(), "short") == 0)) {
-        dataTypeString = "short";
-    } else if ((std::strcmp(typeid(dType).name(), "h") == 0) || (std::strcmp(typeid(dType).name(), "char") == 0)) {
-        dataTypeString = "char";
-    } else if ((std::strcmp(typeid(dType).name(), "t") == 0) ||
-               (std::strcmp(typeid(dType).name(), "unsigned short") == 0)) {
-        dataTypeString = "unsigned short";
-    } else if ((std::strcmp(typeid(dType).name(), "j") == 0) ||
-               (std::strcmp(typeid(dType).name(), "unsigned int") == 0)) {
-        dataTypeString = "unsigned int";
-    } else if ((std::strcmp(typeid(dType).name(), "f") == 0) || (std::strcmp(typeid(dType).name(), "float") == 0)) {
-        dataTypeString = "float";
-    } else if (std::strcmp(typeid(dType).name(), "unsigned char") == 0) {
-        dataTypeString = "char"; //TODO: this should be unsigned char, check downstream
-    } else if (std::strcmp(typeid(dType).name(), "unsigned short") == 0) {
-        dataTypeString = "unsigned short";
-    } else if (std::strcmp(typeid(dType).name(), "int") == 0) {
-        dataTypeString = "int";
-    } else {
-        std::cout << typeid(dType).name() << std::endl;
-        throw std::logic_error("itkSignal:setupTreeWidget Unknown type!");
-    }
-    dataTypeWidget->setText(1, QString::fromStdString(dataTypeString));
-    treeWidget->addChild(dataTypeWidget);
-
-
-    motherTreeWidget->addTopLevelItem(treeWidget);
+    dataTypeWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::DataType));
+    dataTypeWidget->setText(1, displayDataTypeName());
     motherTreeWidget->update();
 }
 
@@ -462,14 +438,12 @@ template<typename dType>
 void itkSignal<dType>::calculateLUT() {
     long long dTypeMax;
 //  if floating point
-    if ((std::is_same<dType, float>::value) | (std::is_same<dType, double>::value)) {
+    if constexpr (std::is_floating_point_v<dType>) {
         if (verbose) {
             std::cout << "Read signal is floating point!\n";
         }
-        isFloatingPoint = true;
         dTypeMax = maximumValue;
     } else {
-        isFloatingPoint = false;
 //         dtype is normally chart short or int, so long long and 10* should be fine
         long long upperLimitLUT = 10 * maximumValue; // limit number of maximum LUT values
         dTypeMax = std::min<long long>(upperLimitLUT, std::numeric_limits<dType>::max());
@@ -729,7 +703,7 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
 
     const dType* imageBuffer = pImage->GetBufferPointer();
     quint32* sliceBufferPtr = sliceBuffer->data();
-    if (!isFloatingPoint) {
+    if constexpr (!std::is_floating_point_v<dType>) {
         if (sliceAxis == 0) {  // x slices
             for (unsigned long z = 0; z < dimZ; ++z) { // Loop over depth (z-axis)
                 unsigned long zOffset = z * dimX * dimY; // Start of the z-plane in the buffer
