@@ -264,6 +264,7 @@ void SliceViewer::setSliceIndex(int proposedSliceIndex) {
             linkedSlider->setValue(static_cast<int>(proposedSliceIndex));
             linkedSlider->blockSignals(false);
         }
+        emit sliceIndexChanged(sliceAxis, proposedSliceIndex);
     }
 }
 
@@ -345,6 +346,17 @@ void SliceViewer::addSignal(SliceViewerITKSignal *signal) {
     updateFunction();
 }
 
+void SliceViewer::removeSignal(itkSignalBase *signal) {
+    std::lock_guard<std::mutex> lock(signalListMutex);
+    for (auto it = signalList.begin(); it != signalList.end(); ++it) {
+        if ((*it)->getSignal() == signal) {
+            delete *it;
+            signalList.erase(it);
+            --numberSignals;
+            return;
+        }
+    }
+}
 
 int SliceViewer::getCurrentSliceWidth() {
     return slice_geometry::sliceWidth(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
@@ -622,6 +634,12 @@ void SliceViewer::setOrthoViewer(OrthoViewer *orthoViewerIn) {
 
 std::vector<SliceViewer *> SliceViewer::getLinkedViewers() {
     return linkedViewerList;
+}
+
+void SliceViewer::setZoom(double zoom) {
+    if (zoom > 0) {
+        modifyZoom(zoom / zoomFactor);
+    }
 }
 
 void SliceViewer::modifyZoomInAllViewers(double factor) {

@@ -1246,6 +1246,13 @@ void OrthoViewer::addSignal(itkSignalBase *signal) {
     sliderXZ->setMaximum(xy->signalList.front()->getDimY() - 1);
 }
 
+void OrthoViewer::removeSignal(itkSignalBase *signal) {
+    std::lock_guard<std::mutex> lock(viewerListMutex);
+    zy->removeSignal(signal);
+    xz->removeSignal(signal);
+    xy->removeSignal(signal);
+}
+
 void OrthoViewer::receiveStatusMessage(QString string) {
     emit sendStatusMessage(string);
 }

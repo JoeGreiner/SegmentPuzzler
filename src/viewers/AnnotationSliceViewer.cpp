@@ -19,6 +19,7 @@
 #include "AnnotationSliceViewer.h"
 #include "Segment3DViewerDialog.h"
 #include "itkImageRegionIteratorWithIndex.h"
+#include <unordered_set>
 #include <unordered_map>
 #include "src/utils/utils.h"
 #include "OrthoViewer.h"
@@ -282,16 +283,26 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("r");
         }
-        if(graphBase->pWorkingSegments != nullptr) {
-            graphBase->pWorkingSegments->randomizeCategoricalLUT();
-            graphBase->pWorkingSegments->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
-        }
         if (graphBase->pSelectedSegmentationSignal != nullptr) {
             graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
-            graphBase->pSelectedSegmentationSignal->randomizeCategoricalLUT();
         }
-        if (graphBase->pSelectedRefinementSignal != nullptr) {
-            graphBase->pSelectedRefinementSignal->randomizeCategoricalLUT();
+
+        std::unordered_set<itkSignalBase *> randomizedSignals;
+        for (auto *sliceSignal : signalList) {
+            if (sliceSignal == nullptr) {
+                continue;
+            }
+
+            itkSignalBase *signal = sliceSignal->getSignal();
+            if (signal == nullptr || !randomizedSignals.insert(signal).second) {
+                continue;
+            }
+
+            signal->randomizeCategoricalLUT();
+        }
+
+        if (graphBase->pWorkingSegments != nullptr && !graphBase->ignoredSegmentLabels.empty()) {
+            graphBase->pWorkingSegments->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
         }
         for (auto *viewer : linkedViewerList) {
             viewer->recalculateQImages();

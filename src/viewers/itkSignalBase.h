@@ -119,6 +119,8 @@ public:
 
     virtual itk::ImageBase<3>::Pointer getImageBase() const = 0;
 
+    virtual void updateImage(itk::ImageBase<3>::Pointer newImage) = 0;
+
     virtual void setupTreeWidget(QTreeWidget *motherTreeWidget, size_t signalIndex) = 0;
 
 
@@ -152,6 +154,8 @@ public:
     virtual void setLUTValueToBlack(unsigned int value) = 0;
 
     virtual void setLUTValueToTransparent(unsigned int value) = 0;
+
+    virtual void randomizeCategoricalLUT() = 0;
 
     virtual void setIsActive(bool isActiveIn) = 0;
 

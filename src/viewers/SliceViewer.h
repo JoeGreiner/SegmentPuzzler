@@ -29,6 +29,7 @@ public:
     );
 
     virtual void addSignal(SliceViewerITKSignal *signal);
+    void removeSignal(itkSignalBase *signal);
 
     bool hasDimensionMisMatch(int dimXIn, int dimYIn, int dimZIn);
 
@@ -113,6 +114,8 @@ public:
 
     void modifyZoom(double factor);
 
+    void setZoom(double zoom);
+
     int predictedSliceIndex;
     std::mutex signalListMutex;
     std::vector<SliceViewerITKSignal *> signalList;
@@ -120,6 +123,7 @@ public:
 signals:
 
     void sendStatusMessage(QString);
+    void sliceIndexChanged(int sliceAxis, int sliceIndex);
 
 
 public slots:

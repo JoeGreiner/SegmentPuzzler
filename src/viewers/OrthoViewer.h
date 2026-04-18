@@ -61,6 +61,7 @@ public:
     ~OrthoViewer();
 
     void addSignal(itkSignalBase *signal);
+    void removeSignal(itkSignalBase *signal);
     void refreshViewers();
     bool isBusy() const;
     TaskRunner *getTaskRunner() const;

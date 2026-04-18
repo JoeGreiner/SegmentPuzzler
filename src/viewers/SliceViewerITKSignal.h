@@ -47,6 +47,8 @@ public:
 
     bool getIsActive();
 
+    itkSignalBase *getSignal() const { return pSignal; }
+
     QImage *getAddressSliceQImage();
 
     bool isValidSliceIndex(unsigned int proposedSliceIndex);

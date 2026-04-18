@@ -58,6 +58,15 @@ public:
 
     void setupTreeWidget(QTreeWidget *motherTreeWidget, size_t signalIndex) override;
 
+    void updateImage(itk::ImageBase<3>::Pointer newImage) override {
+        pImage = dynamic_cast<SignalImageType *>(newImage.GetPointer());
+        if (pImage.IsNull()) {
+            throw std::runtime_error("itkSignal::updateImage: Invalid image type.");
+        }
+        calculateImageSize();
+        computeExtrema();
+        calculateLUT();
+    }
 
     void calculateImageSize() override;
 
@@ -74,7 +83,7 @@ public:
     void checkAndResizeLUT(unsigned int value);
 
     // Re-randomizes all categorical LUT entries from scratch.
-    void randomizeCategoricalLUT();
+    void randomizeCategoricalLUT() override;
 
 
     virtual QImage
@@ -614,6 +623,10 @@ void itkSignal<dType>::checkAndResizeLUT(unsigned int value) {
 
 template<typename dType>
 void itkSignal<dType>::randomizeCategoricalLUT() {
+    if (!isCategorical || isEdge) {
+        return;
+    }
+
     categoricalLUTInitialized = false;
     calculateLUT();
 }
