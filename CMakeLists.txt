@@ -15,10 +15,14 @@ endif ()
 option(DEPLOY "Enable deployment settings" TRUE)
 option(LINK_TIME_OPTIMIZATION "Enable Link Time Optimization" TRUE)
 option(BUILD_TESTING "Enable testing" FALSE)
+option(BUILD_BENCHMARKS "Enable benchmark executables" FALSE)
+option(SEGMENT_PUZZLER_ENABLE_PERFETTO "Enable Perfetto tracing support for benchmark executables" TRUE)
 option(RUN_WITH_ASAN "Enable Address Sanitizer" FALSE)
 option(RUN_WITH_TSAN "Enable Thread Sanitizer" FALSE)
 option(ADD_DEBUG_SYMBOL_O0 "Add debug symbols and O0" FALSE)
 option(USE_OMP "Enable OpenMP" TRUE)
+set(SEGMENT_PUZZLER_PERFETTO_SDK_DIR "${CMAKE_SOURCE_DIR}/thirdparty/perfetto-cpp-sdk-src"
+        CACHE PATH "Path to a Perfetto SDK directory containing perfetto.h and perfetto.cc")
 
 if (USE_OMP)
     if (APPLE AND NOT OpenMP_ROOT)
@@ -44,6 +48,9 @@ MESSAGE(STATUS "CMAKE_BUILD_TYPE: " ${CMAKE_BUILD_TYPE})
 MESSAGE(STATUS "DEPLOY: " ${DEPLOY})
 MESSAGE(STATUS "LINK_TIME_OPTIMIZATION: " ${LINK_TIME_OPTIMIZATION})
 MESSAGE(STATUS "BUILD_TESTING: " ${BUILD_TESTING})
+MESSAGE(STATUS "BUILD_BENCHMARKS: " ${BUILD_BENCHMARKS})
+MESSAGE(STATUS "SEGMENT_PUZZLER_ENABLE_PERFETTO: " ${SEGMENT_PUZZLER_ENABLE_PERFETTO})
+MESSAGE(STATUS "SEGMENT_PUZZLER_PERFETTO_SDK_DIR: " ${SEGMENT_PUZZLER_PERFETTO_SDK_DIR})
 MESSAGE(STATUS "UNIX: " ${UNIX})
 MESSAGE(STATUS "LINUX: " ${LINUX})
 MESSAGE(STATUS "APPLE: " ${APPLE})
@@ -67,6 +74,33 @@ if (APPLE AND DEPLOY)
     set(APP_ICON "${CMAKE_SOURCE_DIR}/resources/images/SegmentPuzzler.icns")
     MESSAGE(STATUS "Using APP_ICON: " ${APP_ICON})
     set_source_files_properties(${APP_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+endif ()
+
+set(SEGMENT_PUZZLER_PERFETTO_AVAILABLE FALSE)
+
+if (BUILD_BENCHMARKS AND SEGMENT_PUZZLER_ENABLE_PERFETTO)
+    if (EXISTS "${SEGMENT_PUZZLER_PERFETTO_SDK_DIR}/perfetto.h" AND
+            EXISTS "${SEGMENT_PUZZLER_PERFETTO_SDK_DIR}/perfetto.cc")
+        set(SEGMENT_PUZZLER_PERFETTO_AVAILABLE TRUE)
+        find_package(Threads REQUIRED)
+
+        add_library(segmentpuzzler_perfetto_sdk STATIC
+                "${SEGMENT_PUZZLER_PERFETTO_SDK_DIR}/perfetto.cc")
+        target_include_directories(segmentpuzzler_perfetto_sdk PUBLIC
+                "${SEGMENT_PUZZLER_PERFETTO_SDK_DIR}")
+        target_link_libraries(segmentpuzzler_perfetto_sdk PUBLIC Threads::Threads)
+
+        if (WIN32)
+            target_compile_options(segmentpuzzler_perfetto_sdk PRIVATE /bigobj)
+            target_compile_definitions(segmentpuzzler_perfetto_sdk PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
+        endif ()
+
+        message(STATUS "Perfetto SDK enabled from ${SEGMENT_PUZZLER_PERFETTO_SDK_DIR}")
+    else ()
+        message(STATUS
+                "Perfetto SDK not found at ${SEGMENT_PUZZLER_PERFETTO_SDK_DIR}. "
+                "Run scripts/setup_perfetto_sdk.sh or set -DSEGMENT_PUZZLER_PERFETTO_SDK_DIR=<path>.")
+    endif ()
 endif ()
 
 ### MSVC compile options
@@ -216,11 +250,19 @@ set(SRC_UTILS
         src/utils/FastMarkerWatershed3D.cpp
         src/utils/DistanceMapFH3D.cpp
         src/utils/DistanceMapSeedExtractors.cpp
+        src/utils/DistanceMapCliIO.cpp
         src/utils/WatershedRagAgglomeration.cpp
         )
 
 set(SRC_ITKIMAGEFILTERS
         src/itkImageFilters/itkWatershedHelpers.cpp
+        )
+
+set(SRC_WATERSHED_HELPER_DEPS
+        src/itkImageFilters/itkWatershedHelpers.cpp
+        src/utils/FastMarkerWatershed3D.cpp
+        src/utils/DistanceMapFH3D.cpp
+        src/utils/DistanceMapSeedExtractors.cpp
         )
 
 set(SRC_SEGMENTHANDLERS
@@ -314,6 +356,71 @@ if (BUILD_TESTING)
 #    target_link_libraries(test_watershedControl ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 endif ()
 
+if (BUILD_BENCHMARKS)
+    function(configure_benchmark_target target_name)
+        target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR})
+        set_target_properties(${target_name} PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+        target_link_libraries(${target_name} ${ITK_LIBRARIES})
+        if (USE_OMP)
+            target_compile_definitions(${target_name} PRIVATE USE_OMP)
+            target_link_libraries(${target_name} OpenMP::OpenMP_CXX)
+        endif ()
+    endfunction()
+
+    function(configure_perfetto_target target_name)
+        if (SEGMENT_PUZZLER_PERFETTO_AVAILABLE)
+            target_link_libraries(${target_name} segmentpuzzler_perfetto_sdk)
+            target_compile_definitions(${target_name} PRIVATE
+                    SEGMENT_PUZZLER_ENABLE_PERFETTO
+                    SEGMENT_PUZZLER_HAS_PERFETTO=1)
+        endif ()
+    endfunction()
+
+    add_executable(benchmark_distance_map
+            examples/benchmarks/benchmark_distance_map.cpp
+            examples/benchmarks/BenchmarkPerfettoTracing.cpp
+            ${SRC_WATERSHED_HELPER_DEPS})
+    configure_benchmark_target(benchmark_distance_map)
+    configure_perfetto_target(benchmark_distance_map)
+
+    add_executable(cli_threshold_boundaries
+            examples/benchmarks/cli_threshold_boundaries.cpp
+            src/utils/DistanceMapCliIO.cpp)
+    configure_benchmark_target(cli_threshold_boundaries)
+
+    add_executable(cli_distance_map
+            examples/benchmarks/cli_distance_map.cpp
+            ${SRC_WATERSHED_HELPER_DEPS}
+            src/utils/DistanceMapCliIO.cpp)
+    configure_benchmark_target(cli_distance_map)
+
+    add_executable(cli_extract_seeds
+            examples/benchmarks/cli_extract_seeds.cpp
+            src/utils/DistanceMapSeedExtractors.cpp
+            src/utils/DistanceMapCliIO.cpp)
+    configure_benchmark_target(cli_extract_seeds)
+
+    add_executable(cli_watershed_from_seeds
+            examples/benchmarks/cli_watershed_from_seeds.cpp
+            ${SRC_WATERSHED_HELPER_DEPS}
+            src/utils/DistanceMapCliIO.cpp)
+    configure_benchmark_target(cli_watershed_from_seeds)
+
+    add_executable(cli_watershed_agglomertion
+            examples/benchmarks/cli_watershed_agglomertion.cpp
+            ${SRC_WATERSHED_HELPER_DEPS}
+            src/utils/WatershedRagAgglomeration.cpp
+            src/utils/DistanceMapCliIO.cpp)
+    configure_benchmark_target(cli_watershed_agglomertion)
+
+    add_executable(benchmark_watershed_agglomertion
+            examples/benchmarks/benchmark_watershed_agglomertion.cpp
+            examples/benchmarks/BenchmarkPerfettoTracing.cpp
+            src/utils/WatershedRagAgglomeration.cpp
+            src/utils/DistanceMapCliIO.cpp)
+    configure_benchmark_target(benchmark_watershed_agglomertion)
+    configure_perfetto_target(benchmark_watershed_agglomertion)
+endif ()
 
 
 if (DEPLOY)

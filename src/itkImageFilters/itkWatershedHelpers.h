@@ -2,8 +2,12 @@
 #define SEGMENTCOUPLER_ITKWATERSHEDHELPERS_H
 
 #include "itkImage.h"
+#include "src/file_definitions/dataTypes.h"
 #include "src/utils/DistanceMapSeedExtractors.h"
 #include "src/utils/FastMarkerWatershed3D.h"
+
+#include <unordered_map>
+#include <vector>
 
 enum class DistanceMapAlgorithm {
     Maurer,
@@ -19,6 +23,14 @@ struct WatershedRunOptions {
     WatershedAlgorithm algorithm = WatershedAlgorithm::MorphologicalWatershedFromMarkers;
     bool showWatershedLines = false;
     bool fullyConnected = false;
+};
+
+struct BoundaryConsistentPartitionResult {
+    using SplitComponentMap = std::unordered_map<dataType::SegmentIdType, std::vector<dataType::SegmentIdType>>;
+
+    dataType::SegmentsImageType::Pointer canonicalLabels;
+    dataType::SegmentsImageType::Pointer displayLabels;
+    SplitComponentMap splitComponentIds;
 };
 
 void binaryThresholdImageFilterFloat(itk::Image<unsigned short, 3>::Pointer &inputImage,
@@ -48,6 +60,14 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
 
 void insertBoundariesIntoWatershed(itk::Image<unsigned int, 3>::Pointer &watershed,
                                    itk::Image<unsigned char, 3>::Pointer &thresholdedBoundaries);
+
+BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
+    dataType::SegmentsImageType::Pointer labels,
+    itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
+    const WatershedRunOptions &repairOptions = WatershedRunOptions(),
+    bool repairCanonicalLabels = true,
+    DistanceMapAlgorithm distanceMapAlgorithm = DistanceMapAlgorithm::Maurer,
+    int threadCount = 1);
 
 void binaryThresholdImageFilterFloat(itk::Image<float, 3>::Pointer &inputImage,
                                      itk::Image<float, 3>::Pointer &outputImage,
