@@ -236,6 +236,7 @@ private:
     int workerThreadCount = 1;
     int boundarySignalIndex = -1;
     int thresholdPreviewSignalIndex = -1;
+    size_t hiddenAgglomertionPreviewSourceSignalIndex = static_cast<size_t>(-1);
     QTimer *agglomertionPreviewTimer = nullptr;
     std::vector<size_t> thresholdOutputSignalIndices;
     std::vector<size_t> distanceMapOutputSignalIndices;
@@ -323,6 +324,9 @@ private:
     void refreshAgglomertionPreview();
     void scheduleAgglomertionPreviewRefresh();
     void clearAgglomertionPreview();
+    bool shouldShowAgglomertionPreview() const;
+    void restoreHiddenAgglomertionPreviewSource();
+    void syncAgglomertionPreviewSourceVisibility(bool showPreview);
     void connectAgglomertionPreviewSignals();
 
 private slots:

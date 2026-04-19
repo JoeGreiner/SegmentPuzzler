@@ -38,6 +38,8 @@
 
 namespace {
 
+constexpr size_t kInvalidSignalIndex = static_cast<size_t>(-1);
+
 int defaultWatershedThreadCount() {
     const int idealThreadCount = QThread::idealThreadCount();
     return idealThreadCount > 0 ? idealThreadCount : 1;
@@ -127,8 +129,6 @@ dataType::SegmentsImageType::Pointer projectClusterLabelsOntoReference(
 
     return projectedLabels;
 }
-
-constexpr size_t kInvalidSignalIndex = static_cast<size_t>(-1);
 
 QString makeUniqueSignalNameExcludingIndex(const std::vector<itkSignalBase *> &signalList,
                                            size_t excludedSignalIndex,
@@ -233,6 +233,49 @@ void WatershedControl::refreshViewers() {
     orthoViewer->refreshViewers();
 }
 
+bool WatershedControl::shouldShowAgglomertionPreview() const {
+    if (agglomertionPreviewCheckBox == nullptr || !agglomertionPreviewCheckBox->isChecked()) {
+        return false;
+    }
+    if (taskRunner->isBusy()) {
+        return false;
+    }
+    if (selectedAgglomertionInput().IsNull() || selectedBoundaryInput().IsNull()) {
+        return false;
+    }
+    return !agglomertionNeedsThresholdMask() || selectedAgglomertionThresholdMask().IsNotNull();
+}
+
+void WatershedControl::restoreHiddenAgglomertionPreviewSource() {
+    if (hiddenAgglomertionPreviewSourceSignalIndex == kInvalidSignalIndex) {
+        return;
+    }
+
+    const size_t signalIndex = hiddenAgglomertionPreviewSourceSignalIndex;
+    hiddenAgglomertionPreviewSourceSignalIndex = kInvalidSignalIndex;
+    if (signalIndex < allSignalList.size() && allSignalList[signalIndex] != nullptr) {
+        setSignalActive(signalIndex, true);
+    }
+}
+
+void WatershedControl::syncAgglomertionPreviewSourceVisibility(bool showPreview) {
+    restoreHiddenAgglomertionPreviewSource();
+    if (!showPreview || !comboHasValidSelection(agglomertionInputComboBox)) {
+        return;
+    }
+
+    const size_t signalIndex = selectedSignalIndex(agglomertionInputComboBox);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        return;
+    }
+    if (!allSignalList[signalIndex]->getIsActive()) {
+        return;
+    }
+
+    hiddenAgglomertionPreviewSourceSignalIndex = signalIndex;
+    setSignalActive(signalIndex, false);
+}
+
 void WatershedControl::clearAgglomertionPreview() {
     if (agglomertionPreviewTimer != nullptr) {
         agglomertionPreviewTimer->stop();
@@ -241,10 +284,11 @@ void WatershedControl::clearAgglomertionPreview() {
         for (size_t idx = 0; idx < allSignalList.size(); ++idx) {
             if (allSignalList[idx] == pAgglomertionPreviewSignal) {
                 setSignalActive(idx, false);
-                return;
+                break;
             }
         }
     }
+    restoreHiddenAgglomertionPreviewSource();
 }
 
 void WatershedControl::scheduleAgglomertionPreviewRefresh() {
@@ -258,13 +302,9 @@ void WatershedControl::agglomertionPreviewSettingsChanged() {
     if (agglomertionBiasValueLabel != nullptr) {
         agglomertionBiasValueLabel->setText(agglomertionBiasLabelText());
     }
-    
-    const bool showPreview = agglomertionPreviewCheckBox != nullptr && agglomertionPreviewCheckBox->isChecked();
 
-    if (comboHasValidSelection(agglomertionInputComboBox)) {
-        size_t watershedIdx = selectedSignalIndex(agglomertionInputComboBox);
-        setSignalActive(watershedIdx, !showPreview);
-    }
+    const bool showPreview = shouldShowAgglomertionPreview();
+    syncAgglomertionPreviewSourceVisibility(showPreview);
 
     if (!showPreview) {
         clearAgglomertionPreview();
@@ -293,10 +333,10 @@ void WatershedControl::connectAgglomertionPreviewSignals() {
 }
 
 void WatershedControl::refreshAgglomertionPreview() {
-    const bool showPreview = agglomertionPreviewCheckBox != nullptr && agglomertionPreviewCheckBox->isChecked();
+    const bool showPreview = shouldShowAgglomertionPreview();
     const bool approximate = agglomertionApproximatePreviewCheckBox != nullptr && agglomertionApproximatePreviewCheckBox->isChecked();
 
-    if (taskRunner->isBusy() || !showPreview) {
+    if (!showPreview) {
         clearAgglomertionPreview();
         updateStepEnablement();
         return;
