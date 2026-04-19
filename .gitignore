@@ -30,8 +30,15 @@
 *.exe
 *.out
 *.app
+.DS_Store
+.Rhistory
 
 # ignore all build/ directories
 build/
 build-*/
 cmake-build-*/
+.idea/
+/test/
+/examples/benchmarks/runs/
+/ideas.md
+/thirdparty/
