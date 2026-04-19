@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <src/file_definitions/dataTypes.h>
+#include <itkIndex.h>
 #include <unordered_map>
 #include <QString>
 
@@ -23,6 +24,11 @@ namespace utils {
     std::tuple<long, long, long, long, long, long> calculateBoundingBoxForLabel(
             typename dataType::SegmentsImageType::Pointer segmentationImage,
             dataType::SegmentIdType labelValue);
+
+    bool findRepresentativeVoxelForLabel(
+            typename dataType::SegmentsImageType::Pointer segmentationImage,
+            dataType::SegmentIdType labelValue,
+            itk::Index<3> &indexOut);
 
 
     template<typename keyType, typename targetType>

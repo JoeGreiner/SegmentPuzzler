@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 
 #include <QCheckBox>
 #include <QFileDialog>
@@ -93,6 +94,85 @@ QStandardItem *makeNumericItem(double v, int decimals = 3) {
     return item;
 }
 
+QStandardItem *makeBooleanItem(bool value) {
+    auto *item = new QStandardItem(value ? "Yes" : "No");
+    item->setTextAlignment(Qt::AlignCenter);
+    item->setData(QVariant(value ? 1.0 : 0.0), Qt::UserRole);
+    return item;
+}
+
+std::unordered_map<dataType::SegmentIdType, bool> computeIsolationByLabel(
+    dataType::SegmentsImageType::Pointer segImage) {
+    std::unordered_map<dataType::SegmentIdType, bool> isolationByLabel;
+    if (segImage == nullptr) {
+        return isolationByLabel;
+    }
+
+    const auto size = segImage->GetLargestPossibleRegion().GetSize();
+    const size_t dimX = size[0];
+    const size_t dimY = size[1];
+    const size_t dimZ = size[2];
+    const size_t planeXY = dimX * dimY;
+    const auto *buffer = segImage->GetBufferPointer();
+
+    for (size_t z = 0; z < dimZ; ++z) {
+        for (size_t y = 0; y < dimY; ++y) {
+            for (size_t x = 0; x < dimX; ++x) {
+                const size_t index = x + y * dimX + z * planeXY;
+                const dataType::SegmentIdType label = buffer[index];
+                if (label == 0) {
+                    continue;
+                }
+
+                isolationByLabel.try_emplace(label, true);
+
+                const auto markNonIsolatedPair = [&](size_t neighborIndex) {
+                    const dataType::SegmentIdType neighborLabel = buffer[neighborIndex];
+                    if (neighborLabel == 0 || neighborLabel == label) {
+                        return;
+                    }
+                    isolationByLabel[label] = false;
+                    isolationByLabel[neighborLabel] = false;
+                };
+
+                if (x + 1 < dimX) {
+                    markNonIsolatedPair(index + 1);
+                }
+                if (y + 1 < dimY) {
+                    markNonIsolatedPair(index + dimX);
+                }
+                if (z + 1 < dimZ) {
+                    markNonIsolatedPair(index + planeXY);
+                }
+            }
+        }
+    }
+
+    return isolationByLabel;
+}
+
+bool segmentationSelectionMatchesCurrent(const GraphBase *graphBase,
+                                         const dataType::SegmentsImageType::Pointer &currentTableSegmentation,
+                                         const itkSignalBase *currentTableSegmentationSignal) {
+    return graphBase != nullptr
+           && currentTableSegmentation != nullptr
+           && graphBase->pSelectedSegmentation == currentTableSegmentation
+           && graphBase->pSelectedSegmentationSignal != nullptr
+           && graphBase->pSelectedSegmentationSignal == currentTableSegmentationSignal;
+}
+
+void navigateOrthoViewerToIndex(OrthoViewer *orthoViewer,
+                                const dataType::SegmentsImageType::IndexType &index) {
+    if (orthoViewer == nullptr) {
+        return;
+    }
+
+    if (orthoViewer->xy->isSliceIndexValid(index[2])) orthoViewer->xy->setSliceIndex(index[2]);
+    if (orthoViewer->xz->isSliceIndexValid(index[1])) orthoViewer->xz->setSliceIndex(index[1]);
+    if (orthoViewer->zy->isSliceIndexValid(index[0])) orthoViewer->zy->setSliceIndex(index[0]);
+    orthoViewer->centerViewportsToXYZImageSpace(index[0], index[1], index[2]);
+}
+
 } // namespace
 
 // ---- construction -----------------------------------------------------------
@@ -161,13 +241,15 @@ QWidget *SegmentTableDialog::createSetupPage() {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Basic Measurements", grid);
         cbVolume            = new QCheckBox("Volume (voxels)");                  cbVolume->setChecked(true);
+        cbIsIsolated        = new QCheckBox("Is Isolated");                      cbIsIsolated->setChecked(true);
         cbPhysicalSize      = new QCheckBox("Physical Size");                    cbPhysicalSize->setChecked(false);
         cbPixelsOnBorder    = new QCheckBox("Pixels on Border");                 cbPixelsOnBorder->setChecked(false);
         cbPerimeterOnBorder = new QCheckBox("Perimeter on Border (physical)");   cbPerimeterOnBorder->setChecked(false);
         grid->addWidget(cbVolume,            0, 0);
-        grid->addWidget(cbPhysicalSize,      0, 1);
-        grid->addWidget(cbPixelsOnBorder,    1, 0);
-        grid->addWidget(cbPerimeterOnBorder, 1, 1);
+        grid->addWidget(cbIsIsolated,        0, 1);
+        grid->addWidget(cbPhysicalSize,      1, 0);
+        grid->addWidget(cbPixelsOnBorder,    1, 1);
+        grid->addWidget(cbPerimeterOnBorder, 2, 0);
         vContent->addWidget(gb);
     }
 
@@ -272,10 +354,10 @@ QWidget *SegmentTableDialog::createResultsPage() {
 
     // Table model with all possible columns
     model = new QStandardItemModel(this);
-    model->setColumnCount(COL_COUNT);
+    model->setColumnCount(SegmentTableDialog::COL_COUNT);
     model->setHorizontalHeaderLabels({
         "Label",
-        "Volume", "Physical Size", "Px on Border", "Perim on Border",
+        "Volume", "Isolated", "Physical Size", "Px on Border", "Perim on Border",
         "CX", "CY", "CZ",
         "BBox W", "BBox H", "BBox D",
         "Elongation", "Flatness", "Roundness",
@@ -289,7 +371,7 @@ QWidget *SegmentTableDialog::createResultsPage() {
     sortModel = new QSortFilterProxyModel(this);
     sortModel->setSourceModel(model);
     sortModel->setSortRole(Qt::UserRole);
-    sortModel->setFilterKeyColumn(COL_LABEL);
+    sortModel->setFilterKeyColumn(SegmentTableDialog::COL_LABEL);
     sortModel->setFilterCaseSensitivity(Qt::CaseInsensitive);
 
     tableView = new QTableView();
@@ -338,6 +420,7 @@ SegmentTableDialog::~SegmentTableDialog() {
 SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     FeatureFlags f;
     f.volume            = cbVolume->isChecked();
+    f.isIsolated        = cbIsIsolated->isChecked();
     f.physicalSize      = cbPhysicalSize->isChecked();
     f.pixelsOnBorder    = cbPixelsOnBorder->isChecked();
     f.perimeterOnBorder = cbPerimeterOnBorder->isChecked();
@@ -355,18 +438,57 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     return f;
 }
 
-void SegmentTableDialog::onComputeClicked() {
-    if (graphBase->pSelectedSegmentation == nullptr) {
+void SegmentTableDialog::setQuickComputeMode() {
+    setAllChecked(false);
+    cbVolume->setChecked(true);
+    cbIsIsolated->setChecked(true);
+    cbCentroid->setChecked(true);
+}
+
+void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segImg) {
+    if (segImg == nullptr) {
+        segImg = graphBase->pSelectedSegmentation;
+    }
+
+    std::cout << "[SegmentTableDebug] startCompute"
+              << " requestedSegmentation=" << static_cast<const void *>(segImg.GetPointer())
+              << " selectedSegmentation=" << static_cast<const void *>(graphBase->pSelectedSegmentation.GetPointer())
+              << " selectedSegmentationSignal=" << static_cast<const void *>(graphBase->pSelectedSegmentationSignal)
+              << " selectedSegmentationMaxId=" << graphBase->selectedSegmentationMaxSegmentId
+              << "\n";
+
+    if (segImg == nullptr) {
         QMessageBox::information(this, "No Segmentation",
                                  "No segmentation is currently selected.\n"
                                  "Load and select a segmentation first.");
         return;
     }
-    if (watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) { return; }
 
-    const FeatureFlags flags  = collectFlags();
-    const auto         segImg = graphBase->pSelectedSegmentation;
+    if (watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) {
+        return;
+    }
+
+    const FeatureFlags flags = collectFlags();
     currentTableSegmentation = segImg;
+    currentTableSegmentationSignal = graphBase->pSelectedSegmentationSignal;
+    std::cout << "[SegmentTableDebug] featureFlags"
+              << " volume=" << flags.volume
+              << " isIsolated=" << flags.isIsolated
+              << " centroid=" << flags.centroid
+              << " elongation=" << flags.elongation
+              << " flatness=" << flags.flatness
+              << " roundness=" << flags.roundness
+              << " bbox=" << flags.bbox
+              << " physicalSize=" << flags.physicalSize
+              << " pixelsOnBorder=" << flags.pixelsOnBorder
+              << " perimeterOnBorder=" << flags.perimeterOnBorder
+              << " equivSphRadius=" << flags.equivSphRadius
+              << " equivSphPerimeter=" << flags.equivSphPerimeter
+              << " equivEllipsoid=" << flags.equivEllipsoid
+              << " principalMoments=" << flags.principalMoments
+              << " perimeter=" << flags.perimeter
+              << " orientedBBox=" << flags.orientedBBox
+              << "\n";
 
     // Switch to results page immediately so the user sees the computing state.
     computeButton->setEnabled(false);
@@ -382,6 +504,10 @@ void SegmentTableDialog::onComputeClicked() {
     }));
 }
 
+void SegmentTableDialog::onComputeClicked() {
+    startCompute();
+}
+
 void SegmentTableDialog::onBackClicked() {
     if (watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) { return; }
     computeButton->setEnabled(true);
@@ -392,6 +518,14 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
     const QModelIndexList selected = tableView->selectionModel()->selectedRows();
     if (selected.isEmpty() || watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) { return; }
 
+    if (!segmentationSelectionMatchesCurrent(graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal)) {
+        std::cout << "[SegmentTableDebug] refusing delete because selected segmentation wiring does not match current table segmentation\n";
+        QMessageBox::warning(this, "Delete Disabled",
+                             "The selected segmentation state does not match the table image.\n"
+                             "Please reopen Inspect Segments from the current selection.");
+        return;
+    }
+
     // Collect label IDs and source row indices from the selection.
     QList<int> sourceRows;
     sourceRows.reserve(selected.size());
@@ -400,7 +534,7 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
         sourceRows << src.row();
 
         if (graphBase->pSelectedSegmentation != nullptr && graphBase->pGraph != nullptr) {
-            const auto *labelItem = model->item(src.row(), COL_LABEL);
+            const auto *labelItem = model->item(src.row(), SegmentTableDialog::COL_LABEL);
             if (labelItem) {
                 const auto label = static_cast<dataType::SegmentIdType>(
                     labelItem->data(Qt::UserRole).toLongLong());
@@ -425,7 +559,7 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
 }
 
 void SegmentTableDialog::setAllChecked(bool checked) {
-    for (QCheckBox *cb : {cbVolume, cbPhysicalSize, cbPixelsOnBorder, cbPerimeterOnBorder,
+    for (QCheckBox *cb : {cbVolume, cbIsIsolated, cbPhysicalSize, cbPixelsOnBorder, cbPerimeterOnBorder,
                           cbCentroid, cbBBox, cbElongation, cbFlatness, cbRoundness,
                           cbEquivSphRadius, cbEquivSphPerimeter, cbEquivEllipsoid,
                           cbPrincipalMoments, cbPerimeter, cbOrientedBBox}) {
@@ -439,12 +573,14 @@ void SegmentTableDialog::updateResultsActionState() {
     const bool hasSelection = tableView != nullptr
                               && tableView->selectionModel() != nullptr
                               && !tableView->selectionModel()->selectedRows().isEmpty();
+    const bool selectionMatches = segmentationSelectionMatchesCurrent(
+        graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal);
 
     if (deleteSelectedButton != nullptr) {
-        deleteSelectedButton->setEnabled(hasSelection && !busy);
+        deleteSelectedButton->setEnabled(hasSelection && !busy && selectionMatches && graphBase != nullptr && graphBase->pGraph != nullptr);
     }
     if (view3DButton != nullptr) {
-        view3DButton->setEnabled(hasSelection && !busy && currentTableSegmentation != nullptr);
+        view3DButton->setEnabled(hasSelection && !busy && selectionMatches);
     }
 }
 
@@ -458,7 +594,7 @@ std::vector<std::pair<dataType::SegmentIdType, quint32>> SegmentTableDialog::col
     const QModelIndexList selectedRows = tableView->selectionModel()->selectedRows();
     for (const QModelIndex &proxyIdx : selectedRows) {
         const QModelIndex src = sortModel->mapToSource(proxyIdx);
-        const auto *labelItem = model->item(src.row(), COL_LABEL);
+        const auto *labelItem = model->item(src.row(), SegmentTableDialog::COL_LABEL);
         if (labelItem == nullptr) {
             continue;
         }
@@ -470,10 +606,9 @@ std::vector<std::pair<dataType::SegmentIdType, quint32>> SegmentTableDialog::col
         seenLabels.insert(label);
 
         quint32 color = 0xFFAAAAAA;
-        if (graphBase != nullptr
-            && graphBase->pSelectedSegmentationSignal != nullptr
-            && label < static_cast<dataType::SegmentIdType>(graphBase->pSelectedSegmentationSignal->LUT.size())) {
-            color = graphBase->pSelectedSegmentationSignal->LUT[label];
+        if (currentTableSegmentationSignal != nullptr
+            && label < static_cast<dataType::SegmentIdType>(currentTableSegmentationSignal->LUT.size())) {
+            color = currentTableSegmentationSignal->LUT[label];
         }
         labels.emplace_back(label, color);
     }
@@ -524,7 +659,8 @@ void SegmentTableDialog::onView3DSelectedClicked() {
 // ---- compute (worker thread) ------------------------------------------------
 
 SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
-    dataType::SegmentsImageType::Pointer segImage, FeatureFlags flags)
+    dataType::SegmentsImageType::Pointer segImage,
+    FeatureFlags flags)
 {
     ComputeResult result;
     result.flags = flags;
@@ -551,6 +687,7 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
     auto       *labelMap = filter->GetOutput();
     const auto  n        = labelMap->GetNumberOfLabelObjects();
     result.rows.reserve(n);
+    const auto isolationByLabel = computeIsolationByLabel(segImage);
 
     for (unsigned int i = 0; i < n; ++i) {
         const auto *lo = labelMap->GetNthLabelObject(i);
@@ -568,6 +705,10 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
 
         if (flags.volume)
             row.volume = static_cast<double>(lo->GetNumberOfPixels());
+        if (flags.isIsolated) {
+            const auto isolationIt = isolationByLabel.find(row.label);
+            row.isIsolated = isolationIt == isolationByLabel.end() || isolationIt->second;
+        }
         if (flags.physicalSize)
             row.physicalSize = lo->GetPhysicalSize();
         if (flags.pixelsOnBorder)
@@ -631,7 +772,16 @@ void SegmentTableDialog::onComputeFinished() {
         QString("%1 labels | Computed in %2 s")
             .arg(result.rows.size())
             .arg(result.elapsedSeconds, 0, 'f', 2));
+    std::cout << "[SegmentTableDebug] computeFinished"
+              << " currentTableSegmentation=" << static_cast<const void *>(currentTableSegmentation.GetPointer())
+              << " currentTableSegmentationSignal=" << static_cast<const void *>(currentTableSegmentationSignal)
+              << " selectedSegmentation=" << static_cast<const void *>(graphBase->pSelectedSegmentation.GetPointer())
+              << " selectedSegmentationSignal=" << static_cast<const void *>(graphBase->pSelectedSegmentationSignal)
+              << " rows=" << result.rows.size()
+              << " elapsedSeconds=" << result.elapsedSeconds
+              << "\n";
     updateResultsActionState();
+    emit computeFinishedDebug();
 }
 
 void SegmentTableDialog::onView3DPreparationFinished() {
@@ -643,8 +793,22 @@ void SegmentTableDialog::onView3DPreparationFinished() {
 
     try {
         auto preparedScene = view3DWatcher->future().result();
-        if (!preparedScene.meshes.empty()) {
+        const auto segImage = currentTableSegmentation;
+        if (preparedScene.hasCombinedMesh || !preparedScene.meshes.empty()) {
             auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
+            dialog->setNavigateToLabelHandler(
+                [segImage, orthoViewer = orthoViewer](dataType::SegmentIdType labelId) {
+                    if (segImage == nullptr || orthoViewer == nullptr) {
+                        return;
+                    }
+
+                    dataType::SegmentsImageType::IndexType index;
+                    if (!utils::findRepresentativeVoxelForLabel(segImage, labelId, index)) {
+                        return;
+                    }
+
+                    navigateOrthoViewerToIndex(orthoViewer, index);
+                });
             dialog->setAttribute(Qt::WA_DeleteOnClose);
             dialog->show();
         } else {
@@ -676,34 +840,35 @@ void SegmentTableDialog::populateTable(const ComputeResult &result) {
         labelItem->setData(QVariant(row.centroidZ), Qt::UserRole + 3);
         labelItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        model->setItem(r, COL_LABEL,               labelItem);
-        model->setItem(r, COL_VOLUME,              makeNumericItem(row.volume, 0));
-        model->setItem(r, COL_PHYSICAL_SIZE,        makeNumericItem(row.physicalSize, 2));
-        model->setItem(r, COL_PIXELS_ON_BORDER,     makeNumericItem(row.pixelsOnBorder, 0));
-        model->setItem(r, COL_PERIMETER_ON_BORDER,  makeNumericItem(row.perimeterOnBorder, 2));
+        model->setItem(r, SegmentTableDialog::COL_LABEL,               labelItem);
+        model->setItem(r, SegmentTableDialog::COL_VOLUME,              makeNumericItem(row.volume, 0));
+        model->setItem(r, SegmentTableDialog::COL_IS_ISOLATED,         makeBooleanItem(row.isIsolated));
+        model->setItem(r, SegmentTableDialog::COL_PHYSICAL_SIZE,        makeNumericItem(row.physicalSize, 2));
+        model->setItem(r, SegmentTableDialog::COL_PIXELS_ON_BORDER,     makeNumericItem(row.pixelsOnBorder, 0));
+        model->setItem(r, SegmentTableDialog::COL_PERIMETER_ON_BORDER,  makeNumericItem(row.perimeterOnBorder, 2));
         // Centroid always populated; column visibility controlled by flags.centroid.
-        model->setItem(r, COL_CX, makeNumericItem(static_cast<double>(row.centroidX), 0));
-        model->setItem(r, COL_CY, makeNumericItem(static_cast<double>(row.centroidY), 0));
-        model->setItem(r, COL_CZ, makeNumericItem(static_cast<double>(row.centroidZ), 0));
-        model->setItem(r, COL_BBOX_W,               makeNumericItem(row.bboxW, 0));
-        model->setItem(r, COL_BBOX_H,               makeNumericItem(row.bboxH, 0));
-        model->setItem(r, COL_BBOX_D,               makeNumericItem(row.bboxD, 0));
-        model->setItem(r, COL_ELONGATION,            makeNumericItem(row.elongation));
-        model->setItem(r, COL_FLATNESS,              makeNumericItem(row.flatness));
-        model->setItem(r, COL_ROUNDNESS,             makeNumericItem(row.roundness));
-        model->setItem(r, COL_EQUIV_SPH_RADIUS,      makeNumericItem(row.equivSphRadius));
-        model->setItem(r, COL_EQUIV_SPH_PERIM,       makeNumericItem(row.equivSphPerimeter));
-        model->setItem(r, COL_EQUIV_ELLIP_D0,        makeNumericItem(row.equivEllipD0));
-        model->setItem(r, COL_EQUIV_ELLIP_D1,        makeNumericItem(row.equivEllipD1));
-        model->setItem(r, COL_EQUIV_ELLIP_D2,        makeNumericItem(row.equivEllipD2));
-        model->setItem(r, COL_PRINCIPAL_MOM0,        makeNumericItem(row.principalMom0));
-        model->setItem(r, COL_PRINCIPAL_MOM1,        makeNumericItem(row.principalMom1));
-        model->setItem(r, COL_PRINCIPAL_MOM2,        makeNumericItem(row.principalMom2));
-        model->setItem(r, COL_PERIMETER,             makeNumericItem(row.perimeter, 1));
-        model->setItem(r, COL_OBBOX_W,               makeNumericItem(row.obboxW));
-        model->setItem(r, COL_OBBOX_H,               makeNumericItem(row.obboxH));
-        model->setItem(r, COL_OBBOX_D,               makeNumericItem(row.obboxD));
-        model->setItem(r, COL_OBBOX_VOLUME,          makeNumericItem(row.obboxVolume));
+        model->setItem(r, SegmentTableDialog::COL_CX, makeNumericItem(static_cast<double>(row.centroidX), 0));
+        model->setItem(r, SegmentTableDialog::COL_CY, makeNumericItem(static_cast<double>(row.centroidY), 0));
+        model->setItem(r, SegmentTableDialog::COL_CZ, makeNumericItem(static_cast<double>(row.centroidZ), 0));
+        model->setItem(r, SegmentTableDialog::COL_BBOX_W,               makeNumericItem(row.bboxW, 0));
+        model->setItem(r, SegmentTableDialog::COL_BBOX_H,               makeNumericItem(row.bboxH, 0));
+        model->setItem(r, SegmentTableDialog::COL_BBOX_D,               makeNumericItem(row.bboxD, 0));
+        model->setItem(r, SegmentTableDialog::COL_ELONGATION,            makeNumericItem(row.elongation));
+        model->setItem(r, SegmentTableDialog::COL_FLATNESS,              makeNumericItem(row.flatness));
+        model->setItem(r, SegmentTableDialog::COL_ROUNDNESS,             makeNumericItem(row.roundness));
+        model->setItem(r, SegmentTableDialog::COL_EQUIV_SPH_RADIUS,      makeNumericItem(row.equivSphRadius));
+        model->setItem(r, SegmentTableDialog::COL_EQUIV_SPH_PERIM,       makeNumericItem(row.equivSphPerimeter));
+        model->setItem(r, SegmentTableDialog::COL_EQUIV_ELLIP_D0,        makeNumericItem(row.equivEllipD0));
+        model->setItem(r, SegmentTableDialog::COL_EQUIV_ELLIP_D1,        makeNumericItem(row.equivEllipD1));
+        model->setItem(r, SegmentTableDialog::COL_EQUIV_ELLIP_D2,        makeNumericItem(row.equivEllipD2));
+        model->setItem(r, SegmentTableDialog::COL_PRINCIPAL_MOM0,        makeNumericItem(row.principalMom0));
+        model->setItem(r, SegmentTableDialog::COL_PRINCIPAL_MOM1,        makeNumericItem(row.principalMom1));
+        model->setItem(r, SegmentTableDialog::COL_PRINCIPAL_MOM2,        makeNumericItem(row.principalMom2));
+        model->setItem(r, SegmentTableDialog::COL_PERIMETER,             makeNumericItem(row.perimeter, 1));
+        model->setItem(r, SegmentTableDialog::COL_OBBOX_W,               makeNumericItem(row.obboxW));
+        model->setItem(r, SegmentTableDialog::COL_OBBOX_H,               makeNumericItem(row.obboxH));
+        model->setItem(r, SegmentTableDialog::COL_OBBOX_D,               makeNumericItem(row.obboxD));
+        model->setItem(r, SegmentTableDialog::COL_OBBOX_VOLUME,          makeNumericItem(row.obboxVolume));
     }
 
     applyColumnColoring();
@@ -717,7 +882,10 @@ void SegmentTableDialog::applyColumnColoring() {
     const int nRows = model->rowCount();
     if (nRows == 0) { return; }
 
-    for (int col = COL_VOLUME; col < COL_COUNT; ++col) {
+    for (int col = SegmentTableDialog::COL_VOLUME; col < SegmentTableDialog::COL_COUNT; ++col) {
+        if (col == SegmentTableDialog::COL_IS_ISOLATED) {
+            continue;
+        }
         double minVal = std::numeric_limits<double>::max();
         double maxVal = std::numeric_limits<double>::lowest();
 
@@ -752,45 +920,46 @@ void SegmentTableDialog::applyColumnColoring() {
 
 void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f) {
     // Hide every non-label column first, then reveal only what was computed.
-    for (int col = COL_VOLUME; col < COL_COUNT; ++col) {
+    for (int col = SegmentTableDialog::COL_VOLUME; col < SegmentTableDialog::COL_COUNT; ++col) {
         tableView->setColumnHidden(col, true);
     }
 
-    if (f.volume)            tableView->setColumnHidden(COL_VOLUME, false);
-    if (f.physicalSize)      tableView->setColumnHidden(COL_PHYSICAL_SIZE, false);
-    if (f.pixelsOnBorder)    tableView->setColumnHidden(COL_PIXELS_ON_BORDER, false);
-    if (f.perimeterOnBorder) tableView->setColumnHidden(COL_PERIMETER_ON_BORDER, false);
+    if (f.volume)            tableView->setColumnHidden(SegmentTableDialog::COL_VOLUME, false);
+    if (f.isIsolated)        tableView->setColumnHidden(SegmentTableDialog::COL_IS_ISOLATED, false);
+    if (f.physicalSize)      tableView->setColumnHidden(SegmentTableDialog::COL_PHYSICAL_SIZE, false);
+    if (f.pixelsOnBorder)    tableView->setColumnHidden(SegmentTableDialog::COL_PIXELS_ON_BORDER, false);
+    if (f.perimeterOnBorder) tableView->setColumnHidden(SegmentTableDialog::COL_PERIMETER_ON_BORDER, false);
     if (f.centroid) {
-        tableView->setColumnHidden(COL_CX, false);
-        tableView->setColumnHidden(COL_CY, false);
-        tableView->setColumnHidden(COL_CZ, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_CX, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_CY, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_CZ, false);
     }
     if (f.bbox) {
-        tableView->setColumnHidden(COL_BBOX_W, false);
-        tableView->setColumnHidden(COL_BBOX_H, false);
-        tableView->setColumnHidden(COL_BBOX_D, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_BBOX_W, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_BBOX_H, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_BBOX_D, false);
     }
-    if (f.elongation)        tableView->setColumnHidden(COL_ELONGATION, false);
-    if (f.flatness)          tableView->setColumnHidden(COL_FLATNESS, false);
-    if (f.roundness)         tableView->setColumnHidden(COL_ROUNDNESS, false);
-    if (f.equivSphRadius)    tableView->setColumnHidden(COL_EQUIV_SPH_RADIUS, false);
-    if (f.equivSphPerimeter) tableView->setColumnHidden(COL_EQUIV_SPH_PERIM, false);
+    if (f.elongation)        tableView->setColumnHidden(SegmentTableDialog::COL_ELONGATION, false);
+    if (f.flatness)          tableView->setColumnHidden(SegmentTableDialog::COL_FLATNESS, false);
+    if (f.roundness)         tableView->setColumnHidden(SegmentTableDialog::COL_ROUNDNESS, false);
+    if (f.equivSphRadius)    tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_SPH_RADIUS, false);
+    if (f.equivSphPerimeter) tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_SPH_PERIM, false);
     if (f.equivEllipsoid) {
-        tableView->setColumnHidden(COL_EQUIV_ELLIP_D0, false);
-        tableView->setColumnHidden(COL_EQUIV_ELLIP_D1, false);
-        tableView->setColumnHidden(COL_EQUIV_ELLIP_D2, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_ELLIP_D0, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_ELLIP_D1, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_ELLIP_D2, false);
     }
     if (f.principalMoments) {
-        tableView->setColumnHidden(COL_PRINCIPAL_MOM0, false);
-        tableView->setColumnHidden(COL_PRINCIPAL_MOM1, false);
-        tableView->setColumnHidden(COL_PRINCIPAL_MOM2, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_PRINCIPAL_MOM0, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_PRINCIPAL_MOM1, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_PRINCIPAL_MOM2, false);
     }
-    if (f.perimeter)    tableView->setColumnHidden(COL_PERIMETER, false);
+    if (f.perimeter)    tableView->setColumnHidden(SegmentTableDialog::COL_PERIMETER, false);
     if (f.orientedBBox) {
-        tableView->setColumnHidden(COL_OBBOX_W, false);
-        tableView->setColumnHidden(COL_OBBOX_H, false);
-        tableView->setColumnHidden(COL_OBBOX_D, false);
-        tableView->setColumnHidden(COL_OBBOX_VOLUME, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_W, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_H, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_D, false);
+        tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_VOLUME, false);
     }
 }
 
@@ -800,7 +969,7 @@ void SegmentTableDialog::onSelectionChanged(const QModelIndex &current,
                                             const QModelIndex & /*previous*/) {
     if (!current.isValid()) { return; }
     const QModelIndex src = sortModel->mapToSource(current);
-    const auto *labelItem = model->item(src.row(), COL_LABEL);
+    const auto *labelItem = model->item(src.row(), SegmentTableDialog::COL_LABEL);
     if (!labelItem) { return; }
     navigateTo(labelItem->data(Qt::UserRole + 1).toInt(),
                labelItem->data(Qt::UserRole + 2).toInt(),
@@ -833,7 +1002,7 @@ void SegmentTableDialog::onExportCsvClicked() {
 
     // Only export the columns that are currently visible.
     QList<int> visibleCols;
-    for (int col = 0; col < COL_COUNT; ++col) {
+    for (int col = 0; col < SegmentTableDialog::COL_COUNT; ++col) {
         if (!tableView->isColumnHidden(col)) { visibleCols << col; }
     }
 

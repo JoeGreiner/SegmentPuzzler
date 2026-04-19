@@ -1,4 +1,6 @@
 #include "utils.h"
+#include <cmath>
+#include <limits>
 #include <string>
 #include <QString>
 #include <itkImageRegionConstIterator.h>
@@ -88,4 +90,66 @@ std::tuple<long, long, long, long, long, long> utils::calculateBoundingBoxForLab
     }
 
     return std::make_tuple(fx, fy, fz, tx, ty, tz);
+}
+
+bool utils::findRepresentativeVoxelForLabel(
+        typename dataType::SegmentsImageType::Pointer segmentationImage,
+        dataType::SegmentIdType labelValue,
+        itk::Index<3> &indexOut
+) {
+    if (segmentationImage == nullptr || labelValue == 0) {
+        return false;
+    }
+
+    const auto &fullRegion = segmentationImage->GetLargestPossibleRegion();
+    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(segmentationImage, fullRegion);
+
+    double sumX = 0.0;
+    double sumY = 0.0;
+    double sumZ = 0.0;
+    size_t count = 0;
+
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+        if (it.Get() != labelValue) {
+            continue;
+        }
+
+        const auto index = it.GetIndex();
+        sumX += static_cast<double>(index[0]);
+        sumY += static_cast<double>(index[1]);
+        sumZ += static_cast<double>(index[2]);
+        ++count;
+    }
+
+    if (count == 0) {
+        return false;
+    }
+
+    const double centroidX = sumX / static_cast<double>(count);
+    const double centroidY = sumY / static_cast<double>(count);
+    const double centroidZ = sumZ / static_cast<double>(count);
+
+    double minDistanceSquared = std::numeric_limits<double>::max();
+    bool found = false;
+
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+        if (it.Get() != labelValue) {
+            continue;
+        }
+
+        const auto candidate = it.GetIndex();
+        const double dx = static_cast<double>(candidate[0]) - centroidX;
+        const double dy = static_cast<double>(candidate[1]) - centroidY;
+        const double dz = static_cast<double>(candidate[2]) - centroidZ;
+        const double distanceSquared = dx * dx + dy * dy + dz * dz;
+        if (distanceSquared >= minDistanceSquared) {
+            continue;
+        }
+
+        minDistanceSquared = distanceSquared;
+        indexOut = candidate;
+        found = true;
+    }
+
+    return found;
 }

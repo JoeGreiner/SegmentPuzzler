@@ -94,6 +94,33 @@ QString summarizeAnnotationSignalImageRects(const std::vector<SliceViewerITKSign
     return entries.join(",");
 }
 
+void navigateOrthoViewerToIndex(OrthoViewer *orthoViewer,
+                                const dataType::SegmentsImageType::IndexType &index) {
+    if (orthoViewer == nullptr) {
+        return;
+    }
+
+    if (orthoViewer->xy->isSliceIndexValid(index[2])) orthoViewer->xy->setSliceIndex(index[2]);
+    if (orthoViewer->xz->isSliceIndexValid(index[1])) orthoViewer->xz->setSliceIndex(index[1]);
+    if (orthoViewer->zy->isSliceIndexValid(index[0])) orthoViewer->zy->setSliceIndex(index[0]);
+    orthoViewer->centerViewportsToXYZImageSpace(index[0], index[1], index[2]);
+}
+
+void navigateOrthoViewerToLabel(OrthoViewer *orthoViewer,
+                                dataType::SegmentsImageType::Pointer segImage,
+                                dataType::SegmentIdType labelId) {
+    if (orthoViewer == nullptr || segImage == nullptr) {
+        return;
+    }
+
+    dataType::SegmentsImageType::IndexType index;
+    if (!utils::findRepresentativeVoxelForLabel(segImage, labelId, index)) {
+        return;
+    }
+
+    navigateOrthoViewerToIndex(orthoViewer, index);
+}
+
 void setLinkedToolMode(std::vector<SliceViewer *> &linkedViewerList, SliceViewer::ToolMode toolMode) {
     for (auto *viewer : linkedViewerList) {
         if (viewer != nullptr) {
@@ -448,9 +475,7 @@ void AnnotationSliceViewer::showPrepared3DView(
 
     if (taskRunner == nullptr) {
         auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
-        auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->show();
+        openPrepared3DView(std::move(preparedScene), 0);
         return;
     }
 
@@ -460,10 +485,68 @@ void AnnotationSliceViewer::showPrepared3DView(
             return Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
         },
         [this](Segment3DViewerDialog::PreparedScene preparedScene) {
-            auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
-            dialog->setAttribute(Qt::WA_DeleteOnClose);
-            dialog->show();
+            openPrepared3DView(std::move(preparedScene), 0);
         });
+}
+
+void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
+                                               dataType::SegmentIdType targetWorkingLabel)
+{
+    const auto navigationImage =
+        targetWorkingLabel != 0
+            ? (graphBase != nullptr ? graphBase->pWorkingSegmentsImage : nullptr)
+            : active3DViewSegmentsImage();
+    auto *linkedOrthoViewer = orthoViewer();
+
+    if (targetWorkingLabel != 0) {
+        preparedScene.targetLabelId = targetWorkingLabel;
+    }
+
+    Segment3DViewerDialog::CutSessionConfig cutSession;
+    if (targetWorkingLabel != 0 && taskRunner != nullptr && graphBase != nullptr && graphBase->pGraph != nullptr) {
+        cutSession.taskRunner = taskRunner;
+        cutSession.applyCut = [this](const Projected3DCutRequest &request) {
+            Segment3DViewerDialog::CutApplyResult result;
+            if (graphBase == nullptr || graphBase->pGraph == nullptr) {
+                result.message = QStringLiteral("Graph unavailable.");
+                return result;
+            }
+
+            result.mutated = graphBase->pGraph->splitWorkingNodeByProjected3DCut(request);
+            if (!result.mutated) {
+                result.message = QStringLiteral("The painted cut did not split the working segment.");
+            }
+            return result;
+        };
+    }
+
+    auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), std::move(cutSession), this);
+    dialog->setNavigateToLabelHandler(
+        [navigationImage, linkedOrthoViewer](dataType::SegmentIdType labelId) {
+            navigateOrthoViewerToLabel(linkedOrthoViewer, navigationImage, labelId);
+        });
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    if (targetWorkingLabel != 0) {
+        connect(dialog, &QDialog::finished, this, [this](int result) {
+            if (result != QDialog::Accepted) {
+                return;
+            }
+            if (graphBase != nullptr && graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
+                graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+            }
+            if (orthoViewer() != nullptr) {
+                orthoViewer()->refreshViewers();
+            }
+        });
+    }
+    dialog->show();
+
+    if (targetWorkingLabel != 0) {
+        std::cout << "[3DCutDebug] opened 3D view for workingLabel=" << targetWorkingLabel
+                  << " dialog=" << dialog
+                  << " workingImage=" << navigationImage.GetPointer()
+                  << std::endl;
+    }
 }
 
 void AnnotationSliceViewer::show3DSegmentView(int posX, int posY) {
@@ -483,6 +566,64 @@ void AnnotationSliceViewer::show3DSegmentView(int posX, int posY) {
     }
 
     showPrepared3DView({{label, lutColor}}, "Preparing 3D segment view...");
+}
+
+quint32 AnnotationSliceViewer::workingSegmentColor(dataType::SegmentIdType label) const {
+    if (graphBase == nullptr || graphBase->pWorkingSegments == nullptr ||
+        label >= static_cast<dataType::SegmentIdType>(graphBase->pWorkingSegments->LUT.size())) {
+        return 0xFFAAAAAA;
+    }
+    return graphBase->pWorkingSegments->LUT[label];
+}
+
+bool AnnotationSliceViewer::show3DWorkingSegmentCutView(int posX, int posY) {
+    if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr || graphBase->pGraph == nullptr) {
+        std::cout << "[3DCutDebug] working-segment cut click ignored: missing working-segments image" << std::endl;
+        sendStatusMessage(QStringLiteral("Load working segments before opening a 3D cut view."));
+        return false;
+    }
+
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    const auto segImage = graphBase->pWorkingSegmentsImage;
+    const dataType::SegmentIdType label = segImage->GetPixel({x, y, z});
+
+    std::cout << "[3DCutDebug] click"
+              << " widgetPos=" << posX << "," << posY
+              << " imagePos=" << x << "," << y << "," << z
+              << " workingLabel=" << label
+              << " taskRunnerBusy=" << (taskRunner != nullptr && taskRunner->isBusy())
+              << std::endl;
+
+    if (label == 0) {
+        sendStatusMessage(QStringLiteral("3D cut: clicked background, no working segment selected."));
+        return false;
+    }
+
+    const quint32 lutColor = workingSegmentColor(label);
+    const std::vector<std::pair<dataType::SegmentIdType, quint32>> labels{{label, lutColor}};
+    const auto workingNodeIt = graphBase->pGraph->workingNodes.find(label);
+    if (workingNodeIt == graphBase->pGraph->workingNodes.end() || workingNodeIt->second == nullptr) {
+        sendStatusMessage(QStringLiteral("The clicked working segment is unavailable."));
+        return false;
+    }
+    const Roi workingNodeRoi = workingNodeIt->second->roi;
+
+    if (taskRunner == nullptr) {
+        auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, labels, workingNodeRoi);
+        openPrepared3DView(std::move(preparedScene), label);
+        return true;
+    }
+
+    taskRunner->runWithLabel(
+        QStringLiteral("Preparing 3D cut view..."),
+        [segImage, labels, workingNodeRoi]() mutable {
+            return Segment3DViewerDialog::prepareScene(segImage, std::move(labels), workingNodeRoi);
+        },
+        [this, label](Segment3DViewerDialog::PreparedScene preparedScene) {
+            openPrepared3DView(std::move(preparedScene), label);
+        });
+    return true;
 }
 
 void AnnotationSliceViewer::show3DAllLabelsView() {
@@ -662,6 +803,16 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
     case ToolMode::View3D:
         show3DSegmentView(event->pos().x(), event->pos().y());
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
+        break;
+    case ToolMode::View3DCut:
+        std::cout << "[3DCutDebug] mousePress armed"
+                  << " sliceAxis=" << sliceAxis
+                  << " pos=" << event->pos().x() << "," << event->pos().y()
+                  << " button=" << static_cast<int>(event->button())
+                  << std::endl;
+        if (show3DWorkingSegmentCutView(event->pos().x(), event->pos().y())) {
+            setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
+        }
         break;
     }
 

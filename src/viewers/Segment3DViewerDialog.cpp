@@ -1,21 +1,34 @@
 #include "Segment3DViewerDialog.h"
 
 #include <QAbstractSlider>
+#include <QApplication>
 #include <QCheckBox>
+#include <QElapsedTimer>
+#include <QEvent>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
+#include <QMessageBox>
+#include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPushButton>
 #include <QShortcut>
 #include <QSlider>
+#include <QStringList>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include "src/qtUtils/TaskRunner.h"
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkSmartPointer.h>
 #include <vtkVersion.h>
 #include <vtkType.h>
+#include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkMatrix4x4.h>
 #include <vtkRenderer.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkImageImport.h>
@@ -30,7 +43,12 @@
 #include <vtkActor.h>
 #include <vtkProperty.h>
 #include <vtkCellData.h>
+#include <vtkCallbackCommand.h>
+#include <vtkCommand.h>
 #include <vtkDataArray.h>
+#include <vtkProp.h>
+#include <vtkPropPicker.h>
+#include <vtkRenderWindowInteractor.h>
 #include <vtkUnsignedCharArray.h>
 #include <vtkAxesActor.h>
 #include <vtkAlgorithmOutput.h>
@@ -56,11 +74,190 @@
 
 #include "src/utils/utils.h"
 
+class CutStrokeOverlay : public QWidget {
+public:
+    explicit CutStrokeOverlay(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        setMouseTracking(true);
+    }
+
+    void setDrawingEnabled(bool enabled) {
+        if (m_drawingEnabled == enabled) {
+            return;
+        }
+        m_drawingEnabled = enabled;
+        m_dragging = false;
+        setAttribute(Qt::WA_TransparentForMouseEvents, !enabled);
+        update();
+    }
+
+    void clearStroke() {
+        if (m_points.empty()) {
+            return;
+        }
+        m_dragging = false;
+        m_points.clear();
+        update();
+        if (onStrokeChanged) {
+            onStrokeChanged();
+        }
+    }
+
+    bool hasValidStroke() const {
+        return m_points.size() >= 2;
+    }
+
+    std::vector<std::array<double, 2>> strokePixels() const {
+        std::vector<std::array<double, 2>> pixels;
+        pixels.reserve(m_points.size());
+        for (const QPointF &point : m_points) {
+            pixels.push_back({point.x(), point.y()});
+        }
+        return pixels;
+    }
+
+    std::function<void()> onStrokeChanged;
+
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        QWidget::paintEvent(event);
+        if (m_points.empty()) {
+            return;
+        }
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(QColor("#ff6f61"));
+        pen.setWidthF(6.0);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(pen);
+        QPolygonF polyline;
+        for (const QPointF &point : m_points) {
+            polyline << point;
+        }
+        painter.drawPolyline(polyline);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override {
+        if (!m_drawingEnabled) {
+            event->ignore();
+            return;
+        }
+
+        if (event->button() != Qt::LeftButton) {
+            event->accept();
+            return;
+        }
+
+        m_dragging = true;
+        m_points.clear();
+        m_points.push_back(event->localPos());
+        update();
+        if (onStrokeChanged) {
+            onStrokeChanged();
+        }
+        event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override {
+        if (!m_drawingEnabled || !m_dragging) {
+            event->accept();
+            return;
+        }
+
+        const QPointF point = event->localPos();
+        if (!m_points.empty() && QLineF(m_points.back(), point).length() < 1.0) {
+            event->accept();
+            return;
+        }
+
+        m_points.push_back(point);
+        update();
+        if (onStrokeChanged) {
+            onStrokeChanged();
+        }
+        event->accept();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (m_drawingEnabled && event->button() == Qt::LeftButton) {
+            m_dragging = false;
+            if (onStrokeChanged) {
+                onStrokeChanged();
+            }
+        }
+        event->accept();
+    }
+
+    void wheelEvent(QWheelEvent *event) override {
+        event->accept();
+    }
+
+private:
+    bool m_drawingEnabled = false;
+    bool m_dragging = false;
+    std::vector<QPointF> m_points;
+};
+
 namespace {
 
 constexpr bool kLog3DViewSplitDetails = false;
 constexpr bool kProfile3DViewExtraction = true;
 constexpr vtkIdType kParallelScanVoxelThreshold = 1'000'000;
+
+double elapsedMilliseconds(qint64 nanoseconds) {
+    return static_cast<double>(nanoseconds) / 1'000'000.0;
+}
+
+QLabel *createHelpBadgeLabel(const QString &tooltipText, QWidget *parent) {
+    if (tooltipText.isEmpty()) {
+        return nullptr;
+    }
+
+    auto *helpLabel = new QLabel("?", parent);
+    helpLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    helpLabel->setStyleSheet(
+        "QLabel { color: white; background-color: #666; border-radius: 8px; "
+        "font-weight: bold; font-size: 11px; min-width: 16px; min-height: 16px; "
+        "max-width: 16px; max-height: 16px; padding: 0px; qproperty-alignment: AlignCenter; }");
+    helpLabel->setToolTip(tooltipText);
+    return helpLabel;
+}
+
+bool navigationModifierPressed(Qt::KeyboardModifiers modifiers) {
+#ifdef Q_OS_MACOS
+    return modifiers.testFlag(Qt::MetaModifier) || modifiers.testFlag(Qt::ControlModifier);
+#else
+    return modifiers.testFlag(Qt::ControlModifier);
+#endif
+}
+
+QString threeDViewHelpText(bool showExplodeControls, bool showCutControls) {
+#ifdef Q_OS_MACOS
+    const QString navigateShortcut = QStringLiteral("Cmd (or Ctrl)");
+#else
+    const QString navigateShortcut = QStringLiteral("Ctrl");
+#endif
+
+    QStringList lines;
+    lines << QStringLiteral("Drag to orbit the 3D camera.");
+    lines << QStringLiteral("Hold %1 and click a segment to jump the linked orthogonal views to that label.")
+                 .arg(navigateShortcut);
+    if (showCutControls) {
+        lines << QStringLiteral("Use Draw Cut to arm projected cut drawing, Clear to erase the stroke, and Apply to split the segment.");
+    }
+    if (showExplodeControls) {
+        lines << QStringLiteral("Enable Explode and move the slider to spread segments apart.");
+        lines << QStringLiteral("Use the left/right arrow keys to step the explode slider.");
+    }
+    lines << QStringLiteral("Press Q to close the 3D view.");
+    return lines.join(QStringLiteral("\n"));
+}
 
 constexpr int segmentIdVtkDataType() {
 #ifdef SEGMENTSHORT
@@ -163,6 +360,21 @@ struct BoundsScanResult {
     int minZ = 0;
     int maxZ = -1;
 };
+
+BoundsScanResult clampBoundsToImage(const Roi &roi,
+                                    int dimX,
+                                    int dimY,
+                                    int dimZ)
+{
+    BoundsScanResult result;
+    result.minX = std::clamp(roi.minX, 0, std::max(0, dimX - 1));
+    result.maxX = std::clamp(roi.maxX, 0, std::max(0, dimX - 1));
+    result.minY = std::clamp(roi.minY, 0, std::max(0, dimY - 1));
+    result.maxY = std::clamp(roi.maxY, 0, std::max(0, dimY - 1));
+    result.minZ = std::clamp(roi.minZ, 0, std::max(0, dimZ - 1));
+    result.maxZ = std::clamp(roi.maxZ, 0, std::max(0, dimZ - 1));
+    return result;
+}
 
 BoundsScanResult scanBoundsForRequestedLabels(
     const dataType::SegmentIdType *buf,
@@ -873,8 +1085,17 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     dataType::SegmentsImageType::Pointer segImage,
     std::vector<LabelWithColor> labels)
 {
+    return prepareScene(segImage, std::move(labels), Roi());
+}
+
+Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
+    dataType::SegmentsImageType::Pointer segImage,
+    std::vector<LabelWithColor> labels,
+    Roi requestedBounds)
+{
     PreparedScene preparedScene;
     if (labels.size() == 1) {
+        preparedScene.targetLabelId = labels[0].first;
         preparedScene.windowTitle = QString("Segment %1 (press q to quit)").arg(labels[0].first);
     } else {
         preparedScene.windowTitle = QString("All Segments (press q to quit)");
@@ -898,17 +1119,26 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
               << "  labels=" << labels.size() << std::endl;
 
     const double t_total = utils::tic();
-    const auto requestedLabelLookup = buildRequestedLabelLookup(labels);
-
-    const double t_bbox = utils::tic();
-    const auto bounds = scanBoundsForRequestedLabels(buf, dimX, dimY, dimZ, requestedLabelLookup);
+    BoundsScanResult bounds;
+    const bool useRequestedBounds = labels.size() == 1 && requestedBounds.maxX >= requestedBounds.minX &&
+                                    requestedBounds.maxY >= requestedBounds.minY &&
+                                    requestedBounds.maxZ >= requestedBounds.minZ;
+    if (useRequestedBounds) {
+        const double t_bbox = utils::tic();
+        bounds = clampBoundsToImage(requestedBounds, dimX, dimY, dimZ);
+        utils::toc(t_bbox, "[3DView] [segmentpuzzler] bbox from requested ROI:");
+    } else {
+        const double t_bbox = utils::tic();
+        const auto requestedLabelLookup = buildRequestedLabelLookup(labels);
+        bounds = scanBoundsForRequestedLabels(buf, dimX, dimY, dimZ, requestedLabelLookup);
+        utils::toc(t_bbox, "[3DView] [segmentpuzzler] bbox scan:");
+    }
     const int minX = bounds.minX;
     const int maxX = bounds.maxX;
     const int minY = bounds.minY;
     const int maxY = bounds.maxY;
     const int minZ = bounds.minZ;
     const int maxZ = bounds.maxZ;
-    utils::toc(t_bbox, "[3DView] [segmentpuzzler] bbox scan:");
 
     if (maxX < 0) {
         std::cout << "[3DView] no requested labels found in image — no mesh" << std::endl;
@@ -1088,7 +1318,16 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
 
 Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
                                              QWidget *parent)
+    : Segment3DViewerDialog(std::move(preparedScene), CutSessionConfig{}, parent)
+{
+}
+
+Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
+                                             CutSessionConfig cutSession,
+                                             QWidget *parent)
     : QDialog(parent)
+    , m_targetLabelId(preparedScene.targetLabelId)
+    , m_cutSession(std::move(cutSession))
 {
     setWindowTitle(preparedScene.windowTitle);
     resize(600, 600);
@@ -1154,7 +1393,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
         actor->GetProperty()->SetSpecular(0.3);
         actor->GetProperty()->SetSpecularPower(20.0);
         m_renderer->AddActor(actor);
-        m_explodeActors.push_back({actor, mesh.centerWorld});
+        m_explodeActors.push_back({actor, mesh.labelId, mesh.centerWorld});
     }
 
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
@@ -1170,11 +1409,19 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     // or when individual actors are already loaded (fallback path with >1 mesh).
     const bool showExplodeControls =
         m_splitSourcePolyData != nullptr || m_explodeActors.size() > 1;
+    const bool showCutControls = static_cast<bool>(m_cutSession.applyCut) && m_targetLabelId != 0;
+    if (m_cutSession.taskRunner != nullptr) {
+        m_taskRunner = m_cutSession.taskRunner;
+    } else if (showExplodeControls) {
+        m_ownedTaskRunner = new TaskRunner(this, this);
+        m_taskRunner = m_ownedTaskRunner;
+    }
 
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setRenderWindow(renWin);
     m_vtkWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_vtkWidget->setFocusPolicy(Qt::StrongFocus);
+    m_vtkWidget->installEventFilter(this);
 
     auto style = vtkSmartPointer<vtkInteractorStyleTrackballCamera>::New();
     style->SetDefaultRenderer(m_renderer);
@@ -1193,75 +1440,134 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(m_vtkWidget, 1);
+    auto *vtkContainer = new QWidget(this);
+    auto *vtkStackLayout = new QGridLayout(vtkContainer);
+    vtkStackLayout->setContentsMargins(0, 0, 0, 0);
+    vtkStackLayout->setSpacing(0);
+    vtkStackLayout->addWidget(m_vtkWidget, 0, 0);
+    if (showCutControls) {
+        m_cutOverlay = new CutStrokeOverlay(vtkContainer);
+        m_cutOverlay->onStrokeChanged = [this]() { updateCutUiState(); };
+        vtkStackLayout->addWidget(m_cutOverlay, 0, 0);
+    }
+    layout->addWidget(vtkContainer, 1);
 
-    if (showExplodeControls) {
-        m_taskRunner = new TaskRunner(this, this);
+    if (showExplodeControls || showCutControls) {
 
         m_controlsWidget = new QWidget(this);
         m_controlsWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-
-        m_explodeSlider = new QSlider(Qt::Horizontal, m_controlsWidget);
-        m_explodeSlider->setRange(0, 100);
-        m_explodeSlider->setSingleStep(2);
-        m_explodeSlider->setPageStep(10);
-        m_explodeSlider->setValue(0);
-        m_explodeSlider->setFocusPolicy(Qt::StrongFocus);
-        m_explodeSlider->setToolTip(QStringLiteral("Explode segments apart to inspect connections."));
-        m_explodeSlider->setMinimumHeight(28);
-
-        // Slider disabled until the user activates explode mode.
-        // For the fallback path (no combined mesh) actors are already loaded — enable directly.
-        const bool hasPreloadedActors = !m_explodeActors.empty();
-        m_explodeSlider->setEnabled(hasPreloadedActors);
-
-        connect(m_explodeSlider, &QSlider::valueChanged, this, [this](int value) {
-            if (m_explodeActors.empty()) {
-                return;
-            }
-            const double offsetDistance =
-                (static_cast<double>(value) / 100.0) * 0.35 * m_sceneExtent;
-            for (const auto &actorInfo : m_explodeActors) {
-                if (actorInfo.actor == nullptr) {
-                    continue;
-                }
-                const double dx = actorInfo.centerWorld[0] - m_sceneCenterWorld[0];
-                const double dy = actorInfo.centerWorld[1] - m_sceneCenterWorld[1];
-                const double dz = actorInfo.centerWorld[2] - m_sceneCenterWorld[2];
-                const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
-                if (len > 1e-9) {
-                    actorInfo.actor->SetPosition(offsetDistance * dx / len,
-                                                 offsetDistance * dy / len,
-                                                 offsetDistance * dz / len);
-                } else {
-                    actorInfo.actor->SetPosition(0.0, 0.0, 0.0);
-                }
-            }
-            m_renderer->ResetCameraClippingRange();
-            if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
-                m_vtkWidget->renderWindow()->Render();
-            }
-        });
-
         auto *controlsRow = new QHBoxLayout(m_controlsWidget);
         controlsRow->setContentsMargins(10, 6, 10, 10);
         controlsRow->setSpacing(8);
 
-        if (m_splitSourcePolyData != nullptr) {
-            m_explodeToggle = new QCheckBox(QStringLiteral("Explode"), m_controlsWidget);
-            connect(m_explodeToggle, &QCheckBox::toggled, this,
-                    &Segment3DViewerDialog::onExplodeToggled);
-            controlsRow->addWidget(m_explodeToggle);
+        if (showExplodeControls) {
+            m_explodeSlider = new QSlider(Qt::Horizontal, m_controlsWidget);
+            m_explodeSlider->setRange(0, 100);
+            m_explodeSlider->setSingleStep(2);
+            m_explodeSlider->setPageStep(10);
+            m_explodeSlider->setValue(0);
+            m_explodeSlider->setFocusPolicy(Qt::StrongFocus);
+            m_explodeSlider->setToolTip(QStringLiteral("Explode segments apart to inspect connections."));
+            m_explodeSlider->setMinimumHeight(28);
+
+            // Slider disabled until the user activates explode mode.
+            // For the fallback path (no combined mesh) actors are already loaded — enable directly.
+            const bool hasPreloadedActors = !m_explodeActors.empty();
+            m_explodeSlider->setEnabled(hasPreloadedActors);
+
+            connect(m_explodeSlider, &QSlider::valueChanged, this, [this](int value) {
+                if (m_explodeActors.empty()) {
+                    return;
+                }
+                const double offsetDistance =
+                    (static_cast<double>(value) / 100.0) * 0.35 * m_sceneExtent;
+                for (const auto &actorInfo : m_explodeActors) {
+                    if (actorInfo.actor == nullptr) {
+                        continue;
+                    }
+                    const double dx = actorInfo.centerWorld[0] - m_sceneCenterWorld[0];
+                    const double dy = actorInfo.centerWorld[1] - m_sceneCenterWorld[1];
+                    const double dz = actorInfo.centerWorld[2] - m_sceneCenterWorld[2];
+                    const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    if (len > 1e-9) {
+                        actorInfo.actor->SetPosition(offsetDistance * dx / len,
+                                                     offsetDistance * dy / len,
+                                                     offsetDistance * dz / len);
+                    } else {
+                        actorInfo.actor->SetPosition(0.0, 0.0, 0.0);
+                    }
+                }
+                m_renderer->ResetCameraClippingRange();
+                if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+                    m_vtkWidget->renderWindow()->Render();
+                }
+            });
+
+            if (m_splitSourcePolyData != nullptr) {
+                m_explodeToggle = new QCheckBox(QStringLiteral("Explode"), m_controlsWidget);
+                connect(m_explodeToggle, &QCheckBox::toggled, this,
+                        &Segment3DViewerDialog::onExplodeToggled);
+                controlsRow->addWidget(m_explodeToggle);
+            }
         }
 
-        controlsRow->addWidget(m_explodeSlider, 1);
+        if (showCutControls) {
+            if (showExplodeControls) {
+                controlsRow->addSpacing(8);
+            }
+            m_drawCutButton = new QPushButton(QStringLiteral("Draw Cut"), m_controlsWidget);
+            m_clearCutButton = new QPushButton(QStringLiteral("Clear"), m_controlsWidget);
+            m_applyCutButton = new QPushButton(QStringLiteral("Apply"), m_controlsWidget);
+            connect(m_drawCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::beginCutDrawing);
+            connect(m_clearCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::clearCutStroke);
+            connect(m_applyCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::applyProjectedCut);
+            controlsRow->addWidget(m_drawCutButton);
+            controlsRow->addWidget(m_clearCutButton);
+            controlsRow->addWidget(m_applyCutButton);
+        }
+
+        if (showExplodeControls) {
+            controlsRow->addWidget(m_explodeSlider, 1);
+        } else {
+            controlsRow->addStretch(1);
+        }
+
+        if (QLabel *helpLabel = createHelpBadgeLabel(
+                threeDViewHelpText(showExplodeControls, showCutControls), m_controlsWidget)) {
+            controlsRow->addWidget(helpLabel);
+        }
 
         layout->addWidget(m_controlsWidget, 0);
+    }
+
+    if (m_vtkWidget != nullptr && m_vtkWidget->interactor() != nullptr) {
+        auto *interactor = m_vtkWidget->interactor();
+        auto navigationObserver = vtkSmartPointer<vtkCallbackCommand>::New();
+        navigationObserver->SetClientData(this);
+        navigationObserver->SetCallback([](vtkObject *, unsigned long eventId, void *clientData, void *) {
+            if (eventId != vtkCommand::LeftButtonPressEvent || clientData == nullptr) {
+                return;
+            }
+
+            auto *dialog = static_cast<Segment3DViewerDialog *>(clientData);
+            dialog->handleInteractorLeftButtonPress();
+        });
+        interactor->AddObserver(vtkCommand::LeftButtonPressEvent, navigationObserver);
     }
 
     auto *closeShortcut = new QShortcut(QKeySequence(Qt::Key_Q), this);
     closeShortcut->setContext(Qt::WindowShortcut);
     connect(closeShortcut, &QShortcut::activated, this, &QDialog::close);
+
+    if (showCutControls) {
+        auto *cutHelpShortcut = new QShortcut(QKeySequence(Qt::Key_Question), this);
+        cutHelpShortcut->setContext(Qt::WindowShortcut);
+        connect(cutHelpShortcut, &QShortcut::activated, this, &Segment3DViewerDialog::showCutHelp);
+
+        auto *cutHelpF1Shortcut = new QShortcut(QKeySequence(Qt::Key_F1), this);
+        cutHelpF1Shortcut->setContext(Qt::WindowShortcut);
+        connect(cutHelpF1Shortcut, &QShortcut::activated, this, &Segment3DViewerDialog::showCutHelp);
+    }
 
     if (showExplodeControls) {
         auto *stepLeftShortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
@@ -1273,9 +1579,13 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
         connect(stepRightShortcut, &QShortcut::activated, this, [this]() { stepExplodeSlider(1); });
     }
 
-    QTimer::singleShot(0, this, [this]() {
+    updateCutUiState();
+    QTimer::singleShot(0, this, [this, showExplodeControls, showCutControls]() {
         if (m_controlsWidget != nullptr) {
             m_controlsWidget->raise();
+        }
+        if (m_cutOverlay != nullptr) {
+            m_cutOverlay->raise();
         }
         if (m_vtkWidget != nullptr && m_vtkWidget->interactor() != nullptr) {
             m_vtkWidget->interactor()->Initialize();
@@ -1285,7 +1595,46 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
             m_renderer->ResetCameraClippingRange();
             m_vtkWidget->renderWindow()->Render();
         }
+        std::cout << "[3DInputDebug] ready"
+                  << " targetLabel=" << m_targetLabelId
+                  << " combinedActor=" << (m_combinedActor != nullptr)
+                  << " explodeActorCount=" << m_explodeActors.size()
+                  << " showExplodeControls=" << showExplodeControls
+                  << " showCutControls=" << showCutControls
+                  << " interactorEnabled="
+                  << (m_vtkWidget != nullptr
+                      && m_vtkWidget->interactor() != nullptr
+                      && m_vtkWidget->interactor()->GetEnabled())
+                  << std::endl;
     });
+}
+
+void Segment3DViewerDialog::setNavigateToLabelHandler(NavigateToLabelHandler handler) {
+    m_navigateToLabelHandler = std::move(handler);
+}
+
+bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_vtkWidget
+        && event != nullptr
+        && event->type() == QEvent::MouseButtonPress
+        && m_vtkWidget != nullptr
+        && m_vtkWidget->renderWindow() != nullptr) {
+        auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            const double devicePixelRatio = m_vtkWidget->devicePixelRatioF();
+            const int pickX = static_cast<int>(std::lround(mouseEvent->pos().x() * devicePixelRatio));
+            const int pickY = static_cast<int>(std::lround(
+                (m_vtkWidget->height() - mouseEvent->pos().y() - 1) * devicePixelRatio));
+            const Qt::KeyboardModifiers effectiveModifiers =
+                mouseEvent->modifiers() | QApplication::keyboardModifiers();
+            if (tryNavigateToPickedLabel(pickX, pickY, effectiveModifiers, "qt")) {
+                event->accept();
+                return true;
+            }
+        }
+    }
+
+    return QDialog::eventFilter(watched, event);
 }
 
 void Segment3DViewerDialog::stepExplodeSlider(int direction) {
@@ -1296,6 +1645,257 @@ void Segment3DViewerDialog::stepExplodeSlider(int direction) {
     m_explodeSlider->triggerAction(direction < 0
                                        ? QAbstractSlider::SliderSingleStepSub
                                        : QAbstractSlider::SliderSingleStepAdd);
+}
+
+void Segment3DViewerDialog::beginCutDrawing() {
+    std::cout << "[3DCutDebug] beginCutDrawing"
+              << " targetLabel=" << m_targetLabelId
+              << " hasApplyCallback=" << static_cast<bool>(m_cutSession.applyCut)
+              << std::endl;
+
+    if (m_cutOverlay == nullptr || m_cutApplyInFlight) {
+        return;
+    }
+
+    m_cutDrawModeActive = true;
+    m_cutOverlay->setDrawingEnabled(true);
+    m_cutOverlay->raise();
+    updateCutUiState();
+}
+
+void Segment3DViewerDialog::clearCutStroke() {
+    std::cout << "[3DCutDebug] clearCutStroke"
+              << " targetLabel=" << m_targetLabelId
+              << std::endl;
+
+    if (m_cutOverlay == nullptr || m_cutApplyInFlight) {
+        return;
+    }
+    m_cutOverlay->clearStroke();
+    updateCutUiState();
+}
+
+Projected3DCutRequest Segment3DViewerDialog::buildProjected3DCutRequest() const {
+    Projected3DCutRequest request;
+    request.targetWorkingLabel = m_targetLabelId;
+    request.strokeWidthPixels = 6.0;
+
+    if (m_cutOverlay != nullptr) {
+        request.viewportSize = {m_cutOverlay->width(), m_cutOverlay->height()};
+        request.strokePixels = m_cutOverlay->strokePixels();
+    } else if (m_vtkWidget != nullptr) {
+        request.viewportSize = {m_vtkWidget->width(), m_vtkWidget->height()};
+    }
+
+    if (m_renderer != nullptr && m_renderer->GetActiveCamera() != nullptr) {
+        vtkCamera *camera = m_renderer->GetActiveCamera();
+        vtkMatrix4x4 *matrix = camera->GetCompositeProjectionTransformMatrix(
+            m_renderer->GetTiledAspectRatio(), 0.0, 1.0);
+        if (matrix != nullptr) {
+            for (int row = 0; row < 4; ++row) {
+                for (int col = 0; col < 4; ++col) {
+                    request.worldToNdcMatrix[static_cast<std::size_t>(row * 4 + col)] =
+                        matrix->GetElement(row, col);
+                }
+            }
+        }
+    }
+
+    return request;
+}
+
+void Segment3DViewerDialog::applyProjectedCut() {
+    std::cout << "[3DCutDebug] applyProjectedCut"
+              << " targetLabel=" << m_targetLabelId
+              << " hasApplyCallback=" << static_cast<bool>(m_cutSession.applyCut)
+              << std::endl;
+
+    if (!m_cutSession.applyCut) {
+        return;
+    }
+    if (m_cutOverlay == nullptr || !m_cutOverlay->hasValidStroke()) {
+        QMessageBox::information(this, tr("3D Cut"), tr("Draw a cut stroke before applying the split."));
+        return;
+    }
+
+    const Projected3DCutRequest request = buildProjected3DCutRequest();
+    if (request.targetWorkingLabel == 0 || request.strokePixels.size() < 2) {
+        QMessageBox::information(this, tr("3D Cut"), tr("The cut request is incomplete."));
+        return;
+    }
+
+    m_cutApplyInFlight = true;
+    updateCutUiState();
+
+    const auto finishApply = [this](CutApplyResult result) {
+        if (result.mutated) {
+            accept();
+            return;
+        }
+
+        m_cutApplyInFlight = false;
+        updateCutUiState();
+        QMessageBox::information(this,
+                                 tr("3D Cut"),
+                                 result.message.isEmpty()
+                                     ? tr("The painted cut did not split the working segment.")
+                                     : result.message);
+    };
+
+    const auto applyCut = m_cutSession.applyCut;
+    if (m_taskRunner != nullptr) {
+        m_taskRunner->runWithLabel(
+            m_cutSession.progressText.isEmpty()
+                ? QStringLiteral("Applying 3D cut...")
+                : m_cutSession.progressText,
+            [applyCut, request]() {
+                return applyCut(request);
+            },
+            [finishApply](CutApplyResult result) mutable {
+                finishApply(std::move(result));
+            });
+        return;
+    }
+
+    finishApply(applyCut(request));
+}
+
+bool Segment3DViewerDialog::tryNavigateToPickedLabel(int pickX,
+                                                     int pickY,
+                                                     Qt::KeyboardModifiers modifiers,
+                                                     const char *sourceTag) {
+    QElapsedTimer totalTimer;
+    totalTimer.start();
+
+    const Qt::KeyboardModifiers effectiveModifiers = modifiers | QApplication::keyboardModifiers();
+    const bool hasNavigateHandler = static_cast<bool>(m_navigateToLabelHandler);
+    const bool modifierActive = navigationModifierPressed(effectiveModifiers);
+    const char *result = "skipped";
+
+    if (!hasNavigateHandler) {
+        result = "skipped_no_handler";
+    } else if (!modifierActive) {
+        result = "skipped_no_modifier";
+    } else if (m_renderer == nullptr) {
+        result = "skipped_no_renderer";
+    } else {
+        QElapsedTimer pickTimer;
+        pickTimer.start();
+
+        auto picker = vtkSmartPointer<vtkPropPicker>::New();
+        vtkProp *pickedProp = nullptr;
+        if (picker->Pick(pickX, pickY, 0.0, m_renderer) != 0) {
+            pickedProp = picker->GetViewProp();
+        }
+        const qint64 pickNanoseconds = pickTimer.nsecsElapsed();
+
+        dataType::SegmentIdType pickedLabelId = 0;
+        if (pickedProp != nullptr && m_combinedActor != nullptr
+            && pickedProp == m_combinedActor.GetPointer()
+            && m_targetLabelId != 0) {
+            pickedLabelId = m_targetLabelId;
+        } else if (pickedProp != nullptr) {
+            for (const auto &actorInfo : m_explodeActors) {
+                if (actorInfo.actor == nullptr || actorInfo.labelId == 0) {
+                    continue;
+                }
+                if (pickedProp == actorInfo.actor.GetPointer()) {
+                    pickedLabelId = actorInfo.labelId;
+                    break;
+                }
+            }
+        }
+
+        qint64 dispatchNanoseconds = 0;
+        bool navigated = false;
+        if (pickedLabelId != 0) {
+            QElapsedTimer dispatchTimer;
+            dispatchTimer.start();
+            m_navigateToLabelHandler(pickedLabelId);
+            dispatchNanoseconds = dispatchTimer.nsecsElapsed();
+            navigated = true;
+            result = "navigated";
+        } else {
+            result = "pick_miss";
+        }
+
+        std::cout << "[3DInputProfile] syncClick"
+                  << " source=" << (sourceTag != nullptr ? sourceTag : "unknown")
+                  << " pickPos=" << pickX << "," << pickY
+                  << " modifiers=" << static_cast<int>(effectiveModifiers)
+                  << " targetLabel=" << m_targetLabelId
+                  << " pickedLabelId=" << pickedLabelId
+                  << " pickedProp=" << pickedProp
+                  << " pickMs=" << elapsedMilliseconds(pickNanoseconds)
+                  << " dispatchMs=" << elapsedMilliseconds(dispatchNanoseconds)
+                  << " totalMs=" << elapsedMilliseconds(totalTimer.nsecsElapsed())
+                  << " result=" << result
+                  << std::endl;
+
+        return navigated;
+    }
+
+    std::cout << "[3DInputProfile] syncClick"
+              << " source=" << (sourceTag != nullptr ? sourceTag : "unknown")
+              << " pickPos=" << pickX << "," << pickY
+              << " modifiers=" << static_cast<int>(effectiveModifiers)
+              << " targetLabel=" << m_targetLabelId
+              << " pickedLabelId=0"
+              << " pickedProp=0"
+              << " pickMs=0"
+              << " dispatchMs=0"
+              << " totalMs=" << elapsedMilliseconds(totalTimer.nsecsElapsed())
+              << " result=" << result
+              << std::endl;
+    return false;
+}
+
+void Segment3DViewerDialog::handleInteractorLeftButtonPress() {
+    if (m_vtkWidget == nullptr || m_vtkWidget->interactor() == nullptr) {
+        return;
+    }
+
+    int eventPosition[2] = {0, 0};
+    m_vtkWidget->interactor()->GetEventPosition(eventPosition);
+    tryNavigateToPickedLabel(eventPosition[0],
+                            eventPosition[1],
+                            QApplication::keyboardModifiers(),
+                            "vtk");
+}
+
+void Segment3DViewerDialog::showCutHelp() {
+    QMessageBox::information(
+        this,
+        tr("3D Cut Help"),
+        tr("1. Rotate, pan, and zoom the segment until the intended cut is visible.\n"
+           "2. Press Draw Cut to freeze navigation and arm stroke drawing.\n"
+           "3. Hold the left mouse button and paint the cut line across the 3D view.\n"
+           "4. Use Clear if you want to redraw the stroke.\n"
+           "5. Press Apply to project the painted stroke through the segment and split it.\n"
+           "6. Cancel or close the dialog to leave the graph unchanged.\n\n"
+           "Shortcuts: ? or F1 opens this helper, Q closes the dialog."));
+}
+
+void Segment3DViewerDialog::updateCutUiState() {
+    const bool cutEnabled = m_cutOverlay != nullptr && static_cast<bool>(m_cutSession.applyCut);
+    if (!cutEnabled) {
+        return;
+    }
+
+    const bool hasStroke = m_cutOverlay->hasValidStroke();
+    m_cutOverlay->setDrawingEnabled(m_cutDrawModeActive && !m_cutApplyInFlight);
+
+    if (m_drawCutButton != nullptr) {
+        m_drawCutButton->setEnabled(!m_cutApplyInFlight && !m_cutDrawModeActive);
+        m_drawCutButton->setText(m_cutDrawModeActive ? QStringLiteral("Cut Drawing Active")
+                                                     : QStringLiteral("Draw Cut"));
+    }
+    if (m_clearCutButton != nullptr) {
+        m_clearCutButton->setEnabled(!m_cutApplyInFlight && hasStroke);
+    }
+    if (m_applyCutButton != nullptr) {
+        m_applyCutButton->setEnabled(!m_cutApplyInFlight && m_cutDrawModeActive && hasStroke);
+    }
 }
 
 void Segment3DViewerDialog::onExplodeToggled(bool checked) {
@@ -1402,7 +2002,7 @@ void Segment3DViewerDialog::activateExplodeActors(const std::vector<PreparedMesh
         actor->GetProperty()->SetSpecular(0.3);
         actor->GetProperty()->SetSpecularPower(20.0);
         m_renderer->AddActor(actor);
-        m_explodeActors.push_back({actor, mesh.centerWorld});
+        m_explodeActors.push_back({actor, mesh.labelId, mesh.centerWorld});
     }
 
     if (m_combinedActor != nullptr) {
