@@ -279,6 +279,7 @@ ProjectedDisplayTransform buildProjectedDisplayTransform(
 std::array<double, 2> projectVoxelCenterToDisplay(const Voxel &voxel,
                                                   const ProjectedDisplayTransform &transform)
 {
+    // Current projected-cut math assumes identity direction; non-identity cases are warned at the UI entry point.
     const double x = static_cast<double>(voxel.x);
     const double y = static_cast<double>(voxel.y);
     const double z = static_cast<double>(voxel.z);

@@ -68,6 +68,7 @@ public:
 
     struct CutSessionConfig {
         TaskRunner *taskRunner = nullptr;
+        std::function<QString(const Projected3DCutRequest &)> preflightWarning;
         std::function<CutApplyResult(const Projected3DCutRequest &)> applyCut;
         QString progressText = QStringLiteral("Applying 3D cut...");
     };

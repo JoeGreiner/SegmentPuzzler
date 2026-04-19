@@ -1770,6 +1770,13 @@ void Segment3DViewerDialog::applyProjectedCut() {
         return;
     }
 
+    if (m_cutSession.preflightWarning) {
+        const QString warningMessage = m_cutSession.preflightWarning(request);
+        if (!warningMessage.isEmpty()) {
+            QMessageBox::warning(this, tr("3D Cut"), warningMessage);
+        }
+    }
+
     m_cutApplyInFlight = true;
     updateCutUiState();
 

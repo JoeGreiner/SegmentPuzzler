@@ -33,6 +33,7 @@
 #include <QShortcut>
 #include <QWidgetAction>
 #include <itkCastImageFilter.h>
+#include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/utils/AppLogger.h"
@@ -257,6 +258,7 @@ void WatershedControl::setGuiBusy(bool busy) {
     calculateDistanceMapButton->setEnabled(!busy);
     calculateSeedsButton->setEnabled(!busy);
     runWatershedButton->setEnabled(!busy);
+    inspectSegmentsButton->setEnabled(!busy);
     createRefinementButton->setEnabled(!busy);
     togglePaintBoundaryModeButton->setEnabled(!busy);
     thresholdValueSlider->setEnabled(!busy);
@@ -1278,6 +1280,7 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     agglomertionSizeBiasStrengthSpinBox = nullptr;
     agglomertionSizeBiasProtectionSlider = nullptr;
     agglomertionSizeBiasProtectionSpinBox = nullptr;
+    inspectSegmentsButton = nullptr;
     finalOutputInputComboBox = nullptr;
     workerThreadCount = defaultWatershedThreadCount();
     setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
@@ -1751,6 +1754,8 @@ void WatershedControl::setupAgglomertionWidget() {
 }
 
 void WatershedControl::setupFinalizeWidget() {
+    inspectSegmentsButton = new QPushButton("Inspect Segments", this);
+    inspectSegmentsButton->setObjectName("inspectSegmentsButton");
     createRefinementButton = new QPushButton(
         outputMode == OutputMode::Segments ? "Export Segments" : "Create Refinement",
         this);
@@ -1769,9 +1774,13 @@ void WatershedControl::setupFinalizeWidget() {
         outputMode == OutputMode::Segments ? "6. Export Segments" : "6. Create Refinement");
     auto *layout = qobject_cast<QVBoxLayout *>(groupBox->layout());
     layout->addWidget(controlsWidget);
+    layout->addWidget(inspectSegmentsButton);
     layout->addWidget(createRefinementButton);
     workflowLayout->addWidget(groupBox, 0);
 
+    auto *inspectShortcut = new QShortcut(QKeySequence(Qt::Key_F8), this);
+    connect(inspectShortcut, &QShortcut::activated, this, &WatershedControl::inspectSegmentsPressed);
+    connect(inspectSegmentsButton, &QPushButton::clicked, this, &WatershedControl::inspectSegmentsPressed);
     connect(createRefinementButton, &QPushButton::clicked, this, &WatershedControl::finalizeOutputPressed);
     connect(finalOutputInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
 }
@@ -2176,6 +2185,8 @@ void WatershedControl::updateStepEnablement() {
     const bool hasRequiredAgglomertionMask = !agglomertionNeedsThresholdMask() || hasAgglomertionThresholdMask;
     const bool hasFinalOutput = selectedFinalOutputInput().IsNotNull();
     const bool hasPersistedAgglomertionOutput = selectedFinalAgglomertionStageOutput() != nullptr;
+    const bool hasInspectableAgglomertion = hasPersistedAgglomertionOutput || hasActiveAgglomertionPreview();
+
     thresholdBoundariesButton->setEnabled(hasBoundary);
     thresholdValueSlider->setEnabled(hasBoundary);
     calculateDistanceMapButton->setEnabled(hasThreshold);
@@ -2185,6 +2196,7 @@ void WatershedControl::updateStepEnablement() {
     agglomertionPreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
     agglomertionApproximatePreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
     agglomertionReplaceCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && hasPersistedAgglomertionOutput && !taskRunner->isBusy());
+    inspectSegmentsButton->setEnabled(hasInspectableAgglomertion);
     createRefinementButton->setEnabled(hasFinalOutput);
     if (!(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask)) {
         clearAgglomertionPreview();
@@ -2818,6 +2830,37 @@ void WatershedControl::agglomertionPressed() {
         msgBox.setText("Please generate a watershed first.");
         msgBox.exec();
     }
+}
+
+void WatershedControl::inspectSegmentsPressed() {
+    itkSignal<GraphSegmentType> *selectedSignal = nullptr;
+    dataType::SegmentsImageType::Pointer selectedOutput;
+    QString errorMessage;
+    if (!tryResolveInspectSegmentsTarget(selectedOutput, selectedSignal, errorMessage)) {
+        QMessageBox msgBox;
+        msgBox.setText(errorMessage);
+        msgBox.exec();
+        return;
+    }
+
+    graphBase->pSelectedSegmentation = selectedOutput;
+    graphBase->pSelectedSegmentationSignal = selectedSignal;
+    graphBase->selectedSegmentationMaxSegmentId =
+        graphBase->pGraph != nullptr ? graphBase->pGraph->getLargestIdInSegmentVolume(selectedOutput) : 0;
+
+    if (orthoViewer != nullptr) {
+        orthoViewer->flashShortcutLegendKey("f8");
+    }
+
+    if (!segmentTableDialog) {
+        segmentTableDialog = new SegmentTableDialog(graphBase, orthoViewer, this);
+        segmentTableDialog->setAttribute(Qt::WA_DeleteOnClose);
+        segmentTableDialog->setQuickComputeMode();
+    }
+    segmentTableDialog->show();
+    segmentTableDialog->raise();
+    segmentTableDialog->activateWindow();
+    segmentTableDialog->startCompute(selectedOutput);
 }
 
 void WatershedControl::finalizeOutputPressed() {

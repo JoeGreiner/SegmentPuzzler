@@ -6,6 +6,8 @@
 #endif
 #include <Qt>
 #include <algorithm>
+#include <cmath>
+#include <iostream>
 #include <itkLabelGeometryImageFilter.h>
 #include <itkRegionOfInterestImageFilter.h>
 #include <itkBinaryBallStructuringElement.h>
@@ -25,6 +27,23 @@
 #include "src/qtUtils/TaskRunner.h"
 
 namespace {
+
+bool hasIdentityDirection(dataType::SegmentsImageType::Pointer image, double epsilon = 1e-6) {
+    if (image == nullptr) {
+        return true;
+    }
+
+    const auto direction = image->GetDirection();
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            const double expected = row == col ? 1.0 : 0.0;
+            if (std::abs(direction[row][col] - expected) > epsilon) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 bool toolWorksWithoutWorkingSegments(SliceViewer::ToolMode tool) {
     return tool == SliceViewer::ToolMode::None ||
@@ -450,6 +469,11 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
 //        graphBase->pGraph->writeInitialEdgesToFile("initialEdges.nrrd");
 //    } else if(event->key() == Qt::Key_F) {
 //        graphBase->pGraph->printMergeTreeToFile("mergeTree.txt");
+    } else if (event->key() == Qt::Key_T) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("3dcut");
+        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::View3DCut);
     } else if (event->key() == Qt::Key_M) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("m");
@@ -504,6 +528,22 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
     Segment3DViewerDialog::CutSessionConfig cutSession;
     if (targetWorkingLabel != 0 && taskRunner != nullptr && graphBase != nullptr && graphBase->pGraph != nullptr) {
         cutSession.taskRunner = taskRunner;
+        cutSession.preflightWarning = [this](const Projected3DCutRequest &request) {
+            if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr ||
+                hasIdentityDirection(graphBase->pWorkingSegmentsImage)) {
+                return QString{};
+            }
+
+            const auto direction = graphBase->pWorkingSegmentsImage->GetDirection();
+            std::cout << "[3D Cut] warning: non-identity direction may make projected cuts inaccurate."
+                      << " targetLabel=" << request.targetWorkingLabel
+                      << " direction=[[" << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2]
+                      << "], [" << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2]
+                      << "], [" << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2]
+                      << "]]" << std::endl;
+            return QStringLiteral(
+                "3D cut currently assumes identity-direction segmentation volumes and may be inaccurate on rotated or flipped data.");
+        };
         cutSession.applyCut = [this](const Projected3DCutRequest &request) {
             Segment3DViewerDialog::CutApplyResult result;
             if (graphBase == nullptr || graphBase->pGraph == nullptr) {
@@ -698,6 +738,7 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
         {Qt::Key_J,       ToolMode::Dilate},
         {Qt::Key_K,       ToolMode::Erode},
         {Qt::Key_H,       ToolMode::Insert},
+        {Qt::Key_T,       ToolMode::View3DCut},
         {Qt::Key_M,       ToolMode::View3D},
     };
     auto it = keyToToolMode.find(event->key());
