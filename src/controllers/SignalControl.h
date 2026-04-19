@@ -88,6 +88,8 @@ public:
 
     void setUserAlpha(QTreeWidgetItem *item);
 
+    void setSignalNormAndRefresh(size_t signalIndex, double lower, double upper);
+
     void setDescription(QTreeWidgetItem *item);
 
     // Owns all signals created during image loading.

@@ -952,8 +952,7 @@ void MainWindow::loadSegmentationSample() {
                                             mySignalControl->setIsActive(probabilityItem, false);
                                         }
                                         if (*imageIndex < mySignalControl->allSignalList.size()) {
-                                            mySignalControl->allSignalList[*imageIndex]->setNorm(0, 100);
-                                            myOrthowindow->refreshViewers();
+                                            mySignalControl->setSignalNormAndRefresh(*imageIndex, 0, 100);
                                         }
                                     });
                             });

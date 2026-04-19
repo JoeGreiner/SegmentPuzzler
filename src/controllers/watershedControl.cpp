@@ -493,7 +493,18 @@ void WatershedControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
         refreshViewers();
     };
 
-    applyNorm(initialLower, initialUpper);
+    {
+        const int clampedLower = std::min(initialLower, initialUpper);
+        const int clampedUpper = std::max(initialLower, initialUpper);
+        const QSignalBlocker lowerSliderBlocker(lowerSlider);
+        const QSignalBlocker upperSliderBlocker(upperSlider);
+        const QSignalBlocker lowerSpinBlocker(lowerSpinBox);
+        const QSignalBlocker upperSpinBlocker(upperSpinBox);
+        lowerSlider->setValue(clampedLower);
+        upperSlider->setValue(clampedUpper);
+        lowerSpinBox->setValue(clampedLower);
+        upperSpinBox->setValue(clampedUpper);
+    }
 
     connect(lowerSlider, &QSlider::valueChanged, this, [applyNorm, upperSpinBox](int value) {
         applyNorm(std::min(value, upperSpinBox->value()), upperSpinBox->value());
@@ -575,7 +586,13 @@ void WatershedControl::openOpacityPopup(QTreeWidgetItem *item, QWidget *anchor) 
         refreshViewers();
     };
 
-    applyOpacity(alphaToPercent(signal->getAlpha()));
+    {
+        const int initialOpacityPercent = alphaToPercent(signal->getAlpha());
+        const QSignalBlocker sliderBlocker(slider);
+        const QSignalBlocker spinBlocker(spinBox);
+        slider->setValue(initialOpacityPercent);
+        spinBox->setValue(initialOpacityPercent);
+    }
 
     connect(slider, &QSlider::valueChanged, this, applyOpacity);
     connect(spinBox, qOverload<int>(&QSpinBox::valueChanged), this, applyOpacity);
