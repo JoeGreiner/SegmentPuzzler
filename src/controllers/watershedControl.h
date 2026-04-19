@@ -34,6 +34,7 @@
 
 class OrthoViewer;
 class TaskRunner;
+class SignalLayerWidget;
 class SegmentTableDialog;
 
 class WatershedControl : public QWidget {
@@ -267,6 +268,12 @@ private:
     void configureInputCombo(QComboBox *comboBox) const;
     void configureAlgorithmCombo(QComboBox *comboBox) const;
     void setTreeVisibleRows(QTreeWidget *treeWidget, int rows) const;
+    void updateLayerSelectionState(QTreeWidget *treeWidget);
+    void attachLayerWidgetToItem(QTreeWidget *treeWidget, QTreeWidgetItem *item);
+    void attachLayerWidgetToLastItem(QTreeWidget *treeWidget);
+    void refreshLayerWidget(QTreeWidget *treeWidget, QTreeWidgetItem *item);
+    void openNormPopup(QTreeWidgetItem *item, QWidget *anchor);
+    void openOpacityPopup(QTreeWidgetItem *item, QWidget *anchor);
     void refreshInputSelectors();
     void refreshComboSelection(QComboBox *comboBox, const std::vector<size_t> &signalIndices);
     void updateStepEnablement();

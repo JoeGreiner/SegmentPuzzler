@@ -3,6 +3,7 @@
 #include "src/viewers/fileIO.h"
 #include "MainWindowWatershedControl.h"
 #include "src/viewers/OrthoViewer.h"
+#include "src/qtUtils/SignalLayerWidget.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include <itkImage.h>
@@ -15,7 +16,11 @@
 #include <QAbstractItemView>
 #include <QLabel>
 #include <QMenu>
+#include <QSignalBlocker>
+#include <QSlider>
+#include <QSpinBox>
 #include <QStandardPaths>
+#include <QWidgetAction>
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <QSettings>
 #include <QThread>
@@ -150,6 +155,103 @@ void setTreeMinimumRows(QTreeWidget *tree, int rows) {
     const int headerHeight = tree->header() != nullptr ? tree->header()->sizeHint().height() : 0;
     const int frameHeight = tree->frameWidth() * 2;
     tree->setMinimumHeight(headerHeight + frameHeight + (std::max(0, rows) * rowHeight));
+}
+
+void configureSelectionLabel(QLabel *label) {
+    if (label == nullptr) {
+        return;
+    }
+
+    label->setWordWrap(true);
+    label->setTextFormat(Qt::PlainText);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+}
+
+SignalLayerWidget *layerWidgetForItem(QTreeWidget *tree, QTreeWidgetItem *item) {
+    if (tree == nullptr || item == nullptr) {
+        return nullptr;
+    }
+    return qobject_cast<SignalLayerWidget *>(tree->itemWidget(item, 0));
+}
+
+QTreeWidgetItem *findSignalTreeItem(QTreeWidget *tree, size_t signalIndex) {
+    if (tree == nullptr) {
+        return nullptr;
+    }
+
+    for (int itemIndex = 0; itemIndex < tree->topLevelItemCount(); ++itemIndex) {
+        QTreeWidgetItem *item = tree->topLevelItem(itemIndex);
+        if (item != nullptr && signal_tree::signalIndex(item) == signalIndex) {
+            return item;
+        }
+    }
+
+    return nullptr;
+}
+
+QString contrastChipText(itkSignalBase *signal) {
+    if (signal == nullptr) {
+        return QString();
+    }
+    return QString("%1..%2")
+        .arg(static_cast<int>(std::lround(signal->getNormLower())))
+        .arg(static_cast<int>(std::lround(signal->getNormUpper())));
+}
+
+QString opacityChipText(itkSignalBase *signal) {
+    if (signal == nullptr) {
+        return QString();
+    }
+    const int opacityPercent = static_cast<int>(std::lround((static_cast<double>(signal->getAlpha()) / 255.0) * 100.0));
+    return QString("%1%").arg(opacityPercent);
+}
+
+int alphaToPercent(unsigned int alpha) {
+    return static_cast<int>(std::lround((static_cast<double>(alpha) / 255.0) * 100.0));
+}
+
+unsigned char percentToAlpha(int percent) {
+    const int clampedPercent = std::clamp(percent, 0, 100);
+    return static_cast<unsigned char>(std::lround((static_cast<double>(clampedPercent) / 100.0) * 255.0));
+}
+
+QString layerToolTipText(itkSignalBase *signal) {
+    if (signal == nullptr) {
+        return QString();
+    }
+
+    QString toolTip = QString("Type: %1").arg(signal->getDisplayDataTypeName());
+    if (signal->usesEdgeStatusColors()) {
+        toolTip += "\nEdge colors are fixed: white, red, green.";
+    } else if (signal->usesCategoricalLUT()) {
+        toolTip += "\nClick the heart to randomize categorical colors.";
+    } else {
+        toolTip += "\nClick the heart to change the display color.";
+    }
+    if (signal->supportsNormControl()) {
+        toolTip += "\nClick contrast to adjust the display range.";
+    }
+    toolTip += "\nClick opacity to adjust the overlay strength.";
+    return toolTip;
+}
+
+int clampPopupValue(double value, int minimum, int maximum) {
+    if (maximum < minimum) {
+        return minimum;
+    }
+    if (!std::isfinite(value)) {
+        return minimum;
+    }
+    const double clamped = std::clamp(value, static_cast<double>(minimum), static_cast<double>(maximum));
+    return static_cast<int>(std::lround(clamped));
+}
+
+QPoint popupPositionForAnchor(QWidget *anchor) {
+    if (anchor == nullptr) {
+        return {};
+    }
+    return anchor->mapToGlobal(QPoint(0, anchor->height() + 2));
 }
 
 bool loadChoiceRequiresWorkingSegments(ImageLoadChoice loadChoice) {
@@ -288,6 +390,11 @@ void SignalControl::refreshUiState() {
     segmentationTreeWidget->setEnabled(enabled);
     refinementTreeWidget->setEnabled(enabled);
 
+    updateLayerSelectionState(signalTreeWidget);
+    updateLayerSelectionState(probabilityTreeWidget);
+    updateLayerSelectionState(segmentationTreeWidget);
+    updateLayerSelectionState(refinementTreeWidget);
+
     updateSelectionLabel(probabilityTreeWidget, selectedBoundaryLabel);
     updateSelectionLabel(refinementTreeWidget, selectedRefinementLabel);
     updateSelectionLabel(segmentationTreeWidget, selectedSegmentationLabel);
@@ -329,7 +436,306 @@ void SignalControl::updateSelectionLabel(QTreeWidget *tree, QLabel *label) {
         currentItem = tree->topLevelItem(tree->topLevelItemCount() - 1);
     }
 
-    label->setText(QString("Selected: %1").arg(currentItem->text(0)));
+    if (itkSignalBase *signal = signalForItem(currentItem)) {
+        label->setText(QString("Selected: %1").arg(signal->name));
+    } else {
+        label->setText("Selected: none");
+    }
+}
+
+void SignalControl::updateLayerSelectionState(QTreeWidget *tree) {
+    if (tree == nullptr) {
+        return;
+    }
+
+    for (int itemIndex = 0; itemIndex < tree->topLevelItemCount(); ++itemIndex) {
+        refreshLayerWidget(tree, tree->topLevelItem(itemIndex));
+    }
+}
+
+void SignalControl::attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *item) {
+    if (tree == nullptr || item == nullptr) {
+        return;
+    }
+
+    auto *layerWidget = new SignalLayerWidget(tree);
+    item->setFirstColumnSpanned(true);
+    tree->setItemWidget(item, 0, layerWidget);
+    SignalLayerWidget::requestHostTreeLayoutSync(tree);
+
+    connect(layerWidget, &SignalLayerWidget::sizeHintChanged, this, [tree]() {
+        SignalLayerWidget::requestHostTreeLayoutSync(tree);
+    });
+
+    connect(layerWidget, &SignalLayerWidget::activated, this, [this, tree, item]() {
+        tree->setCurrentItem(item);
+        if (tree == probabilityTreeWidget) {
+            boundaryClicked(item, 0);
+        } else if (tree == refinementTreeWidget) {
+            refinementClicked(item, 0);
+        } else if (tree == segmentationTreeWidget) {
+            segmentationClicked(item, 0);
+        } else {
+            updateLayerSelectionState(tree);
+        }
+    });
+
+    connect(layerWidget, &SignalLayerWidget::renameRequested, this, [this, tree, item]() {
+        tree->setCurrentItem(item);
+        setDescription(item);
+    });
+
+    connect(layerWidget, &SignalLayerWidget::visibilityToggled, this, [this, tree, item](bool visible) {
+        setIsActive(item, visible);
+        refreshLayerWidget(tree, item);
+    });
+
+    connect(layerWidget, &SignalLayerWidget::colorRequested, this, [this, tree, item]() {
+        setUserColor(item);
+        refreshLayerWidget(tree, item);
+    });
+
+    connect(layerWidget, &SignalLayerWidget::contrastRequested, this, [this, item](QWidget *anchor) {
+        openNormPopup(item, anchor);
+    });
+
+    connect(layerWidget, &SignalLayerWidget::opacityRequested, this, [this, item](QWidget *anchor) {
+        openOpacityPopup(item, anchor);
+    });
+
+    refreshLayerWidget(tree, item);
+}
+
+void SignalControl::attachLayerWidgetToLastItem(QTreeWidget *tree) {
+    if (tree == nullptr || tree->topLevelItemCount() <= 0) {
+        return;
+    }
+    attachLayerWidgetToItem(tree, tree->topLevelItem(tree->topLevelItemCount() - 1));
+}
+
+void SignalControl::refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item) {
+    if (tree == nullptr || item == nullptr) {
+        return;
+    }
+
+    auto *layerWidget = layerWidgetForItem(tree, item);
+    if (layerWidget == nullptr) {
+        return;
+    }
+
+    const size_t signalIndex = signalIndexForItem(item);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        return;
+    }
+
+    itkSignalBase *signal = allSignalList[signalIndex];
+    const QString name = signal->name;
+    const bool active = signal->getIsActive();
+
+    item->setText(0, QString());
+    item->setText(1, QString());
+
+    SignalLayerWidget::Presentation presentation;
+    presentation.layerName = name;
+    presentation.layerColor = QColor::fromRgba(signal->getColor());
+    presentation.usesCategoricalPalette = signal->usesCategoricalLUT();
+    presentation.usesEdgeStatusColors = signal->usesEdgeStatusColors();
+    presentation.layerVisible = active;
+    presentation.selected = item == signal_tree::topLevelSignalItem(tree->currentItem());
+    presentation.contrastText = contrastChipText(signal);
+    presentation.opacityText = opacityChipText(signal);
+    presentation.toolTip = layerToolTipText(signal);
+    presentation.contrastAvailable = signal->supportsNormControl();
+    layerWidget->applyPresentation(presentation);
+}
+
+void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
+    if (item == nullptr || anchor == nullptr) {
+        return;
+    }
+
+    const size_t signalIndex = signalIndexForItem(item);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        return;
+    }
+
+    itkSignalBase *signal = allSignalList[signalIndex];
+    if (!signal->supportsNormControl()) {
+        return;
+    }
+
+    auto *tree = item->treeWidget();
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *action = new QWidgetAction(menu);
+    auto *container = new QWidget(menu);
+    auto *layout = new QVBoxLayout(container);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto *lowerSlider = new QSlider(Qt::Horizontal, container);
+    auto *upperSlider = new QSlider(Qt::Horizontal, container);
+    auto *lowerSpinBox = new QSpinBox(container);
+    auto *upperSpinBox = new QSpinBox(container);
+    auto *autoButton = new QPushButton("Auto", container);
+    auto *resetButton = new QPushButton("Reset", container);
+
+    const int minimumBound = clampPopupValue(signal->getMinimumValueAsDouble(),
+                                             std::numeric_limits<int>::min(),
+                                             std::numeric_limits<int>::max());
+    const int maximumBound = clampPopupValue(signal->getMaximumValueAsDouble(),
+                                             std::numeric_limits<int>::min(),
+                                             std::numeric_limits<int>::max());
+
+    const int popupMinimum = std::min(minimumBound, maximumBound);
+    const int popupMaximum = std::max(minimumBound, maximumBound);
+
+    lowerSlider->setRange(popupMinimum, popupMaximum);
+    upperSlider->setRange(popupMinimum, popupMaximum);
+    lowerSpinBox->setRange(popupMinimum, popupMaximum);
+    upperSpinBox->setRange(popupMinimum, popupMaximum);
+
+    auto *lowerRow = new QWidget(container);
+    auto *lowerLayout = new QHBoxLayout(lowerRow);
+    lowerLayout->setContentsMargins(0, 0, 0, 0);
+    lowerLayout->setSpacing(6);
+    lowerLayout->addWidget(new QLabel("Min", lowerRow));
+    lowerLayout->addWidget(lowerSlider, 1);
+    lowerLayout->addWidget(lowerSpinBox);
+
+    auto *upperRow = new QWidget(container);
+    auto *upperLayout = new QHBoxLayout(upperRow);
+    upperLayout->setContentsMargins(0, 0, 0, 0);
+    upperLayout->setSpacing(6);
+    upperLayout->addWidget(new QLabel("Max", upperRow));
+    upperLayout->addWidget(upperSlider, 1);
+    upperLayout->addWidget(upperSpinBox);
+
+    layout->addWidget(lowerRow);
+    layout->addWidget(upperRow);
+
+    auto *buttonRow = new QWidget(container);
+    auto *buttonLayout = new QHBoxLayout(buttonRow);
+    buttonLayout->setContentsMargins(0, 0, 0, 0);
+    buttonLayout->setSpacing(6);
+    buttonLayout->addStretch(1);
+    buttonLayout->addWidget(autoButton);
+    buttonLayout->addWidget(resetButton);
+    layout->addWidget(buttonRow);
+
+    const int initialLower = clampPopupValue(signal->getNormLower(), popupMinimum, popupMaximum);
+    const int initialUpper = clampPopupValue(signal->getNormUpper(), popupMinimum, popupMaximum);
+
+    auto applyNorm = [this, tree, item, signal, lowerSlider, upperSlider, lowerSpinBox, upperSpinBox](int lower, int upper) {
+        lower = std::min(lower, upper);
+        upper = std::max(lower, upper);
+
+        const QSignalBlocker lowerSliderBlocker(lowerSlider);
+        const QSignalBlocker upperSliderBlocker(upperSlider);
+        const QSignalBlocker lowerSpinBlocker(lowerSpinBox);
+        const QSignalBlocker upperSpinBlocker(upperSpinBox);
+
+        lowerSlider->setValue(lower);
+        upperSlider->setValue(upper);
+        lowerSpinBox->setValue(lower);
+        upperSpinBox->setValue(upper);
+
+        signal->setNorm(lower, upper);
+        refreshLayerWidget(tree, item);
+        refreshViewers();
+    };
+
+    applyNorm(initialLower, initialUpper);
+
+    connect(lowerSlider, &QSlider::valueChanged, this, [applyNorm, upperSpinBox](int value) {
+        applyNorm(std::min(value, upperSpinBox->value()), upperSpinBox->value());
+    });
+    connect(upperSlider, &QSlider::valueChanged, this, [applyNorm, lowerSpinBox](int value) {
+        applyNorm(lowerSpinBox->value(), std::max(value, lowerSpinBox->value()));
+    });
+    connect(lowerSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [applyNorm, upperSpinBox](int value) {
+        applyNorm(std::min(value, upperSpinBox->value()), upperSpinBox->value());
+    });
+    connect(upperSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [applyNorm, lowerSpinBox](int value) {
+        applyNorm(lowerSpinBox->value(), std::max(value, lowerSpinBox->value()));
+    });
+    connect(autoButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
+        double autoLower = static_cast<double>(popupMinimum);
+        double autoUpper = static_cast<double>(popupMaximum);
+        if (!signal->computeNextAutoContrastRange(autoLower, autoUpper)) {
+            autoLower = static_cast<double>(popupMinimum);
+            autoUpper = static_cast<double>(popupMaximum);
+        }
+
+        applyNorm(clampPopupValue(autoLower, popupMinimum, popupMaximum),
+                  clampPopupValue(autoUpper, popupMinimum, popupMaximum));
+    });
+    connect(resetButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
+        applyNorm(popupMinimum, popupMaximum);
+        signal->resetAutoContrastState();
+    });
+
+    action->setDefaultWidget(container);
+    menu->addAction(action);
+    menu->popup(popupPositionForAnchor(anchor));
+}
+
+void SignalControl::openOpacityPopup(QTreeWidgetItem *item, QWidget *anchor) {
+    if (item == nullptr || anchor == nullptr) {
+        return;
+    }
+
+    const size_t signalIndex = signalIndexForItem(item);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        return;
+    }
+
+    itkSignalBase *signal = allSignalList[signalIndex];
+    auto *tree = item->treeWidget();
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *action = new QWidgetAction(menu);
+    auto *container = new QWidget(menu);
+    auto *layout = new QVBoxLayout(container);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto *slider = new QSlider(Qt::Horizontal, container);
+    auto *spinBox = new QSpinBox(container);
+    slider->setRange(0, 100);
+    spinBox->setRange(0, 100);
+    spinBox->setSuffix("%");
+
+    auto *row = new QWidget(container);
+    auto *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(6);
+    rowLayout->addWidget(new QLabel("Opacity", row));
+    rowLayout->addWidget(slider, 1);
+    rowLayout->addWidget(spinBox);
+    layout->addWidget(row);
+
+    auto applyOpacity = [this, tree, item, signal, slider, spinBox](int value) {
+        const int clampedValue = std::clamp(value, 0, 100);
+        const QSignalBlocker sliderBlocker(slider);
+        const QSignalBlocker spinBlocker(spinBox);
+        slider->setValue(clampedValue);
+        spinBox->setValue(clampedValue);
+        signal->setAlpha(percentToAlpha(clampedValue));
+        refreshLayerWidget(tree, item);
+        refreshViewers();
+    };
+
+    applyOpacity(alphaToPercent(signal->getAlpha()));
+
+    connect(slider, &QSlider::valueChanged, this, applyOpacity);
+    connect(spinBox, qOverload<int>(&QSpinBox::valueChanged), this, applyOpacity);
+
+    action->setDefaultWidget(container);
+    menu->addAction(action);
+    menu->popup(popupPositionForAnchor(anchor));
 }
 
 void SignalControl::selectLoadedItemIfAppropriate(QTreeWidget *tree,
@@ -557,6 +963,7 @@ void SignalControl::registerImageSignal(size_t signalIndexGlobal, const QString 
     allSignalList[signalIndexGlobal]->setLUTContinuous();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+    attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
 }
 
@@ -566,6 +973,7 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
     allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(true);
+    attachLayerWidgetToLastItem(segmentationTreeWidget);
     QTreeWidgetItem *newItem = segmentationTreeWidget->topLevelItem(segmentationTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(segmentationTreeWidget, newItem, lastAutoSelectedSegmentationItem);
 
@@ -578,6 +986,7 @@ void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QStri
     allSignalList[signalIndexGlobal]->setLUTContinuous();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
+    attachLayerWidgetToLastItem(probabilityTreeWidget);
     QTreeWidgetItem *newItem = probabilityTreeWidget->topLevelItem(probabilityTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(probabilityTreeWidget, newItem, lastAutoSelectedBoundaryItem);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
@@ -590,6 +999,7 @@ void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QSt
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(false);
+    attachLayerWidgetToLastItem(refinementTreeWidget);
     int lastItemIndex = refinementTreeWidget->topLevelItemCount() - 1;
     refinementTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
     refinementTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
@@ -607,6 +1017,7 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     allSignalList[signalIndexGlobal]->setName(
         signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Supervoxels")));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+    attachLayerWidgetToLastItem(signalTreeWidget);
 
     graphBase->pWorkingSegments = typedSegmentsSignal;
     graphBase->pWorkingSegmentsImage = typedSegmentsSignal->pImage;
@@ -619,6 +1030,7 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
+    attachLayerWidgetToLastItem(signalTreeWidget);
     int lastItemIndex = signalTreeWidget->topLevelItemCount() - 1;
     signalTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
     signalTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
@@ -993,12 +1405,16 @@ void SignalControl::setupSignalTreeWidget() {
     signalTreeWidget->setHeaderLabels({"Name", "Properties"});
     signalTreeWidget->header()->setStretchLastSection(false);
     signalTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    SignalLayerWidget::configureHostTree(signalTreeWidget);
     setTreeMinimumRows(signalTreeWidget, kLayersVisibleRows);
     // Extra vertical space should go into the tree, not the section title.
     signalWidgetLayout->addWidget(signalTreeWidget, 1);
 
     connect(signalTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(signalTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::treeClicked);
+    connect(signalTreeWidget, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *, QTreeWidgetItem *) {
+        updateLayerSelectionState(signalTreeWidget);
+    });
 }
 
 
@@ -1013,11 +1429,13 @@ void SignalControl::setupProbabilityTreeWidget() {
     probabilityTreeWidget->setHeaderLabels({"Name", "Properties"});
     probabilityTreeWidget->header()->setStretchLastSection(false);
     probabilityTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    SignalLayerWidget::configureHostTree(probabilityTreeWidget);
     setTreeMinimumRows(probabilityTreeWidget, kOtherSectionVisibleRows);
     probabilityWidgetLayout->addWidget(probabilityTreeWidget, 1);
 
     selectedBoundaryLabel = new QLabel("Selected: none");
     selectedBoundaryLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    configureSelectionLabel(selectedBoundaryLabel);
     probabilityWidgetLayout->addWidget(selectedBoundaryLabel);
 
     auto *boundaryButtonRow = new QHBoxLayout();
@@ -1039,6 +1457,9 @@ void SignalControl::setupProbabilityTreeWidget() {
 
     connect(probabilityTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(probabilityTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::boundaryClicked);
+    connect(probabilityTreeWidget, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *, QTreeWidgetItem *) {
+        updateLayerSelectionState(probabilityTreeWidget);
+    });
 }
 
 
@@ -1053,14 +1474,19 @@ void SignalControl::setupRefinementTreeWidget() {
     refinementTreeWidget->setHeaderLabels({"Name", "Properties"});
     refinementTreeWidget->header()->setStretchLastSection(false);
     refinementTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    SignalLayerWidget::configureHostTree(refinementTreeWidget);
     setTreeMinimumRows(refinementTreeWidget, kOtherSectionVisibleRows);
     refinementWidgetLayout->addWidget(refinementTreeWidget, 1);
     selectedRefinementLabel = new QLabel("Selected: none");
     selectedRefinementLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    configureSelectionLabel(selectedRefinementLabel);
     refinementWidgetLayout->addWidget(selectedRefinementLabel);
 
     connect(refinementTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(refinementTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::refinementClicked);
+    connect(refinementTreeWidget, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *, QTreeWidgetItem *) {
+        updateLayerSelectionState(refinementTreeWidget);
+    });
 }
 
 void SignalControl::handleDroppedFile(QString fileName) {
@@ -1175,6 +1601,7 @@ void SignalControl::setupSegmentationTreeWidget() {
     segmentationTreeWidget->setHeaderLabels({"Name", "Properties"});
     segmentationTreeWidget->header()->setStretchLastSection(false);
     segmentationTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    SignalLayerWidget::configureHostTree(segmentationTreeWidget);
     setTreeMinimumRows(segmentationTreeWidget, kOtherSectionVisibleRows);
     segmentationWidgetLayout->addWidget(segmentationTreeWidget, 1);
 
@@ -1184,6 +1611,7 @@ void SignalControl::setupSegmentationTreeWidget() {
 
     selectedSegmentationLabel = new QLabel("Selected: none");
     selectedSegmentationLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    configureSelectionLabel(selectedSegmentationLabel);
     exportSegmentationButton = new QPushButton();
     exportSegmentationButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     selectionRow->addWidget(selectedSegmentationLabel, 1);
@@ -1212,6 +1640,9 @@ void SignalControl::setupSegmentationTreeWidget() {
 
     connect(segmentationTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(segmentationTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::segmentationClicked);
+    connect(segmentationTreeWidget, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *, QTreeWidgetItem *) {
+        updateLayerSelectionState(segmentationTreeWidget);
+    });
 }
 
 
@@ -1292,18 +1723,25 @@ void SignalControl::setUserColor(QTreeWidgetItem *item) {
         SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Opening color picker for signal index=%1").arg(signalIndex));
     }
 
+    if (allSignalList[signalIndex]->usesCategoricalLUT()) {
+        allSignalList[signalIndex]->randomizeCategoricalLUT();
+        refreshLayerWidget(item->treeWidget(), item);
+        refreshViewers();
+        return;
+    }
+
+    if (allSignalList[signalIndex]->usesEdgeStatusColors()) {
+        return;
+    }
+
     QColor newColor = QColorDialog::getColor();
-    QPixmap colorIcon(30, 30);
-    colorIcon.fill(newColor);
-    item->setIcon(1, colorIcon);
-    item->parent()->setIcon(1, colorIcon);
-    std::string colorString = std::to_string(newColor.red())
-                              + " " + std::to_string(newColor.green())
-                              + " " + std::to_string(newColor.blue());
-    item->setText(1, QString::fromStdString(colorString));
+    if (!newColor.isValid()) {
+        return;
+    }
 
     allSignalList[signalIndex]->setMainColor(newColor);
 
+    refreshLayerWidget(item->treeWidget(), item);
     refreshViewers();
 }
 
@@ -1322,8 +1760,8 @@ void SignalControl::setDescription(QTreeWidgetItem *item) {
         if (isSegmentsItem(item)) { // TODO: put some unique identifier besides name/descriptor for segments
             SP_LOG_WARNING("segmentation", QStringLiteral("Segment descriptor renaming is still not implemented"));
         } else {
-            item->setText(0, newName);
             allSignalList[signalIndex]->setName(newName);
+            refreshLayerWidget(item->treeWidget(), item);
             refreshUiState();
         }
     }
@@ -1416,12 +1854,6 @@ void SignalControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
     }
     const size_t signalIndex = signalIndexForItem(item);
 
-    if (isActiveIn) {
-        item->setText(1, "active");
-    } else {
-        item->setText(1, "inactive");
-    }
-
     allSignalList[signalIndex]->setIsActive(isActiveIn);
 
     for (auto *viewer: orthoViewer->viewerList) {
@@ -1429,35 +1861,15 @@ void SignalControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
         viewer->recalculateQImages();
     }
 
+    refreshLayerWidget(item->treeWidget(), item);
 }
 
 void SignalControl::setUserNorm(QTreeWidgetItem *item) {
-    const size_t signalIndex = signalIndexForItem(item);
-
-//        std::string test item->get;
-    SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting normalization for signal index=%1").arg(signalIndex));
-    int normLower = QInputDialog::getInt(this, "Min Normalization", "Min Normalization", 0);
-    int normUpper = QInputDialog::getInt(this, "Max Normalization", "Max Normalization", 255, normLower);
-
-    QString normString = QString("%1").arg(normLower) + " " + QString("%1").arg(normUpper);
-    item->setText(1, normString);
-
-    allSignalList[signalIndex]->setNorm(normLower, normUpper);
-
-    refreshViewers();
+    openNormPopup(item, this);
 }
 
 void SignalControl::setUserAlpha(QTreeWidgetItem *item) {
-    const size_t signalIndex = signalIndexForItem(item);
-
-    unsigned char alpha = QInputDialog::getInt(this, "Alpha", "Alpha", 255, 0, 255);
-
-    std::string alphaString = std::to_string(alpha);
-    item->setText(1, QString::fromStdString(alphaString));
-
-    allSignalList[signalIndex]->setAlpha(alpha);
-
-    refreshViewers();
+    openOpacityPopup(item, this);
 }
 
 
@@ -1543,10 +1955,9 @@ void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>:
         allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
         allSignalList[signalIndexGlobal]->setIsActive(false);
         allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
-        int lastItemIndex = refinementTreeWidget->topLevelItemCount() - 1;
-        refinementTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-        refinementTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-        QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(lastItemIndex);
+        attachLayerWidgetToLastItem(refinementTreeWidget);
+        QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(refinementTreeWidget->topLevelItemCount() - 1);
+        setIsActive(newItem, false);
         selectLoadedItemIfAppropriate(refinementTreeWidget, newItem, lastAutoSelectedRefinementItem);
         orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
         selectRefinementItem(refinementTreeWidget->currentItem());
@@ -1581,6 +1992,9 @@ void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImag
     prepareWorkingSegmentsGraph(pImage);
     registerSegmentsGraphSignal(signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
+    if (QTreeWidgetItem *item = findSignalTreeItem(signalTreeWidget, signalIndexGlobal)) {
+        refreshLayerWidget(signalTreeWidget, item);
+    }
 }
 
 
@@ -1679,6 +2093,7 @@ void SignalControl::createEmptySegmentation() {
     allSignalList[signalIndexGlobal]->setName(
         signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Segmentation")));
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
+    attachLayerWidgetToLastItem(segmentationTreeWidget);
     QTreeWidgetItem *newItem = segmentationTreeWidget->topLevelItem(segmentationTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(segmentationTreeWidget, newItem, lastAutoSelectedSegmentationItem);
 

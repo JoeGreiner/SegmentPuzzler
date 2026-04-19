@@ -138,6 +138,9 @@ public:
 
     virtual void setNorm(double lower, double upper) = 0;
 
+    virtual bool computeNextAutoContrastRange(double &lower, double &upper) = 0;
+    virtual void resetAutoContrastState() = 0;
+
     virtual void setMainColor(int r, int g, int b) = 0;
 
     virtual void setMainColor(QColor color) = 0;
@@ -170,9 +173,21 @@ public:
 
     virtual double getNormUpper() = 0;
 
+    virtual double getMinimumValueAsDouble() const = 0;
+
+    virtual double getMaximumValueAsDouble() const = 0;
+
     virtual unsigned int getAlpha() = 0;
 
     virtual QRgb getColor() = 0;
+
+    virtual QString getDisplayDataTypeName() const = 0;
+
+    virtual bool supportsNormControl() const = 0;
+
+    virtual bool usesCategoricalLUT() const = 0;
+
+    virtual bool usesEdgeStatusColors() const = 0;
 
     virtual unsigned long getDimX() = 0;
 

@@ -9,10 +9,13 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QInputDialog>
+#include <QPointer>
+#include <QStyle>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QFormLayout>
+#include <algorithm>
 #include "src/utils/utils.h"
 #include "src/utils/systemStats.h"
 #include "src/qtUtils/WindowStats.h"
@@ -77,6 +80,35 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
         }
 
         window->setGeometry(targetGeometry);
+    });
+}
+
+void scheduleInitialSidebarSizes(QSplitter *splitter, QWidget *sidebar) {
+    if (splitter == nullptr || sidebar == nullptr) {
+        return;
+    }
+
+    QPointer<QSplitter> guardedSplitter = splitter;
+    QPointer<QWidget> guardedSidebar = sidebar;
+    QTimer::singleShot(0, splitter, [guardedSplitter, guardedSidebar]() {
+        if (guardedSplitter == nullptr || guardedSidebar == nullptr) {
+            return;
+        }
+
+        const int availableWidth = std::max(0, guardedSplitter->width() - guardedSplitter->handleWidth());
+        if (availableWidth <= 0) {
+            return;
+        }
+
+        int sidebarMargin = guardedSplitter->style()->pixelMetric(QStyle::PM_LayoutHorizontalSpacing, nullptr, guardedSplitter);
+        if (sidebarMargin < 0) {
+            sidebarMargin = 8;
+        }
+
+        const int requestedLeftWidth = guardedSidebar->minimumSizeHint().width() + sidebarMargin;
+        const int maxLeftWidth = std::max(1, static_cast<int>(availableWidth * 0.45));
+        const int leftWidth = std::min(requestedLeftWidth, maxLeftWidth);
+        guardedSplitter->setSizes({leftWidth, std::max(0, availableWidth - leftWidth)});
     });
 }
 
@@ -149,6 +181,7 @@ MainWindow::MainWindow() {
     auto horizontalSplitter = new QSplitter();
     horizontalSplitter->addWidget(mySignalControl);
     horizontalSplitter->addWidget(myOrthowindow);
+    horizontalSplitter->setChildrenCollapsible(false);
     horizontalSplitter->setStretchFactor(0, 1);
     horizontalSplitter->setStretchFactor(1, 3);
 
@@ -424,6 +457,7 @@ MainWindow::MainWindow() {
     windowStats::setupWindowTitleStatsTimer(this, "SegmentPuzzler");
 
     showWindowWithinAvailableScreen(this);
+    scheduleInitialSidebarSizes(horizontalSplitter, mySignalControl);
 }
 
 void MainWindow::installInitialFileDropHandling() {

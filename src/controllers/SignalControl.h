@@ -29,6 +29,7 @@ class TaskRunner;
 class QMenu;
 class QLabel;
 class QVBoxLayout;
+class SignalLayerWidget;
 
 class SignalControl : public QWidget {
 Q_OBJECT
@@ -270,6 +271,12 @@ private:
     void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
     void refreshUiState();
     void updateSelectionLabel(QTreeWidget *tree, QLabel *label);
+    void updateLayerSelectionState(QTreeWidget *tree);
+    void attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *item);
+    void attachLayerWidgetToLastItem(QTreeWidget *tree);
+    void refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item);
+    void openNormPopup(QTreeWidgetItem *item, QWidget *anchor);
+    void openOpacityPopup(QTreeWidgetItem *item, QWidget *anchor);
     void selectLoadedItemIfAppropriate(QTreeWidget *tree, QTreeWidgetItem *newItem, QTreeWidgetItem *&lastAutoSelectedItem);
     void selectBoundaryItem(QTreeWidgetItem *item);
     void selectRefinementItem(QTreeWidgetItem *item);

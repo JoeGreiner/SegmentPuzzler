@@ -23,6 +23,9 @@
 #endif
 
 #include <iostream>
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <type_traits>
 
 #include <itkMinimumMaximumImageCalculator.h>
@@ -96,6 +99,10 @@ public:
 
     void setNorm(double lower, double upper) override;
 
+    bool computeNextAutoContrastRange(double &lower, double &upper) override;
+
+    void resetAutoContrastState() override;
+
     void setMainColor(int r, int g, int b) override;
 
     void setMainColor(QColor color) override;
@@ -119,6 +126,10 @@ public:
 
     double getNormUpper() override;
 
+    double getMinimumValueAsDouble() const override { return static_cast<double>(minimumValue); }
+
+    double getMaximumValueAsDouble() const override { return static_cast<double>(maximumValue); }
+
     unsigned int getAlpha() override;
 
     QString getNumberOfXYZAsString(int x, int y, int z) override;
@@ -126,6 +137,14 @@ public:
     unsigned long getPixMapIndex(itk::Index<3> coords, unsigned int sliceAxis);
 
     QRgb getColor() override;
+
+    QString getDisplayDataTypeName() const override { return displayDataTypeName(); }
+
+    bool supportsNormControl() const override { return !isCategorical && !isEdge; }
+
+    bool usesCategoricalLUT() const override { return isCategorical && !isEdge; }
+
+    bool usesEdgeStatusColors() const override { return isEdge; }
 
     unsigned long getDimX() override;
 
@@ -184,6 +203,8 @@ public:
     // true once the LUT has been built as categorical at least once;
     // false forces a full rebuild when first switching from continuous to categorical
     bool categoricalLUTInitialized = false;
+
+    int autoContrastThreshold = 0;
 
 
     std::unordered_map<unsigned int, char> *labelToStatus = nullptr;
@@ -565,6 +586,105 @@ void itkSignal<dType>::setNorm(double lower, double upper) {
     normLower = lower;
     normUpper = upper;
     calculateLUT();
+}
+
+template<typename dType>
+void itkSignal<dType>::resetAutoContrastState() {
+    autoContrastThreshold = 0;
+}
+
+template<typename dType>
+bool itkSignal<dType>::computeNextAutoContrastRange(double &lower, double &upper) {
+    constexpr int histogramBinCount = 256;
+    const double imageMinimum = static_cast<double>(minimumValue);
+    const double imageMaximum = static_cast<double>(maximumValue);
+
+    lower = imageMinimum;
+    upper = imageMaximum;
+
+    if (pImage.IsNull()) {
+        return false;
+    }
+
+    if (!std::isfinite(imageMinimum) || !std::isfinite(imageMaximum) || imageMaximum <= imageMinimum) {
+        return true;
+    }
+
+    std::array<long long, histogramBinCount> histogram{};
+    itk::ImageRegionConstIteratorWithIndex<SignalImageType> iterator(pImage, pImage->GetLargestPossibleRegion());
+    const double scale = static_cast<double>(histogramBinCount) / (imageMaximum - imageMinimum);
+    long long pixelCount = 0;
+
+    for (iterator.GoToBegin(); !iterator.IsAtEnd(); ++iterator) {
+        const double value = static_cast<double>(iterator.Get());
+        if (!std::isfinite(value)) {
+            continue;
+        }
+
+        int histogramIndex = 0;
+        if (value >= imageMaximum) {
+            histogramIndex = histogramBinCount - 1;
+        } else if (value > imageMinimum) {
+            histogramIndex = static_cast<int>((value - imageMinimum) * scale);
+            histogramIndex = std::clamp(histogramIndex, 0, histogramBinCount - 1);
+        }
+
+        histogram[histogramIndex] += 1;
+        pixelCount += 1;
+    }
+
+    if (pixelCount <= 0) {
+        return true;
+    }
+
+    const long long limit = pixelCount / 10;
+    if (autoContrastThreshold < 10) {
+        autoContrastThreshold = 5000;
+    } else {
+        autoContrastThreshold /= 2;
+    }
+
+    const long long threshold = pixelCount / autoContrastThreshold;
+
+    int lowerIndex = 0;
+    while (lowerIndex < histogramBinCount - 1) {
+        long long count = histogram[lowerIndex];
+        if (count > limit) {
+            count = 0;
+        }
+        if (count > threshold) {
+            break;
+        }
+        ++lowerIndex;
+    }
+
+    int upperIndex = histogramBinCount - 1;
+    while (upperIndex > 0) {
+        long long count = histogram[upperIndex];
+        if (count > limit) {
+            count = 0;
+        }
+        if (count > threshold) {
+            break;
+        }
+        --upperIndex;
+    }
+
+    if (upperIndex < lowerIndex) {
+        autoContrastThreshold = 0;
+        return true;
+    }
+
+    const double binSize = (imageMaximum - imageMinimum) / static_cast<double>(histogramBinCount);
+    lower = imageMinimum + static_cast<double>(lowerIndex) * binSize;
+    upper = imageMinimum + static_cast<double>(upperIndex) * binSize;
+
+    if (lower == upper) {
+        lower = imageMinimum;
+        upper = imageMaximum;
+    }
+
+    return true;
 }
 
 template<typename dType>

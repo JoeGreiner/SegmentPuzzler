@@ -12,6 +12,7 @@
 #include <QDateTime>
 #include <src/segment_handling/Graph.h>
 #include <src/viewers/OrthoViewer.h>
+#include "src/qtUtils/SignalLayerWidget.h"
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QAbstractItemView>
@@ -25,16 +26,20 @@
 #include <src/viewers/itkSignalThresholdPreview.h>
 #include <QtWidgets/QMessageBox>
 #include <QCheckBox>
+#include <QMenu>
+#include <QSlider>
 #include <QSpinBox>
 #include <QSignalBlocker>
 #include <QShortcut>
+#include <QWidgetAction>
 #include <itkCastImageFilter.h>
-#include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/SignalNameUtils.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace {
 
@@ -154,6 +159,77 @@ QTreeWidgetItem *findSignalTreeItem(QTreeWidget *treeWidget, size_t signalIndex)
     return nullptr;
 }
 
+SignalLayerWidget *layerWidgetForItem(QTreeWidget *treeWidget, QTreeWidgetItem *item) {
+    if (treeWidget == nullptr || item == nullptr) {
+        return nullptr;
+    }
+    return qobject_cast<SignalLayerWidget *>(treeWidget->itemWidget(item, 0));
+}
+
+QString contrastChipText(itkSignalBase *signal) {
+    if (signal == nullptr) {
+        return QString();
+    }
+    return QString("%1..%2")
+        .arg(static_cast<int>(std::lround(signal->getNormLower())))
+        .arg(static_cast<int>(std::lround(signal->getNormUpper())));
+}
+
+QString opacityChipText(itkSignalBase *signal) {
+    if (signal == nullptr) {
+        return QString();
+    }
+    const int opacityPercent = static_cast<int>(std::lround((static_cast<double>(signal->getAlpha()) / 255.0) * 100.0));
+    return QString("%1%").arg(opacityPercent);
+}
+
+int alphaToPercent(unsigned int alpha) {
+    return static_cast<int>(std::lround((static_cast<double>(alpha) / 255.0) * 100.0));
+}
+
+unsigned char percentToAlpha(int percent) {
+    const int clampedPercent = std::clamp(percent, 0, 100);
+    return static_cast<unsigned char>(std::lround((static_cast<double>(clampedPercent) / 100.0) * 255.0));
+}
+
+QString layerToolTipText(itkSignalBase *signal) {
+    if (signal == nullptr) {
+        return QString();
+    }
+
+    QString toolTip = QString("Type: %1").arg(signal->getDisplayDataTypeName());
+    if (signal->usesEdgeStatusColors()) {
+        toolTip += "\nEdge colors are fixed: white, red, green.";
+    } else if (signal->usesCategoricalLUT()) {
+        toolTip += "\nClick the heart to randomize categorical colors.";
+    } else {
+        toolTip += "\nClick the heart to change the display color.";
+    }
+    if (signal->supportsNormControl()) {
+        toolTip += "\nClick contrast to adjust the display range.";
+    }
+    toolTip += "\nClick opacity to adjust the overlay strength.";
+    return toolTip;
+}
+
+int clampPopupValue(double value, int minimum, int maximum) {
+    if (maximum < minimum) {
+        return minimum;
+    }
+    if (!std::isfinite(value)) {
+        return minimum;
+    }
+    const double clamped = std::clamp(value, static_cast<double>(minimum), static_cast<double>(maximum));
+    return static_cast<int>(std::lround(clamped));
+}
+
+QPoint popupPositionForAnchor(QWidget *anchor) {
+    if (anchor == nullptr) {
+        return {};
+    }
+    return anchor->mapToGlobal(QPoint(0, anchor->height() + 2));
+}
+
 } // namespace
 
 WatershedControl::~WatershedControl() {
@@ -181,7 +257,6 @@ void WatershedControl::setGuiBusy(bool busy) {
     calculateDistanceMapButton->setEnabled(!busy);
     calculateSeedsButton->setEnabled(!busy);
     runWatershedButton->setEnabled(!busy);
-    inspectSegmentsButton->setEnabled(!busy);
     createRefinementButton->setEnabled(!busy);
     togglePaintBoundaryModeButton->setEnabled(!busy);
     thresholdValueSlider->setEnabled(!busy);
@@ -227,6 +302,287 @@ void WatershedControl::setGuiBusy(bool busy) {
         updateStepEnablement();
         agglomertionPreviewSettingsChanged();
     }
+}
+
+void WatershedControl::updateLayerSelectionState(QTreeWidget *treeWidget) {
+    if (treeWidget == nullptr) {
+        return;
+    }
+
+    for (int itemIndex = 0; itemIndex < treeWidget->topLevelItemCount(); ++itemIndex) {
+        refreshLayerWidget(treeWidget, treeWidget->topLevelItem(itemIndex));
+    }
+}
+
+void WatershedControl::attachLayerWidgetToItem(QTreeWidget *treeWidget, QTreeWidgetItem *item) {
+    if (treeWidget == nullptr || item == nullptr) {
+        return;
+    }
+
+    auto *layerWidget = new SignalLayerWidget(treeWidget);
+    item->setFirstColumnSpanned(true);
+    treeWidget->setItemWidget(item, 0, layerWidget);
+    SignalLayerWidget::requestHostTreeLayoutSync(treeWidget);
+
+    connect(layerWidget, &SignalLayerWidget::sizeHintChanged, this, [treeWidget]() {
+        SignalLayerWidget::requestHostTreeLayoutSync(treeWidget);
+    });
+
+    connect(layerWidget, &SignalLayerWidget::activated, this, [this, treeWidget, item]() {
+        treeWidget->setCurrentItem(item);
+        updateLayerSelectionState(treeWidget);
+    });
+    connect(layerWidget, &SignalLayerWidget::renameRequested, this, [this, treeWidget, item]() {
+        treeWidget->setCurrentItem(item);
+        setDescription(item);
+    });
+    connect(layerWidget, &SignalLayerWidget::visibilityToggled, this, [this, treeWidget, item](bool visible) {
+        setIsActive(item, visible);
+        refreshLayerWidget(treeWidget, item);
+    });
+    connect(layerWidget, &SignalLayerWidget::colorRequested, this, [this, treeWidget, item]() {
+        setUserColor(item);
+        refreshLayerWidget(treeWidget, item);
+    });
+    connect(layerWidget, &SignalLayerWidget::contrastRequested, this, [this, item](QWidget *anchor) {
+        openNormPopup(item, anchor);
+    });
+    connect(layerWidget, &SignalLayerWidget::opacityRequested, this, [this, item](QWidget *anchor) {
+        openOpacityPopup(item, anchor);
+    });
+
+    refreshLayerWidget(treeWidget, item);
+}
+
+void WatershedControl::attachLayerWidgetToLastItem(QTreeWidget *treeWidget) {
+    if (treeWidget == nullptr || treeWidget->topLevelItemCount() <= 0) {
+        return;
+    }
+    attachLayerWidgetToItem(treeWidget, treeWidget->topLevelItem(treeWidget->topLevelItemCount() - 1));
+}
+
+void WatershedControl::refreshLayerWidget(QTreeWidget *treeWidget, QTreeWidgetItem *item) {
+    if (treeWidget == nullptr || item == nullptr) {
+        return;
+    }
+
+    auto *layerWidget = layerWidgetForItem(treeWidget, item);
+    if (layerWidget == nullptr) {
+        return;
+    }
+
+    const size_t signalIndex = signalIndexForItem(item);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        return;
+    }
+
+    itkSignalBase *signal = allSignalList[signalIndex];
+    const QString name = signal->name;
+    const bool active = signal->getIsActive();
+
+    item->setText(0, QString());
+    item->setText(1, QString());
+
+    SignalLayerWidget::Presentation presentation;
+    presentation.layerName = name;
+    presentation.layerColor = QColor::fromRgba(signal->getColor());
+    presentation.usesCategoricalPalette = signal->usesCategoricalLUT();
+    presentation.usesEdgeStatusColors = signal->usesEdgeStatusColors();
+    presentation.layerVisible = active;
+    presentation.selected = item == signal_tree::topLevelSignalItem(treeWidget->currentItem());
+    presentation.contrastText = contrastChipText(signal);
+    presentation.opacityText = opacityChipText(signal);
+    presentation.toolTip = layerToolTipText(signal);
+    presentation.contrastAvailable = signal->supportsNormControl();
+    layerWidget->applyPresentation(presentation);
+}
+
+void WatershedControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
+    if (item == nullptr || anchor == nullptr) {
+        return;
+    }
+
+    const size_t signalIndex = signalIndexForItem(item);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        return;
+    }
+
+    itkSignalBase *signal = allSignalList[signalIndex];
+    if (!signal->supportsNormControl()) {
+        return;
+    }
+
+    auto *treeWidget = item->treeWidget();
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *action = new QWidgetAction(menu);
+    auto *container = new QWidget(menu);
+    auto *layout = new QVBoxLayout(container);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto *lowerSlider = new QSlider(Qt::Horizontal, container);
+    auto *upperSlider = new QSlider(Qt::Horizontal, container);
+    auto *lowerSpinBox = new QSpinBox(container);
+    auto *upperSpinBox = new QSpinBox(container);
+    auto *autoButton = new QPushButton("Auto", container);
+    auto *resetButton = new QPushButton("Reset", container);
+
+    const int minimumBound = clampPopupValue(signal->getMinimumValueAsDouble(),
+                                             std::numeric_limits<int>::min(),
+                                             std::numeric_limits<int>::max());
+    const int maximumBound = clampPopupValue(signal->getMaximumValueAsDouble(),
+                                             std::numeric_limits<int>::min(),
+                                             std::numeric_limits<int>::max());
+    const int popupMinimum = std::min(minimumBound, maximumBound);
+    const int popupMaximum = std::max(minimumBound, maximumBound);
+    lowerSlider->setRange(popupMinimum, popupMaximum);
+    upperSlider->setRange(popupMinimum, popupMaximum);
+    lowerSpinBox->setRange(popupMinimum, popupMaximum);
+    upperSpinBox->setRange(popupMinimum, popupMaximum);
+
+    auto *lowerRow = new QWidget(container);
+    auto *lowerLayout = new QHBoxLayout(lowerRow);
+    lowerLayout->setContentsMargins(0, 0, 0, 0);
+    lowerLayout->setSpacing(6);
+    lowerLayout->addWidget(new QLabel("Min", lowerRow));
+    lowerLayout->addWidget(lowerSlider, 1);
+    lowerLayout->addWidget(lowerSpinBox);
+
+    auto *upperRow = new QWidget(container);
+    auto *upperLayout = new QHBoxLayout(upperRow);
+    upperLayout->setContentsMargins(0, 0, 0, 0);
+    upperLayout->setSpacing(6);
+    upperLayout->addWidget(new QLabel("Max", upperRow));
+    upperLayout->addWidget(upperSlider, 1);
+    upperLayout->addWidget(upperSpinBox);
+
+    layout->addWidget(lowerRow);
+    layout->addWidget(upperRow);
+
+    auto *buttonRow = new QWidget(container);
+    auto *buttonLayout = new QHBoxLayout(buttonRow);
+    buttonLayout->setContentsMargins(0, 0, 0, 0);
+    buttonLayout->setSpacing(6);
+    buttonLayout->addStretch(1);
+    buttonLayout->addWidget(autoButton);
+    buttonLayout->addWidget(resetButton);
+    layout->addWidget(buttonRow);
+
+    const int initialLower = clampPopupValue(signal->getNormLower(), popupMinimum, popupMaximum);
+    const int initialUpper = clampPopupValue(signal->getNormUpper(), popupMinimum, popupMaximum);
+
+    auto applyNorm = [this, treeWidget, item, signal, lowerSlider, upperSlider, lowerSpinBox, upperSpinBox](int lower,
+                                                                                                             int upper) {
+        lower = std::min(lower, upper);
+        upper = std::max(lower, upper);
+
+        const QSignalBlocker lowerSliderBlocker(lowerSlider);
+        const QSignalBlocker upperSliderBlocker(upperSlider);
+        const QSignalBlocker lowerSpinBlocker(lowerSpinBox);
+        const QSignalBlocker upperSpinBlocker(upperSpinBox);
+
+        lowerSlider->setValue(lower);
+        upperSlider->setValue(upper);
+        lowerSpinBox->setValue(lower);
+        upperSpinBox->setValue(upper);
+
+        signal->setNorm(lower, upper);
+        refreshLayerWidget(treeWidget, item);
+        refreshViewers();
+    };
+
+    applyNorm(initialLower, initialUpper);
+
+    connect(lowerSlider, &QSlider::valueChanged, this, [applyNorm, upperSpinBox](int value) {
+        applyNorm(std::min(value, upperSpinBox->value()), upperSpinBox->value());
+    });
+    connect(upperSlider, &QSlider::valueChanged, this, [applyNorm, lowerSpinBox](int value) {
+        applyNorm(lowerSpinBox->value(), std::max(value, lowerSpinBox->value()));
+    });
+    connect(lowerSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [applyNorm, upperSpinBox](int value) {
+        applyNorm(std::min(value, upperSpinBox->value()), upperSpinBox->value());
+    });
+    connect(upperSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [applyNorm, lowerSpinBox](int value) {
+        applyNorm(lowerSpinBox->value(), std::max(value, lowerSpinBox->value()));
+    });
+    connect(autoButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
+        double autoLower = static_cast<double>(popupMinimum);
+        double autoUpper = static_cast<double>(popupMaximum);
+        if (!signal->computeNextAutoContrastRange(autoLower, autoUpper)) {
+            autoLower = static_cast<double>(popupMinimum);
+            autoUpper = static_cast<double>(popupMaximum);
+        }
+
+        applyNorm(clampPopupValue(autoLower, popupMinimum, popupMaximum),
+                  clampPopupValue(autoUpper, popupMinimum, popupMaximum));
+    });
+    connect(resetButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
+        applyNorm(popupMinimum, popupMaximum);
+        signal->resetAutoContrastState();
+    });
+
+    action->setDefaultWidget(container);
+    menu->addAction(action);
+    menu->popup(popupPositionForAnchor(anchor));
+}
+
+void WatershedControl::openOpacityPopup(QTreeWidgetItem *item, QWidget *anchor) {
+    if (item == nullptr || anchor == nullptr) {
+        return;
+    }
+
+    const size_t signalIndex = signalIndexForItem(item);
+    if (signalIndex >= allSignalList.size() || allSignalList[signalIndex] == nullptr) {
+        return;
+    }
+
+    itkSignalBase *signal = allSignalList[signalIndex];
+    auto *treeWidget = item->treeWidget();
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *action = new QWidgetAction(menu);
+    auto *container = new QWidget(menu);
+    auto *layout = new QVBoxLayout(container);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto *slider = new QSlider(Qt::Horizontal, container);
+    auto *spinBox = new QSpinBox(container);
+    slider->setRange(0, 100);
+    spinBox->setRange(0, 100);
+    spinBox->setSuffix("%");
+
+    auto *row = new QWidget(container);
+    auto *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(6);
+    rowLayout->addWidget(new QLabel("Opacity", row));
+    rowLayout->addWidget(slider, 1);
+    rowLayout->addWidget(spinBox);
+    layout->addWidget(row);
+
+    auto applyOpacity = [this, treeWidget, item, signal, slider, spinBox](int value) {
+        const int clampedValue = std::clamp(value, 0, 100);
+        const QSignalBlocker sliderBlocker(slider);
+        const QSignalBlocker spinBlocker(spinBox);
+        slider->setValue(clampedValue);
+        spinBox->setValue(clampedValue);
+        signal->setAlpha(percentToAlpha(clampedValue));
+        refreshLayerWidget(treeWidget, item);
+        refreshViewers();
+    };
+
+    applyOpacity(alphaToPercent(signal->getAlpha()));
+
+    connect(slider, &QSlider::valueChanged, this, applyOpacity);
+    connect(spinBox, qOverload<int>(&QSpinBox::valueChanged), this, applyOpacity);
+
+    action->setDefaultWidget(container);
+    menu->addAction(action);
+    menu->popup(popupPositionForAnchor(anchor));
 }
 
 void WatershedControl::refreshViewers() {
@@ -800,6 +1156,7 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
     raw->setupTreeWidget(signalTreeWidget, idx);
     if (categorical) raw->setLUTCategorical(); else raw->setLUTContinuous();
     if (transparentZero) raw->setLUTValueToTransparent(0);
+    attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(raw);
     
     if (!active) {
@@ -844,6 +1201,7 @@ void WatershedControl::addImage(QString fileName) {
             allSignalList[signalIndexGlobal]->setName(
                 signal_name_utils::makeUniqueSignalName(allSignalList, QFileInfo(fileName).baseName()));
             allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+            attachLayerWidgetToLastItem(signalTreeWidget);
             orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
         }
     }
@@ -903,7 +1261,6 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     agglomertionSizeBiasStrengthSpinBox = nullptr;
     agglomertionSizeBiasProtectionSlider = nullptr;
     agglomertionSizeBiasProtectionSpinBox = nullptr;
-    inspectSegmentsButton = nullptr;
     finalOutputInputComboBox = nullptr;
     workerThreadCount = defaultWatershedThreadCount();
     setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
@@ -1037,9 +1394,13 @@ void WatershedControl::setupTreeWidget(QTreeWidget *treeWidget) {
     treeWidget->header()->setStretchLastSection(false);
     treeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     treeWidget->setUniformRowHeights(true);
+    SignalLayerWidget::configureHostTree(treeWidget);
     setTreeVisibleRows(treeWidget, 2);
     connect(treeWidget, &QTreeWidget::itemDoubleClicked, this, &WatershedControl::treeDoubleClicked);
     connect(treeWidget, &QTreeWidget::itemClicked, this, &WatershedControl::treeClicked);
+    connect(treeWidget, &QTreeWidget::currentItemChanged, this, [this, treeWidget](QTreeWidgetItem *, QTreeWidgetItem *) {
+        updateLayerSelectionState(treeWidget);
+    });
 }
 
 void WatershedControl::setupSignalTreeWidget() {
@@ -1373,8 +1734,6 @@ void WatershedControl::setupAgglomertionWidget() {
 }
 
 void WatershedControl::setupFinalizeWidget() {
-    inspectSegmentsButton = new QPushButton("Inspect Segments", this);
-    inspectSegmentsButton->setObjectName("inspectSegmentsButton");
     createRefinementButton = new QPushButton(
         outputMode == OutputMode::Segments ? "Export Segments" : "Create Refinement",
         this);
@@ -1393,13 +1752,9 @@ void WatershedControl::setupFinalizeWidget() {
         outputMode == OutputMode::Segments ? "6. Export Segments" : "6. Create Refinement");
     auto *layout = qobject_cast<QVBoxLayout *>(groupBox->layout());
     layout->addWidget(controlsWidget);
-    layout->addWidget(inspectSegmentsButton);
     layout->addWidget(createRefinementButton);
     workflowLayout->addWidget(groupBox, 0);
 
-    auto *inspectShortcut = new QShortcut(QKeySequence(Qt::Key_F8), this);
-    connect(inspectShortcut, &QShortcut::activated, this, &WatershedControl::inspectSegmentsPressed);
-    connect(inspectSegmentsButton, &QPushButton::clicked, this, &WatershedControl::inspectSegmentsPressed);
     connect(createRefinementButton, &QPushButton::clicked, this, &WatershedControl::finalizeOutputPressed);
     connect(finalOutputInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
 }
@@ -1804,8 +2159,6 @@ void WatershedControl::updateStepEnablement() {
     const bool hasRequiredAgglomertionMask = !agglomertionNeedsThresholdMask() || hasAgglomertionThresholdMask;
     const bool hasFinalOutput = selectedFinalOutputInput().IsNotNull();
     const bool hasPersistedAgglomertionOutput = selectedFinalAgglomertionStageOutput() != nullptr;
-    const bool hasInspectableAgglomertion = hasPersistedAgglomertionOutput || hasActiveAgglomertionPreview();
-
     thresholdBoundariesButton->setEnabled(hasBoundary);
     thresholdValueSlider->setEnabled(hasBoundary);
     calculateDistanceMapButton->setEnabled(hasThreshold);
@@ -1815,7 +2168,6 @@ void WatershedControl::updateStepEnablement() {
     agglomertionPreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
     agglomertionApproximatePreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
     agglomertionReplaceCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && hasPersistedAgglomertionOutput && !taskRunner->isBusy());
-    inspectSegmentsButton->setEnabled(hasInspectableAgglomertion);
     createRefinementButton->setEnabled(hasFinalOutput);
     if (!(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask)) {
         clearAgglomertionPreview();
@@ -1973,18 +2325,25 @@ void WatershedControl::setUserColor(QTreeWidgetItem *item) {
         SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Opening color picker for watershed signal index=%1").arg(signalIndex));
     }
 
+    if (allSignalList[signalIndex]->usesCategoricalLUT()) {
+        allSignalList[signalIndex]->randomizeCategoricalLUT();
+        refreshLayerWidget(item->treeWidget(), item);
+        refreshViewers();
+        return;
+    }
+
+    if (allSignalList[signalIndex]->usesEdgeStatusColors()) {
+        return;
+    }
+
     QColor newColor = QColorDialog::getColor();
-    QImage colorIcon = QImage(30, 30, QImage::Format_RGBA8888);
-    colorIcon.fill(newColor);
-    item->setIcon(1, QPixmap::fromImage(colorIcon));
-    item->parent()->setIcon(1, QPixmap::fromImage(colorIcon));
-    std::string colorString = std::to_string(newColor.red())
-                              + " " + std::to_string(newColor.green())
-                              + " " + std::to_string(newColor.blue());
-    item->setText(1, QString::fromStdString(colorString));
+    if (!newColor.isValid()) {
+        return;
+    }
 
     allSignalList[signalIndex]->setMainColor(newColor);
 
+    refreshLayerWidget(item->treeWidget(), item);
     refreshViewers();
 }
 
@@ -2003,8 +2362,8 @@ void WatershedControl::setDescription(QTreeWidgetItem *item) {
         if (isSegmentsItem(item)) { // TODO: put some unique identifier besides name/descriptor for segments
             SP_LOG_WARNING("watershed", QStringLiteral("Segments descriptor renaming is still not implemented"));
         } else {
-            item->setText(0, newName);
             allSignalList[signalIndex]->setName(newName);
+            refreshLayerWidget(item->treeWidget(), item);
         }
     }
 }
@@ -2055,12 +2414,6 @@ void WatershedControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
     }
     const size_t signalIndex = signalIndexForItem(item);
 
-    if (isActiveIn) {
-        item->setText(1, "active");
-    } else {
-        item->setText(1, "inactive");
-    }
-
     allSignalList[signalIndex]->setIsActive(isActiveIn);
 
     for (auto *viewer : orthoViewer->viewerList) {
@@ -2068,35 +2421,15 @@ void WatershedControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
         viewer->recalculateQImages();
     }
 
+    refreshLayerWidget(item->treeWidget(), item);
 }
 
 void WatershedControl::setUserNorm(QTreeWidgetItem *item) {
-    const size_t signalIndex = signalIndexForItem(item);
-
-//        std::string test item->get;
-    SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting normalization for watershed signal index=%1").arg(signalIndex));
-    int normLower = QInputDialog::getInt(this, "Min Normalization", "Min Normalization", 0);
-    int normUpper = QInputDialog::getInt(this, "Max Normalization", "Max Normalization", 255, normLower);
-
-    QString normString = QString("%1").arg(normLower) + " " + QString("%1").arg(normUpper);
-    item->setText(1, normString);
-
-    allSignalList[signalIndex]->setNorm(normLower, normUpper);
-
-    refreshViewers();
+    openNormPopup(item, this);
 }
 
 void WatershedControl::setUserAlpha(QTreeWidgetItem *item) {
-    const size_t signalIndex = signalIndexForItem(item);
-
-    unsigned char alpha = QInputDialog::getInt(this, "Alpha", "Alpha", 255, 0, 255);
-
-    std::string alphaString = std::to_string(alpha);
-    item->setText(1, QString::fromStdString(alphaString));
-
-    allSignalList[signalIndex]->setAlpha(alpha);
-
-    refreshViewers();
+    openOpacityPopup(item, this);
 }
 
 
@@ -2468,37 +2801,6 @@ void WatershedControl::agglomertionPressed() {
         msgBox.setText("Please generate a watershed first.");
         msgBox.exec();
     }
-}
-
-void WatershedControl::inspectSegmentsPressed() {
-    itkSignal<GraphSegmentType> *selectedSignal = nullptr;
-    dataType::SegmentsImageType::Pointer selectedOutput;
-    QString errorMessage;
-    if (!tryResolveInspectSegmentsTarget(selectedOutput, selectedSignal, errorMessage)) {
-        QMessageBox msgBox;
-        msgBox.setText(errorMessage);
-        msgBox.exec();
-        return;
-    }
-
-    graphBase->pSelectedSegmentation = selectedOutput;
-    graphBase->pSelectedSegmentationSignal = selectedSignal;
-    graphBase->selectedSegmentationMaxSegmentId =
-        graphBase->pGraph != nullptr ? graphBase->pGraph->getLargestIdInSegmentVolume(selectedOutput) : 0;
-
-    if (orthoViewer != nullptr) {
-        orthoViewer->flashShortcutLegendKey("f8");
-    }
-
-    if (!segmentTableDialog) {
-        segmentTableDialog = new SegmentTableDialog(graphBase, orthoViewer, this);
-        segmentTableDialog->setAttribute(Qt::WA_DeleteOnClose);
-        segmentTableDialog->setQuickComputeMode();
-    }
-    segmentTableDialog->show();
-    segmentTableDialog->raise();
-    segmentTableDialog->activateWindow();
-    segmentTableDialog->startCompute(selectedOutput);
 }
 
 void WatershedControl::finalizeOutputPressed() {
