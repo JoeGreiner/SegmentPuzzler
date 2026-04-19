@@ -9,6 +9,7 @@
 #include <src/viewers/itkSignal.h>
 #include <itkImage.h>
 #include "src/segment_handling/graphBase.h"
+#include "src/utils/AppLogger.h"
 #include "fileIO.h"
 
 
@@ -25,7 +26,7 @@ void writeDataSetToFile(std::string outputPath,
 
     // output main: [identifier] [features] [shouldMerge, if set]
     // output header: [identifierName] [featureNames]
-    std::cout << "Writing dataset to: " << outputPath << std::endl;
+    SP_LOG_INFO("io", QStringLiteral("Writing dataset to %1").arg(QString::fromStdString(outputPath)));
 
 
     // sanity check: are vector sizes equal?
@@ -36,8 +37,11 @@ void writeDataSetToFile(std::string outputPath,
     }
     if (setMergeLabel) {
         if (features.size() != shouldMerge.size()) {
-            std::cout << "Feature Size: " << features.size() << std::endl;
-            std::cout << "Target Size: " << shouldMerge.size() << std::endl;
+            SP_LOG_ERROR("io",
+                         QStringLiteral("Cannot write dataset %1 because feature count (%2) differs from label count (%3)")
+                             .arg(QString::fromStdString(outputPath))
+                             .arg(features.size())
+                             .arg(shouldMerge.size()));
             throw (std::logic_error("Provided feature size and target size differ!"));
         }
     }
@@ -98,7 +102,7 @@ void writeDataSetToFile(std::string outputPath,
 void createEmptyDataSet(std::string outputPath, std::vector<std::string> featureNames, bool setMergeLabel) {
     // output main: [identifier] [features] [shouldMerge, if set]
     // output header: [identifierName] [featureNames]
-    std::cout << "Create empty dataset at: " << outputPath << std::endl;
+    SP_LOG_INFO("io", QStringLiteral("Creating empty dataset at %1").arg(QString::fromStdString(outputPath)));
 
     std::string headerPath = outputPath + ".header";
     std::remove(headerPath.c_str());
@@ -144,7 +148,7 @@ void appendDataSetToFile(std::vector<std::vector<float>> features,
 
     // output main: [identifier] [features] [shouldMerge, if set]
     // output header: [identifierName] [featureNames]
-    std::cout << "Append dataset to: " << outputPath << std::endl;
+    SP_LOG_INFO("io", QStringLiteral("Appending dataset to %1").arg(QString::fromStdString(outputPath)));
 
 
     // check if header is the same
@@ -152,7 +156,7 @@ void appendDataSetToFile(std::vector<std::vector<float>> features,
     std::ifstream headerFile(headerPath);
 
     if (!headerFile) {
-        std::cerr << "Cannot open the File : " << headerPath << std::endl;
+        SP_LOG_ERROR("io", QStringLiteral("Cannot open dataset header %1").arg(QString::fromStdString(headerPath)));
         throw (std::logic_error("cant open file"));
     }
 
@@ -163,12 +167,19 @@ void appendDataSetToFile(std::vector<std::vector<float>> features,
     unsigned long numberFeaturesFile, numberEntriesFile, labelProvidedFile;
     unsigned long numberFeatures = featureNames.size();
     sscanf(tmpLine.c_str(), "%*s %lu %*s %lu %*s %lu", &numberEntriesFile, &numberFeaturesFile, &labelProvidedFile);
-    std::cout << "Entries: " << numberEntriesFile << " Features: " << numberFeaturesFile << " LabelsProvided: "
-              << labelProvidedFile << std::endl;
+    SP_LOG_DEBUG("io",
+                 QStringLiteral("Dataset header entries=%1 features=%2 labelsProvided=%3")
+                     .arg(numberEntriesFile)
+                     .arg(numberFeaturesFile)
+                     .arg(labelProvidedFile));
 
     if (!featureNames.empty()) {
         if (numberFeatures != numberFeaturesFile) {
-            std::cout << numberFeatures << " vs. " << numberFeaturesFile << std::endl;
+            SP_LOG_ERROR("io",
+                         QStringLiteral("Cannot append dataset %1 because feature count differs (%2 vs %3)")
+                             .arg(QString::fromStdString(outputPath))
+                             .arg(numberFeatures)
+                             .arg(numberFeaturesFile));
             throw (std::logic_error("Trying to append dataset failed! - NumberFeatures differs"));
         }
     }
@@ -207,8 +218,11 @@ void appendDataSetToFile(std::vector<std::vector<float>> features,
     }
 
     if (headerLineDataSet != headerLineFile) {
-        std::cout << headerLineDataSet << std::endl;
-        std::cout << headerLineFile << std::endl;
+        SP_LOG_ERROR("io",
+                     QStringLiteral("Cannot append dataset %1 because feature header differs. New='%2' Existing='%3'")
+                         .arg(QString::fromStdString(outputPath))
+                         .arg(QString::fromStdString(headerLineDataSet))
+                         .arg(QString::fromStdString(headerLineFile)));
         throw (std::logic_error("Trying to append dataset failed! - FeatureNames are different!"));
     }
     headerFile.close();
@@ -267,22 +281,21 @@ void appendDataSetToFile(std::vector<std::vector<float>> features,
 
 
 std::vector<int> readLabelsFromFile(const std::string &fileName) {
-    std::cout << std::endl << "-----------------------" << std::endl;
-    std::cout << "Reading Labels from: " << fileName << std::endl;
+    SP_LOG_INFO("io", QStringLiteral("Reading labels from %1").arg(QString::fromStdString(fileName)));
 
 
     std::ifstream inFile(fileName.c_str());
     if (!inFile) {
-        std::cerr << "Cannot open the File : " << fileName << std::endl;
+        SP_LOG_ERROR("io", QStringLiteral("Cannot open label file %1").arg(QString::fromStdString(fileName)));
         throw (std::logic_error("cant open file"));
     }
 
     std::string headerPath = fileName.substr(0, fileName.length() - 6) + "header";
-    std::cout << "Reading header file: " << headerPath << std::endl;
+    SP_LOG_DEBUG("io", QStringLiteral("Reading label header %1").arg(QString::fromStdString(headerPath)));
     std::ifstream headerFile(headerPath);
 
     if (!headerFile) {
-        std::cerr << "Cannot open the File : " << headerPath << std::endl;
+        SP_LOG_ERROR("io", QStringLiteral("Cannot open label header %1").arg(QString::fromStdString(headerPath)));
         throw (std::logic_error("cant open file"));
     }
 
@@ -290,8 +303,11 @@ std::vector<int> readLabelsFromFile(const std::string &fileName) {
     std::getline(headerFile, tmpLine);
     unsigned long numberFeaturesFile, numberEntriesFile, labelProvidedFile;
     sscanf(tmpLine.c_str(), "%*s %lu %*s %lu %*s %lu", &numberEntriesFile, &numberFeaturesFile, &labelProvidedFile);
-    std::cout << "Entries: " << numberEntriesFile << " Features: " << numberFeaturesFile << " LabelsProvided: "
-              << labelProvidedFile << std::endl;
+    SP_LOG_DEBUG("io",
+                 QStringLiteral("Label header entries=%1 features=%2 labelsProvided=%3")
+                     .arg(numberEntriesFile)
+                     .arg(numberFeaturesFile)
+                     .arg(labelProvidedFile));
     if (!bool(labelProvidedFile)) {
         throw (std::logic_error("labels were not provided with dataset!"));
     }
@@ -303,26 +319,28 @@ std::vector<int> readLabelsFromFile(const std::string &fileName) {
     }
 
     inFile.close();
-    std::cout << "-----------------------" << std::endl << std::endl;
+    SP_LOG_INFO("io",
+                QStringLiteral("Finished reading %1 labels from %2")
+                    .arg(labels.size())
+                    .arg(QString::fromStdString(fileName)));
     return labels;
 }
 
 std::vector<std::vector<float>> readFeaturesFromFile(const std::string &fileName) {
-    std::cout << std::endl << "-----------------------" << std::endl;
-    std::cout << "Reading Features from: " << fileName << std::endl;
+    SP_LOG_INFO("io", QStringLiteral("Reading features from %1").arg(QString::fromStdString(fileName)));
 
     std::ifstream inFile(fileName.c_str());
     if (!inFile) {
-        std::cerr << "Cannot open the File : " << fileName << std::endl;
+        SP_LOG_ERROR("io", QStringLiteral("Cannot open feature file %1").arg(QString::fromStdString(fileName)));
         throw (std::logic_error("cant open file"));
     }
 
     std::string headerPath = fileName.substr(0, fileName.length() - 8) + "header";;
-    std::cout << "Reading header file: " << headerPath << std::endl;
+    SP_LOG_DEBUG("io", QStringLiteral("Reading feature header %1").arg(QString::fromStdString(headerPath)));
     std::ifstream headerFile(headerPath);
 
     if (!headerFile) {
-        std::cerr << "Cannot open the File : " << headerPath << std::endl;
+        SP_LOG_ERROR("io", QStringLiteral("Cannot open feature header %1").arg(QString::fromStdString(headerPath)));
         throw (std::logic_error("cant open file"));
     }
 
@@ -330,8 +348,11 @@ std::vector<std::vector<float>> readFeaturesFromFile(const std::string &fileName
     std::getline(headerFile, tmpLine);
     unsigned long numberFeaturesFile, numberEntriesFile, labelProvidedFile;
     sscanf(tmpLine.c_str(), "%*s %lu %*s %lu %*s %lu", &numberEntriesFile, &numberFeaturesFile, &labelProvidedFile);
-    std::cout << "Entries: " << numberEntriesFile << " Features: " << numberFeaturesFile << " LabelsProvided: "
-              << labelProvidedFile << std::endl;
+    SP_LOG_DEBUG("io",
+                 QStringLiteral("Feature header entries=%1 features=%2 labelsProvided=%3")
+                     .arg(numberEntriesFile)
+                     .arg(numberFeaturesFile)
+                     .arg(labelProvidedFile));
     if (!bool(labelProvidedFile)) {
         throw (std::logic_error("labels were not provided with dataset!"));
     }
@@ -347,7 +368,10 @@ std::vector<std::vector<float>> readFeaturesFromFile(const std::string &fileName
     }
 
     inFile.close();
-    std::cout << "-----------------------" << std::endl << std::endl;
+    SP_LOG_INFO("io",
+                QStringLiteral("Finished reading %1 feature rows from %2")
+                    .arg(features.size())
+                    .arg(QString::fromStdString(fileName)));
     return features;
 }
 

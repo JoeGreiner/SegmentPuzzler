@@ -242,6 +242,7 @@ set(SRC_VIEWERS
         )
 
 set(SRC_UTILS
+        src/utils/AppLogger.cpp
         src/utils/roi.cpp
         src/utils/voxel.cpp
         src/utils/utils.cpp

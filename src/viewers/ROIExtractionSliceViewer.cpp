@@ -4,6 +4,7 @@
 #include <Qt>
 #include "ROIExtractionSliceViewer.h"
 #include "itkImageRegionIteratorWithIndex.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 #include "OrthoViewer.h"
 #include "SliceViewer.h"
@@ -13,7 +14,9 @@ ROIExtractionSliceViewer::ROIExtractionSliceViewer(std::shared_ptr<GraphBase> gr
                                                    QWidget *parent,
                                                    bool)
     : SliceViewer(graphBaseIn, taskRunnerIn, parent) {
-    if (verbose) { std::cout << "ROIExtractionSliceViewer: Constructor\n"; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render", QStringLiteral("ROIExtractionSliceViewer constructed"));
+    }
 
     cursorColor = Qt::white;
     outerColor = QColor(0, 0, 0, 50);
@@ -32,9 +35,13 @@ void ROIExtractionSliceViewer::paintEvent(QPaintEvent *event) {
     int eventHeight = event->rect().height();
 
     if (verbose) {
-        std::cout << "ROIExtractionSliceViewer: Paintevent triggered: " << event->rect().width()
-                  << " x " << event->rect().height() << std::endl;
-        printf("x0: %d y0: %d x1: %d y1: %d\n", topLeftX, topLeftY, eventWidth, eventHeight);
+        SP_LOG_DEBUG(
+            "viewer.render",
+            QStringLiteral("ROIExtractionSliceViewer paint rect=(%1,%2 %3x%4)")
+                .arg(topLeftX)
+                .arg(topLeftY)
+                .arg(eventWidth)
+                .arg(eventHeight));
     }
     double tic = omp_get_wtime();
 
@@ -46,7 +53,9 @@ void ROIExtractionSliceViewer::paintEvent(QPaintEvent *event) {
 
     for (auto &signal : signalList) {
         if (signal->getIsActive()) {
-            if (verbose) { std::cout << "AnnotationViewer: Painting new signal" << std::endl; }
+            if (verbose) {
+                SP_LOG_DEBUG("viewer.render", QStringLiteral("ROIExtractionSliceViewer painting active signal"));
+            }
             painter.drawImage(0, 0, *(signal->getAddressSliceQImage()));
         }
     }
@@ -88,7 +97,11 @@ void ROIExtractionSliceViewer::paintEvent(QPaintEvent *event) {
     }
 
     double toc = omp_get_wtime();
-    if (verbose) { std::cout << "duration ROIExtractionSliceViewer PaintEvent: " << toc - tic << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG(
+            "viewer.render",
+            QStringLiteral("ROIExtractionSliceViewer paint duration=%1 s").arg(toc - tic, 0, 'f', 6));
+    }
 }
 
 

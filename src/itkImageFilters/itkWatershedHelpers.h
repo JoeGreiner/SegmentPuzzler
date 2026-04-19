@@ -6,6 +6,8 @@
 #include "src/utils/DistanceMapSeedExtractors.h"
 #include "src/utils/FastMarkerWatershed3D.h"
 
+#include <functional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -32,6 +34,10 @@ struct BoundaryConsistentPartitionResult {
     dataType::SegmentsImageType::Pointer displayLabels;
     SplitComponentMap splitComponentIds;
 };
+
+using WatershedLogSink = std::function<void(const std::string &)>;
+
+void setWatershedLogSink(WatershedLogSink sink);
 
 void binaryThresholdImageFilterFloat(itk::Image<unsigned short, 3>::Pointer &inputImage,
                                      itk::Image<unsigned char, 3>::Pointer &outputImage,

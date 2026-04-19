@@ -1,5 +1,6 @@
 #include "SliceViewerITKSignal.h"
 #include <itkImageRegionConstIteratorWithIndex.h>
+#include "src/utils/AppLogger.h"
 
 
 SliceViewerITKSignal::SliceViewerITKSignal(
@@ -23,8 +24,11 @@ void
 SliceViewerITKSignal::initializeBuffer() {
     int currentSliceHeight = getCurrentSliceHeight();
     int currentSliceWidth = getCurrentSliceWidth();
-    std::cout << "Initialize Buffer: " << std::to_string(sliceAxis) << " with ";
-    std::cout << std::to_string(currentSliceHeight) << " x " << std::to_string(currentSliceWidth) << std::endl;
+    SP_LOG_DEBUG("viewer.render",
+                 QStringLiteral("Initializing slice buffer axis=%1 size=%2x%3")
+                     .arg(sliceAxis)
+                     .arg(currentSliceHeight)
+                     .arg(currentSliceWidth));
     size_t bufferLength = (getCurrentSliceWidth() * getCurrentSliceHeight());
     currentSignalSliceBuffer = std::make_shared<std::vector<quint32>>(bufferLength, 0);
     predictedSignalSliceBuffer = std::make_shared<std::vector<quint32>>(bufferLength, 0);
@@ -59,18 +63,26 @@ QImage SliceViewerITKSignal::predictSliceQImage(unsigned int predictedSliceIndex
 
 void SliceViewerITKSignal::setSliceIndex(unsigned int proposedSliceIndex) {
     if (isValidSliceIndex(proposedSliceIndex)) {
-        if (verbose) { std::cout << "SliceViewerITKSignal: Setting sliceIndex: " << proposedSliceIndex << std::endl; }
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.render",
+                         QStringLiteral("SliceViewerITKSignal setting sliceIndex=%1")
+                             .arg(proposedSliceIndex));
+        }
         sliceIndex = proposedSliceIndex;
 // TODO: Remove this or make a flag, this seems buggy in some cases, therefore ive disabled it
         if (false && predictedSliceQImage.valid() && (predictedSliceAxis == sliceAxis) &&
             (predictedSliceIndex == sliceIndex)) { //predictedSliceQImage.valid() &&
             if (verbose) {
-                std::cout << "SliceViewerITKSignal: Using predicted sliceindex: " << proposedSliceIndex << std::endl;
+                SP_LOG_DEBUG("viewer.render",
+                             QStringLiteral("SliceViewerITKSignal using predicted sliceIndex=%1")
+                                 .arg(proposedSliceIndex));
             }
             sliceQImage = predictedSliceQImage.get();
         } else {
             if (verbose) {
-                std::cout << "SliceViewerITKSignal: Calculating sliceindex: " << proposedSliceIndex << std::endl;
+                SP_LOG_DEBUG("viewer.render",
+                             QStringLiteral("SliceViewerITKSignal calculating sliceIndex=%1")
+                                 .arg(proposedSliceIndex));
             }
             calculateSliceQImages();
         }
@@ -79,7 +91,11 @@ void SliceViewerITKSignal::setSliceIndex(unsigned int proposedSliceIndex) {
 
 void SliceViewerITKSignal::prepareNextSliceIndexAsync(unsigned int proposedSliceIndex) {
     if (isValidSliceIndex(proposedSliceIndex)) {
-        if (verbose) { std::cout << "SliceViewerITKSignal: Preparing sliceIndex: " << proposedSliceIndex << std::endl; }
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.render",
+                         QStringLiteral("SliceViewerITKSignal preparing sliceIndex=%1")
+                             .arg(proposedSliceIndex));
+        }
         predictedSliceQImage = std::async(std::launch::async,
                                           &SliceViewerITKSignal::predictSliceQImage,
                                           this,
@@ -90,7 +106,11 @@ void SliceViewerITKSignal::prepareNextSliceIndexAsync(unsigned int proposedSlice
 
 void SliceViewerITKSignal::setSliceAxis(int proposedSliceAxis) {
     if (proposedSliceAxis <= 2 && proposedSliceAxis >= 0) {
-        if (verbose) { std::cout << "SliceViewerITKSignal: sliceAxis: " << proposedSliceAxis << std::endl; }
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.render",
+                         QStringLiteral("SliceViewerITKSignal setting sliceAxis=%1")
+                             .arg(proposedSliceAxis));
+        }
         sliceAxis = proposedSliceAxis;
         calculateSliceQImages();
     } else {
@@ -138,4 +158,3 @@ QString SliceViewerITKSignal::getName() {
 QString SliceViewerITKSignal::getNumberOfXYZAsString(int x, int y, int z) {
     return pSignal->getNumberOfXYZAsString(x, y, z);
 }
-

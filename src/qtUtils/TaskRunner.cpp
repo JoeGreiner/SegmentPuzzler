@@ -53,9 +53,17 @@ void TaskRunner::setBusy(bool busy) {
     emit busyChanged(busy_);
 }
 
-void TaskRunner::handleError(std::exception_ptr error)
+void TaskRunner::handleError(std::exception_ptr error, const QString &context)
 {
+    const QString description = describeException(error);
+    if (context.isEmpty()) {
+        SP_LOG_ERROR("tasks", QStringLiteral("Task failed: %1").arg(description));
+    } else {
+        SP_LOG_ERROR("tasks", QStringLiteral("Task failed: %1 | %2").arg(context, description));
+    }
     QMessageBox::critical(messageParent_,
                           QStringLiteral("Error"),
-                          describeException(error));
+                          context.isEmpty()
+                              ? description
+                              : QStringLiteral("%1\n\n%2").arg(context, description));
 }

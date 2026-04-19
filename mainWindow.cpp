@@ -20,6 +20,8 @@
 #include "src/viewers/OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SegmentTableDialog.h"
+#include "src/qtUtils/LoggingSettingsDialog.h"
+#include "src/utils/AppLogger.h"
 
 MainWindow::~MainWindow() = default;
 
@@ -256,6 +258,10 @@ MainWindow::MainWindow() {
     });
 
     settingsMenu->addSeparator();
+    QAction *loggingSettingsAction = new QAction(tr("Logging..."), this);
+    settingsMenu->addAction(loggingSettingsAction);
+    connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);
+    settingsMenu->addSeparator();
     QAction *useSelectedSegmentationFor3DViewsAction =
         new QAction(tr("Use Selected Segmentation For 3D Views"), this);
     useSelectedSegmentationFor3DViewsAction->setCheckable(true);
@@ -300,7 +306,7 @@ MainWindow::MainWindow() {
             int x = xEdit.text().toInt();
             int y = yEdit.text().toInt();
             int z = zEdit.text().toInt();
-            std::cout << "Go to coordinates: " << x << " " << y << " " << z << std::endl;
+            SP_LOG_INFO("viewer.interaction", QStringLiteral("Go to coordinates x=%1 y=%2 z=%3").arg(x).arg(y).arg(z));
             if(myOrthowindow->xy->isSliceIndexValid(z)) {
                 myOrthowindow->xy->setSliceIndex(z);
             }
@@ -323,7 +329,7 @@ MainWindow::MainWindow() {
     });
     connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
         if (graphBase->pSelectedSegmentation == nullptr) {
-            std::cout << "No segmentation loaded.\n";
+            SP_LOG_WARNING("segmentation", QStringLiteral("Go to label requested without a selected segmentation"));
             return;
         }
         QDialog dialog(this);
@@ -341,7 +347,7 @@ MainWindow::MainWindow() {
 
         if (dialog.exec() == QDialog::Accepted) {
             int label = labelEdit.text().toInt();
-            std::cout << "Go to label ID: " << label << std::endl;
+            SP_LOG_INFO("viewer.interaction", QStringLiteral("Go to label id=%1").arg(label));
             itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(graphBase->pSelectedSegmentation, graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
             std::vector<itk::Index<3>> indices;
             while (!it.IsAtEnd()) {
@@ -353,7 +359,7 @@ MainWindow::MainWindow() {
             }
 
             if (indices.empty()) {
-                std::cout << "Label ID not found.\n";
+                SP_LOG_WARNING("segmentation", QStringLiteral("Requested label id=%1 was not found in the selected segmentation").arg(label));
                 return;
             }
 
@@ -367,7 +373,7 @@ MainWindow::MainWindow() {
             index[0] /= indices.size();
             index[1] /= indices.size();
             index[2] /= indices.size();
-            std::cout << "Center of gravity: " << index[0] << " " << index[1] << " " << index[2] << std::endl;
+            SP_LOG_DEBUG("segmentation", QStringLiteral("Label id=%1 centroidApprox=%2,%3,%4").arg(label).arg(index[0]).arg(index[1]).arg(index[2]));
 
 //           go to index that is closest
             auto closest_index = indices[0];
@@ -382,7 +388,7 @@ MainWindow::MainWindow() {
 
             index = closest_index;
 
-            std::cout << "Found label at: " << index[0] << " " << index[1] << " " << index[2] << std::endl;
+            SP_LOG_INFO("viewer.interaction", QStringLiteral("Navigating to label id=%1 at %2,%3,%4").arg(label).arg(index[0]).arg(index[1]).arg(index[2]));
             if(myOrthowindow->xy->isSliceIndexValid(index[2])) {
                 myOrthowindow->xy->setSliceIndex(index[2]);
             }
@@ -626,7 +632,7 @@ SampleDownloadResult downloadFile(const QString &url_to_download,
     QNetworkRequest request(qurl);
 
     if (QFile::exists(outputFilePath)) {
-        std::cout << "File already exists: " << outputFilePath.toStdString() << std::endl;
+        SP_LOG_INFO("network", QStringLiteral("Sample file already cached at %1").arg(outputFilePath));
         return {outputFilePath, SampleDownloadResultType::Cached};
     }
 
@@ -653,7 +659,7 @@ SampleDownloadResult downloadFile(const QString &url_to_download,
         loop.exec(); // Wait for the request to complete
 
         if (reply->error() != QNetworkReply::NoError) {
-            std::cout << "Download failed: " << reply->errorString().toStdString() << std::endl;
+            SP_LOG_ERROR("network", QStringLiteral("Sample download failed: %1").arg(reply->errorString()));
             reply->deleteLater();
             return {};
         }
@@ -664,7 +670,7 @@ SampleDownloadResult downloadFile(const QString &url_to_download,
             if (newUrl.isRelative()) {
                 newUrl = request.url().resolved(newUrl);
             }
-            std::cout << "Following redirect to: " << newUrl.toString().toStdString() << "\n";
+            SP_LOG_INFO("network", QStringLiteral("Following sample download redirect to %1").arg(newUrl.toString()));
             request.setUrl(newUrl);
             reply->deleteLater();
             redirectCount++;
@@ -678,27 +684,27 @@ SampleDownloadResult downloadFile(const QString &url_to_download,
         reply->deleteLater();
 
         if (data.isEmpty()) {
-            std::cout << "No data received after following redirects.\n";
+            SP_LOG_WARNING("network", QStringLiteral("Sample download produced no data after redirects"));
             return {};
         }
 
         QFile file(outputFilePath);
         if (!file.open(QIODevice::WriteOnly)) {
-            std::cout << "Failed to open file: " << outputFilePath.toStdString() << std::endl;
+            SP_LOG_ERROR("io", QStringLiteral("Failed to open sample download target %1").arg(outputFilePath));
             return {};
         }
 
         file.write(data);
         file.close();
 
-        std::cout << "File downloaded successfully to: " << outputFilePath.toStdString() << "\n";
+        SP_LOG_INFO("network", QStringLiteral("Downloaded sample file to %1").arg(outputFilePath));
         if (progressCallback) {
             progressCallback(fileLabel, fileIndex, totalFiles, 1, 1);
         }
         return {outputFilePath, SampleDownloadResultType::Downloaded};
     }
 
-    std::cout << "Too many redirects.\n";
+    SP_LOG_ERROR("network", QStringLiteral("Sample download aborted because it exceeded the redirect limit"));
     return {};
 };
 
@@ -709,21 +715,14 @@ std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *pr
     QLoggingCategory::setFilterRules(QStringLiteral("qt.network.ssl.warning=true\n"
                                                     "qt.network.ssl.debug=true\n"));
 
-    std::cout << "QSslSocket supports SSL: "
-              << (QSslSocket::supportsSsl() ? "true" : "false") << std::endl;
-
-
-    std::cout << "QSslSocket library build version: "
-              << QSslSocket::sslLibraryBuildVersionString().toStdString()
-              << std::endl;
-
-    std::cout << "QSslSocket library runtime version: "
-              << QSslSocket::sslLibraryVersionString().toStdString()
-              << std::endl;
+    SP_LOG_INFO("network", QStringLiteral("QSslSocket supportsSsl=%1 buildVersion=%2 runtimeVersion=%3")
+        .arg(QSslSocket::supportsSsl())
+        .arg(QSslSocket::sslLibraryBuildVersionString())
+        .arg(QSslSocket::sslLibraryVersionString()));
 
     QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     if (tempDir.isEmpty()) {
-        std::cout << "Failed to retrieve the temporary directory path.\n";
+        SP_LOG_ERROR("io", QStringLiteral("Failed to retrieve the temporary directory path for the sample download"));
         return std::make_tuple("", "", "", "");
     }
 
@@ -731,7 +730,7 @@ std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *pr
     QDir dir(tempDir);
     if (!dir.exists()) {
         if (!dir.mkpath(".")) {
-            std::cout << "Failed to create the temporary directory.\n";
+            SP_LOG_ERROR("io", QStringLiteral("Failed to create the temporary directory %1").arg(tempDir));
             return std::make_tuple("", "", "", "");
         }
     }
@@ -929,7 +928,7 @@ void MainWindow::loadSegmentationSample() {
 
 
     } else {
-        std::cout << "Couldn't find sample data at: " << downloadedFilePathMC.toStdString() << std::endl;
+        SP_LOG_ERROR("io", QStringLiteral("Downloaded sample segments file is missing at %1").arg(downloadedFilePathMC));
     }
 }
 
@@ -941,6 +940,12 @@ void MainWindow::showSegmentTable() {
     segmentTableDialog->show();
     segmentTableDialog->raise();
     segmentTableDialog->activateWindow();
+}
+
+void MainWindow::showLoggingSettings() {
+    SP_LOG_INFO("app", QStringLiteral("Opening logging settings"));
+    LoggingSettingsDialog dialog(this);
+    dialog.exec();
 }
 
 void MainWindow::showHotkeys() {

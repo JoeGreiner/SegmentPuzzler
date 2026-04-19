@@ -1,5 +1,5 @@
 #include "qdialogprogressbarpassthrough.h"
-#include <iostream>
+#include "src/utils/AppLogger.h"
 
 QDialogProgressbarPassthrough::QDialogProgressbarPassthrough(QWidget* parent) : QProgressDialog(parent)
 {
@@ -9,7 +9,7 @@ QDialogProgressbarPassthrough::QDialogProgressbarPassthrough(QWidget* parent) : 
 
 void QDialogProgressbarPassthrough::keyReleaseEvent(QKeyEvent *event) {
  if (event->key() == Qt::Key_P) {
-    std::cout << "RELEASED P!!!" << std::endl;
+    SP_LOG_DEBUG("app", QStringLiteral("Progress dialog received Key_P release"));
 
  }
 

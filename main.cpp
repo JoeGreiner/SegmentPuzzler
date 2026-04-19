@@ -15,7 +15,9 @@
 #include <sys/stat.h>
 #include <cstdlib>
 #include <clocale>
+#include <optional>
 
+#include "src/utils/AppLogger.h"
 
 bool return_string_if_valid_option(int argc, char *argv[], int requested_index){
     if (requested_index >= argc){
@@ -30,6 +32,28 @@ bool checkIfPathExists(const QString &s)
 {
     struct stat buffer{};
     return (stat (s.toStdString().c_str(), &buffer) == 0);
+}
+
+std::optional<segment_puzzler::app_logging::LogLevel> parseLogLevelOverride(const QString &rawValue) {
+    using segment_puzzler::app_logging::LogLevel;
+
+    if (rawValue.compare(QStringLiteral("trace"), Qt::CaseInsensitive) == 0) {
+        return LogLevel::Trace;
+    }
+    if (rawValue.compare(QStringLiteral("debug"), Qt::CaseInsensitive) == 0) {
+        return LogLevel::Debug;
+    }
+    if (rawValue.compare(QStringLiteral("info"), Qt::CaseInsensitive) == 0) {
+        return LogLevel::Info;
+    }
+    if (rawValue.compare(QStringLiteral("warning"), Qt::CaseInsensitive) == 0 ||
+        rawValue.compare(QStringLiteral("warn"), Qt::CaseInsensitive) == 0) {
+        return LogLevel::Warning;
+    }
+    if (rawValue.compare(QStringLiteral("error"), Qt::CaseInsensitive) == 0) {
+        return LogLevel::Error;
+    }
+    return std::nullopt;
 }
 
 #ifdef _WIN32
@@ -59,28 +83,58 @@ int main(int argc, char *argv[]) {
     QApplication::setOrganizationName("JoeGreiner");
     QApplication::setOrganizationDomain("joegreiner.de");
 
+    std::optional<segment_puzzler::app_logging::LogLevel> logLevelOverride;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) != "--log-level") {
+            continue;
+        }
+        if (i + 1 >= argc) {
+            std::cerr << "Missing value for --log-level. Expected one of: trace, debug, info, warning, error.\n";
+            return 1;
+        }
+
+        const QString rawLogLevel = QString::fromUtf8(argv[i + 1]);
+        logLevelOverride = parseLogLevelOverride(rawLogLevel);
+        if (!logLevelOverride.has_value()) {
+            std::cerr << "Invalid value for --log-level: " << rawLogLevel.toStdString()
+                      << ". Expected one of: trace, debug, info, warning, error.\n";
+            return 1;
+        }
+        ++i;
+    }
+
+    segment_puzzler::app_logging::AppLogger::initialize();
+    if (logLevelOverride.has_value()) {
+        auto logSettings = segment_puzzler::app_logging::AppLogger::settings();
+        logSettings.minimumLevel = *logLevelOverride;
+        segment_puzzler::app_logging::AppLogger::setSettings(logSettings, false);
+        SP_LOG_INFO("app",
+                    QStringLiteral("Overriding log level from CLI: %1")
+                        .arg(segment_puzzler::app_logging::AppLogger::levelName(*logLevelOverride)));
+    }
+
 // ideally, this would be allowed for user-defined fileio plugins, however, user-written plugins
 // sometimes caused crashes when starting the program
     #ifdef _WIN32
         _putenv("ITK_AUTOLOAD_PATH=");
-        std::cout << "ITK_AUTOLOAD_PATH: " << getEnvVar("ITK_AUTOLOAD_PATH") << std::endl;
+        SP_LOG_INFO("app", QStringLiteral("ITK_AUTOLOAD_PATH=%1").arg(QString::fromStdString(getEnvVar("ITK_AUTOLOAD_PATH"))));
     #else 
         setenv("ITK_AUTOLOAD_PATH", "", 1);
-        std::cout << "ITK_AUTOLOAD_PATH: " << getenv("ITK_AUTOLOAD_PATH") << std::endl;
+        SP_LOG_INFO("app", QStringLiteral("ITK_AUTOLOAD_PATH=%1").arg(QString::fromUtf8(getenv("ITK_AUTOLOAD_PATH"))));
     #endif
 
 #ifdef USE_OMP
     omp_set_max_active_levels(1);
-    std::cout << "OpenMP enabled, max threads: " << omp_get_max_threads() << std::endl;
+    SP_LOG_INFO("app", QStringLiteral("OpenMP enabled, maxThreads=%1").arg(omp_get_max_threads()));
 #else
-    std::cout << "OpenMP disabled" << std::endl;
+    SP_LOG_INFO("app", QStringLiteral("OpenMP disabled"));
 #endif
     qRegisterMetaType<QVector<int> >("QVector<int>");
     qRegisterMetaType<QItemSelection>("QItemSelection");
 
     QFile f(":qdarkstyle/dark/style.qss");
     if (!f.exists()) {
-        printf("Unable to set stylesheet, file not found\n");
+        SP_LOG_WARNING("app", QStringLiteral("Unable to set stylesheet because :qdarkstyle/dark/style.qss was not found"));
     } else {
         f.open(QFile::ReadOnly | QFile::Text);
         QTextStream ts(&f);
@@ -113,6 +167,7 @@ int main(int argc, char *argv[]) {
                 std::cout << "\t\t [--segmentation $path_to_segmentation [$display_name_segmentation]]\n";
                 std::cout << "\t\t [--boundary $path_to_boundary [$display_name_boundary]]\n";
                 std::cout << "\t\t [--refinement $path_to_refinement [$display_name_refinement]]\n";
+                std::cout << "\t\t [--log-level trace|debug|info|warning|error]\n";
             }
         }
     }
@@ -122,14 +177,14 @@ int main(int argc, char *argv[]) {
             if ((std::string(argv[i]) == "--segments") & (i+1 < argc)) {
                 loadSegment=true;
                 pathToSegment = QString(argv[i+1]);
-                std::cout << "Path to segments: " << pathToSegment.toStdString() << "\n";
+                SP_LOG_INFO("app", QStringLiteral("Startup segments path=%1").arg(pathToSegment));
                 segmentNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
                 if (segmentNameIsGiven){
                     segmentName = argv[i+2];
-                    std::cout << "Segments name: " << segmentName.toStdString() << "\n";
+                    SP_LOG_INFO("app", QStringLiteral("Startup segments displayName=%1").arg(segmentName));
                 }
                 if (!checkIfPathExists(pathToSegment)){
-                    std::cout << "Can't access " << pathToSegment.toStdString() << " , skipping.\n";
+                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segments path=%1, skipping").arg(pathToSegment));
                     pathToSegment.clear();
                 }
             }
@@ -141,53 +196,53 @@ int main(int argc, char *argv[]) {
             for (int i = 1; i < argc; ++i) {
                 if ((std::string(argv[i]) == "--image") & (i+1 < argc)) {
                     pathToImage = QString(argv[i+1]);
-                    std::cout << "Path to image: " << pathToImage.toStdString() << "\n";
+                    SP_LOG_INFO("app", QStringLiteral("Startup image path=%1").arg(pathToImage));
                     imageNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
                     if (imageNameIsGiven){
                         imageName = argv[i+2];
-                        std::cout << "Image name: " << imageName.toStdString() << "\n";
+                        SP_LOG_INFO("app", QStringLiteral("Startup image displayName=%1").arg(imageName));
                     }
                     if (!checkIfPathExists(pathToImage)){
-                        std::cout << "Can't access " << pathToImage.toStdString() << " , skipping.\n";
+                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup image path=%1, skipping").arg(pathToImage));
                         pathToImage.clear();
                     }
                 }
                 if ((std::string(argv[i]) == "--segmentation") & (i+1 < argc)) {
                     pathToSegmentation = QString(argv[i+1]);
-                    std::cout << "Path to segmentation: " << pathToSegmentation.toStdString() << "\n";
+                    SP_LOG_INFO("app", QStringLiteral("Startup segmentation path=%1").arg(pathToSegmentation));
                     segmentationNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
                     if (segmentationNameIsGiven){
                         segmentationName = argv[i+2];
-                        std::cout << "Segmentation name: " << segmentationName.toStdString() << "\n";
+                        SP_LOG_INFO("app", QStringLiteral("Startup segmentation displayName=%1").arg(segmentationName));
                     }
                     if (!checkIfPathExists(pathToSegmentation)) {
-                        std::cout << "Can't access " << pathToSegmentation.toStdString() << " , skipping.\n";
+                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segmentation path=%1, skipping").arg(pathToSegmentation));
                         pathToSegmentation.clear();
                     }
                 }
                 if ((std::string(argv[i]) == "--boundary") & (i+1 < argc)) {
                     pathToBoundary = QString(argv[i+1]);
-                    std::cout << "Path to boundary: " << pathToBoundary.toStdString() << "\n";
+                    SP_LOG_INFO("app", QStringLiteral("Startup boundary path=%1").arg(pathToBoundary));
                     boundaryNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
                     if (boundaryNameIsGiven){
                         boundaryName = argv[i+2];
-                        std::cout << "boundary name: " << boundaryName.toStdString() << "\n";
+                        SP_LOG_INFO("app", QStringLiteral("Startup boundary displayName=%1").arg(boundaryName));
                     }
                     if (!checkIfPathExists(pathToBoundary)) {
-                        std::cout << "Can't access " << pathToBoundary.toStdString() << " , skipping.\n";
+                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup boundary path=%1, skipping").arg(pathToBoundary));
                         pathToBoundary.clear();
                     }
                 }
                 if ((std::string(argv[i]) == "--refinement") & (i+1 < argc)) {
                     pathToRefinement = QString(argv[i+1]);
-                    std::cout << "Path to refinement: " << pathToRefinement.toStdString() << "\n";
+                    SP_LOG_INFO("app", QStringLiteral("Startup refinement path=%1").arg(pathToRefinement));
                     refinementNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
                     if (refinementNameIsGiven){
                         refinementName = argv[i+2];
-                        std::cout << "Refinement name: " << refinementName.toStdString() << "\n";
+                        SP_LOG_INFO("app", QStringLiteral("Startup refinement displayName=%1").arg(refinementName));
                     }
                     if (!checkIfPathExists(pathToRefinement)) {
-                        std::cout << "Can't access " << pathToRefinement.toStdString() << " , skipping.\n";
+                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup refinement path=%1, skipping").arg(pathToRefinement));
                         pathToRefinement.clear();
                     }
                 }
@@ -269,7 +324,7 @@ int main(int argc, char *argv[]) {
     try {
         val = QApplication::exec();
     } catch (const std::exception& e){
-        std::cout << e.what() << std::endl;
+        SP_LOG_ERROR("app", QStringLiteral("Unhandled application exception: %1").arg(QString::fromUtf8(e.what())));
     }
     return val;
 }

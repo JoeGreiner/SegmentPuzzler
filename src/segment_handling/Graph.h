@@ -2,6 +2,7 @@
 #define graph_h
 
 #include <memory>
+#include <QElapsedTimer>
 #include "src/utils/voxel.h"
 #include "Projected3DCut.h"
 
@@ -16,6 +17,7 @@
 
 #include "node.h"
 #include "SegmentManager.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 // todo: add this to node/featurres or whatever
 struct CenterOfMass {
@@ -65,8 +67,17 @@ struct CenterOfMass {
         float distZ = (z - B.z) * (z - B.z);
         float total = distX + distY + distZ;
         if (std::isinf(total)) {
-            std::cout << x << " " << y << " " << z << "\n";
-            std::cout << B.x << " " << B.y << " " << B.z << "\n";
+            ::segment_puzzler::app_logging::AppLogger::log(
+                ::segment_puzzler::app_logging::LogLevel::Warning,
+                QStringLiteral("segmentation"),
+                QStringLiteral("CenterOfMass distance overflow from (%1, %2, %3) to (%4, %5, %6)")
+                    .arg(x, 0, 'g', 6)
+                    .arg(y, 0, 'g', 6)
+                    .arg(z, 0, 'g', 6)
+                    .arg(B.x, 0, 'g', 6)
+                    .arg(B.y, 0, 'g', 6)
+                    .arg(B.z, 0, 'g', 6),
+                __func__);
         }
         return distX + distY + distZ;
     }
@@ -159,28 +170,53 @@ public:
 
     template<typename imageType>
     void ITKImageWriter(typename imageType::Pointer pImage, std::string filePathWriter) {
-        double t = 0;
+        QElapsedTimer timer;
         if (verbose) {
-            std::cout << "Graph::ITKImageWriter Writing to: " << filePathWriter << "\n";
-            t = utils::tic();
+            ::segment_puzzler::app_logging::AppLogger::log(
+                ::segment_puzzler::app_logging::LogLevel::Info,
+                QStringLiteral("io"),
+                QStringLiteral("Graph::ITKImageWriter writing to %1").arg(QString::fromStdString(filePathWriter)),
+                __func__);
+            timer.start();
         }
         auto spacing = pImage->GetSpacing();
         auto origin = pImage->GetOrigin();
         auto direction = pImage->GetDirection();
-        std::cout << "Graph::ITKImageWriter: Writing to: " << filePathWriter << "\n";
-        std::cout << "Graph::ITKImageWriter: Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
-        std::cout << "Graph::ITKImageWriter: Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
-        std::cout << "Graph::ITKImageWriter: Direction: [["
-                  << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
-                  << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
-                  << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
+        ::segment_puzzler::app_logging::AppLogger::log(
+            ::segment_puzzler::app_logging::LogLevel::Info,
+            QStringLiteral("io"),
+            QStringLiteral("Graph::ITKImageWriter target=%1 spacing=[%2, %3, %4] origin=[%5, %6, %7] direction=[[%8, %9, %10], [%11, %12, %13], [%14, %15, %16]]")
+                .arg(QString::fromStdString(filePathWriter))
+                .arg(spacing[0], 0, 'g', 6)
+                .arg(spacing[1], 0, 'g', 6)
+                .arg(spacing[2], 0, 'g', 6)
+                .arg(origin[0], 0, 'g', 6)
+                .arg(origin[1], 0, 'g', 6)
+                .arg(origin[2], 0, 'g', 6)
+                .arg(direction[0][0], 0, 'g', 6)
+                .arg(direction[0][1], 0, 'g', 6)
+                .arg(direction[0][2], 0, 'g', 6)
+                .arg(direction[1][0], 0, 'g', 6)
+                .arg(direction[1][1], 0, 'g', 6)
+                .arg(direction[1][2], 0, 'g', 6)
+                .arg(direction[2][0], 0, 'g', 6)
+                .arg(direction[2][1], 0, 'g', 6)
+                .arg(direction[2][2], 0, 'g', 6),
+            __func__);
         using WriterType = itk::ImageFileWriter<imageType>;
         typename WriterType::Pointer writer = WriterType::New();
         writer->SetInput(pImage);
         writer->SetUseCompression(true);
         writer->SetFileName(filePathWriter);
         writer->Update();
-        if (verbose) { utils::toc(t, "Graph::ITKImageWriter finished"); }
+        if (verbose) {
+            ::segment_puzzler::app_logging::AppLogger::log(
+                ::segment_puzzler::app_logging::LogLevel::Debug,
+                QStringLiteral("io"),
+                QStringLiteral("Graph::ITKImageWriter finished (%1 ms)")
+                    .arg(static_cast<double>(timer.nsecsElapsed()) / 1000000.0, 0, 'f', 3),
+                __func__);
+        }
     };
 
     // print graph structure to file

@@ -6,6 +6,7 @@
 #include <QTimer>
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/WindowStats.h"
+#include "src/utils/AppLogger.h"
 
 MainWindowWatershedControl::~MainWindowWatershedControl() = default;
 
@@ -63,6 +64,7 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
 } // namespace
 
 void MainWindowWatershedControl::closeFromExternalSignal() {
+    SP_LOG_INFO("watershed", QStringLiteral("Closing watershed window from external signal"));
     close();
 }
 void MainWindowWatershedControl::receiveStatusMessage(QString string) {
@@ -72,9 +74,11 @@ void MainWindowWatershedControl::receiveStatusMessage(QString string) {
 void MainWindowWatershedControl::setLinkedSignalControl(SignalControl* linkedSignalControlIn){
     linkedSignalControl = linkedSignalControlIn;
     myWatershedControl->linkedSignalControl = linkedSignalControlIn;
+    SP_LOG_INFO("watershed", QStringLiteral("Linked watershed window to the main SignalControl"));
 }
 
 MainWindowWatershedControl::MainWindowWatershedControl(WatershedControl::OutputMode outputMode) {
+    SP_LOG_INFO("watershed", QStringLiteral("Opening watershed window"));
 
     std::shared_ptr<GraphBase> graphBase = std::make_shared<GraphBase>();
 

@@ -30,6 +30,7 @@
 #include <cmath>
 
 #include "src/utils/SignalNameUtils.h"
+#include "src/utils/AppLogger.h"
 
 namespace {
 
@@ -425,9 +426,9 @@ SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
     }
 
     unsigned int dimension = 0;
-    std::cout << "Reading: " << fileName.toStdString() << "\n";
+    SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
     getDimensionAndDataTypeOfFile(fileName, dimension, loadedImage.dataType);
-    std::cout << "Image dimension: " << dimension << "\n";
+    SP_LOG_INFO("io", QStringLiteral("Detected image dimension=%1 for %2").arg(dimension).arg(fileName));
 
     if (dimension != 3) {
         throw std::logic_error("Image is not 3D!");
@@ -841,7 +842,7 @@ void SignalControl::addImage(QString fileName, QString displayedName) {
         showInfoMessage("Please load supervoxels first.");
         return;
     }
-    std::cout << "Adding file: " << fileName.toStdString() << std::endl;
+    SP_LOG_INFO("io", QStringLiteral("Adding image file %1").arg(fileName));
     addImageAsync(fileName, displayedName);
 }
 
@@ -1063,7 +1064,7 @@ void SignalControl::setupRefinementTreeWidget() {
 }
 
 void SignalControl::handleDroppedFile(QString fileName) {
-    std::cout << "SignalControl::handleDroppedFile: " << fileName.toStdString() << '\n';
+    SP_LOG_INFO("io", QStringLiteral("Handling dropped file %1").arg(fileName));
     QImageSelectionRadioButtons chooser(this);
     if (chooser.exec() == QDialog::Accepted) {
         loadDroppedFileAs(fileName, chooser.selectedChoice());
@@ -1273,7 +1274,7 @@ void SignalControl::setTransparentLabelIdInRefinement() {
                                         tr("Set Transparent Label ID in Refinement"),
                                         0,
                                         0);
-    std::cout << "Set " << inputVal << " to transparent in the selected refinement.\n";
+    SP_LOG_INFO("segmentation", QStringLiteral("Setting refinement label %1 to transparent").arg(inputVal));
     graphBase->pSelectedRefinementSignal->setLUTValueToTransparent(inputVal);
     refreshViewers();
 }
@@ -1281,14 +1282,14 @@ void SignalControl::setTransparentLabelIdInRefinement() {
 void SignalControl::segmentationClicked(QTreeWidgetItem *item, int index) {
     treeClicked(item, index);
     selectSegmentationItem(item);
-    std::cout << "Max Id in selected segmentation: " << graphBase->selectedSegmentationMaxSegmentId << "\n";
+    SP_LOG_DEBUG("segmentation", QStringLiteral("Selected segmentation maxId=%1").arg(graphBase->selectedSegmentationMaxSegmentId));
     refreshUiState();
 }
 
 void SignalControl::setUserColor(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        std::cout << "Setting Color for signal " << signalIndex << std::endl;
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Opening color picker for signal index=%1").arg(signalIndex));
     }
 
     QColor newColor = QColorDialog::getColor();
@@ -1309,7 +1310,7 @@ void SignalControl::setUserColor(QTreeWidgetItem *item) {
 void SignalControl::setDescription(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        std::cout << "Setting Name for signal " << signalIndex << std::endl;
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Renaming signal index=%1").arg(signalIndex));
     }
 
     bool inputSuccessful;
@@ -1319,7 +1320,7 @@ void SignalControl::setDescription(QTreeWidgetItem *item) {
 
     if (inputSuccessful) {
         if (isSegmentsItem(item)) { // TODO: put some unique identifier besides name/descriptor for segments
-            std::cout << "TODO: Fix segment descriptor change!\n";
+            SP_LOG_WARNING("segmentation", QStringLiteral("Segment descriptor renaming is still not implemented"));
         } else {
             item->setText(0, newName);
             allSignalList[signalIndex]->setName(newName);
@@ -1342,7 +1343,7 @@ void SignalControl::exportSelectedSegmentation() {
     QString path =
             QFileDialog::getSaveFileName(this, "Export Selected Segmentation", DEFAULT_SAVE_DIR,
                                          "Same Type as Watershed!!! (*.nrrd *.shlat *.uilat)");
-    std::cout << path.toStdString() << "\n";
+    SP_LOG_INFO("io", QStringLiteral("Export selected segmentation dialog returned path=%1").arg(path));
     if (!path.isEmpty()) {
         QDir CurrentDir;
         MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(path));
@@ -1351,20 +1352,20 @@ void SignalControl::exportSelectedSegmentation() {
                 auto spacing = graphBase->pSelectedSegmentation->GetSpacing();
                 auto origin = graphBase->pSelectedSegmentation->GetOrigin();
                 auto direction = graphBase->pSelectedSegmentation->GetDirection();
-                std::cout << "exportSelectedSegmentation: About to write pSelectedSegmentation:\n";
-                std::cout << "  Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
-                std::cout << "  Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
-                std::cout << "  Direction: [["
-                          << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
-                          << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
-                          << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
-                std::cout << "  LC_NUMERIC locale: " << std::setlocale(LC_NUMERIC, nullptr) << "\n";
+                SP_LOG_INFO("io",
+                            QStringLiteral("Exporting selected segmentation to %1 spacing=[%2,%3,%4] origin=[%5,%6,%7] direction=[[ %8,%9,%10 ],[ %11,%12,%13 ],[ %14,%15,%16 ]] locale=%17")
+                                .arg(path)
+                                .arg(spacing[0]).arg(spacing[1]).arg(spacing[2])
+                                .arg(origin[0]).arg(origin[1]).arg(origin[2])
+                                .arg(direction[0][0]).arg(direction[0][1]).arg(direction[0][2])
+                                .arg(direction[1][0]).arg(direction[1][1]).arg(direction[1][2])
+                                .arg(direction[2][0]).arg(direction[2][1]).arg(direction[2][2])
+                                .arg(QString::fromUtf8(std::setlocale(LC_NUMERIC, nullptr))));
             }
             graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(graphBase->pSelectedSegmentation,
                                                                            path.toStdString());
         } catch (itk::ExceptionObject &err) {
-            std::cerr << "ExceptionObject caught during writing!" << std::endl;
-            std::cerr << err << std::endl;
+            SP_LOG_ERROR("io", QStringLiteral("Failed to export selected segmentation to %1: %2").arg(path, QString::fromStdString(err.GetDescription())));
         }
 
     }
@@ -1387,7 +1388,7 @@ void SignalControl::setPaintId(){
     if (!ok) {
         return;
     }
-    std::cout << "Setting paint id to: " << paintId << std::endl;
+    SP_LOG_INFO("segmentation", QStringLiteral("Setting paint id to %1").arg(paintId));
     orthoViewer->xy->labelOfClickedSegmentation = paintId;
     orthoViewer->zy->labelOfClickedSegmentation = paintId;
     orthoViewer->xz->labelOfClickedSegmentation = paintId;
@@ -1410,7 +1411,9 @@ void SignalControl::activateErodeTool() {
 
 
 void SignalControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
-    if (verbose) { std::cout << "Setting item isActive to: " << isActiveIn << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting signal active state to %1").arg(isActiveIn));
+    }
     const size_t signalIndex = signalIndexForItem(item);
 
     if (isActiveIn) {
@@ -1432,7 +1435,7 @@ void SignalControl::setUserNorm(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
 
 //        std::string test item->get;
-    std::cout << "index: " << signalIndex << std::endl;
+    SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting normalization for signal index=%1").arg(signalIndex));
     int normLower = QInputDialog::getInt(this, "Min Normalization", "Min Normalization", 0);
     int normUpper = QInputDialog::getInt(this, "Max Normalization", "Max Normalization", 255, normLower);
 
@@ -1463,7 +1466,7 @@ void SignalControl::addSegmentsGraph(QString fileName) {
 }
 
 void SignalControl::addEmptySegmentsFromBoundary() {
-    std::cout << "Adding empty segments/graph volume based on boundary volume\n";
+    SP_LOG_INFO("segmentation", QStringLiteral("Creating empty segments volume from the selected boundary image"));
     // 3 indices:
     // signalIndexLocal = index inside <dtype> array
     // signalIndexGlobal = index inside allsignal array
@@ -1476,8 +1479,10 @@ void SignalControl::addEmptySegmentsFromBoundary() {
     {
         auto srcSpacing = graphBase->pSelectedBoundary->GetSpacing();
         auto dstSpacing = pImage->GetSpacing();
-        std::cout << "addEmptySegmentsFromBoundary: Source (boundary) spacing: [" << srcSpacing[0] << ", " << srcSpacing[1] << ", " << srcSpacing[2] << "]\n";
-        std::cout << "addEmptySegmentsFromBoundary: New image spacing:         [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
+        SP_LOG_DEBUG("segmentation",
+                     QStringLiteral("Empty segments spacing source=[%1,%2,%3] destination=[%4,%5,%6]")
+                         .arg(srcSpacing[0]).arg(srcSpacing[1]).arg(srcSpacing[2])
+                         .arg(dstSpacing[0]).arg(dstSpacing[1]).arg(dstSpacing[2]));
     }
 
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
@@ -1494,7 +1499,7 @@ void SignalControl::addEmptySegmentsFromBoundary() {
     graphBase->pGraph->constructFromVolume(pImage);
     registerSegmentsGraphSignal(signalIndexGlobal);
 
-    std::cout << "Done add segment function!\n";
+    SP_LOG_INFO("segmentation", QStringLiteral("Empty segments volume initialized and registered"));
 }
 
 void SignalControl::initializeGraph(size_t signalIndexGlobal) {
@@ -1502,7 +1507,7 @@ void SignalControl::initializeGraph(size_t signalIndexGlobal) {
 }
 
 void SignalControl::runWatershed() {
-    std::cout << "Running Watershed Widget" << "\n";
+    SP_LOG_INFO("watershed", QStringLiteral("Opening the watershed workflow window"));
     if (!hasSelectedBoundary()) {
         showInfoMessage("Please add boundaries first.");
         return;
@@ -1580,7 +1585,7 @@ void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImag
 
 
 void SignalControl::loadMembraneProbability(QString fileName, QString displayedName) {
-    std::cout << "Loading boundaries: " << fileName.toStdString() << "\n";
+    SP_LOG_INFO("io", QStringLiteral("Loading boundaries from %1").arg(fileName));
     unsigned int dimension = 0;
     itk::ImageIOBase::IOComponentType boundaryDataType = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
     getDimensionAndDataTypeOfFile(fileName, dimension, boundaryDataType);
@@ -1633,7 +1638,7 @@ void SignalControl::loadMembraneProbability(QString fileName, QString displayedN
 
 
 void SignalControl::createEmptySegmentation() {
-    std::cout << "Adding Segmentation Volume\n";
+    SP_LOG_INFO("segmentation", QStringLiteral("Creating an empty segmentation volume"));
     if (!hasWorkingSegments()) {
         showInfoMessage("Please load supervoxels first.");
         return;
@@ -1655,20 +1660,12 @@ void SignalControl::createEmptySegmentation() {
         auto dstSpacing = pImage->GetSpacing();
         auto dstOrigin = pImage->GetOrigin();
         auto dstDirection = pImage->GetDirection();
-        std::cout << "createEmptySegmentation: Source (pWorkingSegmentsImage):\n";
-        std::cout << "  Spacing: [" << srcSpacing[0] << ", " << srcSpacing[1] << ", " << srcSpacing[2] << "]\n";
-        std::cout << "  Origin:  [" << srcOrigin[0] << ", " << srcOrigin[1] << ", " << srcOrigin[2] << "]\n";
-        std::cout << "  Direction: [["
-                  << srcDirection[0][0] << ", " << srcDirection[0][1] << ", " << srcDirection[0][2] << "], ["
-                  << srcDirection[1][0] << ", " << srcDirection[1][1] << ", " << srcDirection[1][2] << "], ["
-                  << srcDirection[2][0] << ", " << srcDirection[2][1] << ", " << srcDirection[2][2] << "]]\n";
-        std::cout << "createEmptySegmentation: Destination (new segmentation):\n";
-        std::cout << "  Spacing: [" << dstSpacing[0] << ", " << dstSpacing[1] << ", " << dstSpacing[2] << "]\n";
-        std::cout << "  Origin:  [" << dstOrigin[0] << ", " << dstOrigin[1] << ", " << dstOrigin[2] << "]\n";
-        std::cout << "  Direction: [["
-                  << dstDirection[0][0] << ", " << dstDirection[0][1] << ", " << dstDirection[0][2] << "], ["
-                  << dstDirection[1][0] << ", " << dstDirection[1][1] << ", " << dstDirection[1][2] << "], ["
-                  << dstDirection[2][0] << ", " << dstDirection[2][1] << ", " << dstDirection[2][2] << "]]\n";
+        SP_LOG_DEBUG("segmentation",
+                     QStringLiteral("Empty segmentation source spacing=[%1,%2,%3] origin=[%4,%5,%6] destination spacing=[%7,%8,%9] origin=[%10,%11,%12]")
+                         .arg(srcSpacing[0]).arg(srcSpacing[1]).arg(srcSpacing[2])
+                         .arg(srcOrigin[0]).arg(srcOrigin[1]).arg(srcOrigin[2])
+                         .arg(dstSpacing[0]).arg(dstSpacing[1]).arg(dstSpacing[2])
+                         .arg(dstOrigin[0]).arg(dstOrigin[1]).arg(dstOrigin[2]));
     }
 
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
@@ -1691,7 +1688,7 @@ void SignalControl::createEmptySegmentation() {
 }
 
 void SignalControl::loadSegmentationVolumePressed() {
-    std::cout << "Loading Segmentation Volume\n";
+    SP_LOG_INFO("segmentation", QStringLiteral("Opening the load segmentation dialog"));
     QSettings MySettings;
     const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
     QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
@@ -1780,16 +1777,16 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
     bool loadingWasSuccessful = false;
     if (!fileName.isEmpty()) {
         unsigned int dimension;
-        std::cout << "Reading: " << fileName.toStdString() << "\n";
+        SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
         getDimensionAndDataTypeOfFile(fileName, dimension, dataTypeOut);
-        std::cout << "Image dimension: " << dimension << "\n";
+        SP_LOG_INFO("io", QStringLiteral("Detected image dimension=%1 for %2").arg(dimension).arg(fileName));
 
         QSettings MySettings;
         QDir CurrentDir;
         const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
         MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
         DEFAULT_SAVE_DIR = CurrentDir.absoluteFilePath(fileName);
-        std::cout << fileName.toStdString() << "\n";
+        SP_LOG_DEBUG("io", QStringLiteral("Updated default save dir from %1").arg(fileName));
 
         bool forceOnly3D = false;
         if ((dimension == 3) | !forceOnly3D) {

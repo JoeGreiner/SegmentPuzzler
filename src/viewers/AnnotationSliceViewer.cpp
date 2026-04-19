@@ -1,6 +1,5 @@
 #include <QPainter>
-#include <QDebug>
-#include <QHash>
+#include <QDateTime>
 #include <QtWidgets>
 #ifdef USE_OMP
 #include <omp.h>
@@ -21,7 +20,7 @@
 #include "itkImageRegionIteratorWithIndex.h"
 #include <unordered_set>
 #include <unordered_map>
-#include "src/utils/utils.h"
+#include "src/utils/AppLogger.h"
 #include "OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
 
@@ -61,13 +60,7 @@ dataType::SegmentsImageType::RegionType paddedLabelRegion(
 }
 
 void logAnnotationViewerState(const QString &key, const QString &message) {
-    static QHash<QString, QString> lastLogs;
-    if (lastLogs.value(key) == message) {
-        return;
-    }
-
-    qInfo().noquote() << message;
-    lastLogs.insert(key, message);
+    SP_LOG_DEBUG_CHANGED("viewer.render", key, message);
 }
 
 QString summarizeAnnotationSignalImageRects(const std::vector<SliceViewerITKSignal *> &signalList) {
@@ -145,7 +138,9 @@ AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBas
                                              QWidget *parent,
                                              bool)
     : SliceViewer(graphBaseIn, taskRunnerIn, parent) {
-    if (verbose) { std::cout << "AnnotationSliceViewer: Constructor\n"; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Constructing AnnotationSliceViewer"));
+    }
 
     paintModeIsActive = false;
     paintBoundaryModeIsActive = false;
@@ -205,15 +200,14 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
     std::lock_guard<std::mutex> lock(signalListMutex);
 
     if (verbose) {
-        std::cout << "AnnotationViewer: Paintevent triggered: " << event->rect().width()
-                  << " x " << event->rect().height() << std::endl;
-        printf("x0: %d y0: %d x1: %d y1: %d\n",
-               event->rect().topLeft().x(),
-               event->rect().topLeft().y(),
-               event->rect().width(),
-               event->rect().height());
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Annotation paintEvent rect=%1,%2 %3x%4")
+                         .arg(event->rect().topLeft().x())
+                         .arg(event->rect().topLeft().y())
+                         .arg(event->rect().width())
+                         .arg(event->rect().height()));
     }
-    double tic = utils::tic();
+    const qint64 startedAtMs = verbose ? QDateTime::currentMSecsSinceEpoch() : 0;
 
     QPainter painter(this);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
@@ -224,7 +218,9 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
 
     for (auto &signal : signalList) {
         if (signal->getIsActive()) {
-            if (verbose) { std::cout << "AnnotationViewer: Painting new signal" << std::endl; }
+            if (verbose) {
+                SP_LOG_DEBUG("viewer.render", QStringLiteral("Painting active annotation signal"));
+            }
             painter.drawImage(targetRect,
                               *(signal->getAddressSliceQImage()),
                               signal->getAddressSliceQImage()->rect());
@@ -294,15 +290,18 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
             .arg(summarizeAnnotationSignalImageRects(signalList));
     logAnnotationViewerState(logKey, message);
 
-
-    if (verbose) {    utils::toc(tic, "AnnotationViewer PaintEvent finished: ");}
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Annotation paintEvent finished in %1 ms")
+                         .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
+    }
 
 }
 
 
 void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
     if (taskRunner != nullptr && taskRunner->isBusy()) {
-        std::cout << "Currently Calculating, not accepting more KeyPressEvents!" << std::endl;
+        SP_LOG_WARNING("viewer.interaction", QStringLiteral("Ignoring key press because a background task is still running"));
         return;
     }
 //    std::cout << event->key() << std::endl;
@@ -542,10 +541,12 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
     dialog->show();
 
     if (targetWorkingLabel != 0) {
-        std::cout << "[3DCutDebug] opened 3D view for workingLabel=" << targetWorkingLabel
-                  << " dialog=" << dialog
-                  << " workingImage=" << navigationImage.GetPointer()
-                  << std::endl;
+        SP_LOG_DEBUG(
+            "viewer.three_d",
+            QStringLiteral("[3DCutDebug] opened 3D view for workingLabel=%1 dialog=%2 workingImage=%3")
+                .arg(targetWorkingLabel)
+                .arg(reinterpret_cast<quintptr>(dialog), 0, 16)
+                .arg(reinterpret_cast<quintptr>(navigationImage.GetPointer()), 0, 16));
     }
 }
 
@@ -578,7 +579,8 @@ quint32 AnnotationSliceViewer::workingSegmentColor(dataType::SegmentIdType label
 
 bool AnnotationSliceViewer::show3DWorkingSegmentCutView(int posX, int posY) {
     if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr || graphBase->pGraph == nullptr) {
-        std::cout << "[3DCutDebug] working-segment cut click ignored: missing working-segments image" << std::endl;
+        SP_LOG_WARNING("viewer.three_d",
+                       QStringLiteral("[3DCutDebug] working-segment cut click ignored: missing working-segments image"));
         sendStatusMessage(QStringLiteral("Load working segments before opening a 3D cut view."));
         return false;
     }
@@ -588,12 +590,15 @@ bool AnnotationSliceViewer::show3DWorkingSegmentCutView(int posX, int posY) {
     const auto segImage = graphBase->pWorkingSegmentsImage;
     const dataType::SegmentIdType label = segImage->GetPixel({x, y, z});
 
-    std::cout << "[3DCutDebug] click"
-              << " widgetPos=" << posX << "," << posY
-              << " imagePos=" << x << "," << y << "," << z
-              << " workingLabel=" << label
-              << " taskRunnerBusy=" << (taskRunner != nullptr && taskRunner->isBusy())
-              << std::endl;
+    SP_LOG_DEBUG("viewer.three_d",
+                 QStringLiteral("[3DCutDebug] click widgetPos=%1,%2 imagePos=%3,%4,%5 workingLabel=%6 taskRunnerBusy=%7")
+                     .arg(posX)
+                     .arg(posY)
+                     .arg(x)
+                     .arg(y)
+                     .arg(z)
+                     .arg(label)
+                     .arg(taskRunner != nullptr && taskRunner->isBusy()));
 
     if (label == 0) {
         sendStatusMessage(QStringLiteral("3D cut: clicked background, no working segment selected."));
@@ -673,7 +678,7 @@ void AnnotationSliceViewer::exportDebugInformation() {
         return;
     }
 
-    std::cout << "Exporting Debug Information from AnnotationsliceViewer\n";
+    SP_LOG_INFO("segmentation", QStringLiteral("Exporting graph debug information"));
     graphBase->pGraph->exportDebugInformation();
 }
 
@@ -805,11 +810,12 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
     case ToolMode::View3DCut:
-        std::cout << "[3DCutDebug] mousePress armed"
-                  << " sliceAxis=" << sliceAxis
-                  << " pos=" << event->pos().x() << "," << event->pos().y()
-                  << " button=" << static_cast<int>(event->button())
-                  << std::endl;
+        SP_LOG_DEBUG("viewer.three_d",
+                     QStringLiteral("[3DCutDebug] mousePress armed sliceAxis=%1 pos=%2,%3 button=%4")
+                         .arg(sliceAxis)
+                         .arg(event->pos().x())
+                         .arg(event->pos().y())
+                         .arg(static_cast<int>(event->button())));
         if (show3DWorkingSegmentCutView(event->pos().x(), event->pos().y())) {
             setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         }
@@ -826,11 +832,10 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
         return;
     }
 
-    std::cout << "Running InsertSegmentationSegmentIntoInitialSegments\n";
-    std::cout << "AnnotationSliceViewer::InsertSegmentationSegmentIntoInitialSegments called" << std::endl;
+    SP_LOG_INFO("segmentation", QStringLiteral("Transferring a segmentation segment into the working supervoxel graph"));
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    printf("Insert segment at position: %d %d %d\n", x, y, z);
+    SP_LOG_INFO("segmentation", QStringLiteral("Insert segmentation segment at %1,%2,%3").arg(x).arg(y).arg(z));
 
     if (taskRunner == nullptr) {
         graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z);
@@ -848,7 +853,7 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
 }
 
 void AnnotationSliceViewer::runOpenSegmentationLabel(int posX, int posY){
-    std::cout << "Running OpenSegmentationLabel\n";
+    SP_LOG_INFO("segmentation", QStringLiteral("Opening the clicked segmentation label"));
     taskRunner->run(
         [this, posX, posY]() { openSegmentationLabel(posX, posY); },
         [this]() {
@@ -881,17 +886,21 @@ void AnnotationSliceViewer::runErodeSegmentationLabel(int posX, int posY) {
 }
 
 // openSegmentationLabel
-void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
-    double tic = utils::tic();
+void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY) {
+    const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     if (graphBase->pSelectedSegmentation == nullptr) {
         return;
     }
     const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
 
-    double time_first_part = utils::tic("OpenSegmentationLabel first part started: ");
+    const qint64 firstPartStartedAtMs = QDateTime::currentMSecsSinceEpoch();
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    printf("Open segment at position: %d %d %d\n", x, y, z);
+    SP_LOG_DEBUG("viewer.interaction",
+                 QStringLiteral("Opening segmentation label at (%1, %2, %3)")
+                     .arg(x)
+                     .arg(y)
+                     .arg(z));
 
 
     // calculate labelmap
@@ -901,12 +910,15 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     // open
     // put back in
 
-    dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x,y,z});
-    std::cout << "Label at click position: " << labelAtClickPosition << "\n";
+    dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+    SP_LOG_DEBUG("segmentation",
+                 QStringLiteral("Open segmentation requested for label %1")
+                     .arg(labelAtClickPosition));
 
     if (labelAtClickPosition == backgroundLabel) {
-        std::cout << "Label at click position matches the background label (" << backgroundLabel
-                  << "), not refining.\n";
+        SP_LOG_WARNING("segmentation",
+                       QStringLiteral("Skipping segmentation open because clicked label matches background (%1)")
+                           .arg(backgroundLabel));
         return void();
     }
 
@@ -931,9 +943,12 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
 
     dataType::SegmentsImageType ::Pointer pExtractedCell = ROIExtractionFilter->GetOutput();
     ROIExtractionFilter->Update();
-    utils::toc(time_first_part, "OpenSegmentationLabel first part finished: ");
+    SP_LOG_DEBUG("segmentation",
+                 QStringLiteral("Prepared open ROI for label %1 in %2 ms")
+                     .arg(labelAtClickPosition)
+                     .arg(QDateTime::currentMSecsSinceEpoch() - firstPartStartedAtMs));
 
-    double time_second_part = utils::tic("OpenSegmentationLabel second part started: ");
+    const qint64 secondPartStartedAtMs = QDateTime::currentMSecsSinceEpoch();
     using StructuringElementType = itk::BinaryBallStructuringElement<dataType::SegmentIdType , dataType::Dimension>;
     StructuringElementType structuringElement;
     structuringElement.SetRadius(openingRadius);
@@ -948,8 +963,10 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
     openingFilter->Update();
     auto pExtractedCellClosed = openingFilter->GetOutput();
 
-//    std::cout << "Safe border: " << openingFilter->GetSafeBorder() << "\n";
-    utils::toc(time_second_part, "OpenSegmentationLabel second part finished: ");
+    SP_LOG_DEBUG("segmentation",
+                 QStringLiteral("Applied morphological opening for label %1 in %2 ms")
+                     .arg(labelAtClickPosition)
+                     .arg(QDateTime::currentMSecsSinceEpoch() - secondPartStartedAtMs));
 //
 ////     try the same thing with a fast binary dil and erode
 ////    this is not faster!
@@ -1006,13 +1023,16 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY){
         ++it;
     }
 
-    utils::toc(tic, "OpenSegmentationLabel finished: ");
+    SP_LOG_INFO("segmentation",
+                QStringLiteral("Opened segmentation label %1 in %2 ms")
+                    .arg(labelAtClickPosition)
+                    .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
 }
 
 
 
-void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
-    double tic = utils::tic();
+void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY) {
+    const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     if (graphBase->pSelectedSegmentation == nullptr) {
         return;
     }
@@ -1020,7 +1040,11 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
 
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    printf("Filling holes segments at position: %d %d %d\n", x, y, z);
+    SP_LOG_DEBUG("viewer.interaction",
+                 QStringLiteral("Filling segmentation label at (%1, %2, %3)")
+                     .arg(x)
+                     .arg(y)
+                     .arg(z));
 
     // calculate labelmap
 
@@ -1033,12 +1057,15 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
     // close
 
     // put back in
-    dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x,y,z});
-    std::cout << "Label at click position: " << labelAtClickPosition << "\n";
+    dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+    SP_LOG_DEBUG("segmentation",
+                 QStringLiteral("Fill segmentation requested for label %1")
+                     .arg(labelAtClickPosition));
 
     if (labelAtClickPosition == backgroundLabel) {
-        std::cout << "Label at click position matches the background label (" << backgroundLabel
-                  << "), not refining.\n";
+        SP_LOG_WARNING("segmentation",
+                       QStringLiteral("Skipping segmentation fill because clicked label matches background (%1)")
+                           .arg(backgroundLabel));
         return void();
     }
 
@@ -1077,7 +1104,10 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
     closingFilter->SetKernel(structuringElement);
     closingFilter->SetForegroundValue(labelAtClickPosition);
     closingFilter->Update();
-    std::cout << "Safe border: " << closingFilter->GetSafeBorder() << "\n";
+    SP_LOG_DEBUG("segmentation",
+                 QStringLiteral("Applied morphological closing for label %1 (safeBorder=%2)")
+                     .arg(labelAtClickPosition)
+                     .arg(closingFilter->GetSafeBorder()));
 
     auto pExtractedCellClosed = closingFilter->GetOutput();
 
@@ -1110,7 +1140,10 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY){
         ++it;
     }
 
-    utils::toc(tic, "FillSegmentationLabel finished: ");
+    SP_LOG_INFO("segmentation",
+                QStringLiteral("Filled segmentation label %1 in %2 ms")
+                    .arg(labelAtClickPosition)
+                    .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
 }
 
 void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
@@ -1242,10 +1275,13 @@ void AnnotationSliceViewer::setErosionRadius(int radius) {
 
 
 void AnnotationSliceViewer::refineSegmentByPosition(int posX, int posY) {
-    std::cout << "AnnotationSliceViewer::refineSegmentByPosition called" << std::endl;
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    printf("Refining segments at position: %d %d %d\n", x, y, z);
+    SP_LOG_INFO("segmentation",
+                QStringLiteral("Refining segmentation at (%1, %2, %3)")
+                    .arg(x)
+                    .arg(y)
+                    .arg(z));
 
     taskRunner->run(
         [this, x, y, z]() { graphBase->pGraph->refineWithSelectedRefinementAtPosition(x, y, z); },
@@ -1258,7 +1294,11 @@ void AnnotationSliceViewer::refineSegmentByPosition(int posX, int posY) {
 void AnnotationSliceViewer::splitWorkingNodeIntoInitialNodes(int posX, int posY) {
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    std::cout << "Splitting workingsegment into initial nodes at position: " << x << " " << y << " " << z << "\n";
+    SP_LOG_INFO("segmentation",
+                QStringLiteral("Splitting working segment into initial nodes at (%1, %2, %3)")
+                    .arg(x)
+                    .arg(y)
+                    .arg(z));
     graphBase->pGraph->splitWorkingNodeIntoInitialNodes(x, y, z);
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     orthoViewer()->refreshViewers();
@@ -1267,7 +1307,11 @@ void AnnotationSliceViewer::splitWorkingNodeIntoInitialNodes(int posX, int posY)
 void AnnotationSliceViewer::removeInitialSegmentFromWorkingSegmentAtClick(int posX, int posY) {
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    std::cout << "Removing initialsegment from workingsegment at position: " << x << " " << y << " " << z << "\n";
+    SP_LOG_INFO("segmentation",
+                QStringLiteral("Removing initial segment from working segment at (%1, %2, %3)")
+                    .arg(x)
+                    .arg(y)
+                    .arg(z));
     graphBase->pGraph->removeInitialNodeFromWorkingNodeAtPosition(x, y, z);
 
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
@@ -1277,20 +1321,32 @@ void AnnotationSliceViewer::removeInitialSegmentFromWorkingSegmentAtClick(int po
 void AnnotationSliceViewer::transferWorkingNodeToSegmentation(int posX, int posY) {
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
-    printf("Transfering WorkingNode to segmentation at position: %d %d %d\n", x, y, z);
+    SP_LOG_INFO("segmentation",
+                QStringLiteral("Transferring working node to segmentation at (%1, %2, %3)")
+                    .arg(x)
+                    .arg(y)
+                    .arg(z));
     graphBase->pGraph->transferWorkingNodeToSegmentation(x, y, z);
 }
 
 
 void AnnotationSliceViewer::deleteConnectedLabelFromSegmentation(int posX, int posY) {
-    double tic = utils::tic();
+    const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     if (graphBase->pSelectedSegmentation != nullptr && graphBase->pGraph != nullptr) {
         int x, y, z;
         getXYZfromPixmapPos(posX, posY, x, y, z);
         const dataType::SegmentIdType labelAtPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
+        SP_LOG_INFO("segmentation",
+                    QStringLiteral("Deleting connected segmentation label %1 at (%2, %3, %4)")
+                        .arg(labelAtPosition)
+                        .arg(x)
+                        .arg(y)
+                        .arg(z));
         graphBase->pGraph->deleteSegmentationLabel(labelAtPosition);
     }
-    utils::toc(tic, "DeleteConnectedLabelFromSegmentation finished: ");
+    SP_LOG_DEBUG("segmentation",
+                 QStringLiteral("Finished deleting connected segmentation label in %1 ms")
+                     .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
 }
 
 
@@ -1386,9 +1442,12 @@ void AnnotationSliceViewer::mouseReleaseEvent(QMouseEvent *event) {
     } else if (ROISelectionModeIsActive) {
         if (ROISelectionRubberBand != nullptr) {
             //TODO: think about zoom
-            std::cout << "x: " << ROISelectionRubberBand->x() << " y: " << ROISelectionRubberBand->y();
-            std::cout << " width: " << ROISelectionRubberBand->width() << " height: "
-                      << ROISelectionRubberBand->height() << "\n";
+            SP_LOG_DEBUG("viewer.interaction",
+                         QStringLiteral("ROI rubber band x=%1 y=%2 width=%3 height=%4")
+                             .arg(ROISelectionRubberBand->x())
+                             .arg(ROISelectionRubberBand->y())
+                             .arg(ROISelectionRubberBand->width())
+                             .arg(ROISelectionRubberBand->height()));
             if (sliceAxis == 0) {
                 graphBase->ROI_fz = static_cast<int>((ROISelectionRubberBand->x()) / zoomFactor);
                 graphBase->ROI_tz = static_cast<int>((ROISelectionRubberBand->x() + ROISelectionRubberBand->width()) /
@@ -1455,7 +1514,10 @@ void AnnotationSliceViewer::drawPoint(QPoint point) {
 
     point.setX(point.x() / zoomFactor);
     point.setY(point.y() / zoomFactor);
-    std::cout << "Drawing point: " << point.x() << " " << point.y() << "\n";
+    SP_LOG_DEBUG("viewer.interaction",
+                 QStringLiteral("Drawing point at (%1, %2)")
+                     .arg(point.x())
+                     .arg(point.y()));
 
     if ((point.x() < 0) | (point.y() < 0) | (point.x() >= annotationImage.width()) | (point.y() >= annotationImage.height())) {
         return;
@@ -1487,10 +1549,13 @@ void AnnotationSliceViewer::drawLineTo(QPoint endPoint) {
 
     endPoint.setX(endPoint.x() / zoomFactor);
     endPoint.setY(endPoint.y() / zoomFactor);
-    std::cout << "Drawing line to: " << endPoint.x() << " " << endPoint.y() << "\n";
+    SP_LOG_DEBUG("viewer.interaction",
+                 QStringLiteral("Drawing line to (%1, %2)")
+                     .arg(endPoint.x())
+                     .arg(endPoint.y()));
 
     if ((endPoint.x() < 0) | (endPoint.y() < 0) | (endPoint.x() >= annotationImage.width()) | (endPoint.y() >= annotationImage.height())) {
-        std::cout << "Point outside image\n";
+        SP_LOG_WARNING("viewer.interaction", QStringLiteral("Ignoring drawLineTo point outside image bounds"));
         return;
     }
 
@@ -1665,7 +1730,7 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
 
 void AnnotationSliceViewer::resetQImages() {
     if (getCurrentSliceWidth() <= 0 || getCurrentSliceHeight() <= 0) {
-        qWarning() << "AnnotationSliceViewer::resetQImages() called with invalid dimensions!";
+        SP_LOG_WARNING("viewer.render", QStringLiteral("Annotation resetQImages called with invalid dimensions"));
         return;
     }
     backGroundImage = QImage(static_cast<int>(getCurrentSliceWidth()),

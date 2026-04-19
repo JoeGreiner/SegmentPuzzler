@@ -10,6 +10,7 @@
 #include <QPainter>
 #include "SliceViewer.h"
 #include "SliceViewerITKSignal.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 #include <itkImageRegionConstIteratorWithIndex.h>
 #include <QWheelEvent>
@@ -38,13 +39,7 @@ QString planeNameForSliceAxis(int sliceAxis) {
 }
 
 void logSliceViewerState(const QString &key, const QString &message) {
-    static QHash<QString, QString> lastLogs;
-    if (lastLogs.value(key) == message) {
-        return;
-    }
-
-    qInfo().noquote() << message;
-    lastLogs.insert(key, message);
+    SP_LOG_DEBUG_CHANGED("viewer.render", key, message);
 }
 
 QString summarizeActiveSignalImageRects(const std::vector<SliceViewerITKSignal *> &signalList) {
@@ -81,7 +76,9 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, QWidget *parent
 SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn, QWidget *parent, bool verbose)
     : verbose{verbose} {
     setParent(parent);
-    if (verbose) { std::cout << "SliceViewer: Constructor\n"; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Constructing SliceViewer"));
+    }
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
     setFocusPolicy(Qt::WheelFocus);
 
@@ -137,7 +134,9 @@ void SliceViewer::setAllViewersToXYZCoordinates(int posX, int posY) {
     for (auto *viewer : linkedViewerList) {
         viewer->setSliceIndex(getSliceIndexFromXYZ(viewer->getSliceAxis(), x, y, z));
     }
-    if (verbose) { std::cout << posX << " " << posY << " \n"; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting linked viewers to pixmap coordinates x=%1 y=%2").arg(posX).arg(posY));
+    }
 }
 
 void SliceViewer::updateLastMouseXYZAfterSliceInOrDecrement() {
@@ -152,7 +151,7 @@ void SliceViewer::updateLastMouseXYZAfterSliceInOrDecrement() {
             lastMouseZ = sliceIndex;
             break;
         default:
-            std::cout << "SliceAxis: " << sliceAxis << "\n";
+            SP_LOG_ERROR("viewer.interaction", QStringLiteral("Encountered invalid sliceAxis=%1").arg(sliceAxis));
             throw std::logic_error("SliceAxis not implemented!");
     }
 }
@@ -180,14 +179,18 @@ void SliceViewer::decrementSliceIndex() {
 // this is useful if you want to redraw multiple viewers at once and have them draw the correct slice indicator
 void SliceViewer::setSliceIndexWithOutUpdating(int proposedSliceIndex) {
     if (isSliceIndexValid(proposedSliceIndex)) {
-        if (verbose) { std::cout << "Setting SliceIndex without updating: " << proposedSliceIndex << std::endl; }
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting slice index without redraw to %1").arg(proposedSliceIndex));
+        }
         sliceIndex = proposedSliceIndex;
     }
 }
 
 void SliceViewer::setSliceIndex(int proposedSliceIndex) {
     if (isSliceIndexValid(proposedSliceIndex)) {
-        if (verbose) { std::cout << "Setting Slice: " << proposedSliceIndex << std::endl; }
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting slice index to %1").arg(proposedSliceIndex));
+        }
         int oldSliceIndex = sliceIndex;
         sliceIndex = proposedSliceIndex;
         updateLastMouseXYZAfterSliceInOrDecrement();
@@ -292,7 +295,9 @@ int SliceViewer::getSliceIndex() {
 
 void SliceViewer::prepareSliceIndex(int proposedSliceIndex) {
     if (isSliceIndexValid(proposedSliceIndex)) {
-        if (verbose) { std::cout << "Preparing Slice: " << proposedSliceIndex << std::endl; }
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.render", QStringLiteral("Preparing predicted slice index=%1").arg(proposedSliceIndex));
+        }
         for (auto &signal : signalList) {
             if (signal->getIsActive()) {
                 signal->prepareNextSliceIndexAsync(proposedSliceIndex);
@@ -321,14 +326,18 @@ bool SliceViewer::hasDimensionMisMatch(int dimXIn, int dimYIn, int dimZIn) {
 }
 
 void SliceViewer::addSignal(SliceViewerITKSignal *signal) {
-    if (verbose) { std::cout << "Viewer: Adding Signal" << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render", QStringLiteral("Adding signal to SliceViewer"));
+    }
     std::lock_guard<std::mutex> lock(signalListMutex);
     signalList.push_back(signal);
     int newDimX, newDimY, newDimZ;
     newDimX = signalList.back()->getDimX();
     newDimY = signalList.back()->getDimY();
     newDimZ = signalList.back()->getDimZ();
-    if (verbose) { std::cout << "Viewer: Size: " << newDimX << " " << newDimY << " " << newDimZ << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render", QStringLiteral("SliceViewer dimensions=%1x%2x%3").arg(newDimX).arg(newDimY).arg(newDimZ));
+    }
     if (numberSignals == 0) {
         dimX = newDimX;
         dimY = newDimY;
@@ -369,25 +378,29 @@ int SliceViewer::getCurrentSliceHeight() {
 void SliceViewer::paintEvent(QPaintEvent *event) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
 
-    if (verbose) { std::cout << "Viewer: Paintevent triggered" << std::endl; }
-    double tic = utils::tic();
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render", QStringLiteral("SliceViewer paintEvent triggered"));
+    }
+    const qint64 paintStartedAtMs = verbose ? QDateTime::currentMSecsSinceEpoch() : 0;
 
     QPainter painter(this);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
     const QRect targetRect = rect();
     const QRect eventRect = event != nullptr ? event->rect() : QRect();
     if (backGroundImage.isNull()) {
-        qWarning() << "backGroundImage is not initialized!";
+        SP_LOG_WARNING("viewer.render", QStringLiteral("SliceViewer paint skipped because backGroundImage is not initialized"));
     }
     if (sliceIndicatorImage.isNull()) {
-        qWarning() << "sliceIndicatorImage is not initialized!";
+        SP_LOG_WARNING("viewer.render", QStringLiteral("SliceViewer paint skipped because sliceIndicatorImage is not initialized"));
     }
     painter.drawImage(targetRect, backGroundImage, backGroundImage.rect());
     for (auto &signal : signalList) {
         if (signal->getIsActive()) {
-            if (verbose) { std::cout << "Viewer: Painting new signal" << std::endl; }
+            if (verbose) {
+                SP_LOG_DEBUG("viewer.render", QStringLiteral("Painting active SliceViewer signal"));
+            }
             if (signal->getAddressSliceQImage() == nullptr) {
-                qWarning() << "signal->getAddressSliceQImage() is nullptr!";
+                SP_LOG_WARNING("viewer.render", QStringLiteral("SliceViewer encountered an active signal without a slice image"));
             }
             painter.drawImage(targetRect,
                               *(signal->getAddressSliceQImage()),
@@ -413,13 +426,19 @@ void SliceViewer::paintEvent(QPaintEvent *event) {
             .arg(summarizeActiveSignalImageRects(signalList));
     logSliceViewerState(logKey, message);
 
-    if (verbose) { utils::toc(tic, "Viewer: finished PaintEvent: ");}
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("SliceViewer paintEvent finished in %1 ms")
+                         .arg(QDateTime::currentMSecsSinceEpoch() - paintStartedAtMs));
+    }
 
 }
 
 void SliceViewer::setSliceAxis(int proposedSliceAxis) {
     if (proposedSliceAxis <= 2 && proposedSliceAxis >= 0) {
-        if (verbose) { std::cout << "Viewer: sliceAxis: " << proposedSliceAxis << std::endl; }
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting SliceViewer axis to %1").arg(proposedSliceAxis));
+        }
         sliceAxis = proposedSliceAxis;
         for (auto &signal : signalList) {
             signal->setSliceAxis(sliceAxis);
@@ -433,7 +452,10 @@ void SliceViewer::setSliceAxis(int proposedSliceAxis) {
 
 void SliceViewer::resetQImages() {
     if (getCurrentSliceWidth() <= 0 || getCurrentSliceHeight() <= 0) {
-        qWarning() << "SliceViewer::resetQImages() called with invalid dimensions!";
+        SP_LOG_WARNING("viewer.render",
+                       QStringLiteral("SliceViewer::resetQImages() called with invalid dimensions %1x%2")
+                           .arg(getCurrentSliceWidth())
+                           .arg(getCurrentSliceHeight()));
         return;
     }
     backGroundImage = QImage(static_cast<int>(getCurrentSliceWidth()),
@@ -459,25 +481,32 @@ void SliceViewer::resetQImages() {
 
 
 void SliceViewer::recalculateQImages() {
-    double t = 0;
-    if (verbose) { t = utils::tic("Viewer: recalculating QImages"); }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render", QStringLiteral("Recalculating SliceViewer images"));
+    }
     for (auto &signal : signalList) {
         if (signal->getIsActive()) {
-            if (verbose) { std::cout << "Viewer: recalculating Signal" << std::endl; }
+            if (verbose) {
+                SP_LOG_DEBUG("viewer.render", QStringLiteral("Recalculating active SliceViewer signal"));
+            }
             signal->calculateSliceQImages();
             // TODO: Put back in if bugs are fixed
 //            signal->prepareNextSliceIndexAsync(predictedSliceIndex);
         }
     }
-    if (verbose) { utils::toc(t, "Viewer: finished recalculating QImages"); }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render", QStringLiteral("Finished recalculating SliceViewer images"));
+    }
     updateFunction();
 }
 
 void SliceViewer::drawOtherViewerSliceIndicator(int otherSliceAxis, int otherSliceIndex) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
-    if (verbose) { std::cout << "drawing indicator: " << otherSliceAxis << " " << otherSliceIndex << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render", QStringLiteral("Drawing slice indicator axis=%1 index=%2").arg(otherSliceAxis).arg(otherSliceIndex));
+    }
     if (sliceIndicatorImage.isNull()) {
-        qWarning() << "sliceIndicatorImage is not initialized!";
+        SP_LOG_WARNING("viewer.render", QStringLiteral("SliceViewer cannot draw the slice indicator because the image is not initialized"));
     }
 
     QPainter painter(&sliceIndicatorImage);
@@ -589,7 +618,7 @@ void SliceViewer::exportVideo() {
 void SliceViewer::exportCurrentImageToFile(std::string filePrefix) {
     filePrefix = "imgExport/" + filePrefix + ".png";
 
-    std::cout << "Saving current view to: " << filePrefix << "\n";
+    SP_LOG_INFO("io", QStringLiteral("Saving current view to %1").arg(QString::fromStdString(filePrefix)));
     QFile file(filePrefix.c_str());
     file.open(QIODevice::WriteOnly);
 

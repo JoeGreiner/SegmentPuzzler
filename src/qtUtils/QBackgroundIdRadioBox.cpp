@@ -1,5 +1,5 @@
-#include <iostream>
 #include "QBackgroundIdRadioBox.h"
+#include "src/utils/AppLogger.h"
 
 
 QBackgroundIdRadioBox::QBackgroundIdRadioBox(QWidget *parent) :
@@ -29,16 +29,15 @@ QBackgroundIdRadioBox::QBackgroundIdRadioBox(QWidget *parent) :
 }
 
 void QBackgroundIdRadioBox::evaluateSelection() {
-    std::cout << "evaluating background selection!" << std::endl;
     bool radioHighestIdIsBackgroundIsChecked = radioHighestIdIsBackground->isChecked();
     bool radioLowestIdIsBackgroundIsChecked = radioLowestIdIsBackground->isChecked();
     if (radioHighestIdIsBackgroundIsChecked) {
-        std::cout << "highest" << std::endl;
         strategy = "backgroundIsHighestId";
+        SP_LOG_INFO("segmentation", QStringLiteral("Background id strategy selected: %1").arg(strategy));
         emit sendBackgroundIdStrategy(strategy);
     } else if (radioLowestIdIsBackgroundIsChecked) {
-        std::cout << "lowest" << std::endl;
         strategy = "backgroundIsLowestId";
+        SP_LOG_INFO("segmentation", QStringLiteral("Background id strategy selected: %1").arg(strategy));
         emit sendBackgroundIdStrategy(strategy);
     }
     this->close();

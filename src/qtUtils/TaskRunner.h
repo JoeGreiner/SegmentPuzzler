@@ -5,6 +5,7 @@
 #include <QProgressDialog>
 #include <QPointer>
 #include <QString>
+#include <QDateTime>
 #include <QtConcurrent/QtConcurrent>
 #include <QWidget>
 
@@ -14,6 +15,8 @@
 #include <utility>
 #include <stdexcept>
 #include <type_traits>
+
+#include "src/utils/AppLogger.h"
 
 namespace task_runner_detail {
 template<typename Result>
@@ -99,7 +102,7 @@ private:
 
     QProgressDialog *createProgressDialog(const QString &labelText);
     void setBusy(bool busy);
-    void handleError(std::exception_ptr error);
+    void handleError(std::exception_ptr error, const QString &context = {});
 
     bool busy_;
     QPointer<QWidget> messageParent_;
@@ -151,6 +154,10 @@ void TaskRunner::runImpl(QString labelText,
         labelText = QStringLiteral("Working...");
     }
 
+    const QString taskLabel = labelText;
+    const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    SP_LOG_INFO("tasks", QStringLiteral("Task started: %1").arg(taskLabel));
+
     QPointer<QProgressDialog> progressDialog = createProgressDialog(labelText);
 
     auto *watcher = new QFutureWatcher<Outcome>(this);
@@ -158,10 +165,13 @@ void TaskRunner::runImpl(QString labelText,
             [this,
              watcher,
              progressDialog,
+             taskLabel,
+             startedAtMs,
              commit = std::move(commit),
              afterIdle = std::move(afterIdle)]() mutable {
                 Outcome outcome;
                 std::exception_ptr callbackError;
+                bool taskSucceeded = false;
                 try {
                     outcome = watcher->future().result();
                 } catch (...) {
@@ -170,19 +180,20 @@ void TaskRunner::runImpl(QString labelText,
 
                 try {
                     if (callbackError) {
-                        handleError(callbackError);
+                        handleError(callbackError, taskLabel);
                     } else if (outcome.error) {
-                        handleError(outcome.error);
+                        handleError(outcome.error, taskLabel);
                     } else {
                         if constexpr (std::is_void_v<Result>) {
                             commit();
                         } else {
                             commit(std::move(*outcome.value));
                         }
+                        taskSucceeded = true;
                     }
                 } catch (...) {
                     try {
-                        handleError(std::current_exception());
+                        handleError(std::current_exception(), taskLabel);
                     } catch (...) {
                     }
                 }
@@ -193,6 +204,12 @@ void TaskRunner::runImpl(QString labelText,
                 }
                 watcher->deleteLater();
                 setBusy(false);
+                if (taskSucceeded) {
+                    SP_LOG_INFO("tasks",
+                                QStringLiteral("Task finished: %1 (%2 ms)")
+                                    .arg(taskLabel)
+                                    .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
+                }
 
                 // afterIdle runs after setBusy(false), so isBusy() is
                 // briefly false between chained tasks. This is fine as
@@ -203,7 +220,7 @@ void TaskRunner::runImpl(QString labelText,
                         afterIdle();
                     } catch (...) {
                         try {
-                            handleError(std::current_exception());
+                            handleError(std::current_exception(), taskLabel);
                         } catch (...) {
                         }
                     }

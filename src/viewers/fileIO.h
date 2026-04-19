@@ -8,6 +8,7 @@
 #include <itkImage.h>
 #include <itkImageFileReader.h>
 #include <itkImageFileWriter.h>
+#include "src/utils/AppLogger.h"
 
 //#include "H5Cpp.h"
 //#include <highfive/H5File.hpp>
@@ -25,7 +26,7 @@ template<typename dType>
 typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
     using ImageType = itk::Image<dType, 3>;
     using ReaderType = itk::ImageFileReader<ImageType>;
-    std::cout << "ITKImageLoader: Reading " << fileName.toStdString() << "\n";
+    SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
 
     typename ReaderType::Pointer reader = ReaderType::New();
     reader->SetFileName(fileName.toStdString());
@@ -36,13 +37,24 @@ typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
     auto spacing = pImage->GetSpacing();
     auto origin = pImage->GetOrigin();
     auto direction = pImage->GetDirection();
-    std::cout << "ITKImageLoader: Done!\n";
-    std::cout << "ITKImageLoader: Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
-    std::cout << "ITKImageLoader: Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
-    std::cout << "ITKImageLoader: Direction: [["
-              << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
-              << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
-              << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
+    SP_LOG_INFO("io",
+                QStringLiteral("Loaded image %1 spacing=[%2, %3, %4] origin=[%5, %6, %7] direction=[[%8, %9, %10], [%11, %12, %13], [%14, %15, %16]]")
+                    .arg(fileName)
+                    .arg(spacing[0], 0, 'g', 6)
+                    .arg(spacing[1], 0, 'g', 6)
+                    .arg(spacing[2], 0, 'g', 6)
+                    .arg(origin[0], 0, 'g', 6)
+                    .arg(origin[1], 0, 'g', 6)
+                    .arg(origin[2], 0, 'g', 6)
+                    .arg(direction[0][0], 0, 'g', 6)
+                    .arg(direction[0][1], 0, 'g', 6)
+                    .arg(direction[0][2], 0, 'g', 6)
+                    .arg(direction[1][0], 0, 'g', 6)
+                    .arg(direction[1][1], 0, 'g', 6)
+                    .arg(direction[1][2], 0, 'g', 6)
+                    .arg(direction[2][0], 0, 'g', 6)
+                    .arg(direction[2][1], 0, 'g', 6)
+                    .arg(direction[2][2], 0, 'g', 6));
 
     return pImage;
 }
@@ -52,19 +64,30 @@ void ITKImageWriter(typename imageType::Pointer pImage, std::string filePathWrit
     auto spacing = pImage->GetSpacing();
     auto origin = pImage->GetOrigin();
     auto direction = pImage->GetDirection();
-    std::cout << "ITKImageWriter (fileIO): Writing to: " << filePathWriter << "\n";
-    std::cout << "ITKImageWriter (fileIO): Spacing: [" << spacing[0] << ", " << spacing[1] << ", " << spacing[2] << "]\n";
-    std::cout << "ITKImageWriter (fileIO): Origin:  [" << origin[0] << ", " << origin[1] << ", " << origin[2] << "]\n";
-    std::cout << "ITKImageWriter (fileIO): Direction: [["
-              << direction[0][0] << ", " << direction[0][1] << ", " << direction[0][2] << "], ["
-              << direction[1][0] << ", " << direction[1][1] << ", " << direction[1][2] << "], ["
-              << direction[2][0] << ", " << direction[2][1] << ", " << direction[2][2] << "]]\n";
+    SP_LOG_INFO("io",
+                QStringLiteral("Writing image %1 spacing=[%2, %3, %4] origin=[%5, %6, %7] direction=[[%8, %9, %10], [%11, %12, %13], [%14, %15, %16]]")
+                    .arg(QString::fromStdString(filePathWriter))
+                    .arg(spacing[0], 0, 'g', 6)
+                    .arg(spacing[1], 0, 'g', 6)
+                    .arg(spacing[2], 0, 'g', 6)
+                    .arg(origin[0], 0, 'g', 6)
+                    .arg(origin[1], 0, 'g', 6)
+                    .arg(origin[2], 0, 'g', 6)
+                    .arg(direction[0][0], 0, 'g', 6)
+                    .arg(direction[0][1], 0, 'g', 6)
+                    .arg(direction[0][2], 0, 'g', 6)
+                    .arg(direction[1][0], 0, 'g', 6)
+                    .arg(direction[1][1], 0, 'g', 6)
+                    .arg(direction[1][2], 0, 'g', 6)
+                    .arg(direction[2][0], 0, 'g', 6)
+                    .arg(direction[2][1], 0, 'g', 6)
+                    .arg(direction[2][2], 0, 'g', 6));
     using WriterType = itk::ImageFileWriter<imageType>;
     typename WriterType::Pointer writer = WriterType::New();
     writer->SetInput(pImage);
     writer->SetFileName(filePathWriter);
     writer->Update();
-    std::cout << "ITKImageWriter (fileIO): Done!\n";
+    SP_LOG_INFO("io", QStringLiteral("Finished writing image %1").arg(QString::fromStdString(filePathWriter)));
 }
 
 

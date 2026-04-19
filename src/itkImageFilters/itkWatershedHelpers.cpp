@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,6 +30,24 @@ namespace {
 using SegmentsImageType = dataType::SegmentsImageType;
 using SegmentIdType = dataType::SegmentIdType;
 
+std::mutex &watershedLogMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+WatershedLogSink &watershedLogSinkStorage() {
+    static WatershedLogSink sink;
+    return sink;
+}
+
+void emitWatershedLog(const std::string &message) {
+    std::lock_guard<std::mutex> guard(watershedLogMutex());
+    if (const auto &sink = watershedLogSinkStorage()) {
+        sink(message);
+        return;
+    }
+    std::cout << message << std::endl;
+}
 SegmentsImageType::Pointer cloneSegmentsImageMetadata(SegmentsImageType::Pointer source) {
     auto image = SegmentsImageType::New();
     image->SetRegions(source->GetLargestPossibleRegion());
@@ -211,6 +230,11 @@ SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
 
 } // namespace
 
+void setWatershedLogSink(WatershedLogSink sink) {
+    std::lock_guard<std::mutex> guard(watershedLogMutex());
+    watershedLogSinkStorage() = std::move(sink);
+}
+
 void binaryThresholdImageFilterFloat(itk::Image<unsigned short, 3>::Pointer &inputImage,
                                      itk::Image<unsigned char, 3>::Pointer &outputImage,
                                      float thresholdValueMin) {
@@ -281,7 +305,7 @@ void generateDistanceMap(itk::Image<unsigned char, 3>::Pointer &edgeImage,
                          double varianceGaussianFilter,
                          DistanceMapAlgorithm algorithm,
                          int threadCount) {
-    std::cout << "Generate Distance Map" << std::endl;
+    emitWatershedLog("Generate Distance Map");
 
     if (algorithm == DistanceMapAlgorithm::FH) {
         const auto region = edgeImage->GetLargestPossibleRegion();
@@ -375,8 +399,9 @@ void invertDistanceMap(itk::Image<float, 3>::Pointer &distanceMap,
     invertFilter->Update();
     invertedDistanceMap = invertFilter->GetOutput();
 
-    std::cout << "New Maximum should be: " << invertFilter->GetMaximum() << std::endl;
-    std::cout << "Maximum after inverting the distancemap : " << getMaximumOfFloatImage(invertedDistanceMap) << std::endl;
+    emitWatershedLog("New Maximum should be: " + std::to_string(invertFilter->GetMaximum()));
+    emitWatershedLog(
+        "Maximum after inverting the distancemap : " + std::to_string(getMaximumOfFloatImage(invertedDistanceMap)));
 }
 
 void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
@@ -384,7 +409,7 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
                   itk::Image<unsigned int, 3>::Pointer &watershedOut,
                   const WatershedRunOptions &options,
                   segment_puzzler::FastMarkerWatershedMetrics *fastMetrics) {
-    std::cout << "Run watershed ...\n";
+    emitWatershedLog("Run watershed ...");
     switch (options.algorithm) {
         case WatershedAlgorithm::MorphologicalWatershedFromMarkers: {
             using WatershedFilterType =
@@ -422,7 +447,7 @@ void insertBoundariesIntoWatershed(itk::Image<unsigned int, 3>::Pointer &watersh
     } else {
         valueOfBoundaryInWS = 0;
     }
-    std::cout << "Inserting boundaries into watershed with value: " << valueOfBoundaryInWS << "\n";
+    emitWatershedLog("Inserting boundaries into watershed with value: " + std::to_string(valueOfBoundaryInWS));
     for (thresholdIterator.GoToBegin(); !thresholdIterator.IsAtEnd(); ++thresholdIterator) {
         if (thresholdIterator.Get() >= 1) {
             wsIterator.Set(valueOfBoundaryInWS);
@@ -497,15 +522,15 @@ void extractMinimaFromDistanceMap(itk::Image<float, 3>::Pointer &distanceMap,
                                   itk::Image<unsigned int, 3>::Pointer &seeds,
                                   double minimalHeight,
                                   distance_map_benchmark::SeedExtractorKind seedExtractorKind) {
-    std::cout << "Extracting minima ...\n";
+    emitWatershedLog("Extracting minima ...");
     seeds = distance_map_benchmark::extractSeedsFromDistanceImage(distanceMap, seedExtractorKind, minimalHeight);
-    std::cout << "Number of seeds: " << getMaximumOfUIntImage(seeds) << std::endl;
+    emitWatershedLog("Number of seeds: " + std::to_string(getMaximumOfUIntImage(seeds)));
 }
 
 void filterSmallSegmentSeeds(itk::Image<unsigned int, 3>::Pointer &watershedIn,
                              itk::Image<unsigned int, 3>::Pointer &watershedOut,
                              float volumeThreshold) {
-    std::cout << "Filtering\n";
+    emitWatershedLog("Filtering");
     using SegmentType = itk::Image<unsigned int, 3>;
     using LabelGeometryImageFilterType = itk::LabelGeometryImageFilter<SegmentType, SegmentType>;
     LabelGeometryImageFilterType::Pointer labelGeometryImageFilter = LabelGeometryImageFilterType::New();
@@ -525,7 +550,7 @@ void filterSmallSegmentSeeds(itk::Image<unsigned int, 3>::Pointer &watershedIn,
             changeMap[labelValue] = 0;
         }
     }
-    std::cout << "Filtered " << changeMap.size() << " seeds! \n";
+    emitWatershedLog("Filtered " + std::to_string(changeMap.size()) + " seeds!");
 
     ChangeLabelImageFilterType::Pointer changeLabelImageFilter = ChangeLabelImageFilterType::New();
     changeLabelImageFilter->SetInput(watershedIn);

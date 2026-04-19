@@ -34,6 +34,7 @@ private slots:
     void showHotkeys();
     void showSegmentTable();
     void arm3DWorkingSegmentCut();
+    void showLoggingSettings();
 
 private:
     OrthoViewer *myOrthowindow;

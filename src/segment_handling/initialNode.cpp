@@ -1,10 +1,23 @@
 #include "initialNode.h"
 #include "workingNode.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
+#include <QElapsedTimer>
 #include <itkConstShapedNeighborhoodIterator.h>
 #include <itkBinaryThresholdImageFunction.h>
 #include <itkFloodFilledImageFunctionConditionalIterator.h>
 #include <unordered_set>
+
+namespace {
+
+using segment_puzzler::app_logging::AppLogger;
+using segment_puzzler::app_logging::LogLevel;
+
+void logInitialNodeDebug(const char *functionName, const QString &message) {
+    AppLogger::log(LogLevel::Debug, QStringLiteral("segmentation"), message, functionName);
+}
+
+}
 
 
 InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageType::Pointer pSegmentsIn, SegmentIdType labelIn) {
@@ -281,12 +294,15 @@ void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdTy
 // given a onesided edge, it will find the other, corrosponding onesided edge to form a twosided edge
 // useful function when refining
 InitialEdge *InitialNode::computeCorrospondingOneSidedEdge(InitialEdge *pInitialEdge, bool verbose) {
-    double t = 0;
+    QElapsedTimer timer;
     if (verbose) {
-        std::string desc =
-                "InitialNode::computeCorrospondingOneSidedEdge (" + std::to_string(pInitialEdge->pairId.first) +
-                "->" + std::to_string(pInitialEdge->pairId.second) + ") node: " + std::to_string(getLabel());
-        t = utils::tic(desc);
+        logInitialNodeDebug(
+            __func__,
+            QStringLiteral("Computing corresponding one-sided edge %1->%2 on node %3")
+                .arg(pInitialEdge->pairId.first)
+                .arg(pInitialEdge->pairId.second)
+                .arg(getLabel()));
+        timer.start();
     }
 
     using NeighborhoodIteratorType = itk::ConstShapedNeighborhoodIterator<SegmentIdImageType>;
@@ -383,7 +399,12 @@ InitialEdge *InitialNode::computeCorrospondingOneSidedEdge(InitialEdge *pInitial
             }
         }
     }
-    if (verbose) { utils::toc(t, "InitialNode::computeCorrospondingOneSidedEdge finished"); }
+    if (verbose) {
+        const double elapsedMs = static_cast<double>(timer.nsecsElapsed()) / 1000000.0;
+        logInitialNodeDebug(__func__,
+                            QStringLiteral("Finished corresponding one-sided edge computation (%1 ms)")
+                                .arg(elapsedMs, 0, 'f', 3));
+    }
     return pNewEdge;
 }
 

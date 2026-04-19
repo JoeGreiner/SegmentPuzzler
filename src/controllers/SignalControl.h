@@ -19,6 +19,7 @@
 #include "src/viewers/SliceViewer.h"
 #include "src/file_definitions/dataTypes.h"
 #include "src/segment_handling/graphBase.h"
+#include "src/utils/AppLogger.h"
 
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <src/qtUtils/QBackgroundIdRadioBox.h>
@@ -330,11 +331,15 @@ private:
             allSignalList.push_back(pRaw);
             return true;
         } else {
-            std::cout << "Segments: [" << segmentsGraph->getDimX() << " "
-                      << segmentsGraph->getDimY() << " " << segmentsGraph->getDimZ() << "]\n";
-            std::cout << "Image:    [" << pSignal->getDimX() << " "
-                      << pSignal->getDimY() << " " << pSignal->getDimZ() << "]\n";
-            std::cout << "Dimension mismatch! Image is not added.\n";
+            SP_LOG_WARNING(
+                "io",
+                QStringLiteral("Dimension mismatch while adding image. segments=[%1 %2 %3] image=[%4 %5 %6]")
+                    .arg(segmentsGraph->getDimX())
+                    .arg(segmentsGraph->getDimY())
+                    .arg(segmentsGraph->getDimZ())
+                    .arg(pSignal->getDimX())
+                    .arg(pSignal->getDimY())
+                    .arg(pSignal->getDimZ()));
             return false;
         }
     }

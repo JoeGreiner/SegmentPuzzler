@@ -8,8 +8,10 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <numeric>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +28,25 @@ namespace {
 using SegmentIdType = dataType::SegmentIdType;
 using SegmentsImageType = dataType::SegmentsImageType;
 using NeighborMap = std::unordered_map<int, int>;
+
+std::mutex &agglomerationLogMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+AgglomerationLogSink &agglomerationLogSinkStorage() {
+    static AgglomerationLogSink sink;
+    return sink;
+}
+
+void emitAgglomerationLog(const std::string &message) {
+    std::lock_guard<std::mutex> guard(agglomerationLogMutex());
+    if (const auto &sink = agglomerationLogSinkStorage()) {
+        sink(message);
+        return;
+    }
+    std::cout << message << std::endl;
+}
 
 struct EdgeStats {
     double totalBoundarySum = 0.0;
@@ -129,7 +150,9 @@ double elapsedMilliseconds(double startTimeSeconds) {
 }
 
 void logStepTime(double startTimeSeconds, const char *description) {
-    std::cout << description << " " << (currentTimeSeconds() - startTimeSeconds) << std::endl;
+    std::ostringstream stream;
+    stream << description << ' ' << (currentTimeSeconds() - startTimeSeconds);
+    emitAgglomerationLog(stream.str());
 }
 
 int effectiveThreadCount(const WatershedRagAgglomerationOptions &options) {
@@ -368,30 +391,31 @@ typename TImage::Pointer allocateImageLike(typename TImage::Pointer reference) {
 }
 
 void printStats(const WatershedRagAgglomerationStats &stats) {
-    std::cout << "WatershedRagAgglomeration:"
-              << " fragments=" << stats.inputFragmentCount
-              << " edges=" << stats.ragEdgeCount
-              << " merges=" << stats.mergeCount
-              << " output_clusters=" << stats.outputClusterCount
-              << " initial_small_clusters=" << stats.initialSmallClusterCount
-              << " final_small_clusters=" << stats.finalSmallClusterCount
-              << " cleanup_merges=" << stats.sizeBiasCleanupMergeCount
-              << " final_cleanup_eligible_small_clusters=" << stats.finalCleanupEligibleSmallClusterCount
-              << " policy=" << agglomerationExecutionPolicyName(stats.executionPolicyUsed)
-              << " batches=" << stats.batchCount
-              << " max_batch_pairs=" << stats.maxBatchPairs
-              << " compact_ms=" << stats.compactLabelsMs
-              << " rag_ms=" << stats.ragBuildMs
-              << " heap_ms=" << stats.heapInitMs
-              << " agglomeration_ms=" << stats.agglomerationMs
-              << " batch_select_ms=" << stats.batchSelectionMs
-              << " batch_reduce_ms=" << stats.batchReduceMs
-              << " batch_apply_ms=" << stats.batchApplyMs
-              << " projection_ms=" << stats.projectionMs
-              << " boundary_min=" << stats.boundaryMin
-              << " boundary_max=" << stats.boundaryMax
-              << " boundary_scale=" << boundaryNormalizationModeName(stats.resolvedBoundaryNormalization)
-              << "\n";
+    std::ostringstream stream;
+    stream << "WatershedRagAgglomeration:"
+           << " fragments=" << stats.inputFragmentCount
+           << " edges=" << stats.ragEdgeCount
+           << " merges=" << stats.mergeCount
+           << " output_clusters=" << stats.outputClusterCount
+           << " initial_small_clusters=" << stats.initialSmallClusterCount
+           << " final_small_clusters=" << stats.finalSmallClusterCount
+           << " cleanup_merges=" << stats.sizeBiasCleanupMergeCount
+           << " final_cleanup_eligible_small_clusters=" << stats.finalCleanupEligibleSmallClusterCount
+           << " policy=" << agglomerationExecutionPolicyName(stats.executionPolicyUsed)
+           << " batches=" << stats.batchCount
+           << " max_batch_pairs=" << stats.maxBatchPairs
+           << " compact_ms=" << stats.compactLabelsMs
+           << " rag_ms=" << stats.ragBuildMs
+           << " heap_ms=" << stats.heapInitMs
+           << " agglomeration_ms=" << stats.agglomerationMs
+           << " batch_select_ms=" << stats.batchSelectionMs
+           << " batch_reduce_ms=" << stats.batchReduceMs
+           << " batch_apply_ms=" << stats.batchApplyMs
+           << " projection_ms=" << stats.projectionMs
+           << " boundary_min=" << stats.boundaryMin
+           << " boundary_max=" << stats.boundaryMax
+           << " boundary_scale=" << boundaryNormalizationModeName(stats.resolvedBoundaryNormalization);
+    emitAgglomerationLog(stream.str());
 }
 
 template <typename IsActiveVoxel>
@@ -1186,18 +1210,18 @@ WatershedRagAgglomerationResult runWatershedRagAgglomerationImpl(
     ctx.boundaryBuffer = boundary->GetBufferPointer();
     ctx.thresholdMaskBuffer = thresholdMask.IsNotNull() ? thresholdMask->GetBufferPointer() : nullptr;
 
-    std::cout << "WatershedRagAgglomeration compact labels\n";
+    emitAgglomerationLog("WatershedRagAgglomeration compact labels");
     computeBoundaryRange(ctx);
     compactLabels(ctx);
     ctx.stats.initialSmallClusterCount = countSmallRootClusters(ctx);
 
-    std::cout << "WatershedRagAgglomeration build rag\n";
+    emitAgglomerationLog("WatershedRagAgglomeration build rag");
     buildRag(ctx);
 
-    std::cout << "WatershedRagAgglomeration init heap\n";
+    emitAgglomerationLog("WatershedRagAgglomeration init heap");
     initHeap(ctx);
 
-    std::cout << "WatershedRagAgglomeration agglomeration\n";
+    emitAgglomerationLog("WatershedRagAgglomeration agglomeration");
     runAutoOrParallelAgglomeration(ctx, previewMode);
     runCleanupAgglomeration(ctx);
     ctx.stats.finalSmallClusterCount = countSmallRootClusters(ctx);
@@ -1206,7 +1230,7 @@ WatershedRagAgglomerationResult runWatershedRagAgglomerationImpl(
 
     WatershedRagAgglomerationResult result;
     result.stats = ctx.stats;
-    std::cout << "WatershedRagAgglomeration projection\n";
+    emitAgglomerationLog("WatershedRagAgglomeration projection");
     projectLabels(ctx, result);
     result.stats = ctx.stats;
     printStats(result.stats);
@@ -1214,6 +1238,11 @@ WatershedRagAgglomerationResult runWatershedRagAgglomerationImpl(
 }
 
 } // namespace
+
+void setAgglomerationLogSink(AgglomerationLogSink sink) {
+    std::lock_guard<std::mutex> guard(agglomerationLogMutex());
+    agglomerationLogSinkStorage() = std::move(sink);
+}
 
 const char *ragLinkageName(RagLinkage linkage) {
     switch (linkage) {

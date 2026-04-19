@@ -12,10 +12,85 @@
 #include <unordered_set>
 #include <itkNeighborhoodIterator.h>
 #include <itkBinaryThresholdImageFunction.h>
+#include <QElapsedTimer>
 #include <QMessageBox>
 #include <chrono>
+#include <QStringList>
+#include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 #include "graphBase.h"
+
+namespace {
+
+using segment_puzzler::app_logging::AppLogger;
+using segment_puzzler::app_logging::LogLevel;
+
+const QString kSegmentationCategory = QStringLiteral("segmentation");
+const QString kIoCategory = QStringLiteral("io");
+
+void logGraph(LogLevel level, const char *functionName, const QString &message, const QString &category = kSegmentationCategory) {
+    AppLogger::log(level, category, message, functionName);
+}
+
+void logGraphDebugIf(bool enabled, const char *functionName, const QString &message) {
+    if (!enabled) {
+        return;
+    }
+    logGraph(LogLevel::Debug, functionName, message);
+}
+
+template<typename Container>
+QString joinIds(const Container &values) {
+    QStringList parts;
+    for (const auto &value : values) {
+        parts << QString::number(static_cast<qulonglong>(value));
+    }
+    return parts.join(QStringLiteral(" "));
+}
+
+template<typename MapType>
+QString joinPairs(const MapType &values) {
+    QStringList parts;
+    for (const auto &entry : values) {
+        parts << QStringLiteral("%1=%2")
+                     .arg(static_cast<qulonglong>(entry.first))
+                     .arg(QString::number(entry.second, 'g', 6));
+    }
+    return parts.join(QStringLiteral(", "));
+}
+
+class ScopedGraphTimer {
+public:
+    ScopedGraphTimer(bool enabled, const char *functionName, QString operation, QString category = kSegmentationCategory)
+        : enabled_(enabled), functionName_(functionName), operation_(std::move(operation)), category_(std::move(category)) {
+        if (!enabled_) {
+            return;
+        }
+        AppLogger::log(LogLevel::Debug, category_, operation_ + QStringLiteral(" started"), functionName_);
+        timer_.start();
+    }
+
+    ~ScopedGraphTimer() {
+        if (!enabled_) {
+            return;
+        }
+        const double elapsedMs = static_cast<double>(timer_.nsecsElapsed()) / 1000000.0;
+        AppLogger::log(
+            LogLevel::Debug,
+            category_,
+            QStringLiteral("%1 finished (%2 ms)").arg(operation_).arg(elapsedMs, 0, 'f', 3),
+            functionName_);
+    }
+
+private:
+    bool enabled_ = false;
+    const char *functionName_ = nullptr;
+    QString operation_;
+    QString category_;
+    QElapsedTimer timer_;
+};
+
+} // namespace
 
 Graph::~Graph() = default;
 
@@ -327,13 +402,10 @@ void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
 }
 
 void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) {
-    double t = 0, tBig = 0;
-    if (verbose) { tBig = utils::tic("Graph::constructInitialNodes2 called"); }
-    if (verbose) { t = utils::tic("Graph::constructInitialNodes2:Loop1 called"); }
-
-    // get histogram of label ids to preallocate voxel array sizes
+    ScopedGraphTimer totalTimer(verbose, __func__, QStringLiteral("Constructing initial nodes"));
     std::vector<int> segmentIdHistogram(nextFreeId, 0);
-    {
+    {   ScopedGraphTimer histogramTimer(verbose, __func__, QStringLiteral("Building segment histogram"));
+        // get histogram of label ids to preallocate voxel array sizes
         itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
         it.GoToBegin();
         while (!it.IsAtEnd()) {
@@ -342,24 +414,19 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
         }
     }
 
-    if (verbose) { utils::toc(t, "Graph::constructInitialNodes2:Loop1 finished"); }
-    if (verbose) { t = utils::tic("Graph::constructInitialNodes2:Loop2 called"); }
-
     std::vector<std::shared_ptr<InitialNode>> initialNodesVec; // vector use instead of a map to save lookup time
-    initialNodesVec.resize(nextFreeId);
-    segmentManager.clearAndReserveInitialNodes(nextFreeId);
-    for (unsigned int i = 0; i < segmentIdHistogram.size(); i++) {
-        if (segmentIdHistogram[i] > 0) {
-            segmentManager.addInitialNode(i, segmentIdHistogram[i]);
-            initialNodesVec[i] = initialNodes[i];
+    {   ScopedGraphTimer initialNodeTimer(verbose, __func__, QStringLiteral("Allocating initial nodes"));
+        initialNodesVec.resize(nextFreeId);
+        segmentManager.clearAndReserveInitialNodes(nextFreeId);
+        for (unsigned int i = 0; i < segmentIdHistogram.size(); i++) {
+            if (segmentIdHistogram[i] > 0) {
+                segmentManager.addInitialNode(i, segmentIdHistogram[i]);
+                initialNodesVec[i] = initialNodes[i];
+            }
         }
     }
 
-    if (verbose) { utils::toc(t, "Graph::constructInitialNodes2:Loop2 finished"); }
-    if (verbose) { t = utils::tic("Graph::constructInitialNodes2:Loop3 called"); }
-
-
-    {
+    {   ScopedGraphTimer voxelAssignmentTimer(verbose, __func__, QStringLiteral("Assigning voxels to initial nodes"));
         const SegmentIdType* imageBuffer = pImage->GetBufferPointer();
         const itk::ImageRegion<3>& region = pImage->GetLargestPossibleRegion();
         const itk::Size<3>& size = region.GetSize();
@@ -394,36 +461,29 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
 //        }
 //    }
 
-    if (verbose) { utils::toc(t, "Graph::constructInitialNodes2:Loop3 finished"); }
-    if (verbose) { t = utils::tic("Graph::constructInitialNodes2:Loop4 called"); }
-
-    for (unsigned int i = 0; i < initialNodesVec.size(); ++i) {
-        if (segmentIdHistogram[i] > 0) {
-            if (isIgnoredId(i)) {
-                segmentManager.removeInitialNode(i);
+    {   ScopedGraphTimer finalizeNodesTimer(verbose, __func__, QStringLiteral("Finalizing initial node ROIs"));
+        for (unsigned int i = 0; i < initialNodesVec.size(); ++i) {
+            if (segmentIdHistogram[i] > 0) {
+                if (isIgnoredId(i)) {
+                    segmentManager.removeInitialNode(i);
+                }
+                initialNodesVec[i]->roi.updateBoundingRoi(initialNodesVec[i]->voxels);
             }
-            initialNodesVec[i]->roi.updateBoundingRoi(initialNodesVec[i]->voxels);
         }
     }
 
-    if (verbose) { utils::toc(t, "Graph::constructInitialNodes2:Loop4 finished"); }
-    if (verbose) { t = utils::tic("Graph::constructInitialNodes2:calculateNodeFeatures called"); }
-
-
-    std::vector<SegmentIdType> idsOfInitialNodes = utils::getKeyVecOfSharedPtrMap<SegmentIdType>(initialNodes);
+    {   ScopedGraphTimer featureTimer(verbose, __func__, QStringLiteral("Calculating initial node features"));
+        std::vector<SegmentIdType> idsOfInitialNodes = utils::getKeyVecOfSharedPtrMap<SegmentIdType>(initialNodes);
 //#pragma omp parallel for schedule(dynamic)
-    for (long long i = 0; i < static_cast<long long>(idsOfInitialNodes.size()); i++) {
-        initialNodes[idsOfInitialNodes[i]]->calculateNodeFeatures();
+        for (long long i = 0; i < static_cast<long long>(idsOfInitialNodes.size()); i++) {
+            initialNodes[idsOfInitialNodes[i]]->calculateNodeFeatures();
+        }
     }
-
-    if (verbose) { utils::toc(t, "Graph::constructInitialNodes2:calculateNodeFeatures finished"); }
-    if (verbose) { utils::toc(tBig, "Graph::constructInitialNodes2 finished"); }
 }
 
 
 void Graph::initializeEdgeVolumeAndEdgeStatus() {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::initializeEdgeVolumeAndEdgeStatus called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Initializing edge volume and edge status"));
     graphBase->pEdgesInitialSegmentsImage = GraphBase::EdgeImageType::New();
     graphBase->pEdgesInitialSegmentsImage->SetRegions(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
     graphBase->pEdgesInitialSegmentsImage->Allocate(true);
@@ -447,13 +507,11 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
     graphBase->pEdgesInitialSegmentsITKSignal = ownedEdgesSignal.get();
     graphBase->pEdgesInitialSegmentsITKSignal->setLUTEdgeMap(&graphBase->edgeStatus,
                                                              &graphBase->colorLookUpEdgesStatus);
-    if (verbose) { utils::toc(t, "Graph::initializeEdgeVolumeAndEdgeStatus finished"); }
 }
 
 
 Graph::SegmentIdType Graph::getSmallestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::getSmallestSegmentId called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding smallest segment id"));
     SegmentIdType smallestId = std::numeric_limits<SegmentIdType>::max(), currentId;
     itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
     it.GoToBegin();
@@ -464,14 +522,12 @@ Graph::SegmentIdType Graph::getSmallestSegmentId(itk::Image<SegmentIdType, 3>::P
         }
         ++it;
     }
-    if (verbose) { std::cout << "Smallest Id: " << smallestId << "\n"; }
-    if (verbose) { utils::toc(t, "Graph::getSmallestSegmentId finished"); }
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Smallest segment id=%1").arg(smallestId));
     return smallestId;
 }
 
 Graph::SegmentIdType Graph::getLargestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::getLargestSegmentId called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding largest segment id"));
     SegmentIdType largestId = std::numeric_limits<SegmentIdType>::min(), currentId;
     itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
     it.GoToBegin();
@@ -482,15 +538,13 @@ Graph::SegmentIdType Graph::getLargestSegmentId(itk::Image<SegmentIdType, 3>::Po
         }
         ++it;
     }
-    if (verbose) { std::cout << "Largest Id: " << largestId << "\n"; }
-    if (verbose) { utils::toc(t, "Graph::getLargestSegmentId finished"); }
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Largest segment id=%1").arg(largestId));
     return largestId;
 }
 
 
 Graph::SegmentIdType Graph::getNextFreeId(itk::Image<Graph::SegmentIdType, 3>::Pointer pImage) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::getNextFreeId called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding next free segment id"));
 
     SegmentIdType largestId = 0, currentId;
     itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
@@ -502,8 +556,7 @@ Graph::SegmentIdType Graph::getNextFreeId(itk::Image<Graph::SegmentIdType, 3>::P
         }
         ++it;
     }
-    if (verbose) { std::cout << "NextFreeId: " << largestId + 1 << "\n"; }
-    if (verbose) { utils::toc(t, "Graph::getNextFreeId finished"); }
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Next free segment id=%1").arg(largestId + 1));
     return largestId + 1;
 }
 
@@ -521,8 +574,8 @@ bool Graph::isIgnoredId(Graph::SegmentIdType idToCheck) {
 
 
 void Graph::mergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToMerge) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::mergeEdges called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Merging selected edges"));
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Edge ids=%1").arg(joinIds(vecOfEdgeIdsToMerge)));
 
     EdgePairIdType pairId;
     bool updateSegmentImage = false;     // optimization: only update the resulting segments at the end, do not update incrementally
@@ -542,7 +595,6 @@ void Graph::mergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToMerge) {
     for (auto &label : newWorkingNodeIds) {
         insertWorkingNodeInSegmentImage(*workingNodes[label]);
     }
-    if (verbose) { utils::toc(t, "Graph::mergeEdges finished"); }
 }
 
 void Graph::mergeEdge(InitialEdge *edge, bool updateSegmentImage) {
@@ -587,8 +639,7 @@ void Graph::mergeEdge(InitialEdge *edge, bool updateSegmentImage) {
 }
 
 void Graph::insertWorkingNodeInSegmentImage(WorkingNode &pWorkingNode) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::insertWorkingNodeInSegmentImage called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Writing working node into segment image"));
 
 //    auto voxelList = pWorkingNode.getVoxelArray();
     auto voxelListPtr = pWorkingNode.getVoxelPointerArray();
@@ -617,17 +668,12 @@ void Graph::insertWorkingNodeInSegmentImage(WorkingNode &pWorkingNode) {
 //        pBuffer[linearIndex] = label;
 //    }
 
-    if (verbose) { utils::toc(t, "Graph::insertWorkingNodeInSegmentImage finished"); }
 }
 
 
 void Graph::unmergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToUnMerge) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::unmergeEdges called"); }
-
-    for (auto &val : vecOfEdgeIdsToUnMerge) {
-        std::cout << val << "\n";
-    }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Unmerging selected edges"));
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Edge ids=%1").arg(joinIds(vecOfEdgeIdsToUnMerge)));
 
     EdgePairIdType pairId;
     SegmentIdType labelSmaller, labelBigger, currentWorkingNodeIdA, currentWorkingNodeIdB;
@@ -676,16 +722,13 @@ void Graph::unmergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToUnMerge) {
 //        graphBase->edgeStatus[numId] = -2;
 
     }
-
-    if (verbose) { utils::toc(t, "Graph::unmergeEdges finished"); }
 }
 
 
 std::pair<std::vector<Graph::SegmentIdType>, std::vector<Graph::SegmentIdType>>
 Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
                                        InitialEdge *edgeToCalculateDistanceFrom) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::calculateGraphDistancesFromEdge called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Calculating graph distances from edge"));
     std::map<SegmentIdType, float> distA;
     std::map<SegmentIdType, float> distB;
 
@@ -789,16 +832,6 @@ Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
         }
     }
 
-    // print distA
-    for (auto elem : distA) {
-        std::cout << elem.first << " " << elem.second << "\n";
-    }
-
-    // print distB
-    for (auto elem : distB) {
-        std::cout << elem.first << " " << elem.second << "\n";
-    }
-
     std::vector<SegmentIdType> initialNodeIdsSplitA;
     std::vector<SegmentIdType> initialNodeIdsSplitB;
 
@@ -808,24 +841,22 @@ Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
         } else if (distA[elem.first] > distB[elem.first]) {
             initialNodeIdsSplitB.push_back(elem.first);
         } else {
-            std::cout << "WARNING: distA & B are the same!: " << distA[elem.first] << "\n";
+            logGraph(LogLevel::Warning,
+                     __func__,
+                     QStringLiteral("Distance partitions tie for initial node %1 at value %2")
+                         .arg(elem.first)
+                         .arg(QString::number(distA[elem.first], 'g', 6)));
             initialNodeIdsSplitB.push_back(elem.first);
         }
     }
 
-    std::cout << "LabelsA: ";
-    for (auto elem : initialNodeIdsSplitA) {
-        std::cout << elem << " ";
-    }
-    std::cout << "\n";
-    std::cout << "LabelsB: ";
-    for (auto elem : initialNodeIdsSplitB) {
-        std::cout << elem << " ";
-    }
-    std::cout << "\n";
-
-
-    if (verbose) { utils::toc(t, "Graph::calculateGraphDistancesFromEdge finished"); }
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Distances A: %1").arg(joinPairs(distA)));
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Distances B: %1").arg(joinPairs(distB)));
+    logGraphDebugIf(verbose,
+                    __func__,
+                    QStringLiteral("Split labels A=[%1], B=[%2]")
+                        .arg(joinIds(initialNodeIdsSplitA))
+                        .arg(joinIds(initialNodeIdsSplitB)));
     return {initialNodeIdsSplitA, initialNodeIdsSplitB};
 }
 
@@ -835,8 +866,7 @@ Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
 Graph::LandscapeType::Pointer
 Graph::generateLandscapePathfinding(SegmentsImageType::Pointer pSegments, SegmentIdType allowedWorkingNodeLabel,
                                     InitialEdge &forbiddenEdge) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::generateLandscapePathfinding called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Generating pathfinding landscape"));
 
     // get the roi of all allowed segments. the roi will define the maximal size of the landscape
     Roi mergedRoi = workingNodes[allowedWorkingNodeLabel]->roi;
@@ -874,15 +904,13 @@ Graph::generateLandscapePathfinding(SegmentsImageType::Pointer pSegments, Segmen
         pLandscape->SetPixel({voxel.x, voxel.y, voxel.z}, 0);
     }
 
-    if (verbose) { utils::toc(t, "Graph::generateLandscapePathfinding finished"); }
     return pLandscape;
 }
 
 // find shortest path given a landscape/mask
 itk::Image<short, 3>::Pointer Graph::shortestPath(InitialEdge &initialEdge,
                                                   LandscapeType::Pointer pLandscape) { //TODO: This is slow, make it fast! Fast Marching? Multithreaded?
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::shortestPath called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Computing shortest path distances"));
 
 
 
@@ -951,7 +979,6 @@ itk::Image<short, 3>::Pointer Graph::shortestPath(InitialEdge &initialEdge,
 
         }
     }
-    if (verbose) { utils::toc(t, "Graph::shortestPath finished"); }
     return pDistance;
 }
 
@@ -959,8 +986,7 @@ itk::Image<short, 3>::Pointer Graph::shortestPath(InitialEdge &initialEdge,
 void Graph::unmergeEdge(WorkingNode *workingNodeToSplit, std::vector<SegmentIdType> initialNodeIdsA,
                         std::vector<SegmentIdType> initialNodeIdsB) {
     //TODO: Handle cases where distance is inf/max, and assign them a own label (as they are not connected to the rest of the label at all)
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::unmergeEdge2 called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Splitting working node into two groups"));
 
 
     SegmentIdType labelOfNodeA = nextFreeId;
@@ -995,17 +1021,13 @@ void Graph::unmergeEdge(WorkingNode *workingNodeToSplit, std::vector<SegmentIdTy
     splitIntoConnectedComponentsOfWorkingNode(*workingNodes[labelOfNodeA]);
     splitIntoConnectedComponentsOfWorkingNode(*workingNodes[labelOfNodeB]);
 
-
-
-    if (verbose) { utils::toc(t, "Graph::unmergeEdge2 finished"); }
 }
 
 
 void Graph::unmergeEdge(InitialEdge *initialEdge, DistanceType::Pointer pDistanceSmaller,
                         DistanceType::Pointer pDistanceBigger) {
     //TODO: Handle cases where distance is inf/max, and assign them a own label (as they are not connected to the rest of the label at all)
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::unmergeEdge called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Unmerging edge from distance volumes"));
 
     SegmentIdType labelInitialNodeSmaller = initialEdge->getLabelSmaller();
     SegmentIdType labelInitialNodeBigger = initialEdge->getLabelBigger();
@@ -1017,10 +1039,12 @@ void Graph::unmergeEdge(InitialEdge *initialEdge, DistanceType::Pointer pDistanc
 
         // this is an approx solution, best would be a geodesic distance to the edge
         SegmentIdType currentWorkingNodeLabel = workingNodeLarger;
-        if (verbose) {
-            std::cout << "Unmerging workinglabel: " << currentWorkingNodeLabel << "(InitialLabels Edge: "
-                      << labelInitialNodeSmaller << "/" << labelInitialNodeBigger << ")\n";
-        }
+        logGraphDebugIf(verbose,
+                        __func__,
+                        QStringLiteral("Unmerging working node %1 for initial edge %2/%3")
+                            .arg(currentWorkingNodeLabel)
+                            .arg(labelInitialNodeSmaller)
+                            .arg(labelInitialNodeBigger));
         WorkingNode currentWorkingNode = *workingNodes[currentWorkingNodeLabel];
         std::vector<SegmentIdType> labelsOfInitialNodesNearSmaller, labelsOfInitialNodesNearBigger;
 
@@ -1070,16 +1094,11 @@ void Graph::unmergeEdge(InitialEdge *initialEdge, DistanceType::Pointer pDistanc
             }
         }
 
-        std::cout << "LabelsSmaller size: " << labelsOfInitialNodesNearSmaller.size() << "\n";
-        for (auto &el : labelsOfInitialNodesNearSmaller) {
-            std::cout << " " << el;
-        }
-        std::cout << "\n";
-        std::cout << "LabelsBigger size: " << labelsOfInitialNodesNearBigger.size() << "\n";
-        for (auto &el : labelsOfInitialNodesNearBigger) {
-            std::cout << " " << el;
-        }
-        std::cout << "\n";
+        logGraphDebugIf(verbose,
+                        __func__,
+                        QStringLiteral("Unmerge buckets smaller=[%1], bigger=[%2]")
+                            .arg(joinIds(labelsOfInitialNodesNearSmaller))
+                            .arg(joinIds(labelsOfInitialNodesNearBigger)));
         // crude idea:
         // first, unmerge all underlying nodes to workingNode(initialNode)
         // then, merge subsetA -> nodeA, subsetB -> nodeB
@@ -1125,13 +1144,11 @@ void Graph::unmergeEdge(InitialEdge *initialEdge, DistanceType::Pointer pDistanc
 //        }
 
     }
-    if (verbose) { utils::toc(t, "Graph::unmergeEdge finished"); }
 }
 
 void Graph::splitIntoConnectedComponentsOfWorkingNode(
         WorkingNode &workingNodeToAnalyze) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::splitIntoConnectedComponentsOfWorkingNode called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Splitting working node into connected components"));
 
 
     std::set<SegmentIdType> visitedWorkingNodeLabels, initialNodesOfWorkingNode;
@@ -1178,11 +1195,9 @@ void Graph::splitIntoConnectedComponentsOfWorkingNode(
             visitedWorkingNodeLabelsThisRun.insert(activeNode);
         }
 
-        std::cout << "Graph::splitIntoConnectedComponentsOfWorkingNode visited Labels this round: ";
-        for (auto &val : visitedWorkingNodeLabelsThisRun) {
-            std::cout << val << " ";
-        }
-        std::cout << "\n";
+        logGraphDebugIf(verbose,
+                        __func__,
+                        QStringLiteral("Connected component labels=[%1]").arg(joinIds(visitedWorkingNodeLabelsThisRun)));
 
         SegmentIdType labelOfNewNode = nextFreeId;
         nextFreeId++;
@@ -1206,12 +1221,11 @@ void Graph::splitIntoConnectedComponentsOfWorkingNode(
 
     }
     segmentManager.removeWorkingNode(&workingNodeToAnalyze);
-    if (verbose) { utils::toc(t, "splitIntoConnectedComponentsOfWorkingNode finished"); }
 }
 
 
 Graph::SegmentIdType Graph::getLargestIdInSegmentVolume(Graph::SegmentsImageType::Pointer pSegment) {
-    double tic = utils::tic();
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding largest id in segment volume"));
     SegmentIdType backgroundLabel = 0;
     itk::ImageRegionConstIterator<SegmentsImageType>
             it(pSegment, pSegment->GetLargestPossibleRegion());
@@ -1223,8 +1237,7 @@ Graph::SegmentIdType Graph::getLargestIdInSegmentVolume(Graph::SegmentsImageType
         }
         ++it;
     }
-
-    utils::toc(tic, "Graph::getLargestIdInSegmentVolume");
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Largest id in segment volume=%1").arg(backgroundLabel));
     return backgroundLabel;
 }
 
@@ -1271,23 +1284,20 @@ void Graph::removeInitialNodeFromWorkingNodeAtPosition(int x, int y, int z) {
 }
 
 void Graph::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit) {
-    double t = 0;
-    if (verbose) {
-        std::cout << "Graph::splitWorkingNodeIntoInitialNodes called: (" << workingNodeIdToSplit << ")\n";
-        t = utils::tic();
-    }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Splitting working node into initial nodes"));
     if (!isIgnoredId(workingNodeIdToSplit)) {
 
         auto pToWorkingNode = workingNodes.at(workingNodeIdToSplit);
-//        std::cout << "here" << "\n";
 
-        if (verbose) { std::cout << "Splitting into: ";}
         std::vector<SegmentIdType> idsOfSubInitialNodes;
         for (auto &initialNode : pToWorkingNode->subInitialNodes) {
             idsOfSubInitialNodes.push_back(initialNode.first);
-            if (verbose) {std::cout << initialNode.first << " ";}
         }
-        if (verbose) {std::cout << "\n";}
+        logGraphDebugIf(verbose,
+                        __func__,
+                        QStringLiteral("Working node %1 splits into initial nodes [%2]")
+                            .arg(workingNodeIdToSplit)
+                            .arg(joinIds(idsOfSubInitialNodes)));
 
         // remove corrosponding workingedges and workingNode
         segmentManager.removeWorkingNode(pToWorkingNode.get());
@@ -1334,9 +1344,7 @@ void Graph::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit)
                 }
             }
         }
-
     }
-    if (verbose) { utils::toc(t, "Graph::splitWorkingNodeIntoInitialNodes finished"); }
 
 }
 
@@ -1762,11 +1770,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
 
 Graph::SegmentsImageType::RegionType Graph::getDilatedRegionFromRoi(Roi roi, SegmentsImageType::SizeType imageMax,
                                                                     int numberVxDilations) {
-    double t = 0;
-    if (verbose) {
-        std::cout << "Graph::getDilatedRegionFromRoi called: \n";
-        t = utils::tic();
-    }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Calculating dilated ROI region"));
     // e.g.: (inclusive ranges!)
     // imageDimensions 100 200 300
     // roi: 0-19, 20-39, 30-49
@@ -1803,7 +1807,6 @@ Graph::SegmentsImageType::RegionType Graph::getDilatedRegionFromRoi(Roi roi, Seg
     SegmentsImageType::IndexType startIndex = {startX, startY, startZ};
     SegmentsImageType::SizeType size = {sizeX, sizeY, sizeZ};
     SegmentsImageType::RegionType region = {startIndex, size};
-    if (verbose) { utils::toc(t, "Graph::getDilatedRegionFromRoi finished"); }
     return region;
 }
 
@@ -1817,11 +1820,7 @@ Graph::SegmentsImageType::RegionType Graph::getDilatedRegionFromRoi(Roi roi, Seg
 // use different labels for manually merged segments than automatically merged labels
 // override automatic decision with manual decision, if available
 void Graph::mergeSegmentsWithRefinement() {
-    double t = 0, t1 = 0;
-    if (verbose) {
-        std::cout << "Graph::mergeSegmentsWithRefinement called: \n";
-        t = utils::tic();
-    }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Merging segments with refinement"));
 
 
     if (graphBase->pSelectedRefinement != nullptr) {
@@ -1836,7 +1835,7 @@ void Graph::mergeSegmentsWithRefinement() {
 //                      overlapMap[node.first].overlapPercentage << "\n";
         }
 
-        t1 = utils::tic();
+        ScopedGraphTimer mergeTimer(verbose, __func__, QStringLiteral("Collecting refinement-driven edge merges"));
 //        get vec of edges to merge to then call mergeEdges on all of them
         std::set<EdgeNumIdType> edgesToMerge;
         for (auto &edge : initialTwoSidedEdges) {
@@ -1857,7 +1856,6 @@ void Graph::mergeSegmentsWithRefinement() {
 
         }
         mergeEdges(edgesToMerge);
-        if (verbose) { utils::toc(t1, "Graph::mergeSegmentsWithRefinement Merging edges finished"); }
 
 
 //    for (auto &feature : nodeFeatures) {
@@ -1865,25 +1863,23 @@ void Graph::mergeSegmentsWithRefinement() {
 //    }
 
     }
-    if (verbose) { utils::toc(t, "Graph::mergeSegmentsWithRefinement finished"); }
-
 }
 
 void Graph::transferSegmentsWithRefinementOverlap() {
-    double t = 0;
-    if (verbose) {
-        std::cout << "Graph::transferSegmentsWithRefinementOverlap called: \n";
-        t = utils::tic();
-    }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring segments by refinement overlap"));
 
     if (graphBase->pSelectedSegmentation != nullptr) {
         if (graphBase->pSelectedRefinement != nullptr) {
             double overlapThreshold = 0.7;
             for (auto &node : workingNodes) {
                 LabelOverlap overlapFeature = LabelOverlap();
-            overlapFeature.setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
+                overlapFeature.setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
                 overlapFeature.compute(node.second->getVoxelPointerArray());
-                std::cout << overlapFeature.values[0] << "\n";
+                logGraphDebugIf(verbose,
+                                __func__,
+                                QStringLiteral("Working node %1 overlap=%2")
+                                    .arg(node.first)
+                                    .arg(QString::number(overlapFeature.values[0], 'g', 6)));
                 if (overlapFeature.values[0] > overlapThreshold) {
                     if (overlapFeature.corrospondingLabelWithMostOverlap != backgroundId) {
                         transferWorkingNodeToSegmentation(node.first);
@@ -1892,37 +1888,39 @@ void Graph::transferSegmentsWithRefinementOverlap() {
             }
         }
     }
-    if (verbose) { utils::toc(t, "Graph::transferSegmentsWithRefinementOverlap finished"); }
 }
 
 void Graph::transferSegmentsWithVolumeCriterion(double volumeThreshold) {
-    double t = 0;
-    if (verbose) {
-        std::cout << "Graph::transferSegmentsWithVolumeCriterion called: \n";
-        t = utils::tic();
-    }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring segments by volume threshold"));
     if (graphBase->pSelectedSegmentation != nullptr) {
         NumberOfVoxels volumeFeature = NumberOfVoxels();
         for (auto &node : workingNodes) {
             volumeFeature.compute(node.second->getVoxelPointerArray());
-            std::cout << volumeFeature.values[0] << "\n";
+            logGraphDebugIf(verbose,
+                            __func__,
+                            QStringLiteral("Working node %1 volume=%2")
+                                .arg(node.first)
+                                .arg(QString::number(volumeFeature.values[0], 'g', 6)));
             if (volumeFeature.values[0] > volumeThreshold) {
                 transferWorkingNodeToSegmentation(node.first);
             }
         }
     }
-    if (verbose) { utils::toc(t, "Graph::transferSegmentsWithVolumeCriterion finished"); }
 }
 
 void Graph::setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn) {
     backgroundIdStrategy = backgroundIdStrategyIn;
-    if (verbose) {
-        std::cout << "Graph::setBackgroundIdStrategy: " << backgroundIdStrategy << "\n";
-    }
+    logGraphDebugIf(verbose,
+                    __func__,
+                    QStringLiteral("Background id strategy set to %1")
+                        .arg(QString::fromStdString(backgroundIdStrategy)));
 }
 
 void Graph::updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage) {
-    std::cout << "BackgroundIdStrategy: " << backgroundIdStrategy << "\n";
+    logGraphDebugIf(verbose,
+                    __func__,
+                    QStringLiteral("Resolving background id using strategy %1")
+                        .arg(QString::fromStdString(backgroundIdStrategy)));
     if (backgroundIdStrategy == "backgroundIsHighestId") {
         backgroundId = getLargestSegmentId(pImage);
     } else if (backgroundIdStrategy == "backgroundIsLowestId") {
@@ -1930,10 +1928,11 @@ void Graph::updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage) {
     } else {
         throw std::invalid_argument("Received unknown backgroundIdStrategy in Graph::updateBackgroundIdFromVolume");
     }
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Background id resolved to %1").arg(backgroundId));
 }
 
 void Graph::exportDebugInformation(){
-    std::cout << "Graph::exportDebugInformation started"  << std::endl;
+    logGraph(LogLevel::Info, __func__, QStringLiteral("Exporting graph debug information"), kIoCategory);
     printEdgeIdLookUpToFile("edgeIdLookup.txt");
     printWorkingNodesToFile("workingNodes.txt");
     printWorkingEdgesToFile("workingEdges.txt");
@@ -1964,11 +1963,11 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
 // high level workflow: create volume with just the one segment in background
 // treat that new segment as a normal refinement segmentation call
     if (graphBase->pSelectedSegmentation == nullptr) {
-        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: no selected segmentation loaded\n";
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("No selected segmentation is loaded"));
         return;
     }
     if (graphBase->pWorkingSegmentsImage == nullptr) {
-        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: no working segments loaded\n";
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("No working segments image is loaded"));
         return;
     }
 
@@ -1976,8 +1975,10 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
     const SegmentIdType backgroundLabel = backgroundId;
 
     if (label == backgroundLabel) {
-        std::cout << "Graph::transferSegmentationSegmentToInitialSegment: Label matches background label ("
-                  << backgroundLabel << "), not transferring\n";
+        logGraph(LogLevel::Warning,
+                 __func__,
+                 QStringLiteral("Clicked segmentation label matches background label %1; transfer skipped")
+                     .arg(backgroundLabel));
         return;
     }
 
@@ -1992,7 +1993,7 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
                                                         graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
     itk::ImageRegionIterator<SegmentsImageType> itRefinement(temporaryRefinement,
                                                              temporaryRefinement->GetLargestPossibleRegion());
-    std::cout << "Label: " << label << "\n";
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Transferring segmentation label %1").arg(label));
     for (it.GoToBegin(), itRefinement.GoToBegin(); !it.IsAtEnd(); ++it, ++itRefinement) {
         if (it.Get() == label) {
             itRefinement.Set(label);
@@ -2025,12 +2026,13 @@ void Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
 // * check if the clicked label is not background
 // * do a floodfill on the clicked pixel to get the refined segments voxels
 void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
-    double t = 0, t1 = 0, t2 = 0;
-    if (verbose) { t = utils::tic("Graph::refineWithSelectedRefinementAtPosition called"); }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Refining working graph from selected refinement"));
     auto &selectedRefinement = graphBase->pSelectedRefinement;
     auto *selectedRefinementSignal = graphBase->pSelectedRefinementSignal;
     if (selectedRefinement == nullptr || selectedRefinementSignal == nullptr) {
-        std::cout << "Selected refinement was never initialized, add a refinement before refining!\n";
+        logGraph(LogLevel::Warning,
+                 __func__,
+                 QStringLiteral("Selected refinement is not initialized; load a refinement before refining"));
         return;
     }
 
@@ -2059,7 +2061,7 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
     }
 
     if(coordinates_in_ROI) {
-        if (verbose) { t1 = utils::tic(); }
+        ScopedGraphTimer prepareTimer(verbose, __func__, QStringLiteral("Preparing refinement insertion"));
 //        SegmentIdType backgroundLabelInRefinement = getLargestIdInSegmentVolume(selectedRefinement);
 
         const SegmentIdType backgroundLabel = backgroundId;
@@ -2086,7 +2088,9 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
 
         if (msgBoxAnswer == QMessageBox::Yes) {
             // create new initial node by flood-filling the refinement
-            std::cout << "Inserting Initial Node (id: " << labelToInsertTarget << ")\n";
+            logGraph(LogLevel::Info,
+                     __func__,
+                     QStringLiteral("Inserting refinement-derived initial node %1").arg(labelToInsertTarget));
             InitialNode *newInitialNode = new InitialNode(graphBase, selectedRefinement, labelToInsertTarget, x,
                                                           y, z);
             // reset the corrosponding segment pointer to the working segments image
@@ -2100,7 +2104,7 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                 SegmentsImageType::RegionType regionDilated = getDilatedRegionFromRoi(newInitialNode->roi, sizeMax, 2);
 
                 if (graphBase->pWorkingSegmentsImage == nullptr) {
-                    std::cout << "Graph::refineSegmentByPosition: Something went wrong -- pWorkingSegmentsImage is null!!\n";
+                    logGraph(LogLevel::Error, __func__, QStringLiteral("Working segments image is null during refinement"));
                     return;
                 }
 
@@ -2122,7 +2126,10 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                 // add also every working node that is connected to a working node where the new initial node gets placed
                 for (auto &segment : segmentsInsideRefinedRegion) {
                     if (workingNodes.count(segment) == 0) {
-                        std::cout << "CRASH! " << segment << " is not in workingNodes!!\n";
+                        logGraph(LogLevel::Error,
+                                 __func__,
+                                 QStringLiteral("Segment %1 is missing from workingNodes during refinement")
+                                     .arg(segment));
                     }
                     for (auto node : workingNodes[segment]->twosidedEdges) { // crash here!
                         segmentsInsideRefinedRegion.insert(node.first);
@@ -2142,11 +2149,9 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                     labelsInROIBefore.insert(itAfter.Get());
                     ++itAfter;
                 }
-                std::cout << "Labels in ROI before: ";
-                for (auto &val : labelsInROIBefore) {
-                    std::cout << val << " ";
-                }
-                std::cout << "\n";
+                logGraphDebugIf(verbose,
+                                __func__,
+                                QStringLiteral("ROI labels before insertion=[%1]").arg(joinIds(labelsInROIBefore)));
 
                 for (auto &voxel : newInitialNode->voxels) {
 //                printf("INSERT: %d %d %d label: %d\n", voxel.x, voxel.y, voxel.z, labelToInsertTarget);
@@ -2158,12 +2163,9 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                     labelsInROIAfter.insert(itAfter.Get());
                     ++itAfter;
                 }
-
-                std::cout << "Labels in ROI after: ";
-                for (auto &val : labelsInROIAfter) {
-                    std::cout << val << " ";
-                }
-                std::cout << "\n";
+                logGraphDebugIf(verbose,
+                                __func__,
+                                QStringLiteral("ROI labels after insertion=[%1]").arg(joinIds(labelsInROIAfter)));
 
 
                 // delete labels that are not present anymore due to the new segments
@@ -2171,12 +2173,9 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                 std::set_difference(labelsInROIBefore.begin(), labelsInROIBefore.end(),
                                     labelsInROIAfter.begin(), labelsInROIAfter.end(),
                                     std::inserter(labelsInROIIntersection, labelsInROIIntersection.begin()));
-
-                std::cout << "Deleting the following Nodes: ";
-                for (auto &val : labelsInROIIntersection) {
-                    std::cout << val << " ";
-                }
-                std::cout << "\n";
+                logGraphDebugIf(verbose,
+                                __func__,
+                                QStringLiteral("Deleting replaced nodes=[%1]").arg(joinIds(labelsInROIIntersection)));
 
                 // TODO: cant we make that difference/bg estimation etc all in one go?
 
@@ -2198,7 +2197,9 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                         ++it;
                     }
                     if (!labelShouldBeDeleted) {
-                        std::cout << "Found Label (" << id << ") in remaining Lattice, not deleting node!" << std::endl;
+                        logGraph(LogLevel::Debug,
+                                 __func__,
+                                 QStringLiteral("Keeping label %1 because it is still present in the lattice").arg(id));
                         labelsInROIIntersection.erase(id);
                     }
                 }
@@ -2211,16 +2212,13 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
 //                removeInitialNode(initialNodes[label].get());
 //                removeWorkingNode(workingNodes[label].get());
                 }
-                if (verbose) { utils::toc(t1, "first part finished"); }
-                if (verbose) { t2 = utils::tic(); }
+                ScopedGraphTimer recomputeTimer(verbose, __func__, QStringLiteral("Recomputing affected graph neighborhoods"));
 
 
                 // calculate surfacevoxels and onesidededges for new node
                 segmentManager.computeSurfaceAndOneSidedEdgesOnInitialNode(newInitialNode);
-                if (verbose) { std::cout << "done computeSurfaceAndOneSidedEdgesOnInitialNode" << std::endl;}
+                logGraphDebugIf(verbose, __func__, QStringLiteral("Computed one-sided edges for inserted initial node"));
                 segmentManager.computeCorrospondingOneSidedInitialEdges(newInitialNode);
-
-                if (verbose) { utils::toc(t2, "1 part finished"); }
 //            printInitialNodesToFile("initialNodes.txt");
 
                 // recalculate voxels for neighboring initial nodes
@@ -2233,8 +2231,6 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                 //TODO: is there a edge case where actually one of the segments is not an initialNode but a workingnode?
                 //TODO: Maybe enforce it/check it computationally
                 segmentManager.recomputeVoxelListAndOneSidedEdgesIfShrinked(vecOfConnectedInitialNodeIds);
-
-                if (verbose) { utils::toc(t2, "3 part finished"); }
                 segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
 
                 // generate new workingnode  and working edges based of new segment
@@ -2242,35 +2238,25 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                 auto newWorkingNode = new WorkingNode(newInitialNode, labelToInsertTarget, initialNodes);
                 segmentManager.addWorkingNode(newWorkingNode);
                 segmentManager.recalculateEdgesOnWorkingNode(newWorkingNode);
-
                 //TODO: check voxelwise if refinement split a initial node into two segments
-                if (verbose) { utils::toc(t2, "second part finished"); }
 
         } else {
-            std::cout << "Label to insert matches background label (" << backgroundLabel
-                      << "), refinement is not done.\n";
+            logGraph(LogLevel::Warning,
+                     __func__,
+                     QStringLiteral("Refinement label matches background label %1; insertion skipped")
+                         .arg(backgroundLabel));
         }
     } else {
-        std::cout << "Clicked point outside of refinement ROI.\n";
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("Clicked point lies outside the selected refinement ROI"));
     }
-
-    if (verbose) { utils::toc(t, "Graph::refineWithSelectedRefinementAtPosition finished"); }
-
 }
 
-
 void Graph::transferWorkingNodeToSegmentation(int x, int y, int z) {
-    double t = 0;
-    if (verbose) {
-        std::cout << "Graph::transferWorkingNodeToSegmentation called\n";
-        t = utils::tic();
-    }
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring working node to segmentation"));
     if (graphBase->pSelectedSegmentation != nullptr) {
         SegmentIdType labelOfTargetedWorkingNode = graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
         transferWorkingNodeToSegmentation(labelOfTargetedWorkingNode);
     }
-    if (verbose) { utils::toc(t, "Graph::transferWorkingNodeToSegmentation finished"); }
-
 }
 
 void Graph::transferWorkingNodeToSegmentation(SegmentIdType labelOfNodeToTransfer) {
@@ -2355,42 +2341,60 @@ void Graph::printWorkingEdges(std::ostream &outStream) {
 
 
 void Graph::printInitialNodesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing initialNodes to File: " << pathToOutputfile << "\n";
+    logGraph(LogLevel::Info,
+             __func__,
+             QStringLiteral("Writing initial nodes to %1").arg(QString::fromStdString(pathToOutputfile)),
+             kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printInitialNodes(outFile);
     outFile.close();
 }
 
 void Graph::printInitialTwoSidedEdgesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing initialTwoSidedEdges to File: " << pathToOutputfile << "\n";
+    logGraph(LogLevel::Info,
+             __func__,
+             QStringLiteral("Writing initial two-sided edges to %1").arg(QString::fromStdString(pathToOutputfile)),
+             kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printInitialTwoSidedEdges(outFile);
     outFile.close();
 }
 
 void Graph::printInitialOneSidedEdgesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing initialTwoSidedEdges to File: " << pathToOutputfile << "\n";
+    logGraph(LogLevel::Info,
+             __func__,
+             QStringLiteral("Writing initial one-sided edges to %1").arg(QString::fromStdString(pathToOutputfile)),
+             kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printInitialOneSidedEdges(outFile);
     outFile.close();
 }
 
 void Graph::printWorkingNodesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing workingNodes to File: " << pathToOutputfile << "\n";
+    logGraph(LogLevel::Info,
+             __func__,
+             QStringLiteral("Writing working nodes to %1").arg(QString::fromStdString(pathToOutputfile)),
+             kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printWorkingNodes(outFile);
     outFile.close();
 }
 
 void Graph::printEdgeIdLookUpToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing edgeIdLookup to File: " << pathToOutputfile << "\n";
+    logGraph(LogLevel::Info,
+             __func__,
+             QStringLiteral("Writing edge-id lookup to %1").arg(QString::fromStdString(pathToOutputfile)),
+             kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printEdgeIdLookUp(outFile);
     outFile.close();
 }
 
 void Graph::printWorkingEdgesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing workingEdges to File: " << pathToOutputfile << "\n";
+    logGraph(LogLevel::Info,
+             __func__,
+             QStringLiteral("Writing working edges to %1").arg(QString::fromStdString(pathToOutputfile)),
+             kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printWorkingEdges(outFile);
     outFile.close();

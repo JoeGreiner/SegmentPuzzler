@@ -28,6 +28,7 @@
 #include <unordered_map>
 
 #include "src/itkImageFilters/itkWatershedHelpers.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/DistanceMapSeedExtractors.h"
 #include "src/utils/WatershedRagAgglomeration.h"
 
@@ -356,11 +357,15 @@ private:
             allSignalList.push_back(pRaw);
             return true;
         } else {
-            std::cout << "Segments: [" << itkSignalSegmentsGraph->getDimX() << " "
-                      << itkSignalSegmentsGraph->getDimY() << " " << itkSignalSegmentsGraph->getDimZ() << "]\n";
-            std::cout << "Image:    [" << pSignal->getDimX() << " "
-                      << pSignal->getDimY() << " " << pSignal->getDimZ() << "]\n";
-            std::cout << "Dimension mismatch! Image is not added.\n";
+            SP_LOG_WARNING(
+                "io",
+                QStringLiteral("Dimension mismatch while adding watershed image. segments=[%1 %2 %3] image=[%4 %5 %6]")
+                    .arg(itkSignalSegmentsGraph->getDimX())
+                    .arg(itkSignalSegmentsGraph->getDimY())
+                    .arg(itkSignalSegmentsGraph->getDimZ())
+                    .arg(pSignal->getDimX())
+                    .arg(pSignal->getDimY())
+                    .arg(pSignal->getDimZ()));
             return false;
         }
     }

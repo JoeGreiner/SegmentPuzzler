@@ -1,6 +1,7 @@
 #include "OrthoViewer.h"
 #include "SliceViewerITKSignal.h"
 #include "src/qtUtils/TaskRunner.h"
+#include "src/utils/AppLogger.h"
 #include <QDebug>
 #include <QHash>
 #include <QPainter>
@@ -696,7 +697,6 @@ protected:
         painter.fillRect(leftRect, outlineColor);
         painter.fillRect(rightRect, outlineColor);
 
-        static QHash<QString, QString> lastPaintLogs;
         const QString logKey = objectName() + "_paint";
         const QString currentLog = QString("[IndicatorPaint %1] overlayRect=%2,%3 %4x%5 outlineRect=%6,%7 %8x%9 "
                                            "top=%10 bottom=%11 left=%12 right=%13")
@@ -707,10 +707,7 @@ protected:
                 .arg(bottomRect.x() >= 0 && bottomRect.y() >= 0 && bottomRect.right() < width() && bottomRect.bottom() < height())
                 .arg(leftRect.x() >= 0 && leftRect.y() >= 0 && leftRect.right() < width() && leftRect.bottom() < height())
                 .arg(rightRect.x() >= 0 && rightRect.y() >= 0 && rightRect.right() < width() && rightRect.bottom() < height());
-        if (lastPaintLogs.value(logKey) != currentLog) {
-            qInfo().noquote() << currentLog;
-            lastPaintLogs.insert(logKey, currentLog);
-        }
+        SP_LOG_DEBUG_CHANGED("viewer.render", logKey, currentLog);
     }
 
 private:
@@ -735,6 +732,14 @@ void configureLayout(QLayout *layout, int spacing) {
 
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(spacing);
+}
+
+void logOrthoRenderState(const QString &key, const QString &message) {
+    SP_LOG_DEBUG_CHANGED("viewer.render", key, message);
+}
+
+void logOrthoInteractionState(const QString &key, const QString &message) {
+    SP_LOG_DEBUG_CHANGED("viewer.interaction", key, message);
 }
 
 } // namespace
@@ -1059,7 +1064,6 @@ double OrthoViewer::computeFittedZoom() const {
         return 1.0;
     }
 
-    static QString lastFittedZoomLog;
     const QString currentLog = QString("[SplitterFittedZoom] dims=%1x%2x%3 available=%4x%5 "
                                        "chrome left=%6 right=%7 top=%8 bottom=%9 "
                                        "zoom width=%10 height=%11 chosen=%12")
@@ -1070,10 +1074,7 @@ double OrthoViewer::computeFittedZoom() const {
             .arg(zoomFromWidth, 0, 'f', 6)
             .arg(zoomFromHeight, 0, 'f', 6)
             .arg(fittedZoom, 0, 'f', 6);
-    if (lastFittedZoomLog != currentLog) {
-        qInfo().noquote() << currentLog;
-        lastFittedZoomLog = currentLog;
-    }
+    logOrthoRenderState(QStringLiteral("SplitterFittedZoom"), currentLog);
 
     return fittedZoom;
 }
@@ -1137,7 +1138,6 @@ void OrthoViewer::placeSplittersForZoom(double zoom) {
     }
     autoAdjustingSplitters = false;
 
-    static QString lastPlaceLog;
     const QString currentLog = QString("[SplitterPlace] zoom=%1 dims=%2x%3 available=%4x%5 "
                                        "chrome left=%6 top=%7 sizes left=%8 right=%9 top=%10 bottom=%11")
             .arg(zoom, 0, 'f', 6)
@@ -1146,10 +1146,7 @@ void OrthoViewer::placeSplittersForZoom(double zoom) {
             .arg(leftChromeWidth).arg(topChromeHeight)
             .arg(leftWidth).arg(rightWidth)
             .arg(topHeight).arg(bottomHeight);
-    if (lastPlaceLog != currentLog) {
-        qInfo().noquote() << currentLog;
-        lastPlaceLog = currentLog;
-    }
+    logOrthoRenderState(QStringLiteral("SplitterPlace"), currentLog);
 }
 
 void OrthoViewer::reclaimBoundarySlack() {
@@ -1216,7 +1213,6 @@ void OrthoViewer::reclaimBoundarySlack() {
     }
     autoAdjustingSplitters = false;
 
-    static QString lastSlackLog;
     const QString currentLog = QString("[SplitterSlack] yzSlack=%1 xzSlack=%2 "
                                        "current left=%3 right=%4 top=%5 bottom=%6 "
                                        "target left=%7 right=%8 top=%9 bottom=%10 "
@@ -1227,10 +1223,7 @@ void OrthoViewer::reclaimBoundarySlack() {
             .arg(xy->width()).arg(xy->height())
             .arg(zy->width()).arg(zy->height())
             .arg(xz->width()).arg(xz->height());
-    if (lastSlackLog != currentLog) {
-        qInfo().noquote() << currentLog;
-        lastSlackLog = currentLog;
-    }
+    logOrthoRenderState(QStringLiteral("SplitterSlack"), currentLog);
 }
 
 void OrthoViewer::adjustSplittersForCurrentZoom() {
@@ -1250,16 +1243,12 @@ void OrthoViewer::adjustSplittersForCurrentZoom() {
     const double threshold = std::max(1.0, fittedZoom);
     const bool proportionalRegime = currentZoom <= threshold + 1e-6;
 
-    static QString lastAdjustLog;
     const QString currentLog = QString("[SplitterAdjust] currentZoom=%1 fittedZoom=%2 threshold=%3 regime=%4")
             .arg(currentZoom, 0, 'f', 6)
             .arg(fittedZoom, 0, 'f', 6)
             .arg(threshold, 0, 'f', 6)
             .arg(proportionalRegime ? "proportional" : "reclaim-slack");
-    if (lastAdjustLog != currentLog) {
-        qInfo().noquote() << currentLog;
-        lastAdjustLog = currentLog;
-    }
+    logOrthoRenderState(QStringLiteral("SplitterAdjust"), currentLog);
 
     if (proportionalRegime) {
         placeSplittersForZoom(currentZoom);
@@ -1392,15 +1381,11 @@ void OrthoViewer::setViewToMiddleOfStack() {
             return;
         }
 
-        static QString lastInitialZoomLog;
         const QString currentLog = QString("[SplitterInitialZoom] fittedZoom=%1 initialZoom=%2 currentZoom=%3")
                 .arg(fittedZoom, 0, 'f', 6)
                 .arg(initialZoom, 0, 'f', 6)
                 .arg(currentZoom, 0, 'f', 6);
-        if (lastInitialZoomLog != currentLog) {
-            qInfo().noquote() << currentLog;
-            lastInitialZoomLog = currentLog;
-        }
+        logOrthoRenderState(QStringLiteral("SplitterInitialZoom"), currentLog);
 
         if (std::abs(initialZoom - currentZoom) <= 1e-9) {
             adjustSplittersForCurrentZoom();
@@ -1516,7 +1501,6 @@ void OrthoViewer::updatePlaneIndicators() {
             VisibleRectOverlay *indicator,
             QScrollAreaNoWheel *scrollArea,
             SliceViewer *viewer) {
-        static QHash<QString, QString> lastUpdateLogs;
         const QString name = indicator != nullptr ? indicator->objectName() : "unknown";
 
         if (indicator == nullptr || scrollArea == nullptr || viewer == nullptr || scrollArea->viewport() == nullptr ||
@@ -1525,10 +1509,7 @@ void OrthoViewer::updatePlaneIndicators() {
                 indicator->hide();
             }
             const QString currentLog = QString("[IndicatorUpdate %1] hidden reason=no-signal-or-widget").arg(name);
-            if (lastUpdateLogs.value(name) != currentLog) {
-                qInfo().noquote() << currentLog;
-                lastUpdateLogs.insert(name, currentLog);
-            }
+            logOrthoRenderState(QStringLiteral("IndicatorUpdate_%1").arg(name), currentLog);
             return;
         }
 
@@ -1556,10 +1537,7 @@ void OrthoViewer::updatePlaneIndicators() {
                     .arg(scrollAreaRect.x()).arg(scrollAreaRect.y()).arg(scrollAreaRect.width()).arg(scrollAreaRect.height())
                     .arg(contentsRect.x()).arg(contentsRect.y()).arg(contentsRect.width()).arg(contentsRect.height())
                     .arg(viewportMargins.left()).arg(viewportMargins.top()).arg(viewportMargins.right()).arg(viewportMargins.bottom());
-            if (lastUpdateLogs.value(name) != currentLog) {
-                qInfo().noquote() << currentLog;
-                lastUpdateLogs.insert(name, currentLog);
-            }
+            logOrthoRenderState(QStringLiteral("IndicatorUpdate_%1").arg(name), currentLog);
             return;
         }
 
@@ -1606,10 +1584,7 @@ void OrthoViewer::updatePlaneIndicators() {
                     .arg(vBar != nullptr ? vBar->minimum() : -1)
                     .arg(vBar != nullptr ? vBar->maximum() : -1)
                     .arg(vBar != nullptr ? vBar->pageStep() : -1);
-        if (lastUpdateLogs.value(name) != currentLog) {
-            qInfo().noquote() << currentLog;
-            lastUpdateLogs.insert(name, currentLog);
-        }
+        logOrthoRenderState(QStringLiteral("IndicatorUpdate_%1").arg(name), currentLog);
     };
 
     updateIndicator(xyIndicator, scrollAreaXY, xy);
@@ -1624,17 +1599,13 @@ void OrthoViewer::refreshInteractionModeIndicators() {
 
     if (xy != nullptr && !xy->signalList.empty()) {
         const InteractionModePresentation presentation = currentInteractionModePresentation(xy);
-        static QString lastModeLog;
         const QString modeSummary = presentation.secondaryAction.isEmpty()
                 ? presentation.primaryAction
                 : QString("%1 / %2").arg(presentation.primaryAction, presentation.secondaryAction);
         const QString currentLog = QString("[ToolModeIndicator] mode=%1 color=%2")
                 .arg(modeSummary)
                 .arg(presentation.color.name(QColor::HexRgb));
-        if (lastModeLog != currentLog) {
-            qInfo().noquote() << currentLog;
-            lastModeLog = currentLog;
-        }
+        logOrthoInteractionState(QStringLiteral("ToolModeIndicator"), currentLog);
     }
 
     shortcutLegendWidget->setMouseActions(currentMouseActionPresentation(xy));

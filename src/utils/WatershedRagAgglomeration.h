@@ -7,6 +7,8 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
+#include <string>
 
 namespace segment_puzzler {
 
@@ -96,6 +98,9 @@ struct OrthoPlanePreviewSelection {
 
 using BoundaryFloatImageType = itk::Image<float, 3>;
 using BoundaryMaskImageType = itk::Image<unsigned char, 3>;
+using AgglomerationLogSink = std::function<void(const std::string &)>;
+
+void setAgglomerationLogSink(AgglomerationLogSink sink);
 
 WatershedRagAgglomerationResult runWatershedRagAgglomeration(
     dataType::SegmentsImageType::Pointer labels,

@@ -9,6 +9,7 @@
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
 #include <QColorDialog>
+#include <QDateTime>
 #include <src/segment_handling/Graph.h>
 #include <src/viewers/OrthoViewer.h>
 #include <QInputDialog>
@@ -19,7 +20,6 @@
 
 #include <QTreeWidget>
 #include <src/itkImageFilters/itkWatershedHelpers.h>
-#include <src/utils/utils.h>
 #include <itkMultiThreaderBase.h>
 #include <QThread>
 #include <src/viewers/itkSignalThresholdPreview.h>
@@ -32,6 +32,7 @@
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/SignalNameUtils.h"
 #include <algorithm>
 
@@ -390,13 +391,15 @@ void WatershedControl::thresholdBoundariesAsync(std::function<void()> then) {
         [thresholdValue, thresholdAlgorithm, thresholdInput]() {
             auto thresholdInputCopy = thresholdInput;
             itk::Image<unsigned char, 3>::Pointer thresholded;
-            double t = utils::tic("Threshold boundaries");
+            const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
             switch (thresholdAlgorithm) {
                 case ThresholdAlgorithm::BinaryThreshold:
                     binaryThresholdImageFilterFloat(thresholdInputCopy, thresholded, thresholdValue);
                     break;
             }
-            utils::toc(t, "Threshold boundaries done:");
+            SP_LOG_INFO("watershed",
+                        QStringLiteral("Threshold boundaries finished in %1 ms")
+                            .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
             return thresholded;
         },
         [this, signalName](itk::Image<unsigned char, 3>::Pointer thresholded) {
@@ -440,9 +443,11 @@ void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
             itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto thresholdInputCopy = thresholdInput;
             itk::Image<float, 3>::Pointer distanceMap;
-            double t = utils::tic("Generate distance map");
+            const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
             generateDistanceMap(thresholdInputCopy, distanceMap, 0, distanceMapAlgorithm, threadCount);
-            utils::toc(t, "Generate distance map done:");
+            SP_LOG_INFO("watershed",
+                        QStringLiteral("Distance map generation finished in %1 ms")
+                            .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
             return distanceMap;
         },
         [this, signalName](itk::Image<float, 3>::Pointer distanceMap) {
@@ -464,9 +469,11 @@ void WatershedControl::extractSeedsAsync(std::function<void()> then) {
             itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto distanceMapInputCopy = distanceMapInput;
             itk::Image<unsigned int, 3>::Pointer seeds;
-            double t = utils::tic("Extract seeds");
+            const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
             extractMinimaFromDistanceMap(distanceMapInputCopy, seeds, 1, seedAlgorithm);
-            utils::toc(t, "Extract seeds done:");
+            SP_LOG_INFO("watershed",
+                        QStringLiteral("Seed extraction finished in %1 ms")
+                            .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
             return seeds;
         },
         [this, signalName](itk::Image<unsigned int, 3>::Pointer seeds) {
@@ -504,26 +511,34 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
             WatershedRunOptions watershedOptions;
             watershedOptions.algorithm = watershedAlgorithm;
             itk::Image<float, 3>::Pointer invertedDistanceMap = itk::Image<float, 3>::New();
-            double t = utils::tic("Invert distance map");
+            qint64 stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
             invertDistanceMap(distanceMapInputCopy, invertedDistanceMap);
-            utils::toc(t, "Invert distance map done:");
+            SP_LOG_DEBUG("watershed",
+                         QStringLiteral("Distance map inversion finished in %1 ms")
+                             .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
 
             itk::Image<unsigned int, 3>::Pointer watershedFragments;
             itk::Image<unsigned int, 3>::Pointer seedsForWatershed = seedsInput;
-            t = utils::tic("Run watershed");
+            stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
             runWatershed(invertedDistanceMap, seedsForWatershed, watershedFragments, watershedOptions);
-            utils::toc(t, "Run watershed done:");
+            SP_LOG_INFO("watershed",
+                        QStringLiteral("Watershed run finished in %1 ms")
+                            .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
 
             if (filterEnabled) {
-                t = utils::tic("Filter small seeds");
+                stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
                 filterSmallSegmentSeeds(watershedFragments, seedsForWatershed, minSegmentSize);
-                utils::toc(t, "Filter small seeds done:");
-                t = utils::tic("Run watershed (filtered)");
+                SP_LOG_DEBUG("watershed",
+                             QStringLiteral("Small seed filtering finished in %1 ms")
+                                 .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
+                stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
                 runWatershed(invertedDistanceMap, seedsForWatershed, watershedFragments, watershedOptions);
-                utils::toc(t, "Run watershed (filtered) done:");
+                SP_LOG_INFO("watershed",
+                            QStringLiteral("Filtered watershed rerun finished in %1 ms")
+                                .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
             }
 
-            t = utils::tic("Derive boundary-consistent watershed labels");
+            stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
             auto derivedPartition = deriveBoundaryConsistentPartition(
                 watershedFragments,
                 thresholdInput,
@@ -531,7 +546,9 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
                 /*repairCanonicalLabels=*/true,
                 distanceMapAlgorithm,
                 threadCount);
-            utils::toc(t, "Derive boundary-consistent watershed labels done:");
+            SP_LOG_INFO("watershed",
+                        QStringLiteral("Boundary-consistent watershed labels finished in %1 ms")
+                            .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
 
             return derivedPartition;
         },
@@ -777,7 +794,7 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
 
 
 void WatershedControl::addImage(QString fileName) {
-    std::cout << "Adding file: " << fileName.toStdString() << std::endl;
+    SP_LOG_INFO("io", QStringLiteral("Adding watershed input image %1").arg(fileName));
     if (!fileName.isEmpty()) {
         itk::ImageIOBase::IOComponentType dataType;
         size_t signalIndexGlobal;
@@ -850,6 +867,12 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     finalOutputInputComboBox = nullptr;
     workerThreadCount = defaultWatershedThreadCount();
     setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
+    setWatershedLogSink([](const std::string &message) {
+        SP_LOG_INFO("watershed", QString::fromStdString(message));
+    });
+    segment_puzzler::setAgglomerationLogSink([](const std::string &message) {
+        SP_LOG_INFO("watershed", QString::fromStdString(message));
+    });
 
     useROI = false;
     fx = 0;
@@ -989,7 +1012,9 @@ void WatershedControl::setupSignalTreeWidget() {
     workflowLayout->addWidget(groupBox, 0);
 }
 void WatershedControl::forwardValueChangedSignal(int value) {
-    std::cout << value << "\n";
+    SP_LOG_DEBUG_CHANGED("watershed",
+                         QStringLiteral("thresholdPreviewValue"),
+                         QStringLiteral("Threshold preview value=%1").arg(value));
     if (pThresholdPreviewSignal) {
         pThresholdPreviewSignal->thresholdValue = value;
         if (thresholdPreviewSignalIndex >= 0) {
@@ -1905,7 +1930,7 @@ void WatershedControl::treeClicked(QTreeWidgetItem *item, int) {
 void WatershedControl::setUserColor(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        std::cout << "Setting Color for signal " << signalIndex << std::endl;
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Opening color picker for watershed signal index=%1").arg(signalIndex));
     }
 
     QColor newColor = QColorDialog::getColor();
@@ -1926,7 +1951,7 @@ void WatershedControl::setUserColor(QTreeWidgetItem *item) {
 void WatershedControl::setDescription(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
     if (verbose) {
-        std::cout << "Setting Name for signal " << signalIndex << std::endl;
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Renaming watershed signal index=%1").arg(signalIndex));
     }
 
     bool inputSuccessful;
@@ -1936,7 +1961,7 @@ void WatershedControl::setDescription(QTreeWidgetItem *item) {
 
     if (inputSuccessful) {
         if (isSegmentsItem(item)) { // TODO: put some unique identifier besides name/descriptor for segments
-            std::cout << "TODO: Fix segment descriptor change!\n";
+            SP_LOG_WARNING("watershed", QStringLiteral("Segments descriptor renaming is still not implemented"));
         } else {
             item->setText(0, newName);
             allSignalList[signalIndex]->setName(newName);
@@ -1985,7 +2010,9 @@ void WatershedControl::deactivateSignalsByIndices(const std::vector<size_t> &sig
 }
 
 void WatershedControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
-    if (verbose) { std::cout << "Setting item isActive to: " << isActiveIn << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting watershed signal active state to %1").arg(isActiveIn));
+    }
     const size_t signalIndex = signalIndexForItem(item);
 
     if (isActiveIn) {
@@ -2007,7 +2034,7 @@ void WatershedControl::setUserNorm(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
 
 //        std::string test item->get;
-    std::cout << "index: " << signalIndex << std::endl;
+    SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting normalization for watershed signal index=%1").arg(signalIndex));
     int normLower = QInputDialog::getInt(this, "Min Normalization", "Min Normalization", 0);
     int normUpper = QInputDialog::getInt(this, "Max Normalization", "Max Normalization", 255, normLower);
 
@@ -2070,9 +2097,12 @@ void WatershedControl::rebuildGraphFromSegmentsImage(dataType::SegmentsImageType
     graphBase->colorLookUpEdgesStatus.clear();
     graphBase->pWorkingSegmentsImage = segmentsImage;
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    double t = utils::tic("Build graph from volume");
+    const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    SP_LOG_INFO("watershed", QStringLiteral("Building graph from watershed segments volume"));
     graphBase->pGraph->constructFromVolume(segmentsImage);
-    utils::toc(t, "Build graph from volume done:");
+    SP_LOG_INFO("watershed",
+                QStringLiteral("Finished building graph from watershed segments volume in %1 ms")
+                    .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
 }
 
 void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *segmentsSignal) {
@@ -2110,7 +2140,7 @@ bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponent
     if (!fileName.isEmpty()) {
         unsigned int dimension;
         getDimensionAndDataTypeOfFile(fileName, dimension, dataTypeOut);
-        std::cout << "Image dimension: " << dimension << "\n";
+        SP_LOG_INFO("io", QStringLiteral("Detected watershed image dimension=%1 for %2").arg(dimension).arg(fileName));
         if (dimension == 3) {
             if (forceSegmentDataType) {
                 dataTypeOut = itk::ImageIOBase::IOComponentType::UINT;
@@ -2217,12 +2247,11 @@ void WatershedControl::addImagePressed() {
 
 void WatershedControl::addBoundariesFromFile(QString fileName) {
     if (!fileName.isEmpty()) {
-        std::cout << "Adding Boundaries: " << fileName.toStdString() << std::endl;
+        SP_LOG_INFO("io", QStringLiteral("Loading watershed boundaries from %1").arg(fileName));
         QSettings MySettings;
         QDir CurrentDir;
         const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
         MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        std::cout << fileName.toStdString() << "\n";
         if (!fileName.isEmpty()) {
             dataType::BoundaryImageType::Pointer pBoundariesIn = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
             addBoundaries(pBoundariesIn);
@@ -2243,15 +2272,18 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     ty = tyIn;
     tz = tzIn;
 
-    std::cout << "Adding Boundaries: \n";
-    std::cout << "fx-tx, fy-ty, fz-tz: " << fx << "-" << tx << ", " << fy << "-" << ty << ", " <<  fz << "-" << tz << "\n";
+    SP_LOG_INFO("watershed",
+                QStringLiteral("Adding watershed boundaries with requested ROI x=%1-%2 y=%3-%4 z=%5-%6")
+                    .arg(fx).arg(tx).arg(fy).arg(ty).arg(fz).arg(tz));
 
     fxIn = fxIn < 0 ? 0 : fxIn;
     fyIn = fyIn < 0 ? 0 : fyIn;
     fzIn = fzIn < 0 ? 0 : fzIn;
 
     auto originalSize = pBoundariesIn->GetLargestPossibleRegion().GetSize();
-    std::cout << "Original Size: " <<  originalSize[0] << " " << originalSize[1] << " " << originalSize[2] << "\n";
+    SP_LOG_DEBUG("watershed",
+                 QStringLiteral("Boundary image size=%1x%2x%3")
+                     .arg(originalSize[0]).arg(originalSize[1]).arg(originalSize[2]));
 
     int maxFx = originalSize[0] >= 2 ? originalSize[0]-2 : 0;
     int maxFy = originalSize[1] >= 2 ? originalSize[1]-2 : 0;
@@ -2273,9 +2305,9 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     tyIn = tyIn <= maxTy ? tyIn : maxTy;
     tzIn = tzIn <= maxTz ? tzIn : maxTz;
 
-    std::cout << "After Boundarycheck: \n";
-    std::cout << "fx-tx, fy-ty, fz-tz: " << fxIn << "-" << txIn << ", " << fyIn << "-" << tyIn << ", " << fzIn << "-"
-              << tzIn << "\n";
+    SP_LOG_INFO("watershed",
+                QStringLiteral("Clamped watershed ROI to x=%1-%2 y=%3-%4 z=%5-%6")
+                    .arg(fxIn).arg(txIn).arg(fyIn).arg(tyIn).arg(fzIn).arg(tzIn));
 
     // update roi to the corrected values
     fx = fxIn;
@@ -2322,7 +2354,7 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
         }
         ++it;
     }
-    std::cout << "Min: " << min << " Max: " << max << "\n";
+    SP_LOG_INFO("watershed", QStringLiteral("Boundary ROI intensity range min=%1 max=%2").arg(min).arg(max));
 
     addBoundaries(pBoundariesROIImage);
 }

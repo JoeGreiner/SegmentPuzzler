@@ -31,6 +31,7 @@
 #include <itkLabelImageToShapeLabelMapFilter.h>
 
 #include "src/segment_handling/Graph.h"
+#include "src/utils/AppLogger.h"
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/viewers/OrthoViewer.h"
 
@@ -450,12 +451,14 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
         segImg = graphBase->pSelectedSegmentation;
     }
 
-    std::cout << "[SegmentTableDebug] startCompute"
-              << " requestedSegmentation=" << static_cast<const void *>(segImg.GetPointer())
-              << " selectedSegmentation=" << static_cast<const void *>(graphBase->pSelectedSegmentation.GetPointer())
-              << " selectedSegmentationSignal=" << static_cast<const void *>(graphBase->pSelectedSegmentationSignal)
-              << " selectedSegmentationMaxId=" << graphBase->selectedSegmentationMaxSegmentId
-              << "\n";
+    SP_LOG_DEBUG(
+        "segmentation",
+        QStringLiteral("Segment table startCompute requestedSegmentation=%1 selectedSegmentation=%2 "
+                       "selectedSegmentationSignal=%3 selectedSegmentationMaxId=%4")
+            .arg(reinterpret_cast<quintptr>(segImg.GetPointer()), 0, 16)
+            .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentation.GetPointer()), 0, 16)
+            .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentationSignal), 0, 16)
+            .arg(graphBase->selectedSegmentationMaxSegmentId));
 
     if (segImg == nullptr) {
         QMessageBox::information(this, "No Segmentation",
@@ -471,24 +474,28 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
     const FeatureFlags flags = collectFlags();
     currentTableSegmentation = segImg;
     currentTableSegmentationSignal = graphBase->pSelectedSegmentationSignal;
-    std::cout << "[SegmentTableDebug] featureFlags"
-              << " volume=" << flags.volume
-              << " isIsolated=" << flags.isIsolated
-              << " centroid=" << flags.centroid
-              << " elongation=" << flags.elongation
-              << " flatness=" << flags.flatness
-              << " roundness=" << flags.roundness
-              << " bbox=" << flags.bbox
-              << " physicalSize=" << flags.physicalSize
-              << " pixelsOnBorder=" << flags.pixelsOnBorder
-              << " perimeterOnBorder=" << flags.perimeterOnBorder
-              << " equivSphRadius=" << flags.equivSphRadius
-              << " equivSphPerimeter=" << flags.equivSphPerimeter
-              << " equivEllipsoid=" << flags.equivEllipsoid
-              << " principalMoments=" << flags.principalMoments
-              << " perimeter=" << flags.perimeter
-              << " orientedBBox=" << flags.orientedBBox
-              << "\n";
+    SP_LOG_DEBUG(
+        "segmentation",
+        QStringLiteral("Segment table featureFlags volume=%1 isIsolated=%2 centroid=%3 elongation=%4 "
+                       "flatness=%5 roundness=%6 bbox=%7 physicalSize=%8 pixelsOnBorder=%9 "
+                       "perimeterOnBorder=%10 equivSphRadius=%11 equivSphPerimeter=%12 "
+                       "equivEllipsoid=%13 principalMoments=%14 perimeter=%15 orientedBBox=%16")
+            .arg(flags.volume)
+            .arg(flags.isIsolated)
+            .arg(flags.centroid)
+            .arg(flags.elongation)
+            .arg(flags.flatness)
+            .arg(flags.roundness)
+            .arg(flags.bbox)
+            .arg(flags.physicalSize)
+            .arg(flags.pixelsOnBorder)
+            .arg(flags.perimeterOnBorder)
+            .arg(flags.equivSphRadius)
+            .arg(flags.equivSphPerimeter)
+            .arg(flags.equivEllipsoid)
+            .arg(flags.principalMoments)
+            .arg(flags.perimeter)
+            .arg(flags.orientedBBox));
 
     // Switch to results page immediately so the user sees the computing state.
     computeButton->setEnabled(false);
@@ -519,7 +526,8 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
     if (selected.isEmpty() || watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) { return; }
 
     if (!segmentationSelectionMatchesCurrent(graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal)) {
-        std::cout << "[SegmentTableDebug] refusing delete because selected segmentation wiring does not match current table segmentation\n";
+        SP_LOG_WARNING("segmentation",
+                       QStringLiteral("Segment table refusing delete because selected segmentation wiring does not match the current table segmentation"));
         QMessageBox::warning(this, "Delete Disabled",
                              "The selected segmentation state does not match the table image.\n"
                              "Please reopen Inspect Segments from the current selection.");
@@ -680,8 +688,8 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
     // so the parallelism is visible and reproducible.
     const itk::ThreadIdType nThreads = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
     filter->SetNumberOfWorkUnits(nThreads);
-    std::cout << "SegmentTableDialog: running LabelImageToShapeLabelMapFilter "
-              << "with " << nThreads << " ITK work units\n";
+    SP_LOG_INFO("segmentation",
+                QStringLiteral("Running LabelImageToShapeLabelMapFilter with %1 ITK work units").arg(nThreads));
     filter->Update();
 
     auto       *labelMap = filter->GetOutput();
@@ -772,14 +780,17 @@ void SegmentTableDialog::onComputeFinished() {
         QString("%1 labels | Computed in %2 s")
             .arg(result.rows.size())
             .arg(result.elapsedSeconds, 0, 'f', 2));
-    std::cout << "[SegmentTableDebug] computeFinished"
-              << " currentTableSegmentation=" << static_cast<const void *>(currentTableSegmentation.GetPointer())
-              << " currentTableSegmentationSignal=" << static_cast<const void *>(currentTableSegmentationSignal)
-              << " selectedSegmentation=" << static_cast<const void *>(graphBase->pSelectedSegmentation.GetPointer())
-              << " selectedSegmentationSignal=" << static_cast<const void *>(graphBase->pSelectedSegmentationSignal)
-              << " rows=" << result.rows.size()
-              << " elapsedSeconds=" << result.elapsedSeconds
-              << "\n";
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("Segment table computeFinished currentTableSegmentation=%1 "
+                       "currentTableSegmentationSignal=%2 selectedSegmentation=%3 "
+                       "selectedSegmentationSignal=%4 rows=%5 elapsedSeconds=%6")
+            .arg(reinterpret_cast<quintptr>(currentTableSegmentation.GetPointer()), 0, 16)
+            .arg(reinterpret_cast<quintptr>(currentTableSegmentationSignal), 0, 16)
+            .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentation.GetPointer()), 0, 16)
+            .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentationSignal), 0, 16)
+            .arg(result.rows.size())
+            .arg(result.elapsedSeconds, 0, 'f', 3));
     updateResultsActionState();
     emit computeFinishedDebug();
 }

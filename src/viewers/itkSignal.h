@@ -5,12 +5,14 @@
 #include <QRgb>
 #include <vector>
 #include <map>
+#include <QDateTime>
 #include <QTreeWidget>
 #include "itkSignalBase.h"
 #include "itkImageRegionConstIteratorWithIndex.h"
 #include <unordered_map>
 #include "src/file_definitions/dataTypes.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 //#include "graphBase.h"
 
@@ -231,7 +233,7 @@ bool itkSignal<dType>::isShapeMatched(itkSignalBase *otherSignal) {
 
 template<typename dType>
 void itkSignal<dType>::computeExtrema() {
-    double tic = utils::tic();
+    const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
 
 //    typename itk::MinimumMaximumImageCalculator<SignalImageType>::Pointer minMaxCalc = itk::MinimumMaximumImageCalculator<SignalImageType>::New();
 //    // calculate xy
@@ -274,9 +276,11 @@ void itkSignal<dType>::computeExtrema() {
     minimumValue = minMaxCalc->GetMinimum();
     maximumValue = minMaxCalc->GetMaximum();
 
-
-    utils::toc(tic, "duration MinimumMaximumImageCalculator computeExtrema: ");
-    std::cout << "min: " << std::to_string(minimumValue) << " " << "max: " << std::to_string(maximumValue) << "\n";
+    SP_LOG_DEBUG("viewer.render",
+                 QStringLiteral("Computed extrema in %1 ms min=%2 max=%3")
+                     .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs)
+                     .arg(minimumValue)
+                     .arg(maximumValue));
 //
 //    tic = omp_get_wtime();
 //    typedef itk::Statistics::ImageToHistogramFilter<SignalImageType> ImageToHistogramFilterType;
@@ -375,7 +379,7 @@ itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, QTreeWidget *
 
 template<typename dType>
 void itkSignal<dType>::setName(QString nameIn) {
-    std::cout << "Stackname: " << nameIn.toStdString() << "\n";
+    SP_LOG_DEBUG("viewer.render", QStringLiteral("Setting signal name to %1").arg(nameIn));
     name = nameIn;
 }
 
@@ -428,7 +432,13 @@ void itkSignal<dType>::setupTreeWidget(QTreeWidget *motherTreeWidget, size_t sig
 template<typename dType>
 void itkSignal<dType>::calculateImageSize() {
     auto &size = pImage->GetLargestPossibleRegion().GetSize();
-    if (verbose) { std::cout << size << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Signal image size=%1x%2x%3")
+                         .arg(size[0])
+                         .arg(size[1])
+                         .arg(size[2]));
+    }
     dimX = size[0];
     dimY = size[1];
     dimZ = size[2];
@@ -440,7 +450,7 @@ void itkSignal<dType>::calculateLUT() {
 //  if floating point
     if constexpr (std::is_floating_point_v<dType>) {
         if (verbose) {
-            std::cout << "Read signal is floating point!\n";
+            SP_LOG_DEBUG("viewer.render", QStringLiteral("Read signal uses floating-point voxels"));
         }
         dTypeMax = maximumValue;
     } else {
@@ -454,12 +464,15 @@ void itkSignal<dType>::calculateLUT() {
 //        if max is e.g. 255, LUT size has to be 256!
     LUTSizeWanted = dTypeMax + 1;
 
-    std::cout << "Calculating LUTs for " << LUTSizeWanted << " values.\n";
-
-    std::cout << "Current LUT size: " << LUT.size() << std::endl;
+    SP_LOG_DEBUG("viewer.render",
+                 QStringLiteral("Calculating LUT for %1 values (currentSize=%2)")
+                     .arg(LUTSizeWanted)
+                     .arg(LUT.size()));
     size_t oldLUTSize = LUT.size();
     if (size_t(LUTSizeWanted) > LUT.size()) {
-        std::cout << "Resizing LUT to fit index " << LUTSizeWanted << ". New size: " << LUTSizeWanted << "\n";
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Resizing LUT to %1 entries")
+                         .arg(LUTSizeWanted));
         LUT.resize(LUTSizeWanted);
     }
 
@@ -478,11 +491,19 @@ template<typename dType>
 void itkSignal<dType>::calculateLUTContinuous(long long) {
     //TODO: Handle negative continous luts
     //TODO: Handle Floats
-    if (verbose) { std::cout << "Continous LUT" << std::endl; }
-    if (verbose) { std::cout << "Norm min.: " << normLower << " Norm max.: " << normUpper << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Calculating continuous LUT with norm=[%1, %2]")
+                         .arg(normLower)
+                         .arg(normUpper));
+    }
 
     double normFactorDecimal = 255. / (normUpper - normLower);
-    if (verbose) { std::cout << "normFactor: " << normFactorDecimal << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Continuous LUT norm factor=%1")
+                         .arg(normFactorDecimal, 0, 'g', 6));
+    }
 
     for (size_t i = 0; i < LUT.size(); ++i) {
         double normedValue = std::min<double>(std::max<double>(i - normLower, 0) * normFactorDecimal, 255);
@@ -500,7 +521,11 @@ void itkSignal<dType>::calculateLUTContinuous(long long) {
 
 template<typename dType>
 void itkSignal<dType>::calculateLUTCategorical(long long, size_t startIndex) {
-    if (verbose) { std::cout << "Categorical LUT (startIndex=" << startIndex << ")" << std::endl; }
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Calculating categorical LUT startIndex=%1")
+                         .arg(startIndex));
+    }
     // Generate new random colors only for entries beyond startIndex
     for (size_t i = startIndex; i < LUT.size(); ++i) {
         auto colorR = (std::rand() % 255);
@@ -565,7 +590,9 @@ void itkSignal<dType>::setLUTCategorical() {
 template<typename dType>
 void itkSignal<dType>::setLUTValueToBlack(unsigned int value) {
     checkAndResizeLUT(value);
-    std::cout << "Setting " << value << " to be displayed as black! \n";
+    SP_LOG_INFO("viewer.render",
+                QStringLiteral("Setting LUT value %1 to black")
+                    .arg(value));
     LUT.at(value) = qRgba(0, 0, 0, 255);
     blackLUTValues.push_back(value);
 }
@@ -584,7 +611,10 @@ void itkSignal<dType>::checkAndResizeLUT(unsigned int value) {
             newSize *= 2;
         }
         LUT.resize(newSize);
-        std::cout << "Resizing LUT to fit index " << value << ". New size: " << newSize << "\n";
+        SP_LOG_DEBUG("viewer.render",
+                     QStringLiteral("Resizing LUT to fit index %1 (newSize=%2)")
+                         .arg(value)
+                         .arg(newSize));
         if (isCategorical) {
             // Extend with new random colors; existing entries keep their colours
             calculateLUTCategorical(newSize, oldSize);
@@ -609,7 +639,9 @@ void itkSignal<dType>::randomizeCategoricalLUT() {
 template<typename dType>
 void itkSignal<dType>::setLUTValueToTransparent(unsigned int value) {
     checkAndResizeLUT(value);
-    std::cout << "Setting " << value << " to be displayed as transparent! \n";
+    SP_LOG_INFO("viewer.render",
+                QStringLiteral("Setting LUT value %1 to transparent")
+                    .arg(value));
     LUT.at(value) = qRgba(0, 0, 0, 0);
     transparentLUTValues.push_back(value);
 }
@@ -796,9 +828,10 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
                 try {
                     sliceBuffer->at(getPixMapIndex(coords, sliceAxis)) = qRgba(colorR, colorG, colorB, colorA);
                 } catch (const std::out_of_range &e) {
-                    std::cout << "Out of Range error. Second access." << std::endl;
-                    std::cout << "Exception: " << e.what() << std::endl;
-                    std::cout << "index: " << std::to_string(getPixMapIndex(coords, sliceAxis)) << std::endl;
+                    SP_LOG_ERROR("viewer.render",
+                                 QStringLiteral("Out-of-range slice buffer access index=%1 exception=%2")
+                                     .arg(getPixMapIndex(coords, sliceAxis))
+                                     .arg(QString::fromUtf8(e.what())));
                 }
                 ++it;
             }

@@ -1,8 +1,72 @@
 
 
 #include "SegmentManager.h"
+#include <QElapsedTimer>
+#include <QStringList>
+#include "src/utils/AppLogger.h"
 #include <src/utils/utils.h>
 #include <queue>
+
+namespace {
+
+using segment_puzzler::app_logging::AppLogger;
+using segment_puzzler::app_logging::LogLevel;
+
+const QString kSegmentationCategory = QStringLiteral("segmentation");
+const QString kIoCategory = QStringLiteral("io");
+
+void logSegmentManager(LogLevel level, const char *functionName, const QString &message, const QString &category = kSegmentationCategory) {
+    AppLogger::log(level, category, message, functionName);
+}
+
+void logSegmentManagerDebugIf(bool enabled, const char *functionName, const QString &message) {
+    if (!enabled) {
+        return;
+    }
+    logSegmentManager(LogLevel::Debug, functionName, message);
+}
+
+template<typename Container>
+QString joinIds(const Container &values) {
+    QStringList parts;
+    for (const auto &value : values) {
+        parts << QString::number(static_cast<qulonglong>(value));
+    }
+    return parts.join(QStringLiteral(" "));
+}
+
+class ScopedSegmentManagerTimer {
+public:
+    ScopedSegmentManagerTimer(bool enabled, const char *functionName, QString operation, QString category = kSegmentationCategory)
+        : enabled_(enabled), functionName_(functionName), operation_(std::move(operation)), category_(std::move(category)) {
+        if (!enabled_) {
+            return;
+        }
+        AppLogger::log(LogLevel::Debug, category_, operation_ + QStringLiteral(" started"), functionName_);
+        timer_.start();
+    }
+
+    ~ScopedSegmentManagerTimer() {
+        if (!enabled_) {
+            return;
+        }
+        const double elapsedMs = static_cast<double>(timer_.nsecsElapsed()) / 1000000.0;
+        AppLogger::log(
+            LogLevel::Debug,
+            category_,
+            QStringLiteral("%1 finished (%2 ms)").arg(operation_).arg(elapsedMs, 0, 'f', 3),
+            functionName_);
+    }
+
+private:
+    bool enabled_ = false;
+    const char *functionName_ = nullptr;
+    QString operation_;
+    QString category_;
+    QElapsedTimer timer_;
+};
+
+} // namespace
 
 // === init ===
 
@@ -76,17 +140,13 @@ void SegmentManager::addWorkingEdge(WorkingEdge *pWorkingEdgeToAdd) {
 
 void SegmentManager::removeInitialNode(SegmentManager::SegmentIdType labelOfNodeToRemove) {
     InitialNode *nodeToRemove = (*pInitialNodes)[labelOfNodeToRemove].get();
-    double t = 0;
-    if (verbose) {
-        std::string desc = "Graph::removeInitialNode (" + std::to_string(nodeToRemove->getLabel()) + ") called";
-        t = utils::tic(desc);
-    }
+    ScopedSegmentManagerTimer timer(verbose,
+                                    __func__,
+                                    QStringLiteral("Removing initial node %1").arg(nodeToRemove->getLabel()));
     // take care of: initialtwosided edges, initial onesided edges, edgeidlookup, initialnodes, initialEdgeVolume, edgeStatus
 
     removeEdgePropertiesOnInitialNode(nodeToRemove);
     pInitialNodes->erase(nodeToRemove->getLabel());
-
-    if (verbose) { utils::toc(t, "Graph::removeInitialNode finished"); }
 }
 
 void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode) {
@@ -94,36 +154,47 @@ void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode
     int backgroundValueEdges = 0;
     for (auto initialEdge : pInitialNode->twosidedEdges) {
         // set voxels in the initial edge volume to background
-        std::cout << "Removing Voxels of edgenum: " << initialEdge.second->numId << "\n";
+        logSegmentManagerDebugIf(verbose,
+                                 __func__,
+                                 QStringLiteral("Removing voxels for initial edge %1").arg(initialEdge.second->numId));
         for (auto &voxel : initialEdge.second->voxels) {
             (*ppEdgesInitialSegmentsImage)->SetPixel({voxel.x, voxel.y, voxel.z}, backgroundValueEdges);
         }
 
         // delete edge status
         if (pEdgeStatus->count(initialEdge.second->numId) > 0) {
-            std::cout << "Removing status of edgenum: " << initialEdge.second->numId << "\n";
+            logSegmentManagerDebugIf(verbose,
+                                     __func__,
+                                     QStringLiteral("Removing edge status for initial edge %1").arg(initialEdge.second->numId));
             pEdgeStatus->erase(initialEdge.second->numId);
         }
 
         // take care of twosided edges
         if (pInitialTwoSidedEdges->count(initialEdge.second->pairId) > 0) {
-            std::cout << "Removing InitialTwoSidedEdge: " << initialEdge.second->pairId.first << " -> "
-                      << initialEdge.second->pairId.second << "\n";
+            logSegmentManagerDebugIf(verbose,
+                                     __func__,
+                                     QStringLiteral("Removing two-sided initial edge %1 -> %2")
+                                         .arg(initialEdge.second->pairId.first)
+                                         .arg(initialEdge.second->pairId.second));
             pInitialTwoSidedEdges->erase(initialEdge.second->pairId);
         }
         // also delete from the paired node
         if (pInitialNodes->count(initialEdge.first) > 0) {
             if ((*pInitialNodes)[initialEdge.first]->twosidedEdges.count(pInitialNode->getLabel()) > 0) {
-                std::cout << "Removing twosided InitialEdge: " << initialEdge.first << " -> "
-                          << pInitialNode->getLabel()
-                          << "\n";
+                logSegmentManagerDebugIf(verbose,
+                                         __func__,
+                                         QStringLiteral("Removing paired two-sided initial edge %1 -> %2")
+                                             .arg(initialEdge.first)
+                                             .arg(pInitialNode->getLabel()));
                 (*pInitialNodes)[initialEdge.first]->twosidedEdges.erase(pInitialNode->getLabel());
             }
         }
 
         // delete corrosponding edgeidlookup
         if (pInitialEdgeIdLookUp->count(initialEdge.second->numId) > 0) {
-            std::cout << "Removing Edgestatus of id: " << initialEdge.second->numId << "\n";
+            logSegmentManagerDebugIf(verbose,
+                                     __func__,
+                                     QStringLiteral("Removing edge-id lookup entry %1").arg(initialEdge.second->numId));
             pInitialEdgeIdLookUp->erase(initialEdge.second->numId);
         }
     }
@@ -132,16 +203,27 @@ void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode
     // delete onesided edges
     for (auto edge : pInitialNode->onesidedEdges) {
         if (pInitialOneSidedEdges->count({edge.first, pInitialNode->getLabel()}) > 0) {
-            std::cout << "Removing onesided InitialEdge: " << edge.first << " -> " << pInitialNode->getLabel() << "\n";
+            logSegmentManagerDebugIf(verbose,
+                                     __func__,
+                                     QStringLiteral("Removing one-sided initial edge %1 -> %2")
+                                         .arg(edge.first)
+                                         .arg(pInitialNode->getLabel()));
             pInitialOneSidedEdges->erase({edge.first, pInitialNode->getLabel()});
         }
         if (pInitialOneSidedEdges->count({pInitialNode->getLabel(), edge.first}) > 0) {
-            std::cout << "Removing onesided InitialEdge: " << pInitialNode->getLabel() << " -> " << edge.first << "\n";
+            logSegmentManagerDebugIf(verbose,
+                                     __func__,
+                                     QStringLiteral("Removing one-sided initial edge %1 -> %2")
+                                         .arg(pInitialNode->getLabel())
+                                         .arg(edge.first));
             pInitialOneSidedEdges->erase({pInitialNode->getLabel(), edge.first});
         }
         if ((*pInitialNodes)[edge.first]->onesidedEdges.count(pInitialNode->getLabel()) > 0) {
-            std::cout << "Removing onesided InitialEdge on node: " << edge.first << " -> " << pInitialNode->getLabel()
-                      << "\n";
+            logSegmentManagerDebugIf(verbose,
+                                     __func__,
+                                     QStringLiteral("Removing mirrored one-sided edge %1 -> %2")
+                                         .arg(edge.first)
+                                         .arg(pInitialNode->getLabel()));
             (*pInitialNodes)[edge.first]->onesidedEdges.erase(pInitialNode->getLabel());
         }
     }
@@ -171,20 +253,20 @@ void SegmentManager::removeWorkingEdge(WorkingEdge *workingEdgeToRemove) {
         if (pWorkingNodes->at(labelA)->twosidedEdges.count(labelB) > 0) { // if twosided edge exists
             pWorkingNodes->at(labelA)->twosidedEdges.erase(labelB); // delete it
         } else {
-            std::cout << "Warning: node with dangeling edge!!\n";
+            logSegmentManager(LogLevel::Warning, __func__, QStringLiteral("Working node %1 has a dangling edge to %2").arg(labelA).arg(labelB));
         }
     } else {
-        std::cout << "Warning: Edge with dangeling node!!\n";
+        logSegmentManager(LogLevel::Warning, __func__, QStringLiteral("Removing edge with missing working node %1").arg(labelA));
     }
 
     if (pWorkingNodes->count(labelB) > 0) { // if workingNode exist
         if (pWorkingNodes->at(labelB)->twosidedEdges.count(labelA) > 0) { // if twosided edge exists
             pWorkingNodes->at(labelB)->twosidedEdges.erase(labelA); // delete it
         } else {
-            std::cout << "Warning: node with dangeling edge!!\n";
+            logSegmentManager(LogLevel::Warning, __func__, QStringLiteral("Working node %1 has a dangling edge to %2").arg(labelB).arg(labelA));
         }
     } else {
-        std::cout << "Warning: Edge with dangeling node!!\n";
+        logSegmentManager(LogLevel::Warning, __func__, QStringLiteral("Removing edge with missing working node %1").arg(labelB));
     }
 
     pWorkingEdges->erase(pairId); // also delete it from working edges
@@ -286,20 +368,20 @@ void SegmentManager::insertWorkingNodeIntoITKImage(WorkingNode *newWorkingNode) 
 }
 
 void SegmentManager::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit) {
-    double t = 0;
-    if (verbose) {
-        std::cout << "Graph::splitWorkingNodeIntoInitialNodes called: (" << workingNodeIdToSplit << ")\n";
-        t = utils::tic();
-    }
+    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Splitting working node into initial nodes"));
     if (!isIgnoredId(workingNodeIdToSplit)) {
 
         auto pToWorkingNode = pWorkingNodes->at(workingNodeIdToSplit);
-        std::cout << "here" << "\n";
 
         std::vector<SegmentIdType> idsOfSubInitialNodes;
         for (auto &initialNode : pToWorkingNode->subInitialNodes) {
             idsOfSubInitialNodes.push_back(initialNode.first);
         }
+        logSegmentManagerDebugIf(verbose,
+                                 __func__,
+                                 QStringLiteral("Working node %1 splits into initial nodes [%2]")
+                                     .arg(workingNodeIdToSplit)
+                                     .arg(joinIds(idsOfSubInitialNodes)));
 
         // remove corrosponding workingedges and workingNode
         removeWorkingNode(pToWorkingNode.get());
@@ -346,17 +428,14 @@ void SegmentManager::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeI
                 }
             }
         }
-
     }
-    if (verbose) { utils::toc(t, "Graph::splitWorkingNodeIntoInitialNodes finished"); }
 
 }
 
 
 void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(
         WorkingNode &workingNodeToAnalyze) {
-    double t = 0;
-    if (verbose) { t = utils::tic("Graph::splitIntoConnectedComponentsOfWorkingNode called"); }
+    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Splitting working node into connected components"));
 
 
     std::set<SegmentIdType> visitedWorkingNodeLabels, initialNodesOfWorkingNode;
@@ -403,11 +482,9 @@ void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(
             visitedWorkingNodeLabelsThisRun.insert(activeNode);
         }
 
-        std::cout << "Graph::splitIntoConnectedComponentsOfWorkingNode visited Labels this round: ";
-        for (auto &val : visitedWorkingNodeLabelsThisRun) {
-            std::cout << val << " ";
-        }
-        std::cout << "\n";
+        logSegmentManagerDebugIf(verbose,
+                                 __func__,
+                                 QStringLiteral("Connected component labels=[%1]").arg(joinIds(visitedWorkingNodeLabelsThisRun)));
 
         SegmentIdType labelOfNewNode = *nextFreeId;
         (*nextFreeId)++;
@@ -429,24 +506,20 @@ void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(
 
     }
     removeWorkingNode(&workingNodeToAnalyze);
-    if (verbose) { utils::toc(t, "splitIntoConnectedComponentsOfWorkingNode finished"); }
 }
 
 
 void SegmentManager::computeSurfaceAndOneSidedEdgesOnInitialNode(InitialNode *pInitialNode) {
-    double t = 0;
-    if (verbose) { t = utils::tic("SegmentManager::computeSurfaceAndOneSidedEdgesOnInitialNode called"); }
+    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges for one initial node"));
     pInitialNode->parallelComputeOnesidedSurfaceAndEdges(pIgnoredSegmentLabels);
 
     for (auto &edge : pInitialNode->onesidedEdges) {
         addOneSidedInitialEdge(edge.second, {pInitialNode->getLabel(), edge.first});
     }
-    if (verbose) { utils::toc(t, "SegmentManager::computeSurfaceAndOneSidedEdgesOnInitialNode finished"); }
 }
 
 void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInitialNode) {
-    double t = 0;
-    if (verbose) { t = utils::tic("SegmentManager::computeCorrospondingOneSidedInitialEdges called"); }
+    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing corresponding one-sided initial edges"));
     auto labelOfThisInitialNode = pInitialNode->getLabel();
     for (auto &edge : pInitialNode->onesidedEdges) {
         // TODO: this is ugly, add a function to add the initial edge!
@@ -455,7 +528,10 @@ void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInit
         auto pNewEdge = std::shared_ptr<InitialEdge>(pInitialNode->computeCorrospondingOneSidedEdge(edge.second.get()));
 
         if  ((*pInitialNodes).count(labelOfConnectedInitialNode) == 0){
-            std::cout << "connected initial node: " << labelOfConnectedInitialNode << " is not in initial nodes!!" << std::endl;
+            logSegmentManager(LogLevel::Error,
+                              __func__,
+                              QStringLiteral("Connected initial node %1 is missing while computing corresponding one-sided edges")
+                                  .arg(labelOfConnectedInitialNode));
             printEdgeIdLookUpToFile("edgeIdLookup.txt");
             printWorkingNodesToFile("workingNodes.txt");
             printWorkingEdgesToFile("workingEdges.txt");
@@ -466,20 +542,17 @@ void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInit
 //                                                                        "initialEdges.nrrd");
 //            ITKImageWriter<dataType::SegmentsImageType>(graphBase->pWorkingSegmentsImage,s
 //                                                                            "workingSegments.nrrd");
-
         }
 
         (*pInitialNodes)[labelOfConnectedInitialNode]->onesidedEdges[labelOfThisInitialNode] = pNewEdge;
 
         addOneSidedInitialEdge(pNewEdge, {labelOfConnectedInitialNode, labelOfThisInitialNode});
     }
-    if (verbose) { utils::toc(t, "SegmentManager::computeCorrospondingOneSidedInitialEdges finished"); }
 }
 
 
 void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes() {
-    double t = 0;
-    if (verbose) { t = utils::tic("SegmentManager::computeOneSidedEdgesOnAllInitialNodes called"); }
+    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges on all initial nodes"));
 
 
     std::vector<SegmentIdType> initialNodeIds = utils::getKeyVecOfSharedPtrMap<SegmentIdType>(*pInitialNodes);
@@ -496,7 +569,6 @@ void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes() {
         }
     }
 
-    if (verbose) { utils::toc(t, "SegmentManager::computeOneSidedEdgesOnAllInitialNodes finished"); }
 }
 
 
@@ -513,8 +585,7 @@ SegmentManager::createTwoSidedInitialEdgeByMerging(SegmentIdType initialNodeLabe
 
 
 void SegmentManager::mergeNewOneSidedEdgesIntoTwosidedEdges(bool veryVerbose) {
-    double t = 0;
-    if (veryVerbose) { t = utils::tic("SegmentManager::mergeNewOneSidedEdgesIntoTwosidedEdges called"); }
+    ScopedSegmentManagerTimer timer(veryVerbose, __func__, QStringLiteral("Merging new one-sided edges into two-sided edges"));
 
     std::vector<InitialEdge *> newlyAddedInitialEdges;
     for (auto &initialNode: *pInitialNodes) {
@@ -523,9 +594,9 @@ void SegmentManager::mergeNewOneSidedEdgesIntoTwosidedEdges(bool veryVerbose) {
                 // if no edge exists, create a new one
                 SegmentIdType labelSmaller = initialEdge.second->getLabelSmaller();
                 SegmentIdType labelBigger = initialEdge.second->getLabelBigger();
-                if (veryVerbose) {
-                    std::cout << "Merging onesided edges: " << labelSmaller << " " << labelBigger << "\n";
-                }
+                logSegmentManagerDebugIf(veryVerbose,
+                                         __func__,
+                                         QStringLiteral("Merging one-sided edges %1 and %2").arg(labelSmaller).arg(labelBigger));
                 InitialEdge *newEdge = createTwoSidedInitialEdgeByMerging(labelSmaller, labelBigger);
                 addTwoSidedInitialEdge(newEdge);
                 newlyAddedInitialEdges.push_back(newEdge);
@@ -539,15 +610,13 @@ void SegmentManager::mergeNewOneSidedEdgesIntoTwosidedEdges(bool veryVerbose) {
         newlyAddedInitialEdges[i]->calculateEdgeFeatures();
     }
 
-    if (veryVerbose) { utils::toc(t, "SegmentManager::mergeNewOneSidedEdgesIntoTwosidedEdges finished"); }
 }
 
 
 void
 SegmentManager::constructWorkingNodeFromInitialNode(InitialNode *baseInitialNode, bool useSameIdAsInitialNode,
                                                     bool veryVerbose) {
-    double t = 0;
-    if (veryVerbose) { t = utils::tic("SegmentManager::constructWorkingNodeFromInitialNode called"); }
+    ScopedSegmentManagerTimer timer(veryVerbose, __func__, QStringLiteral("Constructing working node from initial node"));
 
     SegmentIdType newLabel;
     if (useSameIdAsInitialNode) {
@@ -560,8 +629,6 @@ SegmentManager::constructWorkingNodeFromInitialNode(InitialNode *baseInitialNode
 
     auto *newWorkingNode = new WorkingNode(baseInitialNode, newLabel, *pInitialNodes);
     addWorkingNode(newWorkingNode);
-
-    if (veryVerbose) { utils::toc(t, "SegmentManager::mergeOneSidedEdgesIntoTwosidedEdges finished"); }
 }
 
 
@@ -571,8 +638,7 @@ bool SegmentManager::isIgnoredId(SegmentIdType idToCheck) {
 }
 
 void SegmentManager::recalculateEdgesOnWorkingNode(WorkingNode *pWorkingNode, bool veryVerbose) {
-    double t = 0;
-    if (veryVerbose) { t = utils::tic("SegmentManager::recalculateEdgesOnWorkingNode called\n"); }
+    ScopedSegmentManagerTimer timer(veryVerbose, __func__, QStringLiteral("Recalculating edges on working node"));
     // de-register old edges and clear twosided edges
     // also deregister the edge from the other node
 
@@ -600,14 +666,10 @@ void SegmentManager::recalculateEdgesOnWorkingNode(WorkingNode *pWorkingNode, bo
             }
         }
     }
-    if (veryVerbose) { utils::toc(t, "SegmentManager::mergeOneSidedEdgesIntoTwosidedEdges finished"); }
 }
 
 void SegmentManager::convertAllInitialNodesIntoWorkingNodes() {
-    double t = 0;
-    if (verbose) {
-        t = utils::tic("SegmentManager::mergeOneSidedEdgesIntoTwosidedEdges called\n");
-    }
+    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Converting all initial nodes into working nodes"));
 
     for (auto &initialNode : *pInitialNodes) {
         constructWorkingNodeFromInitialNode(initialNode.second.get());
@@ -616,17 +678,12 @@ void SegmentManager::convertAllInitialNodesIntoWorkingNodes() {
     for (auto &workingNode : *pWorkingNodes) {
         recalculateEdgesOnWorkingNode(workingNode.second.get());
     }
-
-
-    if (verbose) { utils::toc(t, "SegmentManager::mergeOneSidedEdgesIntoTwosidedEdges finished"); }
 }
 
 void SegmentManager::removeWorkingNode(WorkingNode *workingNodeToRemove, bool veryVerbose) {
-    double t = 0;
-    if (veryVerbose) {
-        t = utils::tic(
-                "SegmentManager::removeWorkingNode (" + std::to_string(workingNodeToRemove->getLabel()) + ") called");
-    }
+    ScopedSegmentManagerTimer timer(veryVerbose,
+                                    __func__,
+                                    QStringLiteral("Removing working node %1").arg(workingNodeToRemove->getLabel()));
     // deregister edges
     std::vector<WorkingEdge *> vecOfWorkingEdgesToRemove =
             utils::getTargetPointersVecOfSharedPtrMap<SegmentIdType, WorkingEdge>(workingNodeToRemove->twosidedEdges);
@@ -635,8 +692,6 @@ void SegmentManager::removeWorkingNode(WorkingNode *workingNodeToRemove, bool ve
     }
     // deregeister Node
     pWorkingNodes->erase(workingNodeToRemove->getLabel());
-    if (veryVerbose) { utils::toc(t, "SegmentManager::removeWorkingNode finished"); }
-
 }
 
 // debugging stuff
@@ -695,44 +750,61 @@ void SegmentManager::printWorkingEdges(std::ostream &outStream) {
 }
 
 void SegmentManager::printInitialNodesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing initialNodes to File: " << pathToOutputfile << "\n";
+    logSegmentManager(LogLevel::Info,
+                      __func__,
+                      QStringLiteral("Writing initial nodes to %1").arg(QString::fromStdString(pathToOutputfile)),
+                      kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printInitialNodes(outFile);
     outFile.close();
 }
 
 void SegmentManager::printInitialTwoSidedEdgesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing initialTwoSidedEdges to File: " << pathToOutputfile << "\n";
+    logSegmentManager(LogLevel::Info,
+                      __func__,
+                      QStringLiteral("Writing initial two-sided edges to %1").arg(QString::fromStdString(pathToOutputfile)),
+                      kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printInitialTwoSidedEdges(outFile);
     outFile.close();
 }
 
 void SegmentManager::printInitialOneSidedEdgesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing initialTwoSidedEdges to File: " << pathToOutputfile << "\n";
+    logSegmentManager(LogLevel::Info,
+                      __func__,
+                      QStringLiteral("Writing initial one-sided edges to %1").arg(QString::fromStdString(pathToOutputfile)),
+                      kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printInitialOneSidedEdges(outFile);
     outFile.close();
 }
 
 void SegmentManager::printWorkingNodesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing workingNodes to File: " << pathToOutputfile << "\n";
+    logSegmentManager(LogLevel::Info,
+                      __func__,
+                      QStringLiteral("Writing working nodes to %1").arg(QString::fromStdString(pathToOutputfile)),
+                      kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printWorkingNodes(outFile);
     outFile.close();
 }
 
 void SegmentManager::printEdgeIdLookUpToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing edgeIdLookup to File: " << pathToOutputfile << "\n";
+    logSegmentManager(LogLevel::Info,
+                      __func__,
+                      QStringLiteral("Writing edge-id lookup to %1").arg(QString::fromStdString(pathToOutputfile)),
+                      kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printEdgeIdLookUp(outFile);
     outFile.close();
 }
 
 void SegmentManager::printWorkingEdgesToFile(const std::string &pathToOutputfile) {
-    std::cout << "Printing workingEdges to File: " << pathToOutputfile << "\n";
+    logSegmentManager(LogLevel::Info,
+                      __func__,
+                      QStringLiteral("Writing working edges to %1").arg(QString::fromStdString(pathToOutputfile)),
+                      kIoCategory);
     std::ofstream outFile(pathToOutputfile);
     printWorkingEdges(outFile);
     outFile.close();
 }
-
