@@ -212,7 +212,6 @@ private:
     QComboBox *agglomertionStrategyComboBox;
     QSlider *agglomertionBiasSlider;
     QSpinBox *agglomertionBiasSpinBox;
-    QLabel *agglomertionBiasValueLabel;
     QCheckBox *agglomertionPreviewCheckBox;
     QCheckBox *agglomertionApproximatePreviewCheckBox;
     QCheckBox *agglomertionPreviewBoundariesCheckBox;
@@ -320,7 +319,6 @@ private:
     QString agglomertionLinkageLabel(segment_puzzler::RagLinkage linkage) const;
     QString agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode mode) const;
     QString agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy strategy) const;
-    QString agglomertionBiasLabelText() const;
     QString sizeBiasStrategyLabel(segment_puzzler::SizeBiasStrategy strategy) const;
     bool agglomertionNeedsThresholdMask() const;
     segment_puzzler::WatershedRagAgglomerationOptions currentAgglomertionOptions() const;

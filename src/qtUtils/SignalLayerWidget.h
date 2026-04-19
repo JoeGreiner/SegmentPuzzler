@@ -37,6 +37,7 @@ public:
     QSize minimumSizeHint() const override;
     QSize preferredSizeForWidth(int width) const;
     QSize sizeHint() const override;
+    QString debugLayerName() const;
 
     void setLayerName(const QString &name);
     void setLayerColor(const QColor &color);

@@ -1609,10 +1609,21 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
         profileOut->collectNeighborGroupsMs = durationMs(collectNeighborGroupsStart, Clock::now());
     }
 
+    const auto shouldSplitNeighborIntoInitialNodes = [](const NeighborWorkingGroup &neighborGroup) {
+        if (neighborGroup.initialLabels.size() > 1) {
+            return true;
+        }
+        return neighborGroup.initialLabels.size() == 1 &&
+               neighborGroup.workingLabel != neighborGroup.initialLabels.front();
+    };
+
     const auto splitWorkingNodesStart = Clock::now();
     splitWorkingNodeIntoInitialNodes(request.targetWorkingLabel);
     for (const auto &neighborGroup : neighborGroups) {
-        if (neighborGroup.initialLabels.size() > 1 && workingNodes.count(neighborGroup.workingLabel) > 0) {
+        // Initial-edge recomputation must see neighboring labels in the working image as initial-node labels,
+        // not stale synthetic working labels left behind by an earlier projected cut.
+        if (shouldSplitNeighborIntoInitialNodes(neighborGroup) &&
+            workingNodes.count(neighborGroup.workingLabel) > 0) {
             splitWorkingNodeIntoInitialNodes(neighborGroup.workingLabel);
         }
     }

@@ -16,6 +16,8 @@
 #include <QAbstractItemView>
 #include <QLabel>
 #include <QMenu>
+#include <QPointer>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
@@ -45,6 +47,11 @@ constexpr int kSectionSpacing = 4;
 constexpr int kLayersVisibleRows = 4;
 constexpr int kOtherSectionVisibleRows = 2;
 constexpr int kApproximateTreeRowPadding = 8;
+
+bool debugLayerLayoutEnabled() {
+    static const bool enabled = !qgetenv("SEGMENTPUZZLER_DEBUG_LAYER_LAYOUT").isEmpty();
+    return enabled;
+}
 
 QLabel *createSectionLabel(const QString &title, QWidget *parent) {
     auto *label = new QLabel(title, parent);
@@ -173,6 +180,61 @@ SignalLayerWidget *layerWidgetForItem(QTreeWidget *tree, QTreeWidgetItem *item) 
         return nullptr;
     }
     return qobject_cast<SignalLayerWidget *>(tree->itemWidget(item, 0));
+}
+
+QString debugTreeName(const QTreeWidget *tree) {
+    if (tree == nullptr) {
+        return QStringLiteral("<null>");
+    }
+    if (!tree->objectName().isEmpty()) {
+        return tree->objectName();
+    }
+    return QStringLiteral("QTreeWidget@0x%1").arg(reinterpret_cast<quintptr>(tree), 0, 16);
+}
+
+int layerTreeLeftGutterWidth(QTreeWidget *tree) {
+    if (tree == nullptr) {
+        return 0;
+    }
+
+    int gutterWidth = 0;
+    for (int itemIndex = 0; itemIndex < tree->topLevelItemCount(); ++itemIndex) {
+        QTreeWidgetItem *item = tree->topLevelItem(itemIndex);
+        if (item == nullptr) {
+            continue;
+        }
+
+        const QModelIndex modelIndex = tree->model()->index(itemIndex, 0);
+        const QRect itemRect = modelIndex.isValid() ? tree->visualRect(modelIndex) : tree->visualItemRect(item);
+        if (itemRect.isValid()) {
+            gutterWidth = std::max(gutterWidth, itemRect.x());
+        }
+    }
+
+    return gutterWidth;
+}
+
+int layerTreePreferredWidth(QTreeWidget *tree) {
+    if (tree == nullptr) {
+        return 0;
+    }
+
+    int widestLayerWidth = 0;
+    for (int itemIndex = 0; itemIndex < tree->topLevelItemCount(); ++itemIndex) {
+        QTreeWidgetItem *item = tree->topLevelItem(itemIndex);
+        if (auto *layerWidget = layerWidgetForItem(tree, item)) {
+            widestLayerWidth = std::max(widestLayerWidth, layerWidget->minimumSizeHint().width());
+        }
+    }
+
+    if (widestLayerWidth <= 0) {
+        return 0;
+    }
+
+    const int gutterWidth = layerTreeLeftGutterWidth(tree);
+    const int scrollbarWidth = tree->verticalScrollBar() != nullptr ? tree->verticalScrollBar()->sizeHint().width() : 0;
+    const int frameWidth = tree->frameWidth() * 2;
+    return gutterWidth + widestLayerWidth + scrollbarWidth + frameWidth + 8;
 }
 
 QTreeWidgetItem *findSignalTreeItem(QTreeWidget *tree, size_t signalIndex) {
@@ -417,6 +479,48 @@ void SignalControl::refreshUiState() {
     transferWithVolumeAction->setEnabled(enabled && hasSelectedSegmentation());
     transferWithRefinementAction->setEnabled(enabled && hasSelectedSegmentation() && hasSelectedRefinement());
     transferAllAction->setEnabled(enabled && hasSelectedSegmentation());
+    schedulePreferredSidebarWidthChanged();
+}
+
+int SignalControl::preferredSidebarWidthHint() const {
+    int preferredWidth = QWidget::minimumSizeHint().width();
+    for (QTreeWidget *tree : {signalTreeWidget, probabilityTreeWidget, segmentationTreeWidget, refinementTreeWidget}) {
+        preferredWidth = std::max(preferredWidth, layerTreePreferredWidth(tree));
+    }
+    return preferredWidth;
+}
+
+void SignalControl::schedulePreferredSidebarWidthChanged() {
+    if (preferredSidebarWidthChangePending) {
+        return;
+    }
+
+    preferredSidebarWidthChangePending = true;
+    QPointer<SignalControl> guardedThis(this);
+    QTimer::singleShot(0, this, [guardedThis]() {
+        if (guardedThis == nullptr) {
+            return;
+        }
+
+        guardedThis->preferredSidebarWidthChangePending = false;
+        guardedThis->updateGeometry();
+        const int preferredWidth = guardedThis->preferredSidebarWidthHint();
+        if (debugLayerLayoutEnabled()) {
+            std::cout << QStringLiteral(
+                             "[LayerSidebarWidthSource] signalControlWidth=%1 splitterWidth=%2 source=preferredSidebarWidthHint value=%3")
+                             .arg(guardedThis->width())
+                             .arg(guardedThis->sectionSplitter != nullptr ? guardedThis->sectionSplitter->width() : -1)
+                             .arg(preferredWidth)
+                             .toStdString()
+                      << std::endl;
+        }
+        if (preferredWidth == guardedThis->lastEmittedPreferredSidebarWidth) {
+            return;
+        }
+
+        guardedThis->lastEmittedPreferredSidebarWidth = preferredWidth;
+        emit guardedThis->preferredSidebarWidthChanged();
+    });
 }
 
 void SignalControl::updateSelectionLabel(QTreeWidget *tree, QLabel *label) {
@@ -462,9 +566,11 @@ void SignalControl::attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *
     item->setFirstColumnSpanned(true);
     tree->setItemWidget(item, 0, layerWidget);
     SignalLayerWidget::requestHostTreeLayoutSync(tree);
+    schedulePreferredSidebarWidthChanged();
 
-    connect(layerWidget, &SignalLayerWidget::sizeHintChanged, this, [tree]() {
+    connect(layerWidget, &SignalLayerWidget::sizeHintChanged, this, [this, tree]() {
         SignalLayerWidget::requestHostTreeLayoutSync(tree);
+        schedulePreferredSidebarWidthChanged();
     });
 
     connect(layerWidget, &SignalLayerWidget::activated, this, [this, tree, item]() {
@@ -504,6 +610,23 @@ void SignalControl::attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *
     });
 
     refreshLayerWidget(tree, item);
+    schedulePreferredSidebarWidthChanged();
+    if (debugLayerLayoutEnabled()) {
+        const int viewportWidth = tree->viewport() != nullptr ? tree->viewport()->width() : -1;
+        const bool scrollbarVisible = tree->verticalScrollBar() != nullptr && tree->verticalScrollBar()->isVisible();
+        std::cout << QStringLiteral(
+                         "[LayerTreeAttach] tree=%1 signalControlWidth=%2 splitterWidth=%3 treeWidth=%4 viewport=%5 "
+                         "scrollbarVisible=%6 widthSource=preferredSidebarWidthHint sourceValue=%7")
+                         .arg(debugTreeName(tree))
+                         .arg(width())
+                         .arg(sectionSplitter != nullptr ? sectionSplitter->width() : -1)
+                         .arg(tree->width())
+                         .arg(viewportWidth)
+                         .arg(scrollbarVisible)
+                         .arg(preferredSidebarWidthHint())
+                         .toStdString()
+                  << std::endl;
+    }
 }
 
 void SignalControl::attachLayerWidgetToLastItem(QTreeWidget *tree) {
@@ -547,6 +670,24 @@ void SignalControl::refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item)
     presentation.toolTip = layerToolTipText(signal);
     presentation.contrastAvailable = signal->supportsNormControl();
     layerWidget->applyPresentation(presentation);
+
+    if (debugLayerLayoutEnabled()) {
+        const int viewportWidth = tree->viewport() != nullptr ? tree->viewport()->width() : -1;
+        const bool scrollbarVisible = tree->verticalScrollBar() != nullptr && tree->verticalScrollBar()->isVisible();
+        std::cout << QStringLiteral(
+                         "[LayerTreeRefresh] tree=%1 name=\"%2\" signalControlWidth=%3 splitterWidth=%4 treeWidth=%5 "
+                         "viewport=%6 scrollbarVisible=%7 widthSource=preferredSidebarWidthHint sourceValue=%8")
+                         .arg(debugTreeName(tree))
+                         .arg(name)
+                         .arg(width())
+                         .arg(sectionSplitter != nullptr ? sectionSplitter->width() : -1)
+                         .arg(tree->width())
+                         .arg(viewportWidth)
+                         .arg(scrollbarVisible)
+                         .arg(preferredSidebarWidthHint())
+                         .toStdString()
+                  << std::endl;
+    }
 }
 
 void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
@@ -1017,10 +1158,7 @@ void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QSt
     allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(false);
     attachLayerWidgetToLastItem(refinementTreeWidget);
-    int lastItemIndex = refinementTreeWidget->topLevelItemCount() - 1;
-    refinementTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-    refinementTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-    QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(lastItemIndex);
+    QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(refinementTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(refinementTreeWidget, newItem, lastAutoSelectedRefinementItem);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
     selectRefinementItem(refinementTreeWidget->currentItem());
@@ -1042,16 +1180,14 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     allSignalList[signalIndexGlobal]->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
 
+    const size_t edgeSignalIndex = allSignalList.size();
     graphBase->pEdgesInitialSegmentsITKSignal->setName(
         signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Edges")));
-    graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
+    allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
+    graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, edgeSignalIndex);
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
     attachLayerWidgetToLastItem(signalTreeWidget);
-    int lastItemIndex = signalTreeWidget->topLevelItemCount() - 1;
-    signalTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-    signalTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-    allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
     orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
 
     orthoViewer->setViewToMiddleOfStack();
@@ -1415,13 +1551,14 @@ void SignalControl::setupSignalTreeWidget() {
     auto *signalWidgetLayout = createSectionLayout(tr("Layers"));
 
     signalTreeWidget = new QTreeWidget();
+    signalTreeWidget->setObjectName(QStringLiteral("layersTree"));
     signalTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     signalTreeWidget->setUniformRowHeights(true);
     signalTreeWidget->setFocusPolicy(Qt::NoFocus);
     signalTreeWidget->setColumnCount(2);
-    signalTreeWidget->setHeaderLabels({"Name", "Properties"});
-    signalTreeWidget->header()->setStretchLastSection(false);
-    signalTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    signalTreeWidget->setHeaderHidden(true);
+    signalTreeWidget->setRootIsDecorated(false);
+    signalTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(signalTreeWidget);
     setTreeMinimumRows(signalTreeWidget, kLayersVisibleRows);
     // Extra vertical space should go into the tree, not the section title.
@@ -1439,13 +1576,14 @@ void SignalControl::setupProbabilityTreeWidget() {
     auto *probabilityWidgetLayout = createSectionLayout(tr("Boundaries"));
 
     probabilityTreeWidget = new QTreeWidget();
+    probabilityTreeWidget->setObjectName(QStringLiteral("boundariesTree"));
     probabilityTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     probabilityTreeWidget->setUniformRowHeights(true);
     probabilityTreeWidget->setFocusPolicy(Qt::NoFocus);
     probabilityTreeWidget->setColumnCount(2);
-    probabilityTreeWidget->setHeaderLabels({"Name", "Properties"});
-    probabilityTreeWidget->header()->setStretchLastSection(false);
-    probabilityTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    probabilityTreeWidget->setHeaderHidden(true);
+    probabilityTreeWidget->setRootIsDecorated(false);
+    probabilityTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(probabilityTreeWidget);
     setTreeMinimumRows(probabilityTreeWidget, kOtherSectionVisibleRows);
     probabilityWidgetLayout->addWidget(probabilityTreeWidget, 1);
@@ -1484,13 +1622,14 @@ void SignalControl::setupRefinementTreeWidget() {
     auto *refinementWidgetLayout = createSectionLayout(tr("Refinements"));
 
     refinementTreeWidget = new QTreeWidget();
+    refinementTreeWidget->setObjectName(QStringLiteral("refinementsTree"));
     refinementTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     refinementTreeWidget->setUniformRowHeights(true);
     refinementTreeWidget->setFocusPolicy(Qt::NoFocus);
     refinementTreeWidget->setColumnCount(2);
-    refinementTreeWidget->setHeaderLabels({"Name", "Properties"});
-    refinementTreeWidget->header()->setStretchLastSection(false);
-    refinementTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    refinementTreeWidget->setHeaderHidden(true);
+    refinementTreeWidget->setRootIsDecorated(false);
+    refinementTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(refinementTreeWidget);
     setTreeMinimumRows(refinementTreeWidget, kOtherSectionVisibleRows);
     refinementWidgetLayout->addWidget(refinementTreeWidget, 1);
@@ -1611,13 +1750,14 @@ void SignalControl::setupSegmentationTreeWidget() {
     auto *segmentationWidgetLayout = createSectionLayout(tr("Segmentations"));
 
     segmentationTreeWidget = new QTreeWidget();
+    segmentationTreeWidget->setObjectName(QStringLiteral("segmentationsTree"));
     segmentationTreeWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     segmentationTreeWidget->setUniformRowHeights(true);
     segmentationTreeWidget->setFocusPolicy(Qt::NoFocus);
     segmentationTreeWidget->setColumnCount(2);
-    segmentationTreeWidget->setHeaderLabels({"Name", "Properties"});
-    segmentationTreeWidget->header()->setStretchLastSection(false);
-    segmentationTreeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    segmentationTreeWidget->setHeaderHidden(true);
+    segmentationTreeWidget->setRootIsDecorated(false);
+    segmentationTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(segmentationTreeWidget);
     setTreeMinimumRows(segmentationTreeWidget, kOtherSectionVisibleRows);
     segmentationWidgetLayout->addWidget(segmentationTreeWidget, 1);
@@ -1686,15 +1826,6 @@ void SignalControl::treeDoubleClicked(QTreeWidgetItem *item, int) {
 void SignalControl::treeClicked(QTreeWidgetItem *item, int) {
     if (signal_tree::rowKind(item) != signal_tree::RowKind::Root) {
         return;
-    }
-
-    std::string itemText = item->text(1).toStdString();
-    if ((itemText == "active") || (itemText == "inactive")) {
-        if (itemText == "inactive" && (item->checkState(0) == Qt::CheckState::Checked)) {
-            setIsActive(item, true);
-        } else if (itemText == "active" && (item->checkState(0) == Qt::CheckState::Unchecked)) {
-            setIsActive(item, false);
-        }
     }
 }
 

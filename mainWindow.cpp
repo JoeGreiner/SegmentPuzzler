@@ -30,6 +30,11 @@ MainWindow::~MainWindow() = default;
 
 namespace {
 
+bool debugLayerLayoutEnabled() {
+    static const bool enabled = !qgetenv("SEGMENTPUZZLER_DEBUG_LAYER_LAYOUT").isEmpty();
+    return enabled;
+}
+
 QStringList localFilesFromMimeData(const QMimeData *mimeData) {
     QStringList localFiles;
     if (mimeData == nullptr || !mimeData->hasUrls()) {
@@ -83,13 +88,13 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
     });
 }
 
-void scheduleInitialSidebarSizes(QSplitter *splitter, QWidget *sidebar) {
+void scheduleInitialSidebarSizes(QSplitter *splitter, SignalControl *sidebar) {
     if (splitter == nullptr || sidebar == nullptr) {
         return;
     }
 
     QPointer<QSplitter> guardedSplitter = splitter;
-    QPointer<QWidget> guardedSidebar = sidebar;
+    QPointer<SignalControl> guardedSidebar = sidebar;
     QTimer::singleShot(0, splitter, [guardedSplitter, guardedSidebar]() {
         if (guardedSplitter == nullptr || guardedSidebar == nullptr) {
             return;
@@ -105,10 +110,28 @@ void scheduleInitialSidebarSizes(QSplitter *splitter, QWidget *sidebar) {
             sidebarMargin = 8;
         }
 
-        const int requestedLeftWidth = guardedSidebar->minimumSizeHint().width() + sidebarMargin;
+        const int requestedLeftWidth = guardedSidebar->preferredSidebarWidthHint() + sidebarMargin;
         const int maxLeftWidth = std::max(1, static_cast<int>(availableWidth * 0.45));
         const int leftWidth = std::min(requestedLeftWidth, maxLeftWidth);
         guardedSplitter->setSizes({leftWidth, std::max(0, availableWidth - leftWidth)});
+
+        if (debugLayerLayoutEnabled()) {
+            const QList<int> sizes = guardedSplitter->sizes();
+            std::cout << QStringLiteral(
+                             "[LayerSidebarSizing] splitterWidth=%1 handleWidth=%2 available=%3 requestedLeft=%4 "
+                             "chosenLeft=%5 actualSizes=%6,%7 sidebarWidth=%8 sidebarPreferred=%9")
+                             .arg(guardedSplitter->width())
+                             .arg(guardedSplitter->handleWidth())
+                             .arg(availableWidth)
+                             .arg(requestedLeftWidth)
+                             .arg(leftWidth)
+                             .arg(sizes.value(0, -1))
+                             .arg(sizes.value(1, -1))
+                             .arg(guardedSidebar->width())
+                             .arg(guardedSidebar->preferredSidebarWidthHint())
+                             .toStdString()
+                      << std::endl;
+        }
     });
 }
 
@@ -184,6 +207,9 @@ MainWindow::MainWindow() {
     horizontalSplitter->setChildrenCollapsible(false);
     horizontalSplitter->setStretchFactor(0, 1);
     horizontalSplitter->setStretchFactor(1, 3);
+    connect(mySignalControl, &SignalControl::preferredSidebarWidthChanged, this, [this, horizontalSplitter]() {
+        scheduleInitialSidebarSizes(horizontalSplitter, mySignalControl);
+    });
 
     setCentralWidget(horizontalSplitter);
 

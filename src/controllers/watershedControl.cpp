@@ -213,6 +213,84 @@ QString layerToolTipText(itkSignalBase *signal) {
     return toolTip;
 }
 
+QString thresholdOutputToken(WatershedControl::ThresholdAlgorithm algorithm) {
+    switch (algorithm) {
+        case WatershedControl::ThresholdAlgorithm::BinaryThreshold:
+            return QStringLiteral("Binary");
+    }
+    return QStringLiteral("Binary");
+}
+
+QString distanceOutputToken(DistanceMapAlgorithm algorithm) {
+    switch (algorithm) {
+        case DistanceMapAlgorithm::Maurer:
+            return QStringLiteral("Maurer");
+        case DistanceMapAlgorithm::FH:
+            return QStringLiteral("FH");
+    }
+    return QStringLiteral("Maurer");
+}
+
+QString seedOutputToken(distance_map_benchmark::SeedExtractorKind algorithm) {
+    switch (algorithm) {
+        case distance_map_benchmark::SeedExtractorKind::LocalMaxima:
+            return QStringLiteral("Local");
+        case distance_map_benchmark::SeedExtractorKind::HConvex:
+            return QStringLiteral("HConvex");
+        case distance_map_benchmark::SeedExtractorKind::All:
+            return QStringLiteral("All");
+    }
+    return QStringLiteral("Local");
+}
+
+QString watershedOutputToken(WatershedAlgorithm algorithm) {
+    switch (algorithm) {
+        case WatershedAlgorithm::MorphologicalWatershedFromMarkers:
+            return QStringLiteral("Morph");
+        case WatershedAlgorithm::FastMarkerWatershed:
+            return QStringLiteral("Fast");
+    }
+    return QStringLiteral("Morph");
+}
+
+QString agglomertionStrategyOutputToken(segment_puzzler::BoundaryEvidenceStrategy strategy) {
+    switch (strategy) {
+        case segment_puzzler::BoundaryEvidenceStrategy::RawInterfaceMean:
+            return QStringLiteral("Raw");
+        case segment_puzzler::BoundaryEvidenceStrategy::OpenInterfaceMean:
+            return QStringLiteral("OpenMean");
+        case segment_puzzler::BoundaryEvidenceStrategy::OpenFractionWeighted:
+            return QStringLiteral("OpenFrac");
+    }
+    return QStringLiteral("OpenFrac");
+}
+
+QString agglomertionLinkageOutputToken(segment_puzzler::RagLinkage linkage) {
+    switch (linkage) {
+        case segment_puzzler::RagLinkage::Average:
+            return QStringLiteral("Avg");
+        case segment_puzzler::RagLinkage::Sum:
+            return QStringLiteral("Sum");
+    }
+    return QStringLiteral("Avg");
+}
+
+QString agglomertionBoundaryModeOutputToken(segment_puzzler::BoundaryNormalizationMode mode) {
+    switch (mode) {
+        case segment_puzzler::BoundaryNormalizationMode::AutoDetect:
+            return QStringLiteral("Auto");
+        case segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToOne:
+            return QStringLiteral("0to1");
+        case segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToTwo:
+            return QStringLiteral("0to2");
+        case segment_puzzler::BoundaryNormalizationMode::UInt8FullRange:
+            return QStringLiteral("U8");
+        case segment_puzzler::BoundaryNormalizationMode::UInt16FullRange:
+            return QStringLiteral("U16");
+    }
+    return QStringLiteral("Auto");
+}
+
 int clampPopupValue(double value, int minimum, int maximum) {
     if (maximum < minimum) {
         return minimum;
@@ -674,10 +752,6 @@ void WatershedControl::scheduleAgglomertionPreviewRefresh() {
 }
 
 void WatershedControl::agglomertionPreviewSettingsChanged() {
-    if (agglomertionBiasValueLabel != nullptr) {
-        agglomertionBiasValueLabel->setText(agglomertionBiasLabelText());
-    }
-
     const bool showPreview = shouldShowAgglomertionPreview();
     syncAgglomertionPreviewSourceVisibility(showPreview);
 
@@ -780,7 +854,7 @@ void WatershedControl::refreshAgglomertionPreview() {
         auto previewSignal = std::make_unique<itkSignal<unsigned int>>(previewLabels);
         pAgglomertionPreviewSignal = previewSignal.get();
         pAgglomertionPreviewSignal->setMainColor(255, 0, 255); // Magenta
-        registerSignal(std::move(previewSignal), SignalStage::None, "Agglomertion Preview", true, true);
+        registerSignal(std::move(previewSignal), SignalStage::None, "Agglomeration Preview", true, true);
     } else {
         pAgglomertionPreviewSignal->updateImage(previewLabels);
         for (size_t idx = 0; idx < allSignalList.size(); ++idx) {
@@ -800,7 +874,7 @@ void WatershedControl::thresholdBoundariesAsync(std::function<void()> then) {
     const ThresholdAlgorithm thresholdAlgorithm = selectedThresholdAlgorithm();
     const dataType::BoundaryImageType::Pointer thresholdInput = selectedBoundaryInput();
     const QString signalName =
-        QString("Thresholded Boundaries [%1]").arg(thresholdAlgorithmLabel(thresholdAlgorithm));
+        QStringLiteral("Threshold [%1]").arg(thresholdOutputToken(thresholdAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Thresholding boundaries..."),
         [thresholdValue, thresholdAlgorithm, thresholdInput]() {
@@ -851,7 +925,7 @@ void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
     const DistanceMapAlgorithm distanceMapAlgorithm = selectedDistanceMapAlgorithm();
     const itk::Image<unsigned char, 3>::Pointer thresholdInput = selectedThresholdInput();
     const QString signalName =
-        QString("Distance Map [%1]").arg(distanceMapAlgorithmLabel(distanceMapAlgorithm));
+        QStringLiteral("Distance [%1]").arg(distanceOutputToken(distanceMapAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Calculating distance map..."),
         [thresholdInput, distanceMapAlgorithm, threadCount = workerThreadCount]() {
@@ -877,7 +951,7 @@ void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
 void WatershedControl::extractSeedsAsync(std::function<void()> then) {
     const distance_map_benchmark::SeedExtractorKind seedAlgorithm = selectedSeedAlgorithm();
     const itk::Image<float, 3>::Pointer distanceMapInput = selectedDistanceMapInput();
-    const QString signalName = QString("Seeds [%1]").arg(seedAlgorithmLabel(seedAlgorithm));
+    const QString signalName = QStringLiteral("Seeds [%1]").arg(seedOutputToken(seedAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Extracting seeds..."),
         [distanceMapInput, seedAlgorithm, threadCount = workerThreadCount]() {
@@ -913,7 +987,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
     const itk::Image<unsigned int, 3>::Pointer seedsInput = selectedWatershedSeedsInput();
     const itk::Image<unsigned char, 3>::Pointer thresholdInput = selectedWatershedThresholdInput();
     const QString signalName =
-        QString("Watershed [%1]").arg(watershedAlgorithmLabel(watershedAlgorithm));
+        QStringLiteral("Watershed [%1]").arg(watershedOutputToken(watershedAlgorithm));
 
     removeRegisteredEdgeSignal();
 
@@ -1012,11 +1086,10 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
             : kInvalidSignalIndex;
 
     const QString signalName =
-        QString("Agglomertion [%1 | %2 | %3 | tau=%4]")
-            .arg(agglomertionBoundaryEvidenceStrategyLabel(boundaryStrategy))
-            .arg(agglomertionLinkageLabel(linkage))
-            .arg(agglomertionBoundaryModeLabel(boundaryMode))
-            .arg(tau, 0, 'f', 2);
+        QStringLiteral("Agglomeration [%1 | %2 | %3]")
+            .arg(agglomertionStrategyOutputToken(boundaryStrategy))
+            .arg(agglomertionLinkageOutputToken(linkage))
+            .arg(agglomertionBoundaryModeOutputToken(boundaryMode));
 
     clearAgglomertionPreview();
     removeRegisteredEdgeSignal();
@@ -1267,7 +1340,6 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     agglomertionStrategyComboBox = nullptr;
     agglomertionBiasSlider = nullptr;
     agglomertionBiasSpinBox = nullptr;
-    agglomertionBiasValueLabel = nullptr;
     agglomertionPreviewCheckBox = nullptr;
     agglomertionApproximatePreviewCheckBox = nullptr;
     agglomertionPreviewBoundariesCheckBox = nullptr;
@@ -1410,9 +1482,9 @@ void WatershedControl::addStepSection(QGroupBox *groupBox, QWidget *controlsWidg
 void WatershedControl::setupTreeWidget(QTreeWidget *treeWidget) {
     treeWidget->setFocusPolicy(Qt::NoFocus);
     treeWidget->setColumnCount(2);
-    treeWidget->setHeaderLabels({"Name", "Properties"});
-    treeWidget->header()->setStretchLastSection(false);
-    treeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    treeWidget->setHeaderHidden(true);
+    treeWidget->setRootIsDecorated(false);
+    treeWidget->setIndentation(0);
     treeWidget->setUniformRowHeights(true);
     SignalLayerWidget::configureHostTree(treeWidget);
     setTreeVisibleRows(treeWidget, 2);
@@ -1474,7 +1546,7 @@ void WatershedControl::setupThresholdWidget() {
 
 
 void WatershedControl::setupDistanceMapWidget() {
-    calculateDistanceMapButton = new QPushButton("Calculate Distancemap", this);
+    calculateDistanceMapButton = new QPushButton("Calculate Distance Map", this);
     calculateDistanceMapButton->setObjectName("calculateDistanceMapButton");
     thresholdInputComboBox = new QComboBox(this);
     distanceMapAlgorithmComboBox = new QComboBox(this);
@@ -1584,7 +1656,6 @@ void WatershedControl::setupAgglomertionWidget() {
     auto *biasControl = createSliderWithSpinBox(agglomertionBiasSlider, agglomertionBiasSpinBox);
     agglomertionBiasSlider->setObjectName("agglomertionBiasSlider");
     agglomertionBiasSpinBox->setObjectName("agglomertionBiasSpinBox");
-    agglomertionBiasValueLabel = new QLabel(this);
     agglomertionPreviewCheckBox = new QCheckBox("Live Preview", this);
     agglomertionPreviewCheckBox->setChecked(true);
     agglomertionApproximatePreviewCheckBox = new QCheckBox("Fast Approx.", this);
@@ -1599,18 +1670,15 @@ void WatershedControl::setupAgglomertionWidget() {
     agglomertionBiasSlider->setRange(0, 100);
     agglomertionBiasSpinBox->setRange(0, 100);
     agglomertionBiasSlider->setValue(50);
-    agglomertionBiasValueLabel->setText(agglomertionBiasLabelText());
 
     auto *biasWidget = new QWidget(this);
     auto *biasLayout = new QVBoxLayout(biasWidget);
     biasLayout->setContentsMargins(0, 0, 0, 0);
-    biasLayout->setSpacing(4);
+    biasLayout->setSpacing(2);
     biasLayout->addWidget(biasControl);
     auto *biasLabelsLayout = new QHBoxLayout();
     biasLabelsLayout->setContentsMargins(0, 0, 0, 0);
     biasLabelsLayout->addWidget(new QLabel("More Splits", this));
-    biasLabelsLayout->addStretch(1);
-    biasLabelsLayout->addWidget(agglomertionBiasValueLabel);
     biasLabelsLayout->addStretch(1);
     biasLabelsLayout->addWidget(new QLabel("More Merges", this));
     biasLayout->addLayout(biasLabelsLayout);
@@ -1631,7 +1699,7 @@ void WatershedControl::setupAgglomertionWidget() {
         "<b>Auto Detect</b> is usually correct. Override this only when you know the image scale.";
     const QString mergeBiasTooltip =
         "Left keeps more splits. Right merges more.<br><br>"
-        "This changes tau.";
+        "This changes merge aggressiveness (tau).";
     const QString sizeBiasTooltip =
         "Optional small-region cleanup.<br><br>"
         "<b>Soft Bias</b> makes small regions merge earlier.<br>"
@@ -1643,8 +1711,20 @@ void WatershedControl::setupAgglomertionWidget() {
         "through blocked boundaries.<br>"
         "<b>Off</b>: Size bias may ignore the mask and use raw boundary evidence.";
     const QString replaceExistingTooltip =
-        "Reuses the agglomertion output currently selected in stage 6 instead of creating a new volume.<br><br>"
+        "Reuses the agglomeration output currently selected in stage 6 instead of creating a new volume.<br><br>"
         "If no agglomertion result is currently selected there, a new output is created.";
+
+    auto *biasRow = new QWidget(this);
+    auto *biasRowLayout = new QHBoxLayout(biasRow);
+    biasRowLayout->setContentsMargins(0, 0, 0, 0);
+    biasRowLayout->setSpacing(6);
+    auto *biasLabel = new QLabel("Bias", biasRow);
+    biasLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    biasRowLayout->addWidget(biasLabel);
+    if (QLabel *helpBadge = createHelpBadgeLabel(mergeBiasTooltip, biasRow)) {
+        biasRowLayout->addWidget(helpBadge);
+    }
+    biasRowLayout->addWidget(biasWidget, 1);
 
     auto *controlsWidget = new QWidget(this);
     auto *controlsLayout = new QVBoxLayout(controlsWidget);
@@ -1664,10 +1744,7 @@ void WatershedControl::setupAgglomertionWidget() {
         "Boundary Scale",
         agglomertionBoundaryModeComboBox,
         boundaryScaleTooltip));
-    controlsLayout->addWidget(createLabeledInputRow(
-        "Merge Bias",
-        biasWidget,
-        mergeBiasTooltip));
+    controlsLayout->addWidget(biasRow);
     controlsLayout->addWidget(agglomertionPreviewCheckBox);
     controlsLayout->addWidget(agglomertionApproximatePreviewCheckBox);
     controlsLayout->addWidget(agglomertionPreviewBoundariesCheckBox);
@@ -1720,7 +1797,7 @@ void WatershedControl::setupAgglomertionWidget() {
     controlsLayout->addWidget(createLabeledInputRow("Strength", sizeBiasStrengthControl));
     controlsLayout->addWidget(createLabeledInputRow("Protection", sizeBiasProtectionControl));
 
-    auto *groupBox = createStepGroup("5. Agglomertion");
+    auto *groupBox = createStepGroup("5. Agglomeration");
     addStepSection(groupBox, controlsWidget, runAgglomertionButton);
 
     connect(runAgglomertionButton, &QPushButton::clicked, this, &WatershedControl::agglomertionPressed);
@@ -1768,7 +1845,7 @@ void WatershedControl::setupFinalizeWidget() {
     auto *controlsLayout = new QVBoxLayout(controlsWidget);
     controlsLayout->setContentsMargins(0, 0, 0, 0);
     controlsLayout->setSpacing(6);
-    controlsLayout->addWidget(createLabeledInputRow("Agglomertion", finalOutputInputComboBox));
+    controlsLayout->addWidget(createLabeledInputRow("Agglomeration", finalOutputInputComboBox));
 
     auto *groupBox = createStepGroup(
         outputMode == OutputMode::Segments ? "6. Export Segments" : "6. Create Refinement");
@@ -2096,7 +2173,7 @@ void WatershedControl::updateRegisteredSignalName(size_t signalIndex, const QStr
     allSignalList[signalIndex]->setName(uniqueName);
 
     if (QTreeWidgetItem *treeItem = findSignalTreeItem(signalTreeWidget, signalIndex)) {
-        treeItem->setText(0, uniqueName);
+        refreshLayerWidget(signalTreeWidget, treeItem);
     }
 
     if (finalOutputInputComboBox != nullptr) {
@@ -2297,11 +2374,6 @@ QString WatershedControl::agglomertionBoundaryEvidenceStrategyLabel(segment_puzz
     return "Open Fraction Weighted";
 }
 
-QString WatershedControl::agglomertionBiasLabelText() const {
-    const double tau = selectedAgglomertionTau();
-    return QString("tau %1").arg(tau, 0, 'f', 2);
-}
-
 QString WatershedControl::sizeBiasStrategyLabel(segment_puzzler::SizeBiasStrategy strategy) const {
     switch (strategy) {
         case segment_puzzler::SizeBiasStrategy::Off:          return "Off";
@@ -2336,15 +2408,6 @@ void WatershedControl::treeDoubleClicked(QTreeWidgetItem *item, int) {
 void WatershedControl::treeClicked(QTreeWidgetItem *item, int) {
     if (signal_tree::rowKind(item) != signal_tree::RowKind::Root) {
         return;
-    }
-
-    std::string itemText = item->text(1).toStdString();
-    if ((itemText == "active") || (itemText == "inactive")) {
-        if (itemText == "inactive" && (item->checkState(0) == Qt::CheckState::Checked)) {
-            setIsActive(item, true);
-        } else if (itemText == "active" && (item->checkState(0) == Qt::CheckState::Unchecked)) {
-            setIsActive(item, false);
-        }
     }
 }
 
@@ -2421,11 +2484,10 @@ void WatershedControl::setSignalActive(size_t signalIdx, bool active) {
     for (int i = 0; i < signalTreeWidget->topLevelItemCount(); ++i) {
         QTreeWidgetItem *treeItem = signalTreeWidget->topLevelItem(i);
         if (signal_tree::signalIndex(treeItem) == signalIdx) {
-            const bool treeWasActive = treeItem->checkState(0) == Qt::Checked;
+            const bool treeWasActive = allSignalList[signalIdx] != nullptr && allSignalList[signalIdx]->getIsActive();
             if (treeWasActive != active) {
-                treeItem->setCheckState(0, active ? Qt::Checked : Qt::Unchecked);
+                setIsActive(treeItem, active);
             }
-            setIsActive(treeItem, active);
             break;
         }
     }
@@ -2519,16 +2581,15 @@ void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *
         segmentsSignal->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
     }
 
+    const size_t edgeSignalIndex = allSignalList.size();
     graphBase->pEdgesInitialSegmentsITKSignal->setName(
         signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Edges")));
-    graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, allSignalList.size());
+    registeredEdgeSignalIndex = static_cast<int>(edgeSignalIndex);
+    allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
+    graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, edgeSignalIndex);
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
-    int lastItemIndex = signalTreeWidget->topLevelItemCount() - 1;
-    signalTreeWidget->topLevelItem(lastItemIndex)->setCheckState(0, Qt::Unchecked);
-    signalTreeWidget->topLevelItem(lastItemIndex)->setText(1, "inactive");
-    registeredEdgeSignalIndex = static_cast<int>(allSignalList.size());
-    allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
+    attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
     orthoViewer->setViewToMiddleOfStack();
 }

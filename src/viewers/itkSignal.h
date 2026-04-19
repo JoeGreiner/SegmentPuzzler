@@ -407,45 +407,12 @@ void itkSignal<dType>::setName(QString nameIn) {
 
 template<typename dType>
 void itkSignal<dType>::setupTreeWidget(QTreeWidget *motherTreeWidget, size_t signalIndex) {
-
-    QPixmap colorIcon(30, 30);
-    colorIcon.fill(QColor::fromRgba(mainColor));
-
     auto *treeWidget = new QTreeWidgetItem(motherTreeWidget);
-    treeWidget->setText(0, name);
-    treeWidget->setText(1, "active");
-    treeWidget->setIcon(1, colorIcon);
-    treeWidget->setCheckState(0, Qt::CheckState::Checked);
+    treeWidget->setText(0, QString());
+    treeWidget->setText(1, QString());
+    treeWidget->setFlags(treeWidget->flags() & ~Qt::ItemIsUserCheckable);
     treeWidget->setData(0, signal_tree::SignalIndexRole, static_cast<qulonglong>(signalIndex));
     treeWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Root));
-
-
-    auto *colorWidget = new QTreeWidgetItem(treeWidget);
-    colorWidget->setIcon(1, colorIcon);
-    colorWidget->setText(0, "Color");
-    colorWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Color));
-    std::string colorString = std::to_string(qRed(mainColor))
-                              + " " + std::to_string(qGreen(mainColor))
-                              + " " + std::to_string(qBlue(mainColor));
-    colorWidget->setText(1, QString::fromStdString(colorString));
-
-    auto *normWidget = new QTreeWidgetItem(treeWidget);
-    normWidget->setText(0, "Norm");
-    normWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Norm));
-    QString normString = QString("%1").arg(normLower) + " " + QString("%1").arg(normUpper);
-    normWidget->setText(1, normString);
-
-    auto *alphaWidget = new QTreeWidgetItem(treeWidget);
-    alphaWidget->setText(0, "Alpha");
-    alphaWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Alpha));
-    std::string alphaString = std::to_string(alpha);
-    alphaWidget->setText(1, QString::fromStdString(alphaString));
-
-
-    auto *dataTypeWidget = new QTreeWidgetItem(treeWidget);
-    dataTypeWidget->setText(0, "data type");
-    dataTypeWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::DataType));
-    dataTypeWidget->setText(1, displayDataTypeName());
     motherTreeWidget->update();
 }
 

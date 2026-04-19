@@ -22,18 +22,34 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <array>
+#include <iostream>
 
 namespace {
 
-constexpr int kTreeWidthInset = 4;
-constexpr int kOuterSpacing = 6;
+constexpr int kTreeWidthInset = 8;
+constexpr int kOuterSpacing = 4;
 constexpr int kMetadataSpacing = 8;
 constexpr int kTextRowSlack = 2;
-const QMargins kRowMargins(6, 4, 12, 4);
+const QMargins kRowMargins(4, 3, 8, 3);
 const QSize kVisibilityButtonSize(20, 20);
 const QSize kColorButtonSize(28, 24);
 constexpr auto kAbbreviationMarker = "(...)";
 constexpr auto kMinimumTitleSample = "MMMM";
+
+bool debugLayerLayoutEnabled() {
+    static const bool enabled = !qgetenv("SEGMENTPUZZLER_DEBUG_LAYER_LAYOUT").isEmpty();
+    return enabled;
+}
+
+QString debugTreeName(const QTreeWidget *treeWidget) {
+    if (treeWidget == nullptr) {
+        return QStringLiteral("<null>");
+    }
+    if (!treeWidget->objectName().isEmpty()) {
+        return treeWidget->objectName();
+    }
+    return QStringLiteral("QTreeWidget@0x%1").arg(reinterpret_cast<quintptr>(treeWidget), 0, 16);
+}
 
 class LayerTreeLayoutSyncFilter final : public QObject {
 public:
@@ -433,6 +449,70 @@ void SignalLayerWidget::syncHostTreeLayout(QTreeWidget *treeWidget) {
     }
 
     treeWidget->doItemsLayout();
+
+    if (!debugLayerLayoutEnabled()) {
+        return;
+    }
+
+    const QString treeName = debugTreeName(treeWidget);
+    const bool scrollbarVisible = treeWidget->verticalScrollBar() != nullptr && treeWidget->verticalScrollBar()->isVisible();
+    std::cout << QStringLiteral("[LayerLayoutSync] tree=%1 viewport=%2 column0=%3 items=%4 scrollbarVisible=%5")
+                     .arg(treeName)
+                     .arg(viewportWidth)
+                     .arg(treeWidget->columnWidth(0))
+                     .arg(treeWidget->topLevelItemCount())
+                     .arg(scrollbarVisible)
+                     .toStdString()
+              << std::endl;
+
+    for (int itemIndex = 0; itemIndex < treeWidget->topLevelItemCount(); ++itemIndex) {
+        QTreeWidgetItem *item = treeWidget->topLevelItem(itemIndex);
+        if (item == nullptr) {
+            continue;
+        }
+
+        auto *layerWidget = qobject_cast<SignalLayerWidget *>(treeWidget->itemWidget(item, 0));
+        if (layerWidget == nullptr) {
+            continue;
+        }
+
+        const QModelIndex modelIndex = treeWidget->model()->index(itemIndex, 0);
+        const QRect itemRect = modelIndex.isValid() ? treeWidget->visualRect(modelIndex) : treeWidget->visualItemRect(item);
+        const int legacyResolvedWidth = std::max(0, viewportWidth - kTreeWidthInset);
+        const int resolvedWidth = contentColumnWidth > 0 ? contentColumnWidth : layerWidget->minimumSizeHint().width();
+        const QSize minHint = layerWidget->minimumSizeHint();
+        const QSize sizeHint = layerWidget->sizeHint();
+        const QSize itemHint = item->sizeHint(0);
+        const QRect geometry = layerWidget->geometry();
+
+        std::cout << QStringLiteral(
+                         "[LayerLayoutRow] tree=%1 row=%2 name=\"%3\" viewport=%4 column0=%5 rect=%6,%7 %8x%9 "
+                         "legacyResolved=%10 resolved=%11 minHint=%12x%13 sizeHint=%14x%15 "
+                         "geometry=%16,%17 %18x%19 itemHint=%20x%21")
+                         .arg(treeName)
+                         .arg(itemIndex)
+                         .arg(layerWidget->debugLayerName())
+                         .arg(viewportWidth)
+                         .arg(treeWidget->columnWidth(0))
+                         .arg(itemRect.x())
+                         .arg(itemRect.y())
+                         .arg(itemRect.width())
+                         .arg(itemRect.height())
+                         .arg(legacyResolvedWidth)
+                         .arg(resolvedWidth)
+                         .arg(minHint.width())
+                         .arg(minHint.height())
+                         .arg(sizeHint.width())
+                         .arg(sizeHint.height())
+                         .arg(geometry.x())
+                         .arg(geometry.y())
+                         .arg(geometry.width())
+                         .arg(geometry.height())
+                         .arg(itemHint.width())
+                         .arg(itemHint.height())
+                         .toStdString()
+                  << std::endl;
+    }
 }
 
 SignalLayerWidget::SignalLayerWidget(QWidget *parent) : QFrame(parent) {
@@ -575,6 +655,10 @@ QSize SignalLayerWidget::preferredSizeForWidth(int width) const {
 
 QSize SignalLayerWidget::sizeHint() const {
     return preferredSizeForWidth(width());
+}
+
+QString SignalLayerWidget::debugLayerName() const {
+    return fullLayerName.isEmpty() ? nameLabel->text() : fullLayerName;
 }
 
 void SignalLayerWidget::setLayerName(const QString &name) {

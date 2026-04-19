@@ -125,7 +125,10 @@ public:
     void populateBoundariesMenu(QMenu *menu);
     void populateRefinementsMenu(QMenu *menu);
     void populateSegmentationsMenu(QMenu *menu);
+    int preferredSidebarWidthHint() const;
 
+signals:
+    void preferredSidebarWidthChanged();
 
 public slots:
     void handleDroppedFile(QString fileName);
@@ -252,6 +255,8 @@ private:
 
     bool roiSelectionActive = false;
     bool paintModeActive = false;
+    bool preferredSidebarWidthChangePending = false;
+    int lastEmittedPreferredSidebarWidth = -1;
 
     QString DEFAULT_SAVE_DIR;
 
@@ -272,6 +277,7 @@ private:
     void setPaintModeActive(bool active);
     void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
     void refreshUiState();
+    void schedulePreferredSidebarWidthChanged();
     void updateSelectionLabel(QTreeWidget *tree, QLabel *label);
     void updateLayerSelectionState(QTreeWidget *tree);
     void attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *item);
