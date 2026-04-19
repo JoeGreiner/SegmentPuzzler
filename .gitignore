@@ -42,3 +42,4 @@ cmake-build-*/
 /examples/benchmarks/runs/
 /ideas.md
 /thirdparty/
+thirdparty/perfetto-cpp-sdk-src/

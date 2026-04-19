@@ -4,19 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PERFETTO_VERSION="${1:-v53.0}"
-DEST_DIR="${2:-${REPO_ROOT}/thirdparty/perfetto-cpp-sdk-src}"
-ASSET_URL="https://github.com/google/perfetto/releases/download/${PERFETTO_VERSION}/perfetto-cpp-sdk-src.zip"
+PERFETTO_VERSION="v53.0"
+DEST_DIR="${1:-${REPO_ROOT}/thirdparty/perfetto-cpp-sdk-src}"
+SOURCE_ARCHIVE_URL="https://codeload.github.com/google/perfetto/zip/refs/tags/${PERFETTO_VERSION}"
+CURL_OPTS=(-fL --retry 3 --retry-delay 2 --retry-all-errors)
 
 TMP_DIR="$(mktemp -d)"
-ARCHIVE_PATH="${TMP_DIR}/perfetto-cpp-sdk-src.zip"
+ARCHIVE_PATH="${TMP_DIR}/perfetto-download.zip"
 EXTRACT_DIR="${TMP_DIR}/extract"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 mkdir -p "${EXTRACT_DIR}" "${DEST_DIR}"
 
-echo "Downloading ${ASSET_URL}"
-curl -fL "${ASSET_URL}" -o "${ARCHIVE_PATH}"
+echo "Downloading ${SOURCE_ARCHIVE_URL}"
+curl "${CURL_OPTS[@]}" "${SOURCE_ARCHIVE_URL}" -o "${ARCHIVE_PATH}"
 
 (
     cd "${EXTRACT_DIR}"

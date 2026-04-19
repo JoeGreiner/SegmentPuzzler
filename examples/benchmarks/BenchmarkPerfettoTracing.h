@@ -29,11 +29,11 @@ PERFETTO_DEFINE_CATEGORIES(
     perfetto::Category("agglomeration.projection"),
     perfetto::Category("compare"));
 #else
-#define TRACE_EVENT(...)
-#define TRACE_EVENT_BEGIN(...)
-#define TRACE_EVENT_END(...)
-#define TRACE_EVENT_INSTANT(...)
-#define TRACE_COUNTER(...)
+#define TRACE_EVENT(...) ((void) 0)
+#define TRACE_EVENT_BEGIN(...) ((void) 0)
+#define TRACE_EVENT_END(...) ((void) 0)
+#define TRACE_EVENT_INSTANT(...) ((void) 0)
+#define TRACE_COUNTER(...) ((void) 0)
 #define TRACE_EVENT_CATEGORY_ENABLED(...) false
 #endif
 
