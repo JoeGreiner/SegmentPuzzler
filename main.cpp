@@ -56,7 +56,7 @@ int main(int argc, char *argv[]) {
     std::setlocale(LC_NUMERIC, "C");
 
     QApplication::setApplicationName("SegmentPuzzler");
-    QApplication::setOrganizationName("IEKM");
+    QApplication::setOrganizationName("JoeGreiner");
     QApplication::setOrganizationDomain("joegreiner.de");
 
 // ideally, this would be allowed for user-defined fileio plugins, however, user-written plugins
