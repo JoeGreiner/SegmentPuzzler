@@ -177,6 +177,10 @@ MainWindow::MainWindow() {
         }
     });
     connect(showSegmentTableAction, &QAction::triggered, this, &MainWindow::showSegmentTable);
+    splitWorkingSegment3DCutAction = new QAction(tr("Split Working Segment by 3D Cut..."), this);
+    splitWorkingSegment3DCutAction->setShortcut(Qt::Key_F7);
+    segmentationsMenu->addAction(splitWorkingSegment3DCutAction);
+    connect(splitWorkingSegment3DCutAction, &QAction::triggered, this, &MainWindow::arm3DWorkingSegmentCut);
 
     settingsMenu = menuBar()->addMenu(tr("&Settings"));
     QAction *setClosingRadiusAction = new QAction(tr("Set Closing Radius"), this);
@@ -405,7 +409,10 @@ MainWindow::MainWindow() {
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
+    connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this]() { update3DWorkingSegmentCutActionState(); });
+    connect(segmentationsMenu, &QMenu::aboutToShow, this, &MainWindow::update3DWorkingSegmentCutActionState);
     installInitialFileDropHandling();
+    update3DWorkingSegmentCutActionState();
 
     // Title-bar system stats (CPU + RAM + swap), updated every 500 ms.
     windowStats::setupWindowTitleStatsTimer(this, "SegmentPuzzler");
@@ -1022,6 +1029,9 @@ void MainWindow::showHotkeys() {
 <p class="bold_header">F8</p>
 <p>Open the Segment Feature Table: shape features for all labels in the selected segmentation, sortable and color-coded. Click a row to navigate to that label.</p>
 
+<p class="bold_header">F7</p>
+<p>Arm the 3D cut tool for working segments. Then click a working segment to open the cut-enabled 3D view.</p>
+
 <p class="bold_header">F9</p>
 <p>Jump to explicit X, Y, Z coordinates.</p>
 
@@ -1033,6 +1043,9 @@ void MainWindow::showHotkeys() {
 
 <p class="bold_header">N</p>
 <p>Open a 3D surface view of all segments at once.</p>
+
+<p class="bold_header">Segmentations -> Split Working Segment by 3D Cut...</p>
+<p>Same as F7. In the 3D dialog, orient the segment, press Draw Cut, paint the cut stroke, then Apply. Press ? or F1 in that dialog for the step-by-step helper.</p>
 
 </body>
 </html>
@@ -1061,4 +1074,24 @@ void MainWindow::showHotkeys() {
 
 void MainWindow::receiveStatusMessage(const QString& string) {
     statusBar()->showMessage(string);
+}
+
+void MainWindow::arm3DWorkingSegmentCut() {
+    update3DWorkingSegmentCutActionState();
+    if (splitWorkingSegment3DCutAction == nullptr || !splitWorkingSegment3DCutAction->isEnabled()) {
+        return;
+    }
+
+    if (myOrthowindow != nullptr) {
+        myOrthowindow->setAnnotationToolMode(SliceViewer::ToolMode::View3DCut);
+        myOrthowindow->flashShortcutLegendKey("3dcut");
+    }
+    receiveStatusMessage(QStringLiteral("Click a working segment to open the 3D cut view."));
+}
+
+void MainWindow::update3DWorkingSegmentCutActionState() {
+    if (splitWorkingSegment3DCutAction == nullptr || mySignalControl == nullptr || taskRunner == nullptr) {
+        return;
+    }
+    splitWorkingSegment3DCutAction->setEnabled(mySignalControl->hasWorkingSegments() && !taskRunner->isBusy());
 }

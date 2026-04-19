@@ -33,6 +33,7 @@ public slots:
 private slots:
     void showHotkeys();
     void showSegmentTable();
+    void arm3DWorkingSegmentCut();
 
 private:
     OrthoViewer *myOrthowindow;
@@ -47,6 +48,7 @@ private:
     QAction *openHotkeysAction;
     QAction *loadSampleSegmentationAction;
     QAction *showSegmentTableAction = nullptr;
+    QAction *splitWorkingSegment3DCutAction = nullptr;
     std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
     std::unique_ptr<TaskRunner> taskRunner;
@@ -54,6 +56,7 @@ private:
 
     void installInitialFileDropHandling();
     void registerDropTarget(QWidget *widget);
+    void update3DWorkingSegmentCutActionState();
 };
 
 #endif //SEGMENTCOUPLER_MAINWINDOW_H

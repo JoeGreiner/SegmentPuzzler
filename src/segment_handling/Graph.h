@@ -3,6 +3,7 @@
 
 #include <memory>
 #include "src/utils/voxel.h"
+#include "Projected3DCut.h"
 
 #include "initialEdge.h"
 #include "workingEdge.h"
@@ -81,6 +82,8 @@ public:
 
     // Refine using the currently selected refinement image and signal at the given voxel.
     void refineWithSelectedRefinementAtPosition(int x, int y, int z);
+    bool splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &request,
+                                          Projected3DCutProfile *profileOut = nullptr);
     void transferSegmentationSegmentToInitialSegment(int x, int y, int z);
     void setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn);
 

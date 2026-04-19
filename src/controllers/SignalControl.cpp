@@ -276,17 +276,7 @@ void SignalControl::setAnnotationToolMode(SliceViewer::ToolMode toolMode) {
     if (orthoViewer == nullptr) {
         return;
     }
-
-    if (orthoViewer->xy != nullptr) {
-        orthoViewer->xy->activeTool = toolMode;
-    }
-    if (orthoViewer->xz != nullptr) {
-        orthoViewer->xz->activeTool = toolMode;
-    }
-    if (orthoViewer->zy != nullptr) {
-        orthoViewer->zy->activeTool = toolMode;
-    }
-    orthoViewer->refreshInteractionModeIndicators();
+    orthoViewer->setAnnotationToolMode(toolMode);
 }
 
 void SignalControl::refreshUiState() {

@@ -298,6 +298,8 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
             return createSingleActionWithPan("Insert", QColor("#e0a35c"));
         case SliceViewer::ToolMode::View3D:
             return createSingleActionWithPan("3D View", QColor("#8ccf5f"));
+        case SliceViewer::ToolMode::View3DCut:
+            return createSingleActionWithPan("3D Cut", QColor("#ff8e6e"));
         case SliceViewer::ToolMode::None:
         default:
             return createDualActionWithPan("Merge", "Unmerge", QColor("#7b8ea1"));
@@ -375,6 +377,9 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("f8", "F8", "Feature Table",
                            "Press F8 to open the segment feature table: shape features for all labels, sortable and color-coded.",
                            isFlashed("f8")),
+        createShortcutHint("3dcut", "F7", "3D Cut",
+                           "Press F7, then click a working segment to open the cut-enabled 3D view.",
+                           activeTool == SliceViewer::ToolMode::View3DCut || isFlashed("3dcut")),
         createShortcutHint("f1", "F1", "Hotkeys",
                            "Press F1 to open the full hotkey reference dialog.",
                            isFlashed("f1")),
@@ -1661,6 +1666,19 @@ void OrthoViewer::setShortcutLegendProfile(ShortcutLegendProfile profile) {
     }
 
     shortcutLegendProfile = profile;
+    refreshInteractionModeIndicators();
+}
+
+void OrthoViewer::setAnnotationToolMode(SliceViewer::ToolMode toolMode) {
+    if (xy != nullptr) {
+        xy->activeTool = toolMode;
+    }
+    if (xz != nullptr) {
+        xz->activeTool = toolMode;
+    }
+    if (zy != nullptr) {
+        zy->activeTool = toolMode;
+    }
     refreshInteractionModeIndicators();
 }
 

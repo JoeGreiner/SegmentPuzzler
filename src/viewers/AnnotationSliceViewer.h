@@ -4,6 +4,8 @@
 #include <src/viewers/SliceViewer.h>
 #include "src/segment_handling/graphBase.h"
 #include "src/segment_handling/Graph.h"
+#include "src/segment_handling/Projected3DCut.h"
+#include "src/viewers/Segment3DViewerDialog.h"
 
 class AnnotationSliceViewer : public SliceViewer {
 Q_OBJECT
@@ -131,7 +133,11 @@ private:
     void showPrepared3DView(std::vector<std::pair<dataType::SegmentIdType, quint32>> labels,
                             const QString &progressText);
     void show3DSegmentView(int posX, int posY);
+    bool show3DWorkingSegmentCutView(int posX, int posY);
     void show3DAllLabelsView();
+    quint32 workingSegmentColor(dataType::SegmentIdType label) const;
+    void openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
+                            dataType::SegmentIdType targetWorkingLabel);
     QPoint ROISelectionOrigin;
     int openingRadius = 3;
     int closingRadius = 8;
