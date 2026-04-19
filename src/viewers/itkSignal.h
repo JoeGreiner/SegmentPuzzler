@@ -383,20 +383,20 @@ void itkSignal<dType>::setName(QString nameIn) {
 template<typename dType>
 void itkSignal<dType>::setupTreeWidget(QTreeWidget *motherTreeWidget, size_t signalIndex) {
 
-    QImage colorIcon = QImage(30, 30, QImage::Format_RGBA8888);
-    colorIcon.fill(mainColor);
+    QPixmap colorIcon(30, 30);
+    colorIcon.fill(QColor::fromRgba(mainColor));
 
     auto *treeWidget = new QTreeWidgetItem(motherTreeWidget);
     treeWidget->setText(0, name);
     treeWidget->setText(1, "active");
-    treeWidget->setIcon(1, QPixmap::fromImage(colorIcon));
+    treeWidget->setIcon(1, colorIcon);
     treeWidget->setCheckState(0, Qt::CheckState::Checked);
     treeWidget->setData(0, signal_tree::SignalIndexRole, static_cast<qulonglong>(signalIndex));
     treeWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Root));
 
 
     auto *colorWidget = new QTreeWidgetItem(treeWidget);
-    colorWidget->setIcon(1, QPixmap::fromImage(colorIcon));
+    colorWidget->setIcon(1, colorIcon);
     colorWidget->setText(0, "Color");
     colorWidget->setData(0, signal_tree::RowKindRole, static_cast<int>(signal_tree::RowKind::Color));
     std::string colorString = std::to_string(qRed(mainColor))

@@ -1292,10 +1292,10 @@ void SignalControl::setUserColor(QTreeWidgetItem *item) {
     }
 
     QColor newColor = QColorDialog::getColor();
-    QImage colorIcon = QImage(30, 30, QImage::Format_RGBA8888);
+    QPixmap colorIcon(30, 30);
     colorIcon.fill(newColor);
-    item->setIcon(1, QPixmap::fromImage(colorIcon));
-    item->parent()->setIcon(1, QPixmap::fromImage(colorIcon));
+    item->setIcon(1, colorIcon);
+    item->parent()->setIcon(1, colorIcon);
     std::string colorString = std::to_string(newColor.red())
                               + " " + std::to_string(newColor.green())
                               + " " + std::to_string(newColor.blue());
