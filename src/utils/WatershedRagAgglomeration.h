@@ -35,6 +35,13 @@ enum class AgglomerationExecutionPolicy {
     OmpBatched
 };
 
+enum class SizeBiasStrategy {
+    Off,
+    SoftBias,
+    Cleanup,
+    SoftBiasAndCleanup
+};
+
 struct WatershedRagAgglomerationOptions {
     RagLinkage linkage = RagLinkage::Average;
     BoundaryNormalizationMode boundaryNormalization = BoundaryNormalizationMode::UInt16FullRange;
@@ -44,6 +51,13 @@ struct WatershedRagAgglomerationOptions {
     bool usePhysicalFaceArea = true;
     int threadCount = 0;
     std::size_t parallelMergeEdgeThreshold = 200000;
+
+    // Size-bias options — Off by default for exact backward compatibility
+    SizeBiasStrategy sizeBiasStrategy = SizeBiasStrategy::Off;
+    uint64_t sizeBiasThreshold = 5000;  // voxels: segments below this get the full bias effect
+    double sizeBiasStrength = 0.3;      // max bonus magnitude added to merge priority (0.0–1.0)
+    double sizeBiasProtection = 0.3;    // cleanup boundary floor: score > -floor required to absorb
+    bool sizeBiasRespectMask = true;    // when false, size bias uses raw interface mean (ignores threshold mask)
 };
 
 struct WatershedRagAgglomerationStats {
@@ -51,6 +65,9 @@ struct WatershedRagAgglomerationStats {
     std::size_t ragEdgeCount = 0;
     std::size_t mergeCount = 0;
     std::size_t outputClusterCount = 0;
+    std::size_t initialSmallClusterCount = 0;
+    std::size_t finalSmallClusterCount = 0;
+    std::size_t finalCleanupEligibleSmallClusterCount = 0;
     std::size_t batchCount = 0;
     std::size_t maxBatchPairs = 0;
     double compactLabelsMs = 0.0;
@@ -65,6 +82,7 @@ struct WatershedRagAgglomerationStats {
     double boundaryMax = 0.0;
     BoundaryNormalizationMode resolvedBoundaryNormalization = BoundaryNormalizationMode::AutoDetect;
     AgglomerationExecutionPolicy executionPolicyUsed = AgglomerationExecutionPolicy::Serial;
+    std::size_t sizeBiasCleanupMergeCount = 0;
 };
 
 struct WatershedRagAgglomerationResult {
@@ -96,6 +114,7 @@ const char *ragLinkageName(RagLinkage linkage);
 const char *boundaryNormalizationModeName(BoundaryNormalizationMode mode);
 const char *boundaryEvidenceStrategyName(BoundaryEvidenceStrategy strategy);
 const char *agglomerationExecutionPolicyName(AgglomerationExecutionPolicy policy);
+const char *sizeBiasStrategyName(SizeBiasStrategy strategy);
 
 } // namespace segment_puzzler
 

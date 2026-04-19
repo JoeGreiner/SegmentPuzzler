@@ -4,6 +4,9 @@
 #include <cmath>
 #include <iostream>
 #include <map>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "itkBinaryThresholdImageFilter.h"
@@ -20,6 +23,193 @@
 
 #include "src/utils/DistanceMapFH3D.h"
 #include "src/utils/FastMarkerWatershed3D.h"
+
+namespace {
+
+using SegmentsImageType = dataType::SegmentsImageType;
+using SegmentIdType = dataType::SegmentIdType;
+
+SegmentsImageType::Pointer cloneSegmentsImageMetadata(SegmentsImageType::Pointer source) {
+    auto image = SegmentsImageType::New();
+    image->SetRegions(source->GetLargestPossibleRegion());
+    image->SetSpacing(source->GetSpacing());
+    image->SetOrigin(source->GetOrigin());
+    image->SetDirection(source->GetDirection());
+    image->Allocate();
+    return image;
+}
+
+SegmentsImageType::Pointer copySegmentsImage(SegmentsImageType::Pointer source) {
+    auto image = cloneSegmentsImageMetadata(source);
+    std::copy(source->GetBufferPointer(),
+              source->GetBufferPointer() + source->GetLargestPossibleRegion().GetNumberOfPixels(),
+              image->GetBufferPointer());
+    return image;
+}
+
+void relabelInjectedBoundaryComponents(
+    SegmentsImageType::Pointer labels,
+    itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
+    SegmentsImageType::Pointer &displayLabels,
+    BoundaryConsistentPartitionResult::SplitComponentMap &splitComponentIds) {
+    displayLabels = copySegmentsImage(labels);
+    splitComponentIds.clear();
+
+    if (thresholdedBoundaries.IsNull()) {
+        return;
+    }
+
+    const auto size = labels->GetLargestPossibleRegion().GetSize();
+    const std::ptrdiff_t dimX = static_cast<std::ptrdiff_t>(size[0]);
+    const std::ptrdiff_t dimY = static_cast<std::ptrdiff_t>(size[1]);
+    const std::ptrdiff_t dimZ = static_cast<std::ptrdiff_t>(size[2]);
+    const std::ptrdiff_t planeXY = dimX * dimY;
+    const std::ptrdiff_t total = dimX * dimY * dimZ;
+
+    SegmentIdType *displayBuffer = displayLabels->GetBufferPointer();
+    const unsigned char *thresholdBuffer = thresholdedBoundaries->GetBufferPointer();
+    for (std::ptrdiff_t index = 0; index < total; ++index) {
+        if (thresholdBuffer[index] != 0) {
+            displayBuffer[index] = 0;
+        }
+    }
+
+    auto componentImage = cloneSegmentsImageMetadata(labels);
+    componentImage->FillBuffer(0);
+    SegmentIdType *componentBuffer = componentImage->GetBufferPointer();
+
+    std::vector<unsigned char> visited(static_cast<std::size_t>(total), 0);
+    std::vector<std::ptrdiff_t> queue;
+    queue.reserve(1024);
+
+    std::vector<SegmentIdType> componentOriginalLabels(1, 0);
+    std::unordered_map<SegmentIdType, std::vector<SegmentIdType>> componentsByOriginalLabel;
+    SegmentIdType nextComponentId = 1;
+
+    const std::array<std::ptrdiff_t, 6> offsetX{{1, -1, 0, 0, 0, 0}};
+    const std::array<std::ptrdiff_t, 6> offsetY{{0, 0, 1, -1, 0, 0}};
+    const std::array<std::ptrdiff_t, 6> offsetZ{{0, 0, 0, 0, 1, -1}};
+
+    for (std::ptrdiff_t seed = 0; seed < total; ++seed) {
+        if (visited[seed] != 0 || displayBuffer[seed] == 0) {
+            visited[seed] = 1;
+            continue;
+        }
+
+        const SegmentIdType originalLabel = displayBuffer[seed];
+        queue.clear();
+        queue.push_back(seed);
+        visited[seed] = 1;
+        componentBuffer[seed] = nextComponentId;
+
+        for (std::size_t queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
+            const std::ptrdiff_t current = queue[queueIndex];
+            const std::ptrdiff_t z = current / planeXY;
+            const std::ptrdiff_t remainder = current % planeXY;
+            const std::ptrdiff_t y = remainder / dimX;
+            const std::ptrdiff_t x = remainder % dimX;
+
+            for (size_t direction = 0; direction < offsetX.size(); ++direction) {
+                const std::ptrdiff_t nx = x + offsetX[direction];
+                const std::ptrdiff_t ny = y + offsetY[direction];
+                const std::ptrdiff_t nz = z + offsetZ[direction];
+                if (nx < 0 || ny < 0 || nz < 0 || nx >= dimX || ny >= dimY || nz >= dimZ) {
+                    continue;
+                }
+
+                const std::ptrdiff_t neighbor = nx + ny * dimX + nz * planeXY;
+                if (visited[neighbor] != 0 || displayBuffer[neighbor] != originalLabel) {
+                    continue;
+                }
+
+                visited[neighbor] = 1;
+                componentBuffer[neighbor] = nextComponentId;
+                queue.push_back(neighbor);
+            }
+        }
+
+        componentOriginalLabels.push_back(originalLabel);
+        componentsByOriginalLabel[originalLabel].push_back(nextComponentId);
+        ++nextComponentId;
+    }
+
+    SegmentIdType nextFreshLabel = getMaximumOfUIntImage(labels) + 1;
+    std::vector<SegmentIdType> componentToFinalLabel(nextComponentId, 0);
+    for (auto &entry : componentsByOriginalLabel) {
+        const SegmentIdType originalLabel = entry.first;
+        auto &componentIds = entry.second;
+        if (componentIds.size() == 1) {
+            componentToFinalLabel[componentIds.front()] = originalLabel;
+            continue;
+        }
+
+        auto &newLabels = splitComponentIds[originalLabel];
+        newLabels.reserve(componentIds.size());
+        for (SegmentIdType componentId : componentIds) {
+            const SegmentIdType newLabel = nextFreshLabel++;
+            componentToFinalLabel[componentId] = newLabel;
+            newLabels.push_back(newLabel);
+        }
+    }
+
+    for (std::ptrdiff_t index = 0; index < total; ++index) {
+        const SegmentIdType componentId = componentBuffer[index];
+        displayBuffer[index] = componentId == 0 ? 0 : componentToFinalLabel[componentId];
+    }
+}
+
+SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
+    SegmentsImageType::Pointer labels,
+    itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
+    SegmentsImageType::Pointer displayLabels,
+    const BoundaryConsistentPartitionResult::SplitComponentMap &splitComponentIds,
+    const WatershedRunOptions &repairOptions,
+    DistanceMapAlgorithm distanceMapAlgorithm,
+    int threadCount) {
+    auto canonicalLabels = copySegmentsImage(labels);
+    if (thresholdedBoundaries.IsNull() || splitComponentIds.empty()) {
+        return canonicalLabels;
+    }
+
+    auto seeds = cloneSegmentsImageMetadata(labels);
+    SegmentIdType *seedBuffer = seeds->GetBufferPointer();
+    const SegmentIdType *labelBuffer = labels->GetBufferPointer();
+    const SegmentIdType *displayBuffer = displayLabels->GetBufferPointer();
+    const size_t voxelCount = labels->GetLargestPossibleRegion().GetNumberOfPixels();
+
+    std::unordered_set<SegmentIdType> splitLabelSet;
+    splitLabelSet.reserve(splitComponentIds.size());
+    for (const auto &entry : splitComponentIds) {
+        splitLabelSet.insert(entry.first);
+    }
+
+    for (size_t index = 0; index < voxelCount; ++index) {
+        const SegmentIdType originalLabel = labelBuffer[index];
+        if (originalLabel == 0) {
+            seedBuffer[index] = 0;
+            continue;
+        }
+        if (splitLabelSet.count(originalLabel) == 0) {
+            seedBuffer[index] = originalLabel;
+            continue;
+        }
+        seedBuffer[index] = displayBuffer[index];
+    }
+
+    itk::Image<float, 3>::Pointer distanceMap;
+    auto thresholdCopy = thresholdedBoundaries;
+    generateDistanceMap(thresholdCopy, distanceMap, 0, distanceMapAlgorithm, threadCount);
+
+    itk::Image<float, 3>::Pointer invertedDistanceMap;
+    invertDistanceMap(distanceMap, invertedDistanceMap);
+
+    WatershedRunOptions options = repairOptions;
+    options.showWatershedLines = false;
+    runWatershed(invertedDistanceMap, seeds, canonicalLabels, options);
+    return canonicalLabels;
+}
+
+} // namespace
 
 void binaryThresholdImageFilterFloat(itk::Image<unsigned short, 3>::Pointer &inputImage,
                                      itk::Image<unsigned char, 3>::Pointer &outputImage,
@@ -239,6 +429,34 @@ void insertBoundariesIntoWatershed(itk::Image<unsigned int, 3>::Pointer &watersh
         }
         ++wsIterator;
     }
+}
+
+BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
+    dataType::SegmentsImageType::Pointer labels,
+    itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
+    const WatershedRunOptions &repairOptions,
+    bool repairCanonicalLabels,
+    DistanceMapAlgorithm distanceMapAlgorithm,
+    int threadCount) {
+    BoundaryConsistentPartitionResult result;
+    if (labels.IsNull()) {
+        return result;
+    }
+
+    relabelInjectedBoundaryComponents(labels, thresholdedBoundaries, result.displayLabels, result.splitComponentIds);
+    if (repairCanonicalLabels) {
+        result.canonicalLabels = repairSplitLabelsWithWatershed(
+            labels,
+            thresholdedBoundaries,
+            result.displayLabels,
+            result.splitComponentIds,
+            repairOptions,
+            distanceMapAlgorithm,
+            threadCount);
+    } else {
+        result.canonicalLabels = labels;
+    }
+    return result;
 }
 
 void binaryThresholdImageFilterFloat(itk::Image<float, 3>::Pointer &inputImage,

@@ -19,6 +19,7 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QComboBox>
+#include <QPointer>
 #include <QScrollArea>
 #include <QGroupBox>
 #include <QLabel>
@@ -32,6 +33,7 @@
 
 class OrthoViewer;
 class TaskRunner;
+class SegmentTableDialog;
 
 class WatershedControl : public QWidget {
 Q_OBJECT
@@ -133,6 +135,7 @@ public slots:
     void watershedPressed();
     void agglomertionPressed();
 
+    void inspectSegmentsPressed();
     void finalizeOutputPressed();
 
     void addImage(QString fileName);
@@ -149,6 +152,13 @@ private:
         Seeds,
         Watershed,
         Agglomertion
+    };
+
+    struct GeneratedStageOutput {
+        SignalStage stage = SignalStage::None;
+        dataType::SegmentsImageType::Pointer canonicalLabels;
+        dataType::SegmentsImageType::Pointer displayLabels;
+        BoundaryConsistentPartitionResult::SplitComponentMap splitComponentIds;
     };
 
     QTreeWidgetItem *topLevelItem(QTreeWidgetItem *item) const;
@@ -204,20 +214,34 @@ private:
     QCheckBox *agglomertionPreviewCheckBox;
     QCheckBox *agglomertionApproximatePreviewCheckBox;
     QCheckBox *agglomertionPreviewBoundariesCheckBox;
+    QCheckBox *agglomertionReplaceCheckBox = nullptr;
 
+    QCheckBox *agglomertionSizeBiasCheckBox;
+    QCheckBox *agglomertionSizeBiasMaskCheckBox;
+    QComboBox *agglomertionSizeBiasStrategyComboBox;
+    QSlider *agglomertionSizeBiasThresholdSlider;
+    QSpinBox *agglomertionSizeBiasThresholdSpinBox;
+    QSlider *agglomertionSizeBiasStrengthSlider;
+    QSpinBox *agglomertionSizeBiasStrengthSpinBox;
+    QSlider *agglomertionSizeBiasProtectionSlider;
+    QSpinBox *agglomertionSizeBiasProtectionSpinBox;
+
+    QPushButton *inspectSegmentsButton;
     QPushButton *createRefinementButton;
     QComboBox *finalOutputInputComboBox;
+    QPointer<SegmentTableDialog> segmentTableDialog;
     bool paintBoundaryModeActive = false;
     int registeredEdgeSignalIndex = -1;
     int workerThreadCount = 1;
     int boundarySignalIndex = -1;
+    int thresholdPreviewSignalIndex = -1;
     QTimer *agglomertionPreviewTimer = nullptr;
     std::vector<size_t> thresholdOutputSignalIndices;
     std::vector<size_t> distanceMapOutputSignalIndices;
     std::vector<size_t> seedOutputSignalIndices;
     std::vector<size_t> watershedOutputSignalIndices;
     std::vector<size_t> agglomertionInputSignalIndices;
-    std::unordered_map<size_t, dataType::SegmentsImageType::Pointer> fragmentSignalImages;
+    std::unordered_map<size_t, GeneratedStageOutput> generatedStageOutputs;
 
     void transferWatershedToGraph();
     void setupWorkflowUi();
@@ -230,7 +254,9 @@ private:
     void setupFinalizeWidget();
     QGroupBox *createStepGroup(const QString &title) const;
     QWidget *createLabeledInputRow(const QString &labelText, QComboBox *comboBox) const;
+    QWidget *createLabeledInputRow(const QString &labelText, QComboBox *comboBox, const QString &tooltipText) const;
     QWidget *createLabeledInputRow(const QString &labelText, QWidget *widget) const;
+    QWidget *createLabeledInputRow(const QString &labelText, QWidget *widget, const QString &tooltipText) const;
     QWidget *createSliderWithSpinBox(QSlider *&slider, QSpinBox *&spinBox);
     void addStepSection(QGroupBox *groupBox, QWidget *controlsWidget, QWidget *actionWidget = nullptr);
     void setupTreeWidget(QTreeWidget *treeWidget);
@@ -244,6 +270,9 @@ private:
     void updateStepEnablement();
     bool comboHasValidSelection(const QComboBox *comboBox) const;
     size_t selectedSignalIndex(const QComboBox *comboBox) const;
+    const GeneratedStageOutput *generatedStageOutput(size_t signalIndex) const;
+    const GeneratedStageOutput *selectedAgglomertionStageOutput() const;
+    const GeneratedStageOutput *selectedFinalAgglomertionStageOutput() const;
     dataType::BoundaryImageType::Pointer selectedBoundaryInput() const;
     itk::Image<unsigned char, 3>::Pointer selectedThresholdInput() const;
     itk::Image<float, 3>::Pointer selectedDistanceMapInput() const;
@@ -257,7 +286,18 @@ private:
     segment_puzzler::BoundaryNormalizationMode selectedAgglomertionBoundaryNormalization() const;
     segment_puzzler::BoundaryEvidenceStrategy selectedAgglomertionBoundaryEvidenceStrategy() const;
     double selectedAgglomertionTau() const;
+    segment_puzzler::SizeBiasStrategy selectedSizeBiasStrategy() const;
+    uint64_t selectedSizeBiasThreshold() const;
+    double selectedSizeBiasStrength() const;
+    double selectedSizeBiasProtection() const;
     dataType::SegmentsImageType::Pointer selectedFinalOutputInput() const;
+    itkSignal<GraphSegmentType> *selectedFinalOutputSignal() const;
+    itkSignal<GraphSegmentType> *selectedFinalAgglomertionSignal() const;
+    bool hasActiveAgglomertionPreview() const;
+    bool tryResolveInspectSegmentsTarget(dataType::SegmentsImageType::Pointer &segmentsImage,
+                                         itkSignal<GraphSegmentType> *&segmentsSignal,
+                                         QString &errorMessage) const;
+    void updateRegisteredSignalName(size_t signalIndex, const QString &requestedName);
 
     ThresholdAlgorithm selectedThresholdAlgorithm() const;
     DistanceMapAlgorithm selectedDistanceMapAlgorithm() const;
@@ -272,7 +312,9 @@ private:
     QString agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode mode) const;
     QString agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy strategy) const;
     QString agglomertionBiasLabelText() const;
+    QString sizeBiasStrategyLabel(segment_puzzler::SizeBiasStrategy strategy) const;
     bool agglomertionNeedsThresholdMask() const;
+    segment_puzzler::WatershedRagAgglomerationOptions currentAgglomertionOptions() const;
 
     bool getDimensionMatchWithSegmentImage();
     void setGuiBusy(bool busy);

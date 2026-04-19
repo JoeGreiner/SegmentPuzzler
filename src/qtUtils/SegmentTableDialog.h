@@ -8,6 +8,7 @@
 #include "src/segment_handling/graphBase.h"
 #include "src/file_definitions/dataTypes.h"
 #include "src/viewers/Segment3DViewerDialog.h"
+#include "src/viewers/itkSignalBase.h"
 
 class QCheckBox;
 class QLabel;
@@ -29,52 +30,13 @@ public:
                                 QWidget *parent = nullptr);
     ~SegmentTableDialog() override;
 
-private slots:
-    void onComputeClicked();
-    void onComputeFinished();
-    void onBackClicked();
-    void onDeleteSelectedClicked();
-    void onSelectionChanged(const QModelIndex &current, const QModelIndex &previous);
-    void onExportCsvClicked();
-    void onView3DSelectedClicked();
-    void onView3DPreparationFinished();
-
-private:
-    // ---- Column definitions (fixed set; visibility is dynamic) ----
-    enum Columns {
-        COL_LABEL               = 0,
-        COL_VOLUME              = 1,
-        COL_PHYSICAL_SIZE       = 2,
-        COL_PIXELS_ON_BORDER    = 3,
-        COL_PERIMETER_ON_BORDER = 4,
-        COL_CX                  = 5,
-        COL_CY                  = 6,
-        COL_CZ                  = 7,
-        COL_BBOX_W              = 8,
-        COL_BBOX_H              = 9,
-        COL_BBOX_D              = 10,
-        COL_ELONGATION          = 11,
-        COL_FLATNESS            = 12,
-        COL_ROUNDNESS           = 13,
-        COL_EQUIV_SPH_RADIUS    = 14,
-        COL_EQUIV_SPH_PERIM     = 15,
-        COL_EQUIV_ELLIP_D0      = 16,
-        COL_EQUIV_ELLIP_D1      = 17,
-        COL_EQUIV_ELLIP_D2      = 18,
-        COL_PRINCIPAL_MOM0      = 19,
-        COL_PRINCIPAL_MOM1      = 20,
-        COL_PRINCIPAL_MOM2      = 21,
-        COL_PERIMETER           = 22,
-        COL_OBBOX_W             = 23,
-        COL_OBBOX_H             = 24,
-        COL_OBBOX_D             = 25,
-        COL_OBBOX_VOLUME        = 26,
-        COL_COUNT               = 27
-    };
+    void setQuickComputeMode();
+    void startCompute(dataType::SegmentsImageType::Pointer segImg = nullptr);
 
     // ---- What to compute (mirrors the setup-page checkboxes) ----
     struct FeatureFlags {
         bool volume            = true;
+        bool isIsolated        = true;
         bool physicalSize      = false;
         bool pixelsOnBorder    = false;
         bool perimeterOnBorder = false;
@@ -98,6 +60,7 @@ private:
         int centroidX = 0, centroidY = 0, centroidZ = 0;
 
         double volume = -1, physicalSize = -1;
+        bool isIsolated = true;
         double pixelsOnBorder = -1, perimeterOnBorder = -1;
         double bboxW = -1, bboxH = -1, bboxD = -1;
         double elongation = -1, flatness = -1, roundness = -1;
@@ -114,9 +77,59 @@ private:
         double elapsedSeconds = 0.0;
     };
 
+    // ---- Column definitions (fixed set; visibility is dynamic) ----
+    enum Columns {
+        COL_LABEL               = 0,
+        COL_VOLUME              = 1,
+        COL_IS_ISOLATED         = 2,
+        COL_PHYSICAL_SIZE       = 3,
+        COL_PIXELS_ON_BORDER    = 4,
+        COL_PERIMETER_ON_BORDER = 5,
+        COL_CX                  = 6,
+        COL_CY                  = 7,
+        COL_CZ                  = 8,
+        COL_BBOX_W              = 9,
+        COL_BBOX_H              = 10,
+        COL_BBOX_D              = 11,
+        COL_ELONGATION          = 12,
+        COL_FLATNESS            = 13,
+        COL_ROUNDNESS           = 14,
+        COL_EQUIV_SPH_RADIUS    = 15,
+        COL_EQUIV_SPH_PERIM     = 16,
+        COL_EQUIV_ELLIP_D0      = 17,
+        COL_EQUIV_ELLIP_D1      = 18,
+        COL_EQUIV_ELLIP_D2      = 19,
+        COL_PRINCIPAL_MOM0      = 20,
+        COL_PRINCIPAL_MOM1      = 21,
+        COL_PRINCIPAL_MOM2      = 22,
+        COL_PERIMETER           = 23,
+        COL_OBBOX_W             = 24,
+        COL_OBBOX_H             = 25,
+        COL_OBBOX_D             = 26,
+        COL_OBBOX_VOLUME        = 27,
+        COL_COUNT               = 28
+    };
+
     // Runs on a worker thread — must not touch QWidgets.
     static ComputeResult computeFeatures(
-        dataType::SegmentsImageType::Pointer segImage, FeatureFlags flags);
+        dataType::SegmentsImageType::Pointer segImg,
+        FeatureFlags flags);
+
+signals:
+    void computeFinishedDebug();
+
+private slots:
+    void onComputeClicked();
+    void onComputeFinished();
+    void onBackClicked();
+    void onDeleteSelectedClicked();
+    void onSelectionChanged(const QModelIndex &current, const QModelIndex &previous);
+    void onExportCsvClicked();
+    void onView3DSelectedClicked();
+    void onView3DPreparationFinished();
+
+private:
+    // ---- Column definitions (fixed set; visibility is dynamic) ----
 
     QWidget *createSetupPage();
     QWidget *createResultsPage();
@@ -133,10 +146,11 @@ private:
     std::shared_ptr<GraphBase> graphBase;
     OrthoViewer *orthoViewer;
     dataType::SegmentsImageType::Pointer currentTableSegmentation;
+    itkSignalBase *currentTableSegmentationSignal = nullptr;
     QStackedWidget *stack = nullptr;
 
     // ---- Setup page ----
-    QCheckBox *cbVolume = nullptr, *cbPhysicalSize = nullptr;
+    QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr, *cbPhysicalSize = nullptr;
     QCheckBox *cbPixelsOnBorder = nullptr, *cbPerimeterOnBorder = nullptr;
     QCheckBox *cbCentroid = nullptr, *cbBBox = nullptr;
     QCheckBox *cbElongation = nullptr, *cbFlatness = nullptr, *cbRoundness = nullptr;
@@ -163,4 +177,3 @@ private:
 };
 
 #endif // SEGMENTPUZZLER_SEGMENTTABLEDIALOG_H
-
