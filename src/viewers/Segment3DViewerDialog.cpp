@@ -16,6 +16,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QShortcut>
+#include <QShowEvent>
 #include <QSlider>
 #include <QStringList>
 #include <QTimer>
@@ -258,6 +259,14 @@ QString threeDViewHelpText(bool showExplodeControls, bool showCutControls) {
     }
     lines << QStringLiteral("Press Q to close the 3D view.");
     return lines.join(QStringLiteral("\n"));
+}
+
+double safeCameraDistance(double cameraDistance, double sceneExtent)
+{
+    const double safeExtent = std::max(sceneExtent, 1.0);
+    return std::isfinite(cameraDistance) && cameraDistance > 1e-6
+               ? cameraDistance
+               : std::max(1.5 * safeExtent, 1.0);
 }
 
 #define SP_LOG_3D_TIMER(startedAtMs, label) \
@@ -1363,17 +1372,20 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
 }
 
 Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
-                                             QWidget *parent)
-    : Segment3DViewerDialog(std::move(preparedScene), CutSessionConfig{}, parent)
+                                             QWidget *parent,
+                                             int launchSliceAxis)
+    : Segment3DViewerDialog(std::move(preparedScene), CutSessionConfig{}, parent, launchSliceAxis)
 {
 }
 
 Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
                                              CutSessionConfig cutSession,
-                                             QWidget *parent)
+                                             QWidget *parent,
+                                             int launchSliceAxis)
     : QDialog(parent)
     , m_targetLabelId(preparedScene.targetLabelId)
     , m_cutSession(std::move(cutSession))
+    , m_launchSliceAxis(launchSliceAxis)
 {
     setWindowTitle(preparedScene.windowTitle);
     resize(600, 600);
@@ -1447,10 +1459,6 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     m_splitSourcePolyData = std::move(preparedScene.splitSourcePolyData);
     m_splitLabels = std::move(preparedScene.splitLabels);
 
-    if (m_combinedActor != nullptr || !m_explodeActors.empty()) {
-        m_renderer->ResetCamera();
-    }
-
     // Show explode controls when a deferred split is available (combined-mesh path)
     // or when individual actors are already loaded (fallback path with >1 mesh).
     const bool showExplodeControls =
@@ -1465,9 +1473,12 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
 
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setRenderWindow(renWin);
-    m_vtkWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    QSizePolicy vtkSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    vtkSizePolicy.setRetainSizeWhenHidden(true);
+    m_vtkWidget->setSizePolicy(vtkSizePolicy);
     m_vtkWidget->setFocusPolicy(Qt::StrongFocus);
     m_vtkWidget->installEventFilter(this);
+    m_vtkWidget->hide();
 
     auto style = vtkSmartPointer<vtkInteractorStyleTrackballCamera>::New();
     style->SetDefaultRenderer(m_renderer);
@@ -1626,38 +1637,124 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     }
 
     updateCutUiState();
-    QTimer::singleShot(0, this, [this, showExplodeControls, showCutControls]() {
-        if (m_controlsWidget != nullptr) {
-            m_controlsWidget->raise();
-        }
-        if (m_cutOverlay != nullptr) {
-            m_cutOverlay->raise();
-        }
-        if (m_vtkWidget != nullptr && m_vtkWidget->interactor() != nullptr) {
-            m_vtkWidget->interactor()->Initialize();
-            m_vtkWidget->interactor()->Enable();
-        }
-        if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
-            m_renderer->ResetCameraClippingRange();
-            m_vtkWidget->renderWindow()->Render();
-        }
-        SP_LOG_DEBUG(
-            "viewer.three_d",
-            QStringLiteral("[3DInputDebug] ready targetLabel=%1 combinedActor=%2 explodeActorCount=%3 "
-                           "showExplodeControls=%4 showCutControls=%5 interactorEnabled=%6")
-                .arg(m_targetLabelId)
-                .arg(m_combinedActor != nullptr)
-                .arg(m_explodeActors.size())
-                .arg(showExplodeControls)
-                .arg(showCutControls)
-                .arg(m_vtkWidget != nullptr
-                     && m_vtkWidget->interactor() != nullptr
-                     && m_vtkWidget->interactor()->GetEnabled()));
-    });
+}
+
+std::optional<Segment3DViewerDialog::CameraOrientation>
+Segment3DViewerDialog::cameraOrientationForSliceAxis(int sliceAxis)
+{
+    switch (sliceAxis) {
+        case 0:
+            return CameraOrientation{{-1.0, 0.0, 0.0}, {0.0, -1.0, 0.0}};
+        case 1:
+            return CameraOrientation{{0.0, -1.0, 0.0}, {0.0, 0.0, -1.0}};
+        case 2:
+            return CameraOrientation{{0.0, 0.0, 1.0}, {0.0, -1.0, 0.0}};
+        default:
+            return std::nullopt;
+    }
 }
 
 void Segment3DViewerDialog::setNavigateToLabelHandler(NavigateToLabelHandler handler) {
     m_navigateToLabelHandler = std::move(handler);
+}
+
+void Segment3DViewerDialog::showEvent(QShowEvent *event) {
+    QDialog::showEvent(event);
+
+    if (m_initialFrameScheduled || m_initialFrameRendered) {
+        return;
+    }
+
+    m_initialFrameScheduled = true;
+    QTimer::singleShot(0, this, [this]() { finishInitialRender(); });
+}
+
+void Segment3DViewerDialog::applyInitialCameraOrientation(int launchSliceAxis) {
+    if (m_renderer == nullptr) {
+        return;
+    }
+
+    vtkCamera *camera = m_renderer->GetActiveCamera();
+    if (camera == nullptr) {
+        return;
+    }
+
+    const auto orientation = cameraOrientationForSliceAxis(launchSliceAxis);
+    if (!orientation.has_value()) {
+        return;
+    }
+
+    const double distance = safeCameraDistance(camera->GetDistance(), m_sceneExtent);
+    camera->SetFocalPoint(m_sceneCenterWorld[0], m_sceneCenterWorld[1], m_sceneCenterWorld[2]);
+    camera->SetPosition(m_sceneCenterWorld[0] - orientation->lookDirection[0] * distance,
+                        m_sceneCenterWorld[1] - orientation->lookDirection[1] * distance,
+                        m_sceneCenterWorld[2] - orientation->lookDirection[2] * distance);
+    camera->SetViewUp(orientation->viewUp[0], orientation->viewUp[1], orientation->viewUp[2]);
+    camera->OrthogonalizeViewUp();
+
+    SP_LOG_DEBUG("viewer.three_d",
+                 QStringLiteral("[3DView] applied launch axis=%1 center=%2,%3,%4 distance=%5")
+                     .arg(launchSliceAxis)
+                     .arg(m_sceneCenterWorld[0], 0, 'g', 6)
+                     .arg(m_sceneCenterWorld[1], 0, 'g', 6)
+                     .arg(m_sceneCenterWorld[2], 0, 'g', 6)
+                     .arg(distance, 0, 'g', 6));
+}
+
+void Segment3DViewerDialog::finishInitialRender() {
+    if (m_initialFrameRendered) {
+        return;
+    }
+
+    if (!isVisible()) {
+        m_initialFrameScheduled = false;
+        return;
+    }
+
+    m_initialFrameRendered = true;
+
+    if (m_vtkWidget != nullptr && m_vtkWidget->interactor() != nullptr) {
+        m_vtkWidget->interactor()->Initialize();
+        m_vtkWidget->interactor()->Enable();
+    }
+
+    if (m_renderer != nullptr && (m_combinedActor != nullptr || !m_explodeActors.empty())) {
+        m_renderer->ResetCamera();
+        applyInitialCameraOrientation(m_launchSliceAxis);
+        m_renderer->ResetCameraClippingRange();
+    }
+
+    if (m_vtkWidget != nullptr) {
+        m_vtkWidget->show();
+    }
+
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+
+    if (m_controlsWidget != nullptr) {
+        m_controlsWidget->raise();
+    }
+    if (m_cutOverlay != nullptr) {
+        m_cutOverlay->raise();
+    }
+
+    const bool showExplodeControls = m_explodeSlider != nullptr || m_explodeToggle != nullptr;
+    const bool showCutControls = m_cutOverlay != nullptr;
+    SP_LOG_DEBUG(
+        "viewer.three_d",
+        QStringLiteral("[3DInputDebug] ready targetLabel=%1 combinedActor=%2 explodeActorCount=%3 "
+                       "showExplodeControls=%4 showCutControls=%5 interactorEnabled=%6")
+            .arg(m_targetLabelId)
+            .arg(m_combinedActor != nullptr)
+            .arg(m_explodeActors.size())
+            .arg(showExplodeControls)
+            .arg(showCutControls)
+            .arg(m_vtkWidget != nullptr
+                 && m_vtkWidget->interactor() != nullptr
+                 && m_vtkWidget->interactor()->GetEnabled()));
+
+    m_initialFrameScheduled = false;
 }
 
 bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {

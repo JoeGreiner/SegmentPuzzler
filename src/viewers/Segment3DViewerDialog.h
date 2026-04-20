@@ -5,6 +5,7 @@
 #include <QString>
 #include <array>
 #include <functional>
+#include <optional>
 #include <vector>
 #include <utility>
 #include <vtkActor.h>
@@ -20,6 +21,7 @@ class QVTKOpenGLNativeWidget;
 class QCheckBox;
 class QEvent;
 class QPushButton;
+class QShowEvent;
 class QSlider;
 class QWidget;
 class TaskRunner;
@@ -31,6 +33,11 @@ class Segment3DViewerDialog : public QDialog {
 public:
     using LabelWithColor = std::pair<dataType::SegmentIdType, quint32>;
     using NavigateToLabelHandler = std::function<void(dataType::SegmentIdType)>;
+
+    struct CameraOrientation {
+        std::array<double, 3> lookDirection{0.0, 0.0, 1.0};
+        std::array<double, 3> viewUp{0.0, 1.0, 0.0};
+    };
 
     struct PreparedMesh {
         dataType::SegmentIdType labelId = 0;
@@ -60,6 +67,7 @@ public:
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<LabelWithColor> labels,
         Roi requestedBounds);
+    static std::optional<CameraOrientation> cameraOrientationForSliceAxis(int sliceAxis);
 
     struct CutApplyResult {
         bool mutated = false;
@@ -75,14 +83,17 @@ public:
 
     explicit Segment3DViewerDialog(PreparedScene preparedScene,
                                    CutSessionConfig cutSession,
-                                   QWidget *parent = nullptr);
+                                   QWidget *parent = nullptr,
+                                   int launchSliceAxis = -1);
     explicit Segment3DViewerDialog(PreparedScene preparedScene,
-                                   QWidget *parent = nullptr);
+                                   QWidget *parent = nullptr,
+                                   int launchSliceAxis = -1);
 
     void setNavigateToLabelHandler(NavigateToLabelHandler handler);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private:
     struct ActorInfo {
@@ -105,6 +116,8 @@ private:
                                   Qt::KeyboardModifiers modifiers,
                                   const char *sourceTag);
     void handleInteractorLeftButtonPress();
+    void applyInitialCameraOrientation(int launchSliceAxis);
+    void finishInitialRender();
 
     vtkSmartPointer<vtkRenderer> m_renderer;
     vtkSmartPointer<vtkActor> m_combinedActor;
@@ -128,6 +141,9 @@ private:
     TaskRunner *m_taskRunner = nullptr;
     CutSessionConfig m_cutSession;
     NavigateToLabelHandler m_navigateToLabelHandler;
+    int m_launchSliceAxis = -1;
+    bool m_initialFrameScheduled = false;
+    bool m_initialFrameRendered = false;
     bool m_cutDrawModeActive = false;
     bool m_cutApplyInFlight = false;
 };

@@ -489,7 +489,8 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
 
 void AnnotationSliceViewer::showPrepared3DView(
     std::vector<std::pair<dataType::SegmentIdType, quint32>> labels,
-    const QString &progressText)
+    const QString &progressText,
+    int launchSliceAxis)
 {
     const auto segImage = active3DViewSegmentsImage();
     if (segImage == nullptr || labels.empty()) {
@@ -498,7 +499,7 @@ void AnnotationSliceViewer::showPrepared3DView(
 
     if (taskRunner == nullptr) {
         auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
-        openPrepared3DView(std::move(preparedScene), 0);
+        openPrepared3DView(std::move(preparedScene), launchSliceAxis, 0);
         return;
     }
 
@@ -507,12 +508,13 @@ void AnnotationSliceViewer::showPrepared3DView(
         [segImage, labels]() mutable {
             return Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
         },
-        [this](Segment3DViewerDialog::PreparedScene preparedScene) {
-            openPrepared3DView(std::move(preparedScene), 0);
+        [this, launchSliceAxis](Segment3DViewerDialog::PreparedScene preparedScene) {
+            openPrepared3DView(std::move(preparedScene), launchSliceAxis, 0);
         });
 }
 
 void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
+                                               int launchSliceAxis,
                                                dataType::SegmentIdType targetWorkingLabel)
 {
     const auto navigationImage =
@@ -559,7 +561,7 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
         };
     }
 
-    auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), std::move(cutSession), this);
+    auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), std::move(cutSession), this, launchSliceAxis);
     dialog->setNavigateToLabelHandler(
         [navigationImage, linkedOrthoViewer](dataType::SegmentIdType labelId) {
             navigateOrthoViewerToLabel(linkedOrthoViewer, navigationImage, labelId);
@@ -606,7 +608,10 @@ void AnnotationSliceViewer::show3DSegmentView(int posX, int posY) {
         lutColor = activeSignal->LUT[label];
     }
 
-    showPrepared3DView({{label, lutColor}}, "Preparing 3D segment view...");
+    showPrepared3DView(
+        {{label, lutColor}},
+        "Preparing 3D segment view...",
+        sliceAxis);
 }
 
 quint32 AnnotationSliceViewer::workingSegmentColor(dataType::SegmentIdType label) const {
@@ -653,10 +658,11 @@ bool AnnotationSliceViewer::show3DWorkingSegmentCutView(int posX, int posY) {
         return false;
     }
     const Roi workingNodeRoi = workingNodeIt->second->roi;
+    const int launchSliceAxis = sliceAxis;
 
     if (taskRunner == nullptr) {
         auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, labels, workingNodeRoi);
-        openPrepared3DView(std::move(preparedScene), label);
+        openPrepared3DView(std::move(preparedScene), launchSliceAxis, label);
         return true;
     }
 
@@ -665,8 +671,8 @@ bool AnnotationSliceViewer::show3DWorkingSegmentCutView(int posX, int posY) {
         [segImage, labels, workingNodeRoi]() mutable {
             return Segment3DViewerDialog::prepareScene(segImage, std::move(labels), workingNodeRoi);
         },
-        [this, label](Segment3DViewerDialog::PreparedScene preparedScene) {
-            openPrepared3DView(std::move(preparedScene), label);
+        [this, label, launchSliceAxis](Segment3DViewerDialog::PreparedScene preparedScene) {
+            openPrepared3DView(std::move(preparedScene), launchSliceAxis, label);
         });
     return true;
 }
@@ -695,7 +701,10 @@ void AnnotationSliceViewer::show3DAllLabelsView() {
     if (labelColors.empty()) return;
 
     std::vector<std::pair<dataType::SegmentIdType, quint32>> labels(labelColors.begin(), labelColors.end());
-    showPrepared3DView(std::move(labels), "Preparing 3D view for all segments...");
+    showPrepared3DView(
+        std::move(labels),
+        "Preparing 3D view for all segments...",
+        2);
 }
 
 void AnnotationSliceViewer::exportDebugInformation() {

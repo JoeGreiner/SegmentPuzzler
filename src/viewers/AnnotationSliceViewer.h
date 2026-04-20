@@ -131,12 +131,14 @@ private:
     void setLinkedToolModeAndNotify(std::vector<SliceViewer *> &viewerList, ToolMode toolMode);
     void notifyOrthoViewerInteractionModeChanged();
     void showPrepared3DView(std::vector<std::pair<dataType::SegmentIdType, quint32>> labels,
-                            const QString &progressText);
+                            const QString &progressText,
+                            int launchSliceAxis);
     void show3DSegmentView(int posX, int posY);
     bool show3DWorkingSegmentCutView(int posX, int posY);
     void show3DAllLabelsView();
     quint32 workingSegmentColor(dataType::SegmentIdType label) const;
     void openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
+                            int launchSliceAxis,
                             dataType::SegmentIdType targetWorkingLabel);
     QPoint ROISelectionOrigin;
     int openingRadius = 3;
