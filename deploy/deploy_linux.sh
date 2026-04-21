@@ -4,6 +4,19 @@
 # then it should run on newer versions as well. if you build on a newer version, it might not run on older versions,
 # e.g. because of libc version mismatch
 
+set -euo pipefail
+
+fail() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+require_file() {
+    local path=$1
+    local description=$2
+    [[ -f "$path" ]] || fail "$description not found at $path"
+}
+
 if [[ -d build ]]; then
     echo "build directory found, deleting..."
     rm -r build
@@ -58,37 +71,57 @@ chmod u+x linuxdeploy-plugin-qt-x86_64.AppImage
 ## set environment variables
 
 # make assertion QT6_DIR is set, this returns true if QT6_DIR is empty
-#if [[ -z $QT6_DIR ]]; then
-#    echo "QT6_DIR is not set."
-#    # check if tmp file exists, if so read and export
-#    if [[ -f tmp_QT6_env_var.txt ]]; then
-#        echo "tmp_QT6_env_var.txt found, reading QT6_DIR from file."
-#        QT6_DIR=$(cat tmp_QT6_env_var.txt)
-#        export QT6_DIR
-#        echo "QT6_DIR set to $QT6_DIR"
-#    else
-#      echo "Please set QT6_DIR, e.g. to: ../../QT/6.5.2/gcc_64/"
-#      read -r QT6_DIR
-#      export QT6_DIR
-#      echo $QT6_DIR > tmp_QT6_env_var.txt
-#    fi
-#fi
+if [[ -z ${QT6_DIR:-} ]]; then
+    echo "QT6_DIR is not set."
+    # check if tmp file exists, if so read and export
+    if [[ -f tmp_QT6_env_var.txt ]]; then
+        echo "tmp_QT6_env_var.txt found, reading QT6_DIR from file."
+        QT6_DIR=$(cat tmp_QT6_env_var.txt)
+        export QT6_DIR
+        echo "QT6_DIR set to $QT6_DIR"
+    else
+      echo "Please set QT6_DIR, e.g. to: ../../QT/6.5.2/gcc_64/ or ../../QT/6.5.2/gcc_64/lib/cmake/Qt6"
+      read -r QT6_DIR
+      export QT6_DIR
+    fi
+fi
 
-# add QT6_DIR to cmake prefix path
-#export CMAKE_PREFIX_PATH=$QT6_DIR/lib/cmake:$CMAKE_PREFIX_PATH
+qt6_input_dir=${QT6_DIR#-DQt6_DIR=}
+qt6_input_dir=${qt6_input_dir%/}
 
-# check if qmake exists in $QT6_DIR/bin/qmake, if not, ask for it
-#if [[ ! -f $QT6_DIR/bin/qmake ]]; then
-#    echo "qmake not found in $QT6_DIR/bin/qmake. Please set QT6_DIR, e.g. to: ../../QT/6.5.2/gcc_64/"
-#    read -r QMAKE
-#    export QMAKE
-#else
-#    echo "qmake found in $QT6_DIR/bin/qmake"
-#    QMAKE=$QT6_DIR/bin/qmake
-#    export QMAKE
-#fi
+if [[ -d "$qt6_input_dir/bin" && -d "$qt6_input_dir/lib/cmake/Qt6" ]]; then
+    QT6_ROOT_DIR=$qt6_input_dir
+    QT6_CMAKE_DIR=$qt6_input_dir/lib/cmake/Qt6
+elif [[ -d "$qt6_input_dir" && "$(basename "$qt6_input_dir")" == "Qt6" ]]; then
+    QT6_CMAKE_DIR=$qt6_input_dir
+    QT6_ROOT_DIR=$(cd "$qt6_input_dir/../../.." && pwd)
+else
+    fail "QT6_DIR must point to the Qt root or to lib/cmake/Qt6. Current value: $QT6_DIR"
+fi
 
-cmake .. -B build/ -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+QT6_LIB_DIR=$QT6_ROOT_DIR/lib
+QMAKE=$QT6_ROOT_DIR/bin/qmake
+QT6_PLATFORM_PLUGIN=$QT6_ROOT_DIR/plugins/platforms/libqxcb.so
+
+require_file "$QMAKE" "qmake"
+require_file "$QT6_LIB_DIR/libQt6Core.so.6" "Qt6Core runtime"
+require_file "$QT6_PLATFORM_PLUGIN" "Qt xcb platform plugin"
+echo "$QT6_ROOT_DIR" > tmp_QT6_env_var.txt
+
+export QT6_DIR=$QT6_CMAKE_DIR
+export QMAKE
+export CMAKE_PREFIX_PATH="$QT6_ROOT_DIR:$QT6_ROOT_DIR/lib/cmake:${CMAKE_PREFIX_PATH:-}"
+export PATH="$QT6_ROOT_DIR/bin:$PATH"
+export LD_LIBRARY_PATH="$QT6_LIB_DIR:${LD_LIBRARY_PATH:-}"
+export APPIMAGELAUNCHER_DISABLE=1
+
+echo "Using Qt6 root: $QT6_ROOT_DIR"
+echo "Using Qt6 CMake dir: $QT6_CMAKE_DIR"
+echo "Using qmake: $QMAKE"
+echo "Using Qt6 platform plugin: $QT6_PLATFORM_PLUGIN"
+echo "Disabling AppImageLauncher integration prompts for local deploy tools"
+
+cmake .. -B build/ -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DQt6_DIR="$QT6_CMAKE_DIR"
 make -C build/ -j 12
 
 basePath=$(pwd)
@@ -136,6 +169,72 @@ cp "$desktopPath" "$desktopPath2"
 
 # run linux deploy
 ./linuxdeploy-x86_64.AppImage --appdir=export_linux/ -e build/SegmentPuzzler --plugin qt
+
+require_file "$basePath/export_linux/usr/bin/SegmentPuzzler" "Bundled SegmentPuzzler executable"
+require_file "$basePath/export_linux/usr/lib/libQt6Core.so.6" "Bundled Qt6Core runtime"
+require_file "$basePath/export_linux/usr/plugins/platforms/libqxcb.so" "Bundled Qt xcb platform plugin"
+
+cat > "$basePath/export_linux/usr/bin/qt.conf" <<'EOF'
+[Paths]
+Prefix = ../
+Plugins = plugins
+Imports = qml
+Qml2Imports = qml
+EOF
+
+cat > "$basePath/export_linux/AppRun" <<'EOF'
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+this_dir="$(readlink -f "$(dirname "$0")")"
+app_dir="$this_dir"
+qt_conf="$app_dir/usr/bin/qt.conf"
+main_executable="$app_dir/usr/bin/SegmentPuzzler"
+qt_core="$app_dir/usr/lib/libQt6Core.so.6"
+qt_platform_dir="$app_dir/usr/plugins/platforms"
+qt_platform_plugin="$qt_platform_dir/libqxcb.so"
+
+show_error() {
+    local message=$1
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --error --title="SegmentPuzzler packaging error" --text="$message" || true
+    elif command -v kdialog >/dev/null 2>&1; then
+        kdialog --error "$message" --title "SegmentPuzzler packaging error" || true
+    elif command -v xmessage >/dev/null 2>&1; then
+        xmessage -center "$message" || true
+    fi
+    printf '%s\n' "$message" >&2
+}
+
+for path_info in \
+    "$main_executable|SegmentPuzzler executable" \
+    "$qt_conf|qt.conf" \
+    "$qt_core|Qt6Core runtime" \
+    "$qt_platform_plugin|Qt xcb platform plugin"
+do
+    path=${path_info%%|*}
+    description=${path_info#*|}
+    if [[ ! -f "$path" ]]; then
+        show_error "SegmentPuzzler is missing ${description} at ${path}. The AppImage is incomplete. Rebuild it with deploy/deploy_linux.sh using one Qt 6 installation."
+        exit 1
+    fi
+done
+
+export QT_PLUGIN_PATH="$app_dir/usr/plugins"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$qt_platform_dir"
+export LD_LIBRARY_PATH="$app_dir/usr/lib:${LD_LIBRARY_PATH:-}"
+
+case "${XDG_CURRENT_DESKTOP:-}" in
+    *GNOME*|*gnome*|*XFCE*)
+        export QT_QPA_PLATFORMTHEME=gtk2
+        ;;
+esac
+
+exec "$app_dir/AppRun.wrapped" "$@"
+EOF
+
+chmod +x "$basePath/export_linux/AppRun"
 
 # copy stuff
 # now done on the fly in the code
