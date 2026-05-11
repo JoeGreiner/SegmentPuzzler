@@ -339,11 +339,12 @@ if (MSVC)
     file(GLOB OPENSSL_DLLS "${OPENSSL_BIN_DIR}/*.dll")
     if (OPENSSL_DLLS)
         message(STATUS "Copying OpenSSL DLLs from ${OPENSSL_BIN_DIR} to target directory.")
-        foreach(DLL ${OPENSSL_DLLS})
-            add_custom_command(TARGET SegmentPuzzler POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${DLL} $<TARGET_FILE_DIR:SegmentPuzzler>)
-        endforeach()
+        add_custom_command(TARGET SegmentPuzzler POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SegmentPuzzler>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${OPENSSL_DLLS}
+                    "$<TARGET_FILE_DIR:SegmentPuzzler>"
+            VERBATIM)
     else()
         message(WARNING "No OpenSSL DLLs found in ${OPENSSL_BIN_DIR}. Ensure OpenSSL is installed and the path is correct.")
     endif()

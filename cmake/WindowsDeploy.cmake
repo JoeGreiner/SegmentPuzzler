@@ -102,11 +102,9 @@ set(CPACK_NSIS_CREATE_ICONS_EXTRA
 
 include(InstallRequiredSystemLibraries)
 install(TARGETS SegmentPuzzler DESTINATION bin)
-install(FILES
-    $<TARGET_FILE_DIR:SegmentPuzzler>/libssl-1_1-x64.dll
-    $<TARGET_FILE_DIR:SegmentPuzzler>/libcrypto-1_1-x64.dll
-    DESTINATION bin
-)
+if (OPENSSL_DLLS)
+    install(FILES ${OPENSSL_DLLS} DESTINATION bin)
+endif()
 
 install(CODE "
     file(WRITE \"\${CMAKE_INSTALL_PREFIX}/run_SegmentPuzzler.bat\" \"@echo off\\nstart bin\\\\SegmentPuzzler.exe\\nexit\\n\")
