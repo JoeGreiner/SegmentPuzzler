@@ -4,7 +4,6 @@
 #include <QHash>
 #include <QList>
 #include <QString>
-#include <QStringView>
 
 #include <mutex>
 #include <string>
@@ -80,10 +79,6 @@ namespace detail {
 
 inline QString asQString(const QString &value) {
     return value;
-}
-
-inline QString asQString(QStringView value) {
-    return value.toString();
 }
 
 inline QString asQString(const char *value) {

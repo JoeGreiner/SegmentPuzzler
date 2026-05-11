@@ -810,7 +810,7 @@ void SliceViewer::setUpCustomCursor() {
     cursorPainter.setPen(QPen(cursorColor, cursorLineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     cursorPainter.drawEllipse(startX, startY, rectWidth, rectHeight);
 
-    this->setCursor(cursorPixMap);
+    this->setCursor(QCursor(cursorPixMap));
 
     // update application around cursor
     QPoint pos = QCursor::pos();

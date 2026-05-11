@@ -471,7 +471,11 @@ protected:
         keyFont.setBold(true);
         painter.setFont(keyFont);
         const QFontMetrics keyMetrics(keyFont);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
         const int keyWidth = std::max(24, keyMetrics.horizontalAdvance(keyLabel) + 10);
+#else
+        const int keyWidth = std::max(24, keyMetrics.width(keyLabel) + 10);
+#endif
         const QRectF keyRect(5.0, 4.0, static_cast<qreal>(keyWidth), height() - 8.0);
         painter.setPen(Qt::NoPen);
         painter.setBrush(keyFillColor);

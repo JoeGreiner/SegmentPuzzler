@@ -4,12 +4,16 @@
 #include <QColor>
 #include <QFrame>
 #include <QString>
+#include <QtGlobal>
 
 class QLabel;
 class QPushButton;
 class QToolButton;
 class QTreeWidget;
 class QWidget;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+class QEnterEvent;
+#endif
 
 class SignalLayerWidget : public QFrame {
 Q_OBJECT
@@ -61,7 +65,11 @@ signals:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    void enterEvent(QEnterEvent *event) override;
+#else
     void enterEvent(QEvent *event) override;
+#endif
     void leaveEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
 

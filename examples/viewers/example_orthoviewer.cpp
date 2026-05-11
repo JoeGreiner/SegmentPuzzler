@@ -20,10 +20,7 @@ int main(int argc, char *argv[]) {
 
 
     auto myMainWindow = std::make_unique<QMainWindow>();
-    auto* orthoViewer = new OrthoViewer(graphBase);
-
-
-    graphBase->pOrthoViewer = orthoViewer;
+    auto* orthoViewer = new OrthoViewer(graphBase, nullptr);
 
     myMainWindow->setCentralWidget(orthoViewer);
     QString fileName = QFileDialog::getOpenFileName(myMainWindow.get(),

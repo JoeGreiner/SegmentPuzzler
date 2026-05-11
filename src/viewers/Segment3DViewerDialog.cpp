@@ -76,6 +76,18 @@
 
 #include "src/utils/utils.h"
 
+namespace {
+
+QPointF mouseEventPosition(const QMouseEvent *event) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position();
+#else
+    return event->localPos();
+#endif
+}
+
+}
+
 class CutStrokeOverlay : public QWidget {
 public:
     explicit CutStrokeOverlay(QWidget *parent = nullptr)
@@ -158,7 +170,7 @@ protected:
 
         m_dragging = true;
         m_points.clear();
-        m_points.push_back(event->localPos());
+        m_points.push_back(mouseEventPosition(event));
         update();
         if (onStrokeChanged) {
             onStrokeChanged();
@@ -172,7 +184,7 @@ protected:
             return;
         }
 
-        const QPointF point = event->localPos();
+        const QPointF point = mouseEventPosition(event);
         if (!m_points.empty() && QLineF(m_points.back(), point).length() < 1.0) {
             event->accept();
             return;

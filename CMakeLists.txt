@@ -21,6 +21,14 @@ option(RUN_WITH_ASAN "Enable Address Sanitizer" FALSE)
 option(RUN_WITH_TSAN "Enable Thread Sanitizer" FALSE)
 option(ADD_DEBUG_SYMBOL_O0 "Add debug symbols and O0" FALSE)
 option(USE_OMP "Enable OpenMP" TRUE)
+set(SEGMENT_PUZZLER_QT_MAJOR "6" CACHE STRING "Qt major version to build against: 5 or 6")
+set_property(CACHE SEGMENT_PUZZLER_QT_MAJOR PROPERTY STRINGS 5 6)
+if (NOT SEGMENT_PUZZLER_QT_MAJOR STREQUAL "5" AND
+        NOT SEGMENT_PUZZLER_QT_MAJOR STREQUAL "6")
+    message(FATAL_ERROR
+            "SEGMENT_PUZZLER_QT_MAJOR must be 5 or 6, got '${SEGMENT_PUZZLER_QT_MAJOR}'")
+endif ()
+set(SEGMENT_PUZZLER_QT_PACKAGE "Qt${SEGMENT_PUZZLER_QT_MAJOR}")
 set(SEGMENT_PUZZLER_PERFETTO_SDK_DIR "${CMAKE_SOURCE_DIR}/thirdparty/perfetto-cpp-sdk-src"
         CACHE PATH "Path to a Perfetto SDK directory containing perfetto.h and perfetto.cc")
 
@@ -59,6 +67,7 @@ MESSAGE(STATUS "RUN_WITH_ASAN: " ${RUN_WITH_ASAN})
 MESSAGE(STATUS "RUN_WITH_TSAN: " ${RUN_WITH_TSAN})
 MESSAGE(STATUS "ADD_DEBUG_SYMBOL_O0: " ${ADD_DEBUG_SYMBOL_O0})
 MESSAGE(STATUS "USE_OMP: " ${USE_OMP})
+MESSAGE(STATUS "SEGMENT_PUZZLER_QT_MAJOR: " ${SEGMENT_PUZZLER_QT_MAJOR})
 
 ### Apple compile options
 if (APPLE AND DEPLOY)
@@ -139,19 +148,14 @@ if (ADD_DEBUG_SYMBOL_O0)
     MESSAGE(STATUS "Adding debug symbols and O0")
 endif ()
 
-find_package(Qt5 COMPONENTS Core Gui Widgets QUIET)
-if (NOT Qt5Widgets_FOUND)
-    message(STATUS "Qt5 not found. Please install Qt5 and set Qt5_DIR to the path to Qt5Config.cmake")
-    set(Qt5_DIR "" CACHE PATH "Path to QT, e.g.  /home/user/Qt/5.14.2/gcc_64/lib/cmake/Qt5/")
-    if (NOT EXISTS "${Qt5_DIR}")
-        message(FATAL_ERROR "Qt5_DIR is not set or invalid. Please provide the path to -DQt5_DIR=<path>, e.g.\n"
-                "Linux: cmake -DQt5_DIR=/home/user/Qt/5.14.2/gcc_64/lib/cmake/Qt5/ build/\n"
-                "Windows: cmake -DQt5_DIR=C:/Qt/5.14.2/msvc2017_64/lib/cmake/Qt5/ build/\n"
-                "Mac: cmake -DQt5_DIR=/Users/user/Qt/5.14.2/clang_64/lib/cmake/Qt5/ build/")
-    endif ()
-endif ()
-
-find_package(Qt5 COMPONENTS Widgets Network)
+find_package(${SEGMENT_PUZZLER_QT_PACKAGE} REQUIRED COMPONENTS Core Gui Widgets Network Concurrent)
+set(SEGMENT_PUZZLER_QT_CORE_LIBRARY ${SEGMENT_PUZZLER_QT_PACKAGE}::Core)
+set(SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES
+        ${SEGMENT_PUZZLER_QT_PACKAGE}::Widgets
+        ${SEGMENT_PUZZLER_QT_PACKAGE}::Concurrent)
+set(SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES
+        ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES}
+        ${SEGMENT_PUZZLER_QT_PACKAGE}::Network)
 
 find_package(ITK REQUIRED QUIET)
 if (NOT ITK_FOUND)
@@ -173,13 +177,36 @@ find_package(VTK REQUIRED COMPONENTS
         RenderingCore RenderingOpenGL2 RenderingAnnotation
         InteractionStyle InteractionWidgets
         GUISupportQt)
+set(SEGMENT_PUZZLER_VTK_QT_MAJOR "")
+if (DEFINED VTK_QT_VERSION AND NOT "${VTK_QT_VERSION}" STREQUAL "")
+    set(SEGMENT_PUZZLER_VTK_QT_MAJOR "${VTK_QT_VERSION}")
+elseif (TARGET VTK::GUISupportQt)
+    get_target_property(SEGMENT_PUZZLER_VTK_QT_LINKS
+            VTK::GUISupportQt
+            INTERFACE_LINK_LIBRARIES)
+    foreach(SEGMENT_PUZZLER_VTK_QT_LINK IN LISTS SEGMENT_PUZZLER_VTK_QT_LINKS)
+        if (SEGMENT_PUZZLER_VTK_QT_LINK MATCHES "^Qt([56])::")
+            set(SEGMENT_PUZZLER_VTK_QT_MAJOR "${CMAKE_MATCH_1}")
+        endif ()
+    endforeach()
+endif ()
+if (SEGMENT_PUZZLER_VTK_QT_MAJOR STREQUAL "")
+    set(SEGMENT_PUZZLER_VTK_QT_MAJOR "<unknown>")
+endif ()
+if (NOT SEGMENT_PUZZLER_VTK_QT_MAJOR STREQUAL SEGMENT_PUZZLER_QT_MAJOR)
+    message(FATAL_ERROR
+            "SegmentPuzzler is configured for Qt${SEGMENT_PUZZLER_QT_MAJOR}, "
+            "but VTK reports Qt${SEGMENT_PUZZLER_VTK_QT_MAJOR}. "
+            "Use a VTK_DIR built with the same Qt major. Current VTK_DIR='${VTK_DIR}'.")
+endif ()
 MESSAGE(STATUS "VTK_DIR: " ${VTK_DIR})
+MESSAGE(STATUS "VTK_QT_VERSION: " ${SEGMENT_PUZZLER_VTK_QT_MAJOR})
 
 if (MSVC) # not needed for Mac
     find_package(OpenSSL QUIET)
     if (NOT OpenSSL_FOUND)
         # look for ssl installation in qt, can be installed with build tools -> openssl -> binaries
-#            set(OPENSSL_ROOT_DIR "${Qt5_DIR}/../../../../../Tools/OpenSSLv3/Win_x64")
+#            set(OPENSSL_ROOT_DIR "${${SEGMENT_PUZZLER_QT_PACKAGE}_DIR}/../../../../../Tools/OpenSSLv3/Win_x64")
 #            set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
 #            set(OPENSSL_BIN_DIR "${OPENSSL_ROOT_DIR}/bin")
 #            set(OPENSSL_LIBRARIES "${OPENSSL_ROOT_DIR}/lib/libssl.lib;${OPENSSL_ROOT_DIR}/lib/libcrypto.lib")
@@ -211,9 +238,9 @@ if (MSVC) # not needed for Mac
 endif()
 
 
-MESSAGE(STATUS "Qt5_DIR: " ${Qt5_DIR})
+MESSAGE(STATUS "${SEGMENT_PUZZLER_QT_PACKAGE}_DIR: " ${${SEGMENT_PUZZLER_QT_PACKAGE}_DIR})
 MESSAGE(STATUS "ITK_USE_FILE: " ${ITK_USE_FILE})
-MESSAGE(STATUS "Qt5Widgets_INCLUDE_DIRS:" ${Qt5Widgets_INCLUDE_DIRS})
+MESSAGE(STATUS "${SEGMENT_PUZZLER_QT_PACKAGE}Widgets_INCLUDE_DIRS:" ${${SEGMENT_PUZZLER_QT_PACKAGE}Widgets_INCLUDE_DIRS})
 
 
 
@@ -301,7 +328,7 @@ else ()
 endif ()
 
 
-target_link_libraries(SegmentPuzzler ${ITK_LIBRARIES} Qt5::Widgets Qt5::Network ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+target_link_libraries(SegmentPuzzler ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)
     target_compile_definitions(SegmentPuzzler PRIVATE USE_OMP)
     target_link_libraries(SegmentPuzzler OpenMP::OpenMP_CXX)
@@ -344,15 +371,19 @@ if (BUILD_TESTING)
             examples/benchmarks/test_fast_marker_reference.cpp
             ${SRC_WATERSHED_HELPER_DEPS}
             src/utils/DistanceMapCliIO.cpp)
-    target_link_libraries(profile_SliceViewer ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-    target_link_libraries(profile_Projected3DCut ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_Projected3DCut ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_SliceViewer ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-    target_link_libraries(test_OrthoViewer ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-    target_link_libraries(test_WatershedPipeline ${ITK_LIBRARIES} Qt5::Widgets Qt5::Network ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_FastMarkerReference ${ITK_LIBRARIES} Qt5::Core Qt5::Network)
+    target_link_libraries(profile_SliceViewer ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(profile_Projected3DCut ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_Projected3DCut ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_SliceViewer ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_OrthoViewer ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_WatershedPipeline ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_FastMarkerReference ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_CORE_LIBRARY} ${SEGMENT_PUZZLER_QT_PACKAGE}::Network)
+    vtk_module_autoinit(TARGETS profile_SliceViewer MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS profile_Projected3DCut MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS test_Projected3DCut MODULES ${VTK_LIBRARIES})
+    vtk_module_autoinit(TARGETS test_SliceViewer MODULES ${VTK_LIBRARIES})
+    vtk_module_autoinit(TARGETS test_OrthoViewer MODULES ${VTK_LIBRARIES})
+    vtk_module_autoinit(TARGETS test_WatershedPipeline MODULES ${VTK_LIBRARIES})
     if (USE_OMP)
         target_compile_definitions(profile_SliceViewer PRIVATE USE_OMP)
         target_compile_definitions(profile_Projected3DCut PRIVATE USE_OMP)
@@ -369,9 +400,9 @@ if (BUILD_TESTING)
         target_link_libraries(test_WatershedPipeline OpenMP::OpenMP_CXX)
         target_link_libraries(test_FastMarkerReference OpenMP::OpenMP_CXX)
     endif ()
-#    target_link_libraries(test_customwatershed ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-#    target_link_libraries(test_watershed ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-#    target_link_libraries(test_watershedControl ${ITK_LIBRARIES} Qt5::Widgets ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+#    target_link_libraries(test_customwatershed ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+#    target_link_libraries(test_watershed ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+#    target_link_libraries(test_watershedControl ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 endif ()
 
 if (BUILD_BENCHMARKS)

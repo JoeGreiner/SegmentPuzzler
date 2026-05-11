@@ -2,7 +2,7 @@ message(STATUS "Creating MACOSX_BUNDLE")
 set_target_properties(SegmentPuzzler PROPERTIES MACOSX_BUNDLE True)
 
 # based on code from CMake's QtDialog/CMakeLists.txt
-macro(install_qt5_plugin _qt_plugin_name _qt_plugins_var _prefix)
+macro(install_qt_plugin _qt_plugin_name _qt_plugins_var _prefix)
     get_target_property(_qt_plugin_path "${_qt_plugin_name}" LOCATION)
     if(EXISTS "${_qt_plugin_path}")
         get_filename_component(_qt_plugin_file "${_qt_plugin_path}" NAME)
@@ -19,7 +19,8 @@ macro(install_qt5_plugin _qt_plugin_name _qt_plugins_var _prefix)
 endmacro()
 
 
-install_qt5_plugin("Qt5::QCocoaIntegrationPlugin" QT_PLUGINS ${prefix})
+find_package(${SEGMENT_PUZZLER_QT_PACKAGE}Gui REQUIRED COMPONENTS QCocoaIntegrationPlugin)
+install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QCocoaIntegrationPlugin" QT_PLUGINS ${prefix})
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/qt.conf"
         "[Paths]\nPlugins = ${_qt_plugin_dir}\n")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/qt.conf"
@@ -46,8 +47,8 @@ endif()
 
 
 
-# Append Qt's lib folder which is two levels above Qt5Widgets_DIR
-list(APPEND DIRS "${Qt5Widgets_DIR}/../..")
+# Append Qt's lib folder which is two levels above Qt Widgets' CMake directory.
+list(APPEND DIRS "${${SEGMENT_PUZZLER_QT_PACKAGE}Widgets_DIR}/../..")
 
 foreach(extraDir
         "/usr/local/lib"

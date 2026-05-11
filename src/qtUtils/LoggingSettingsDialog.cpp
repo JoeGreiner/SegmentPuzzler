@@ -29,6 +29,14 @@ using segment_puzzler::app_logging::LogSettings;
 
 namespace {
 
+int textWidth(const QFontMetrics &metrics, const QString &text) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
+    return metrics.horizontalAdvance(text);
+#else
+    return metrics.width(text);
+#endif
+}
+
 void addLevelOption(QComboBox *comboBox, const QString &label, LogLevel level) {
     comboBox->addItem(label, static_cast<int>(level));
 }
@@ -240,7 +248,7 @@ int LoggingSettingsDialog::minimumLevelComboBoxWidth() const {
     const QFontMetrics fontMetrics(minimumLevelComboBox_->font());
     for (int index = 0; index < minimumLevelComboBox_->count(); ++index) {
         const QString label = minimumLevelComboBox_->itemText(index);
-        const int labelWidth = fontMetrics.horizontalAdvance(label);
+        const int labelWidth = textWidth(fontMetrics, label);
         if (labelWidth > widestLabel) {
             widestLabel = labelWidth;
             longestLabel = label;

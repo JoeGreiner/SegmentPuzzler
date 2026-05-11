@@ -1,6 +1,5 @@
 #include "mainWindow.h"
 #include <QApplication>
-#include <QDesktopWidget>
 #include <QStatusBar>
 #include <QScreen>
 #include <QDialogButtonBox>
@@ -15,6 +14,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QFormLayout>
+#include <QWindow>
 #include <algorithm>
 #include "src/utils/utils.h"
 #include "src/utils/systemStats.h"
@@ -58,7 +58,10 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
 
     window->show();
     QTimer::singleShot(0, window, [window]() {
-        QScreen *screen = window->screen();
+        QScreen *screen = nullptr;
+        if (window->windowHandle() != nullptr) {
+            screen = window->windowHandle()->screen();
+        }
         if (screen == nullptr) {
             screen = QGuiApplication::primaryScreen();
         }

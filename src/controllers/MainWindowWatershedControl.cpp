@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QScreen>
 #include <QTimer>
+#include <QWindow>
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/WindowStats.h"
 #include "src/utils/AppLogger.h"
@@ -19,7 +20,10 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
 
     window->show();
     QTimer::singleShot(0, window, [window]() {
-        QScreen *screen = window->screen();
+        QScreen *screen = nullptr;
+        if (window->windowHandle() != nullptr) {
+            screen = window->windowHandle()->screen();
+        }
         if (screen == nullptr) {
             screen = QGuiApplication::primaryScreen();
         }

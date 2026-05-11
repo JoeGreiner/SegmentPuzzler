@@ -36,6 +36,14 @@ const QSize kColorButtonSize(28, 24);
 constexpr auto kAbbreviationMarker = "(...)";
 constexpr auto kMinimumTitleSample = "MMMM";
 
+int textWidth(const QFontMetrics &metrics, const QString &text) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
+    return metrics.horizontalAdvance(text);
+#else
+    return metrics.width(text);
+#endif
+}
+
 bool debugLayerLayoutEnabled() {
     static const bool enabled = !qgetenv("SEGMENTPUZZLER_DEBUG_LAYER_LAYOUT").isEmpty();
     return enabled;
@@ -284,12 +292,12 @@ QString abbreviateLayerNameWithMarker(const QString &fullName, const QFontMetric
         return QString::fromLatin1(kAbbreviationMarker);
     }
 
-    if (metrics.horizontalAdvance(fullName) <= availableWidth) {
+    if (textWidth(metrics, fullName) <= availableWidth) {
         return fullName;
     }
 
     const QString marker = QString::fromLatin1(kAbbreviationMarker);
-    if (metrics.horizontalAdvance(marker) >= availableWidth) {
+    if (textWidth(metrics, marker) >= availableWidth) {
         return marker;
     }
 
@@ -304,7 +312,7 @@ QString abbreviateLayerNameWithMarker(const QString &fullName, const QFontMetric
         }
         candidate += marker;
 
-        if (metrics.horizontalAdvance(candidate) <= availableWidth) {
+        if (textWidth(metrics, candidate) <= availableWidth) {
             best = mid;
             low = mid + 1;
         } else {
@@ -343,9 +351,9 @@ int leftZoneWidth() {
 }
 
 int minimumTextColumnWidth(const QFontMetrics &metrics, const QString &contrastText, const QString &opacityText) {
-    const int titleWidth = metrics.horizontalAdvance(QString::fromLatin1(kMinimumTitleSample));
-    const int contrastWidth = contrastText.isEmpty() ? 0 : metrics.horizontalAdvance(contrastText);
-    const int opacityWidth = opacityText.isEmpty() ? 0 : metrics.horizontalAdvance(opacityText);
+    const int titleWidth = textWidth(metrics, QString::fromLatin1(kMinimumTitleSample));
+    const int contrastWidth = contrastText.isEmpty() ? 0 : textWidth(metrics, contrastText);
+    const int opacityWidth = opacityText.isEmpty() ? 0 : textWidth(metrics, opacityText);
     const int metadataWidth = contrastWidth > 0 && opacityWidth > 0
                                   ? contrastWidth + kMetadataSpacing + opacityWidth
                                   : std::max(contrastWidth, opacityWidth);
@@ -745,7 +753,11 @@ bool SignalLayerWidget::eventFilter(QObject *watched, QEvent *event) {
     return QFrame::eventFilter(watched, event);
 }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+void SignalLayerWidget::enterEvent(QEnterEvent *event) {
+#else
 void SignalLayerWidget::enterEvent(QEvent *event) {
+#endif
     QFrame::enterEvent(event);
     if (!hovered) {
         hovered = true;

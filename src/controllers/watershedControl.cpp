@@ -1616,7 +1616,11 @@ void WatershedControl::setupWatershedWidget() {
     sizeFilteringInput->setMinimum(100);
     sizeFilteringInput->setMaximum(10000000);
     sizeFilteringInput->setValue(5000);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 12, 0)
     sizeFilteringInput->setStepType(QAbstractSpinBox::AdaptiveDecimalStepType);
+#else
+    sizeFilteringInput->setSingleStep(100);
+#endif
 
     auto *filterRow = new QWidget(this);
     auto *filterLayout = new QHBoxLayout(filterRow);
