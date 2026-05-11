@@ -154,16 +154,17 @@ FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
 
     const double xStart = wallTimeSeconds();
 #ifdef USE_OMP
+    const long long xPassLineCount = static_cast<long long>(dims[2]) * dims[1];
 #pragma omp parallel
     {
         std::vector<int> v(static_cast<std::size_t>(dims[0]));
         std::vector<double> z(static_cast<std::size_t>(dims[0]) + 1);
-#pragma omp for collapse(2) schedule(static)
-        for (int zIndex = 0; zIndex < dims[2]; ++zIndex) {
-            for (int yIndex = 0; yIndex < dims[1]; ++yIndex) {
-                const std::size_t offset = flatIndex(0, yIndex, zIndex, dims);
-                edt1d(current.data() + offset, dims[0], spacing[0] * spacing[0], next.data() + offset, v, z);
-            }
+#pragma omp for schedule(static)
+        for (long long lineIndex = 0; lineIndex < xPassLineCount; ++lineIndex) {
+            const int zIndex = static_cast<int>(lineIndex / dims[1]);
+            const int yIndex = static_cast<int>(lineIndex % dims[1]);
+            const std::size_t offset = flatIndex(0, yIndex, zIndex, dims);
+            edt1d(current.data() + offset, dims[0], spacing[0] * spacing[0], next.data() + offset, v, z);
         }
     }
 #else
@@ -183,22 +184,23 @@ FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
 
     const double yStart = wallTimeSeconds();
 #ifdef USE_OMP
+    const long long yPassLineCount = static_cast<long long>(dims[2]) * dims[0];
 #pragma omp parallel
     {
         std::vector<DistanceVoxelType> lineIn(static_cast<std::size_t>(dims[1]));
         std::vector<DistanceVoxelType> lineOut(static_cast<std::size_t>(dims[1]));
         std::vector<int> v(static_cast<std::size_t>(dims[1]));
         std::vector<double> z(static_cast<std::size_t>(dims[1]) + 1);
-#pragma omp for collapse(2) schedule(static)
-        for (int zIndex = 0; zIndex < dims[2]; ++zIndex) {
-            for (int xIndex = 0; xIndex < dims[0]; ++xIndex) {
-                for (int yIndex = 0; yIndex < dims[1]; ++yIndex) {
-                    lineIn[static_cast<std::size_t>(yIndex)] = current[flatIndex(xIndex, yIndex, zIndex, dims)];
-                }
-                edt1d(lineIn.data(), dims[1], spacing[1] * spacing[1], lineOut.data(), v, z);
-                for (int yIndex = 0; yIndex < dims[1]; ++yIndex) {
-                    next[flatIndex(xIndex, yIndex, zIndex, dims)] = lineOut[static_cast<std::size_t>(yIndex)];
-                }
+#pragma omp for schedule(static)
+        for (long long lineIndex = 0; lineIndex < yPassLineCount; ++lineIndex) {
+            const int zIndex = static_cast<int>(lineIndex / dims[0]);
+            const int xIndex = static_cast<int>(lineIndex % dims[0]);
+            for (int yIndex = 0; yIndex < dims[1]; ++yIndex) {
+                lineIn[static_cast<std::size_t>(yIndex)] = current[flatIndex(xIndex, yIndex, zIndex, dims)];
+            }
+            edt1d(lineIn.data(), dims[1], spacing[1] * spacing[1], lineOut.data(), v, z);
+            for (int yIndex = 0; yIndex < dims[1]; ++yIndex) {
+                next[flatIndex(xIndex, yIndex, zIndex, dims)] = lineOut[static_cast<std::size_t>(yIndex)];
             }
         }
     }
@@ -226,22 +228,23 @@ FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
 
     const double zStart = wallTimeSeconds();
 #ifdef USE_OMP
+    const long long zPassLineCount = static_cast<long long>(dims[1]) * dims[0];
 #pragma omp parallel
     {
         std::vector<DistanceVoxelType> lineIn(static_cast<std::size_t>(dims[2]));
         std::vector<DistanceVoxelType> lineOut(static_cast<std::size_t>(dims[2]));
         std::vector<int> v(static_cast<std::size_t>(dims[2]));
         std::vector<double> z(static_cast<std::size_t>(dims[2]) + 1);
-#pragma omp for collapse(2) schedule(static)
-        for (int yIndex = 0; yIndex < dims[1]; ++yIndex) {
-            for (int xIndex = 0; xIndex < dims[0]; ++xIndex) {
-                for (int zIndex = 0; zIndex < dims[2]; ++zIndex) {
-                    lineIn[static_cast<std::size_t>(zIndex)] = current[flatIndex(xIndex, yIndex, zIndex, dims)];
-                }
-                edt1d(lineIn.data(), dims[2], spacing[2] * spacing[2], lineOut.data(), v, z);
-                for (int zIndex = 0; zIndex < dims[2]; ++zIndex) {
-                    next[flatIndex(xIndex, yIndex, zIndex, dims)] = lineOut[static_cast<std::size_t>(zIndex)];
-                }
+#pragma omp for schedule(static)
+        for (long long lineIndex = 0; lineIndex < zPassLineCount; ++lineIndex) {
+            const int yIndex = static_cast<int>(lineIndex / dims[0]);
+            const int xIndex = static_cast<int>(lineIndex % dims[0]);
+            for (int zIndex = 0; zIndex < dims[2]; ++zIndex) {
+                lineIn[static_cast<std::size_t>(zIndex)] = current[flatIndex(xIndex, yIndex, zIndex, dims)];
+            }
+            edt1d(lineIn.data(), dims[2], spacing[2] * spacing[2], lineOut.data(), v, z);
+            for (int zIndex = 0; zIndex < dims[2]; ++zIndex) {
+                next[flatIndex(xIndex, yIndex, zIndex, dims)] = lineOut[static_cast<std::size_t>(zIndex)];
             }
         }
     }
