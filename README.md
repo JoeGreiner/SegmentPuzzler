@@ -2,7 +2,11 @@
 
 Tool to manipulate (merge, unmerge, regenerate, paint, select, ...) and proofread supervoxel-based segmentations. Under construction, more to come.
 
-<video src="https://github.com/user-attachments/assets/44012456-4d42-4e00-93a5-8bacb68d5d3b" autoplay muted loop playsinline style="width:100%; max-width:800px; display:block; margin:0 auto;">
+
+
+
+
+<video src="https://github.com/user-attachments/assets/478145be-9f75-4305-96e0-66af3779de33" autoplay muted loop playsinline style="width:100%; max-width:800px; display:block; margin:0 auto;">
   Your browser does not support the video tag.
 </video>
 
