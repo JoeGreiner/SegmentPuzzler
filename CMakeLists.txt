@@ -40,6 +40,9 @@ if (USE_OMP)
             set(OpenMP_ROOT "/usr/local/opt/libomp")
         endif ()
     endif ()
+    if (MSVC)
+        set(OpenMP_RUNTIME_MSVC "llvm" CACHE STRING "MSVC OpenMP runtime")
+    endif ()
     find_package(OpenMP REQUIRED COMPONENTS CXX)
 endif ()
 
@@ -333,18 +336,46 @@ if (USE_OMP)
     target_compile_definitions(SegmentPuzzler PRIVATE USE_OMP)
     target_link_libraries(SegmentPuzzler OpenMP::OpenMP_CXX)
 endif ()
+
+if (MSVC AND LINK_TIME_OPTIMIZATION)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT SEGMENT_PUZZLER_MSVC_IPO_SUPPORTED
+            OUTPUT SEGMENT_PUZZLER_MSVC_IPO_ERROR
+            LANGUAGES CXX)
+    if (SEGMENT_PUZZLER_MSVC_IPO_SUPPORTED)
+        set_property(TARGET SegmentPuzzler PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET SegmentPuzzler PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+        message(STATUS "MSVC IPO/LTCG enabled for SegmentPuzzler Release builds")
+    else()
+        message(WARNING "MSVC IPO/LTCG requested but not supported: ${SEGMENT_PUZZLER_MSVC_IPO_ERROR}")
+    endif()
+endif()
+
 vtk_module_autoinit(TARGETS SegmentPuzzler MODULES ${VTK_LIBRARIES})
 
 if (MSVC)
+    if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.21)
+        add_custom_command(TARGET SegmentPuzzler POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_RUNTIME_DLLS:SegmentPuzzler>
+                    $<TARGET_FILE_DIR:SegmentPuzzler>
+            COMMAND_EXPAND_LISTS
+            VERBATIM)
+    else()
+        message(WARNING
+                "Automatic runtime DLL copy requires CMake 3.21 or newer. "
+                "Add VTK, ITK, HDF5, Qt, and OpenMP DLL directories to PATH "
+                "before running SegmentPuzzler from the build tree.")
+    endif()
+
     file(GLOB OPENSSL_DLLS "${OPENSSL_BIN_DIR}/*.dll")
     if (OPENSSL_DLLS)
         message(STATUS "Copying OpenSSL DLLs from ${OPENSSL_BIN_DIR} to target directory.")
-        add_custom_command(TARGET SegmentPuzzler POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SegmentPuzzler>"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${OPENSSL_DLLS}
-                    "$<TARGET_FILE_DIR:SegmentPuzzler>"
-            VERBATIM)
+        foreach(DLL ${OPENSSL_DLLS})
+            add_custom_command(TARGET SegmentPuzzler POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${DLL} $<TARGET_FILE_DIR:SegmentPuzzler>)
+        endforeach()
     else()
         message(WARNING "No OpenSSL DLLs found in ${OPENSSL_BIN_DIR}. Ensure OpenSSL is installed and the path is correct.")
     endif()
