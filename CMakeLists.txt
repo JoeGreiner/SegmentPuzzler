@@ -295,7 +295,7 @@ set(SRC_WATERSHED_HELPER_DEPS
         )
 
 set(SRC_SEGMENTHANDLERS
-        src/segment_handling/graph.cpp
+        src/segment_handling/Graph.cpp
         src/segment_handling/graphBase.cpp
         src/segment_handling/initialEdge.cpp
         src/segment_handling/baseEdge.cpp
