@@ -12,9 +12,9 @@ fail() {
 }
 
 require_file() {
-    local path=$1
+    local required_path=$1
     local description=$2
-    [[ -f "$path" ]] || fail "$description not found at $path"
+    [[ -f "$required_path" ]] || fail "$description not found at $required_path"
 }
 
 if [[ -d build ]]; then
