@@ -58,7 +58,7 @@ QImage itkSignalThresholdPreview<dType>::calculateSliceQImage(unsigned int slice
                                   this->alpha);
 
     while (!it.IsAtEnd()) {
-        const bool isAboveThreshold = it.Get() > thresholdValue;
+        const bool isAboveThreshold = it.Get() >= thresholdValue;
         const auto &coords = it.GetIndex();
         (*sliceBuffer)[this->getPixMapIndex(coords, sliceAxis)] = isAboveThreshold ? onColor : offColor;
         ++it;

@@ -21,6 +21,7 @@
 #include "src/segment_handling/graphBase.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/ConnectedComponentLabelSplitter.h"
+#include "src/qtUtils/BoundaryConversionDialog.h"
 
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <src/qtUtils/QBackgroundIdRadioBox.h>
@@ -41,11 +42,7 @@ public:
         CreateEmptySegments
     };
 
-    enum class FloatBoundaryConversionMode {
-        CastValues,
-        ScaleMinMax,
-        ScaleZeroToOne
-    };
+    using FloatBoundaryConversionMode = boundary_conversion_dialog::ConversionMode;
 
     //TODO: Fix file handling. dataype + signal index should be enough as an unique identifier.
     SignalControl(std::shared_ptr<GraphBase> graphBaseIn,

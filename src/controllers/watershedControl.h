@@ -326,6 +326,8 @@ private:
     bool getDimensionMatchWithSegmentImage();
     void setGuiBusy(bool busy);
     void refreshViewers();
+    dataType::BoundaryImageType::Pointer maybeRescaleLowRangeBoundary(
+        dataType::BoundaryImageType::Pointer boundaries);
     void refreshAgglomertionPreview();
     void scheduleAgglomertionPreviewRefresh();
     void clearAgglomertionPreview();

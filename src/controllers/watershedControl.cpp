@@ -36,6 +36,7 @@
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
+#include "src/qtUtils/BoundaryConversionDialog.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/SignalNameUtils.h"
 #include <algorithm>
@@ -307,6 +308,76 @@ QPoint popupPositionForAnchor(QWidget *anchor) {
         return {};
     }
     return anchor->mapToGlobal(QPoint(0, anchor->height() + 2));
+}
+
+struct BoundaryIntensityRange {
+    dataType::BoundaryVoxelType minValue = 0;
+    dataType::BoundaryVoxelType maxValue = 0;
+    bool hasPixels = false;
+};
+
+BoundaryIntensityRange boundaryIntensityRange(dataType::BoundaryImageType::Pointer image) {
+    BoundaryIntensityRange range;
+    if (image.IsNull()) {
+        return range;
+    }
+
+    itk::ImageRegionConstIterator<dataType::BoundaryImageType> it(image, image->GetLargestPossibleRegion());
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+        const dataType::BoundaryVoxelType value = it.Get();
+        if (!range.hasPixels) {
+            range.minValue = value;
+            range.maxValue = value;
+            range.hasPixels = true;
+            continue;
+        }
+        range.minValue = std::min(range.minValue, value);
+        range.maxValue = std::max(range.maxValue, value);
+    }
+    return range;
+}
+
+dataType::BoundaryImageType::Pointer rescaleBoundaryImage(
+    dataType::BoundaryImageType::Pointer sourceImage,
+    boundary_conversion_dialog::ConversionMode conversionMode) {
+    if (sourceImage.IsNull() || conversionMode == boundary_conversion_dialog::ConversionMode::CastValues) {
+        return sourceImage;
+    }
+
+    auto convertedImage = dataType::BoundaryImageType::New();
+    convertedImage->SetRegions(sourceImage->GetLargestPossibleRegion());
+    convertedImage->SetSpacing(sourceImage->GetSpacing());
+    convertedImage->SetOrigin(sourceImage->GetOrigin());
+    convertedImage->SetDirection(sourceImage->GetDirection());
+    convertedImage->Allocate();
+
+    const BoundaryIntensityRange range = boundaryIntensityRange(sourceImage);
+    const double targetMax = static_cast<double>(std::numeric_limits<dataType::BoundaryVoxelType>::max());
+    const double minValue = static_cast<double>(range.minValue);
+    const double maxValue = static_cast<double>(range.maxValue);
+
+    itk::ImageRegionConstIterator<dataType::BoundaryImageType> inputIt(sourceImage, sourceImage->GetLargestPossibleRegion());
+    itk::ImageRegionIterator<dataType::BoundaryImageType> outputIt(convertedImage, convertedImage->GetLargestPossibleRegion());
+    for (inputIt.GoToBegin(), outputIt.GoToBegin(); !inputIt.IsAtEnd(); ++inputIt, ++outputIt) {
+        const double rawValue = static_cast<double>(inputIt.Get());
+        double convertedValue = rawValue;
+        switch (conversionMode) {
+            case boundary_conversion_dialog::ConversionMode::ScaleZeroToOne:
+                convertedValue = std::clamp(rawValue, 0.0, 1.0) * targetMax;
+                break;
+            case boundary_conversion_dialog::ConversionMode::ScaleMinMax:
+                convertedValue = maxValue > minValue
+                    ? ((rawValue - minValue) / (maxValue - minValue)) * targetMax
+                    : rawValue;
+                break;
+            case boundary_conversion_dialog::ConversionMode::CastValues:
+                break;
+        }
+        convertedValue = std::clamp(convertedValue, 0.0, targetMax);
+        outputIt.Set(static_cast<dataType::BoundaryVoxelType>(std::llround(convertedValue)));
+    }
+
+    return convertedImage;
 }
 
 } // namespace
@@ -684,6 +755,36 @@ void WatershedControl::openOpacityPopup(QTreeWidgetItem *item, QWidget *anchor) 
 
 void WatershedControl::refreshViewers() {
     orthoViewer->refreshViewers();
+}
+
+dataType::BoundaryImageType::Pointer WatershedControl::maybeRescaleLowRangeBoundary(
+    dataType::BoundaryImageType::Pointer boundaries) {
+    const BoundaryIntensityRange range = boundaryIntensityRange(boundaries);
+    if (!range.hasPixels || range.maxValue > 1) {
+        return boundaries;
+    }
+
+    const auto selectedMode = boundary_conversion_dialog::askForBoundaryConversionMode(
+        this,
+        tr("Low-Range Boundary Detected"),
+        tr("The selected boundary only contains values in the 0..1 range. "
+           "Watershed thresholding uses the unsigned-short boundary range, so the preview and threshold steps "
+           "usually work better after rescaling."),
+        tr("Current range: %1..%2\n"
+           "Use Scale 0..1 for probability or binary boundaries. Use Cast Values to keep the data unchanged.")
+            .arg(range.minValue)
+            .arg(range.maxValue));
+
+    if (!selectedMode || *selectedMode == boundary_conversion_dialog::ConversionMode::CastValues) {
+        return boundaries;
+    }
+
+    SP_LOG_INFO("watershed",
+                QStringLiteral("Rescaling low-range watershed boundary min=%1 max=%2 mode=%3")
+                    .arg(range.minValue)
+                    .arg(range.maxValue)
+                    .arg(static_cast<int>(*selectedMode)));
+    return rescaleBoundaryImage(boundaries, *selectedMode);
 }
 
 bool WatershedControl::shouldShowAgglomertionPreview() const {
@@ -1512,7 +1613,6 @@ void WatershedControl::forwardValueChangedSignal(int value) {
         pThresholdPreviewSignal->thresholdValue = value;
         if (thresholdPreviewSignalIndex >= 0) {
             setSignalActive(static_cast<size_t>(thresholdPreviewSignalIndex), true);
-            return;
         }
     }
     refreshViewers();
@@ -2270,6 +2370,7 @@ void WatershedControl::updateStepEnablement() {
 
     thresholdBoundariesButton->setEnabled(hasBoundary);
     thresholdValueSlider->setEnabled(hasBoundary);
+    thresholdValueSpinBox->setEnabled(hasBoundary);
     calculateDistanceMapButton->setEnabled(hasThreshold);
     calculateSeedsButton->setEnabled(hasDistanceMap);
     runWatershedButton->setEnabled(hasWatershedDistanceMap && hasWatershedSeeds && hasWatershedThreshold);
@@ -2807,7 +2908,7 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     dataType::BoundaryImageType::Pointer pBoundariesROIImage = ROIExtractionFilter->GetOutput();
     ROIExtractionFilter->Update();
 
-    // if min and max are 0 and 1, respectively, resize to 0 ... 2, so that the threshold preview works
+    // Log the ROI range before the shared low-range rescale prompt runs in addBoundaries().
     dataType::BoundaryVoxelType min, max;
     auto it = itk::ImageRegionIterator<dataType::BoundaryImageType>(pBoundariesROIImage, pBoundariesROIImage->GetLargestPossibleRegion());
     min = it.Get();
@@ -2827,7 +2928,7 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
 }
 
 void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn) {
-    pBoundaries = pBoundariesIn;
+    pBoundaries = maybeRescaleLowRangeBoundary(pBoundariesIn);
 
     // 1. Raw Boundaries Signal
     auto rawSignal = std::make_unique<itkSignal<dataType::BoundaryVoxelType>>(pBoundaries);
@@ -2850,7 +2951,7 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     const QSignalBlocker spinBlocker(thresholdValueSpinBox);
     thresholdValueSlider->setRange(minValue, maxValue);
     thresholdValueSpinBox->setRange(minValue, maxValue);
-    const int initialThresholdValue = static_cast<int>((minValue + maxValue)/2);
+    const int initialThresholdValue = minValue + ((maxValue - minValue + 1) / 2);
     thresholdValueSlider->setValue(initialThresholdValue);
     thresholdValueSpinBox->setValue(initialThresholdValue);
     pThresholdPreviewSignal->thresholdValue = initialThresholdValue;

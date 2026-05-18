@@ -358,26 +358,11 @@ void SignalControl::showInfoMessage(const QString &message) const {
 
 std::optional<SignalControl::FloatBoundaryConversionMode> SignalControl::askForFloatBoundaryConversionMode(
     const QString &fileName) const {
-    QMessageBox msgBox(const_cast<SignalControl *>(this));
-    msgBox.setWindowTitle(tr("Float Boundary Detected"));
-    msgBox.setText(tr("The loaded boundary is float-valued. How should it be converted to the boundary type?"));
-    msgBox.setInformativeText(QFileInfo(fileName).fileName());
-    QPushButton *scaleZeroToOneButton = msgBox.addButton(tr("Scale 0..1"), QMessageBox::AcceptRole);
-    QPushButton *scaleMinMaxButton = msgBox.addButton(tr("Scale Min-Max"), QMessageBox::ActionRole);
-    QPushButton *castValuesButton = msgBox.addButton(tr("Cast Values"), QMessageBox::DestructiveRole);
-    msgBox.addButton(QMessageBox::Cancel);
-    msgBox.exec();
-
-    if (msgBox.clickedButton() == scaleZeroToOneButton) {
-        return FloatBoundaryConversionMode::ScaleZeroToOne;
-    }
-    if (msgBox.clickedButton() == scaleMinMaxButton) {
-        return FloatBoundaryConversionMode::ScaleMinMax;
-    }
-    if (msgBox.clickedButton() == castValuesButton) {
-        return FloatBoundaryConversionMode::CastValues;
-    }
-    return std::nullopt;
+    return boundary_conversion_dialog::askForBoundaryConversionMode(
+        const_cast<SignalControl *>(this),
+        tr("Float Boundary Detected"),
+        tr("The loaded boundary is float-valued. How should it be converted to the boundary type?"),
+        QFileInfo(fileName).fileName());
 }
 
 bool SignalControl::hasWorkingSegments() const {
