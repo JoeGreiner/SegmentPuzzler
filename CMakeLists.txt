@@ -6,7 +6,7 @@ set(BUILD_SHARED_LIBS ON)
 
 message(STATUS "Building SegmentPuzzler Version ${PROJECT_VERSION}")
 
-if (NOT CMAKE_BUILD_TYPE)
+if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING
             "None Debug Release RelWithDebInfo MinSizeRel"
             FORCE)
@@ -115,22 +115,13 @@ endif ()
 ### MSVC compile options
 if (MSVC)
     MESSAGE(STATUS "Using MSVC")
-    if (CMAKE_BUILD_TYPE MATCHES RELEASE)
-        add_compile_options(/Ox)
-    endif ()
+    add_compile_options("$<$<CONFIG:Release>:/Ox>")
     add_compile_options(/F 8388608)
 endif ()
 
-### Linux compile options
-if (UNIX AND RELEASE)
-    add_compile_options(-Ofast)
-    if (LINK_TIME_OPTIMIZATION)
-        add_compile_options(-flto)
-    endif ()
-endif ()
-
-if (UNIX AND DEBUG)
-    add_compile_options(-O2 -g3)
+### Unix compile options
+if (UNIX)
+    add_compile_options("$<$<CONFIG:Debug>:-O2>" "$<$<CONFIG:Debug>:-g3>")
 endif ()
 
 if (RUN_WITH_ASAN)
@@ -338,17 +329,17 @@ if (USE_OMP)
     target_link_libraries(SegmentPuzzler OpenMP::OpenMP_CXX)
 endif ()
 
-if (MSVC AND LINK_TIME_OPTIMIZATION)
+if (LINK_TIME_OPTIMIZATION)
     include(CheckIPOSupported)
-    check_ipo_supported(RESULT SEGMENT_PUZZLER_MSVC_IPO_SUPPORTED
-            OUTPUT SEGMENT_PUZZLER_MSVC_IPO_ERROR
+    check_ipo_supported(RESULT SEGMENT_PUZZLER_IPO_SUPPORTED
+            OUTPUT SEGMENT_PUZZLER_IPO_ERROR
             LANGUAGES CXX)
-    if (SEGMENT_PUZZLER_MSVC_IPO_SUPPORTED)
+    if (SEGMENT_PUZZLER_IPO_SUPPORTED)
         set_property(TARGET SegmentPuzzler PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         set_property(TARGET SegmentPuzzler PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
-        message(STATUS "MSVC IPO/LTCG enabled for SegmentPuzzler Release builds")
+        message(STATUS "IPO/LTO enabled for SegmentPuzzler Release builds")
     else()
-        message(WARNING "MSVC IPO/LTCG requested but not supported: ${SEGMENT_PUZZLER_MSVC_IPO_ERROR}")
+        message(WARNING "IPO/LTO requested but not supported: ${SEGMENT_PUZZLER_IPO_ERROR}")
     endif()
 endif()
 
