@@ -38,6 +38,10 @@ build/
 build-*/
 cmake-build-*/
 .idea/
+.vs/
+*.user
+*.user~RF*.TMP
+*~RF*.TMP
 /test/
 /examples/benchmarks/runs/
 /ideas.md
