@@ -1218,7 +1218,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     const qint64 t_voi = QDateTime::currentMSecsSinceEpoch();
     auto importer = vtkSmartPointer<vtkImageImport>::New();
     importer->SetImportVoidPointer(const_cast<dataType::SegmentIdType *>(buf));
-    importer->SetDataScalarType(VTK_UNSIGNED_INT);
+    importer->SetDataScalarType(segmentIdVtkDataType());
     importer->SetNumberOfScalarComponents(1);
     importer->SetWholeExtent(0, dimX - 1, 0, dimY - 1, 0, dimZ - 1);
     importer->SetDataExtentToWholeExtent();
