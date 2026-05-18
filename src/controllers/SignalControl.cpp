@@ -317,12 +317,26 @@ QPoint popupPositionForAnchor(QWidget *anchor) {
     return anchor->mapToGlobal(QPoint(0, anchor->height() + 2));
 }
 
+template<typename ImagePointer>
+slice_geometry::Dimensions3D imageDimensions(const ImagePointer &image) {
+    const auto size = image->GetLargestPossibleRegion().GetSize();
+    return slice_geometry::makeDimensions(size[0], size[1], size[2]);
+}
+
+template<typename ImagePointer>
+bool imageMatchesDimensions(const ImagePointer &image, const slice_geometry::Dimensions3D &expectedDimensions) {
+    const auto dimensions = imageDimensions(image);
+    return dimensions.x == expectedDimensions.x &&
+           dimensions.y == expectedDimensions.y &&
+           dimensions.z == expectedDimensions.z;
+}
+
 bool loadChoiceRequiresWorkingSegments(ImageLoadChoice loadChoice) {
     switch (loadChoice) {
         case ImageLoadChoice::Supervoxels:
             return false;
         case ImageLoadChoice::Image:
-            return true;
+            return false;
         case ImageLoadChoice::Boundaries:
             return false;
         case ImageLoadChoice::Refinement:
@@ -490,7 +504,7 @@ void SignalControl::refreshUiState() {
     updateSelectionLabel(refinementTreeWidget, selectedRefinementLabel);
     updateSelectionLabel(segmentationTreeWidget, selectedSegmentationLabel);
 
-    addImageAction->setEnabled(enabled && hasWorkingSegments());
+    addImageAction->setEnabled(enabled);
     addSegmentsAction->setEnabled(enabled && !hasWorkingSegments());
     addBoundariesAction->setEnabled(enabled);
     loadRefinementAction->setEnabled(enabled && hasWorkingSegments());
@@ -500,7 +514,7 @@ void SignalControl::refreshUiState() {
     runWatershedAction->setEnabled(enabled && hasSelectedBoundary());
     mergeWithRefinementAction->setEnabled(enabled && hasSelectedRefinement());
     setIdTransparentAction->setEnabled(enabled && hasSelectedRefinement());
-    toggleROISelectionAction->setEnabled(enabled);
+    toggleROISelectionAction->setEnabled(enabled && hasWorkingSegments());
     togglePaintModeAction->setEnabled(enabled && hasSelectedSegmentation());
     setPaintIdAction->setEnabled(enabled && hasSelectedSegmentation());
     dilateSegmentationAction->setEnabled(enabled && hasSelectedSegmentation());
@@ -1004,6 +1018,74 @@ QString SignalControl::resolvedDisplayName(const QString &fileName, const QStrin
     return signal_name_utils::makeUniqueSignalName(allSignalList, requestedName);
 }
 
+std::optional<slice_geometry::Dimensions3D> SignalControl::expectedDimensionsForNewSignal(
+    bool forceShapeOfSegments) const {
+    itkSignalBase *referenceSignal = nullptr;
+    if (segmentsGraph != nullptr && forceShapeOfSegments) {
+        referenceSignal = segmentsGraph;
+    } else if (segmentsGraph == nullptr && !allSignalList.empty()) {
+        referenceSignal = allSignalList.front();
+    }
+
+    if (referenceSignal == nullptr) {
+        return std::nullopt;
+    }
+
+    return slice_geometry::makeDimensions(
+        referenceSignal->getDimX(),
+        referenceSignal->getDimY(),
+        referenceSignal->getDimZ());
+}
+
+bool SignalControl::dimensionsMatchExpectedDimensions(unsigned long dimX,
+                                                      unsigned long dimY,
+                                                      unsigned long dimZ,
+                                                      bool forceShapeOfSegments) const {
+    const auto expectedDimensions = expectedDimensionsForNewSignal(forceShapeOfSegments);
+    if (!expectedDimensions) {
+        return true;
+    }
+
+    return dimX == expectedDimensions->x &&
+           dimY == expectedDimensions->y &&
+           dimZ == expectedDimensions->z;
+}
+
+void SignalControl::reportDimensionMismatch(unsigned long dimX,
+                                            unsigned long dimY,
+                                            unsigned long dimZ,
+                                            bool forceShapeOfSegments) const {
+    const auto expectedDimensions = expectedDimensionsForNewSignal(forceShapeOfSegments);
+    if (!expectedDimensions) {
+        return;
+    }
+
+    const QString referenceName =
+        (segmentsGraph != nullptr && forceShapeOfSegments)
+            ? tr("loaded supervoxels")
+            : tr("the first loaded layer");
+
+    SP_LOG_WARNING(
+        "io",
+        QStringLiteral("Dimension mismatch while adding volume. reference=[%1 %2 %3] loaded=[%4 %5 %6]")
+            .arg(expectedDimensions->x)
+            .arg(expectedDimensions->y)
+            .arg(expectedDimensions->z)
+            .arg(dimX)
+            .arg(dimY)
+            .arg(dimZ));
+
+    showInfoMessage(
+        tr("The loaded volume dimensions do not match %1.\n\nExpected: %2 x %3 x %4\nLoaded: %5 x %6 x %7")
+            .arg(referenceName)
+            .arg(expectedDimensions->x)
+            .arg(expectedDimensions->y)
+            .arg(expectedDimensions->z)
+            .arg(dimX)
+            .arg(dimY)
+            .arg(dimZ));
+}
+
 void SignalControl::invokeLoadCallbackLater(LoadCallback then, LoadResult result) {
     if (!then) {
         return;
@@ -1153,11 +1235,16 @@ bool SignalControl::insertLoadedImage(const LoadedImageData &loadedImage,
 }
 
 void SignalControl::registerImageSignal(size_t signalIndexGlobal, const QString &name) {
+    const bool centerFirstStandaloneLayer = !hasWorkingSegments() && allSignalList.size() == 1;
     allSignalList[signalIndexGlobal]->setLUTContinuous();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
     attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    if (centerFirstStandaloneLayer) {
+        orthoViewer->setViewToMiddleOfStack();
+    }
+    refreshUiState();
 }
 
 void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const QString &name) {
@@ -1288,11 +1375,16 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
     }
 
     const bool hadWorkingSegments = hasWorkingSegments();
+    const auto expectedDimensions = expectedDimensionsForNewSignal(hadWorkingSegments);
     taskRunner->runWithLabel(
         QStringLiteral("Loading segmentation..."),
-        [this, fileName, createWorkingSegments, hadWorkingSegments]() mutable {
+        [this, fileName, createWorkingSegments, hadWorkingSegments, expectedDimensions]() mutable {
             SegmentationLoadResultData result;
             result.segmentationImage = ITKImageLoader<GraphSegmentType>(fileName);
+            if (expectedDimensions && !imageMatchesDimensions(result.segmentationImage, *expectedDimensions)) {
+                result.dimensionMismatch = true;
+                return result;
+            }
             if (!hadWorkingSegments) {
                 graphBase->pGraph->updateBackgroundIdFromVolume(result.segmentationImage);
             }
@@ -1302,6 +1394,13 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
             return result;
         },
         [this, fileName, displayedName, hadWorkingSegments, then = std::move(then)](SegmentationLoadResultData result) mutable {
+            if (result.dimensionMismatch && result.segmentationImage != nullptr) {
+                const auto dimensions = imageDimensions(result.segmentationImage);
+                reportDimensionMismatch(dimensions.x, dimensions.y, dimensions.z, hadWorkingSegments);
+                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                return;
+            }
+
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(result.segmentationImage, signalIndexGlobal, hadWorkingSegments);
             if (ok) {
@@ -1343,23 +1442,42 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
         return;
     }
 
+    struct SegmentsGraphLoadResult {
+        GraphSegmentImageType::Pointer image;
+        bool dimensionMismatch = false;
+    };
+
+    const auto expectedDimensions = expectedDimensionsForNewSignal(false);
     taskRunner->runWithLabel(
         QStringLiteral("Loading supervoxels and building graph..."),
-        [this, fileName]() mutable {
+        [this, fileName, expectedDimensions]() mutable {
+            SegmentsGraphLoadResult result;
             // Modifies graphBase on the worker thread. Safe only because
             // one task runs at a time and the owning window is blocked.
             auto pImage = ITKImageLoader<GraphSegmentType>(fileName);
+            result.image = pImage;
+            if (expectedDimensions && !imageMatchesDimensions(pImage, *expectedDimensions)) {
+                result.dimensionMismatch = true;
+                return result;
+            }
             graphBase->ignoredSegmentLabels.clear();
             graphBase->edgeStatus.clear();
             graphBase->colorLookUpEdgesStatus.clear();
             graphBase->pWorkingSegmentsImage = pImage;
             graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
             graphBase->pGraph->constructFromVolume(pImage);
-            return pImage;
+            return result;
         },
-        [this, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
+        [this, then = std::move(then)](SegmentsGraphLoadResult result) mutable {
+            if (result.dimensionMismatch && result.image != nullptr) {
+                const auto dimensions = imageDimensions(result.image);
+                reportDimensionMismatch(dimensions.x, dimensions.y, dimensions.z, false);
+                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                return;
+            }
+
             size_t signalIndexGlobal = 0;
-            bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, false);
+            bool ok = insertImageSegmenttype(result.image, signalIndexGlobal, false);
             if (ok) {
                 registerSegmentsGraphSignal(signalIndexGlobal);
             } else {
@@ -1380,9 +1498,10 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
     }
 
     const bool createEmptySegments = loadMode == BoundaryLoadMode::CreateEmptySegments;
+    const auto expectedDimensions = expectedDimensionsForNewSignal(false);
     taskRunner->runWithLabel(
         QStringLiteral("Loading boundaries..."),
-        [this, fileName, createEmptySegments, floatConversionMode]() mutable {
+        [this, fileName, createEmptySegments, floatConversionMode, expectedDimensions]() mutable {
             BoundaryLoadResult result;
             unsigned int dimension = 0;
             itk::ImageIOBase::IOComponentType boundaryDataType = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
@@ -1404,6 +1523,10 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                     break;
             }
             if (createEmptySegments) {
+                if (expectedDimensions && !imageMatchesDimensions(result.boundaryImage, *expectedDimensions)) {
+                    return result;
+                }
+
                 result.emptySegmentsImage = dataType::SegmentsImageType::New();
                 result.emptySegmentsImage->SetRegions(result.boundaryImage->GetLargestPossibleRegion());
                 result.emptySegmentsImage->SetSpacing(result.boundaryImage->GetSpacing());
@@ -1438,10 +1561,6 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
 }
 
 void SignalControl::addImage(QString fileName, QString displayedName) {
-    if (!hasWorkingSegments()) {
-        showInfoMessage("Please load supervoxels first.");
-        return;
-    }
     SP_LOG_INFO("io", QStringLiteral("Adding image file %1").arg(fileName));
     addImageAsync(fileName, displayedName);
 }

@@ -187,6 +187,7 @@ SegmentPuzzler
     [--boundary $path_to_boundary [$display_name_boundary]]
     [--refinement $path_to_refinement [$display_name_refinement]]
 ```
+`--image` can be used on its own to open a 3D volume as an XY/XZ/YZ image viewer.
 </details>
 
 <details>

@@ -209,6 +209,7 @@ private:
     struct SegmentationLoadResultData {
         GraphSegmentImageType::Pointer segmentationImage;
         GraphSegmentImageType::Pointer workingSegmentsImage;
+        bool dimensionMismatch = false;
     };
 
     size_t signalIndexForItem(QTreeWidgetItem *item) const;
@@ -328,6 +329,15 @@ private:
     QString resolvedDisplayName(const QString &fileName, const QString &displayedName) const;
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
     GraphSegmentImageType::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage);
+    std::optional<slice_geometry::Dimensions3D> expectedDimensionsForNewSignal(bool forceShapeOfSegments) const;
+    bool dimensionsMatchExpectedDimensions(unsigned long dimX,
+                                           unsigned long dimY,
+                                           unsigned long dimZ,
+                                           bool forceShapeOfSegments) const;
+    void reportDimensionMismatch(unsigned long dimX,
+                                 unsigned long dimY,
+                                 unsigned long dimZ,
+                                 bool forceShapeOfSegments) const;
 
     LoadedImageData loadImageData(QString fileName,
                                   bool forceSegmentDataTypeUInt = false,
@@ -353,25 +363,28 @@ private:
         size_t                             &signalIndexGlobalOut,
         bool                                forceShapeOfSegments)
     {
+        if (pImage == nullptr) {
+            SP_LOG_WARNING("io", QStringLiteral("Ignoring null image while adding a layer"));
+            return false;
+        }
+
         std::unique_ptr<itkSignal<T>> pSignal(new itkSignal<T>(pImage));
-        const bool shapeCheckPassed =
-            !forceShapeOfSegments || segmentsGraph == nullptr || pSignal->isShapeMatched(segmentsGraph);
-        if (shapeCheckPassed) {
+        if (dimensionsMatchExpectedDimensions(
+                pSignal->getDimX(),
+                pSignal->getDimY(),
+                pSignal->getDimZ(),
+                forceShapeOfSegments)) {
             signalIndexGlobalOut = allSignalList.size();
             itkSignalBase *pRaw = pSignal.get();
             ownedSignals.push_back(std::move(pSignal));
             allSignalList.push_back(pRaw);
             return true;
         } else {
-            SP_LOG_WARNING(
-                "io",
-                QStringLiteral("Dimension mismatch while adding image. segments=[%1 %2 %3] image=[%4 %5 %6]")
-                    .arg(segmentsGraph->getDimX())
-                    .arg(segmentsGraph->getDimY())
-                    .arg(segmentsGraph->getDimZ())
-                    .arg(pSignal->getDimX())
-                    .arg(pSignal->getDimY())
-                    .arg(pSignal->getDimZ()));
+            reportDimensionMismatch(
+                pSignal->getDimX(),
+                pSignal->getDimY(),
+                pSignal->getDimZ(),
+                forceShapeOfSegments);
             return false;
         }
     }

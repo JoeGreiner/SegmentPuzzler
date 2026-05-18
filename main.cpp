@@ -160,7 +160,7 @@ int main(int argc, char *argv[]) {
     QString pathToBoundary, boundaryName;
     QString pathToRefinement, refinementName;
 
-    if(argc >= 2) {
+    if (argc >= 2) {
         for (int i = 1; i < argc; ++i) {
             if (std::string(argv[i]) == "--help") {
                 std::cout << "SegmentPuzzler\n"
@@ -174,83 +174,75 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if(argc >= 2){
+    if (argc >= 2) {
         for (int i = 1; i < argc; ++i) {
-            if ((std::string(argv[i]) == "--segments") & (i+1 < argc)) {
-                loadSegment=true;
+            const std::string argument = std::string(argv[i]);
+            if ((argument == "--segments") && (i + 1 < argc)) {
+                loadSegment = true;
                 pathToSegment = QString(argv[i+1]);
                 SP_LOG_INFO("app", QStringLiteral("Startup segments path=%1").arg(pathToSegment));
                 segmentNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                if (segmentNameIsGiven){
+                if (segmentNameIsGiven) {
                     segmentName = argv[i+2];
                     SP_LOG_INFO("app", QStringLiteral("Startup segments displayName=%1").arg(segmentName));
                 }
-                if (!checkIfPathExists(pathToSegment)){
+                if (!checkIfPathExists(pathToSegment)) {
                     SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segments path=%1, skipping").arg(pathToSegment));
                     pathToSegment.clear();
+                }
+            } else if ((argument == "--image") && (i + 1 < argc)) {
+                pathToImage = QString(argv[i+1]);
+                SP_LOG_INFO("app", QStringLiteral("Startup image path=%1").arg(pathToImage));
+                imageNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
+                if (imageNameIsGiven) {
+                    imageName = argv[i+2];
+                    SP_LOG_INFO("app", QStringLiteral("Startup image displayName=%1").arg(imageName));
+                }
+                if (!checkIfPathExists(pathToImage)) {
+                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup image path=%1, skipping").arg(pathToImage));
+                    pathToImage.clear();
+                }
+            } else if ((argument == "--segmentation") && (i + 1 < argc)) {
+                pathToSegmentation = QString(argv[i+1]);
+                SP_LOG_INFO("app", QStringLiteral("Startup segmentation path=%1").arg(pathToSegmentation));
+                segmentationNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
+                if (segmentationNameIsGiven) {
+                    segmentationName = argv[i+2];
+                    SP_LOG_INFO("app", QStringLiteral("Startup segmentation displayName=%1").arg(segmentationName));
+                }
+                if (!checkIfPathExists(pathToSegmentation)) {
+                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segmentation path=%1, skipping").arg(pathToSegmentation));
+                    pathToSegmentation.clear();
+                }
+            } else if ((argument == "--boundary") && (i + 1 < argc)) {
+                pathToBoundary = QString(argv[i+1]);
+                SP_LOG_INFO("app", QStringLiteral("Startup boundary path=%1").arg(pathToBoundary));
+                boundaryNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
+                if (boundaryNameIsGiven) {
+                    boundaryName = argv[i+2];
+                    SP_LOG_INFO("app", QStringLiteral("Startup boundary displayName=%1").arg(boundaryName));
+                }
+                if (!checkIfPathExists(pathToBoundary)) {
+                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup boundary path=%1, skipping").arg(pathToBoundary));
+                    pathToBoundary.clear();
+                }
+            } else if ((argument == "--refinement") && (i + 1 < argc)) {
+                pathToRefinement = QString(argv[i+1]);
+                SP_LOG_INFO("app", QStringLiteral("Startup refinement path=%1").arg(pathToRefinement));
+                refinementNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
+                if (refinementNameIsGiven) {
+                    refinementName = argv[i+2];
+                    SP_LOG_INFO("app", QStringLiteral("Startup refinement displayName=%1").arg(refinementName));
+                }
+                if (!checkIfPathExists(pathToRefinement)) {
+                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup refinement path=%1, skipping").arg(pathToRefinement));
+                    pathToRefinement.clear();
                 }
             }
         }
     }
 
     if (loadSegment && !pathToSegment.isEmpty()) {
-        if(argc >= 2){
-            for (int i = 1; i < argc; ++i) {
-                if ((std::string(argv[i]) == "--image") & (i+1 < argc)) {
-                    pathToImage = QString(argv[i+1]);
-                    SP_LOG_INFO("app", QStringLiteral("Startup image path=%1").arg(pathToImage));
-                    imageNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (imageNameIsGiven){
-                        imageName = argv[i+2];
-                        SP_LOG_INFO("app", QStringLiteral("Startup image displayName=%1").arg(imageName));
-                    }
-                    if (!checkIfPathExists(pathToImage)){
-                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup image path=%1, skipping").arg(pathToImage));
-                        pathToImage.clear();
-                    }
-                }
-                if ((std::string(argv[i]) == "--segmentation") & (i+1 < argc)) {
-                    pathToSegmentation = QString(argv[i+1]);
-                    SP_LOG_INFO("app", QStringLiteral("Startup segmentation path=%1").arg(pathToSegmentation));
-                    segmentationNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (segmentationNameIsGiven){
-                        segmentationName = argv[i+2];
-                        SP_LOG_INFO("app", QStringLiteral("Startup segmentation displayName=%1").arg(segmentationName));
-                    }
-                    if (!checkIfPathExists(pathToSegmentation)) {
-                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segmentation path=%1, skipping").arg(pathToSegmentation));
-                        pathToSegmentation.clear();
-                    }
-                }
-                if ((std::string(argv[i]) == "--boundary") & (i+1 < argc)) {
-                    pathToBoundary = QString(argv[i+1]);
-                    SP_LOG_INFO("app", QStringLiteral("Startup boundary path=%1").arg(pathToBoundary));
-                    boundaryNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (boundaryNameIsGiven){
-                        boundaryName = argv[i+2];
-                        SP_LOG_INFO("app", QStringLiteral("Startup boundary displayName=%1").arg(boundaryName));
-                    }
-                    if (!checkIfPathExists(pathToBoundary)) {
-                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup boundary path=%1, skipping").arg(pathToBoundary));
-                        pathToBoundary.clear();
-                    }
-                }
-                if ((std::string(argv[i]) == "--refinement") & (i+1 < argc)) {
-                    pathToRefinement = QString(argv[i+1]);
-                    SP_LOG_INFO("app", QStringLiteral("Startup refinement path=%1").arg(pathToRefinement));
-                    refinementNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                    if (refinementNameIsGiven){
-                        refinementName = argv[i+2];
-                        SP_LOG_INFO("app", QStringLiteral("Startup refinement displayName=%1").arg(refinementName));
-                    }
-                    if (!checkIfPathExists(pathToRefinement)) {
-                        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup refinement path=%1, skipping").arg(pathToRefinement));
-                        pathToRefinement.clear();
-                    }
-                }
-            }
-        }
-
         myMainWindow->mySignalControl->addSegmentsGraphAsync(
             pathToSegment,
             [myMainWindow,
@@ -320,6 +312,8 @@ int main(int argc, char *argv[]) {
                     loadSegmentation();
                 }
             });
+    } else if (!pathToImage.isEmpty()) {
+        myMainWindow->mySignalControl->addImageAsync(pathToImage, imageName);
     }
 
     int val = 0;
