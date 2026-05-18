@@ -1486,6 +1486,9 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
 
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setRenderWindow(renWin);
+    m_vtkWidget->setEnableTouchEventProcessing(false);
+    m_vtkWidget->setMouseTracking(false);
+    m_vtkWidget->setAttribute(Qt::WA_Hover, false);
     QSizePolicy vtkSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     vtkSizePolicy.setRetainSizeWhenHidden(true);
     m_vtkWidget->setSizePolicy(vtkSizePolicy);
@@ -1790,23 +1793,47 @@ void Segment3DViewerDialog::finishInitialRender() {
 }
 
 bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == m_vtkWidget
-        && event != nullptr
-        && event->type() == QEvent::MouseButtonPress
-        && m_vtkWidget != nullptr
-        && m_vtkWidget->renderWindow() != nullptr) {
-        auto *mouseEvent = static_cast<QMouseEvent *>(event);
-        if (mouseEvent->button() == Qt::LeftButton) {
-            const double devicePixelRatio = m_vtkWidget->devicePixelRatioF();
-            const int pickX = static_cast<int>(std::lround(mouseEvent->pos().x() * devicePixelRatio));
-            const int pickY = static_cast<int>(std::lround(
-                (m_vtkWidget->height() - mouseEvent->pos().y() - 1) * devicePixelRatio));
-            const Qt::KeyboardModifiers effectiveModifiers =
-                mouseEvent->modifiers() | QApplication::keyboardModifiers();
-            if (tryNavigateToPickedLabel(pickX, pickY, effectiveModifiers, "qt")) {
+    if (watched == m_vtkWidget && event != nullptr) {
+        switch (event->type()) {
+            case QEvent::HoverEnter:
+            case QEvent::HoverMove:
+            case QEvent::HoverLeave:
+            case QEvent::TouchBegin:
+            case QEvent::TouchUpdate:
+            case QEvent::TouchEnd:
+            case QEvent::TouchCancel:
                 event->accept();
                 return true;
+
+            case QEvent::MouseMove: {
+                auto *mouseEvent = static_cast<QMouseEvent *>(event);
+                if (mouseEvent->buttons() == Qt::NoButton) {
+                    event->accept();
+                    return true;
+                }
+                break;
             }
+
+            case QEvent::MouseButtonPress:
+                if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+                    auto *mouseEvent = static_cast<QMouseEvent *>(event);
+                    if (mouseEvent->button() == Qt::LeftButton) {
+                        const double devicePixelRatio = m_vtkWidget->devicePixelRatioF();
+                        const int pickX = static_cast<int>(std::lround(mouseEvent->pos().x() * devicePixelRatio));
+                        const int pickY = static_cast<int>(std::lround(
+                            (m_vtkWidget->height() - mouseEvent->pos().y() - 1) * devicePixelRatio));
+                        const Qt::KeyboardModifiers effectiveModifiers =
+                            mouseEvent->modifiers() | QApplication::keyboardModifiers();
+                        if (tryNavigateToPickedLabel(pickX, pickY, effectiveModifiers, "qt")) {
+                            event->accept();
+                            return true;
+                        }
+                    }
+                }
+                break;
+
+            default:
+                break;
         }
     }
 
