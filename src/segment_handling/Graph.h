@@ -18,6 +18,7 @@
 #include "node.h"
 #include "SegmentManager.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/ConnectedComponentLabelSplitter.h"
 #include "src/utils/utils.h"
 // todo: add this to node/featurres or whatever
 struct CenterOfMass {
@@ -97,6 +98,8 @@ public:
                                           Projected3DCutProfile *profileOut = nullptr);
     void transferSegmentationSegmentToInitialSegment(int x, int y, int z);
     void setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn);
+    segment_puzzler::connected_components::ConnectedComponentSplitStats splitDisconnectedInitialSegments(
+        segment_puzzler::connected_components::ConnectivityStencil connectivity);
 
 
     static constexpr int Dimension = 3;

@@ -1092,6 +1092,9 @@ void MainWindow::showHotkeys() {
 <p class="bold_header">CMD + Click</p>
 <p>Set other orthogonal views to slice through the point under the cursor.</p>
 
+<p class="bold_header">F7</p>
+<p>Run the connected component split filter with the selected target and connectivity.</p>
+
 <p class="bold_header">F8</p>
 <p>Open the Segment Feature Table: shape features for all labels in the selected segmentation, sortable and color-coded. Click a row to navigate to that label.</p>
 

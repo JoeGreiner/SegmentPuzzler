@@ -11,6 +11,7 @@
 #include <QFileDialog>
 #include <QColorDialog>
 #include <QFont>
+#include <QActionGroup>
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QAbstractItemView>
@@ -395,6 +396,48 @@ bool SignalControl::hasSelectedBoundary() const {
     return graphBase->pSelectedBoundary != nullptr;
 }
 
+SignalControl::ConnectedComponentSplitTarget SignalControl::selectedConnectedComponentSplitTarget() const {
+    if (connectedComponentSplitTargetSegmentationAction != nullptr &&
+        connectedComponentSplitTargetSegmentationAction->isChecked()) {
+        return ConnectedComponentSplitTarget::SelectedSegmentation;
+    }
+    return ConnectedComponentSplitTarget::InitialSegments;
+}
+
+segment_puzzler::connected_components::ConnectivityStencil SignalControl::selectedConnectedComponentConnectivity() const {
+    if (connectedComponentSplitConnectivitySixAction != nullptr &&
+        connectedComponentSplitConnectivitySixAction->isChecked()) {
+        return segment_puzzler::connected_components::ConnectivityStencil::SixConnected;
+    }
+    return segment_puzzler::connected_components::ConnectivityStencil::Full;
+}
+
+bool SignalControl::connectedComponentSplitTargetAvailable(ConnectedComponentSplitTarget target) const {
+    switch (target) {
+        case ConnectedComponentSplitTarget::InitialSegments:
+            return hasWorkingSegments();
+        case ConnectedComponentSplitTarget::SelectedSegmentation:
+            return hasSelectedSegmentation();
+    }
+    return false;
+}
+
+void SignalControl::ensureConnectedComponentSplitTargetAvailable() {
+    if (connectedComponentSplitTargetInitialAction == nullptr ||
+        connectedComponentSplitTargetSegmentationAction == nullptr) {
+        return;
+    }
+
+    if (connectedComponentSplitTargetAvailable(selectedConnectedComponentSplitTarget())) {
+        return;
+    }
+    if (hasWorkingSegments()) {
+        connectedComponentSplitTargetInitialAction->setChecked(true);
+    } else if (hasSelectedSegmentation()) {
+        connectedComponentSplitTargetSegmentationAction->setChecked(true);
+    }
+}
+
 void SignalControl::updateModeActionTexts() {
     if (toggleROISelectionAction != nullptr) {
         toggleROISelectionAction->setText(roiSelectionActive ? tr("Disable ROI Selection")
@@ -446,6 +489,7 @@ void SignalControl::setAnnotationToolMode(SliceViewer::ToolMode toolMode) {
 
 void SignalControl::refreshUiState() {
     const bool enabled = !guiBusy;
+    ensureConnectedComponentSplitTargetAvailable();
 
     signalTreeWidget->setEnabled(enabled);
     probabilityTreeWidget->setEnabled(enabled);
@@ -476,6 +520,12 @@ void SignalControl::refreshUiState() {
     setPaintIdAction->setEnabled(enabled && hasSelectedSegmentation());
     dilateSegmentationAction->setEnabled(enabled && hasSelectedSegmentation());
     erodeSegmentationAction->setEnabled(enabled && hasSelectedSegmentation());
+    connectedComponentSplitTargetInitialAction->setEnabled(enabled && hasWorkingSegments());
+    connectedComponentSplitTargetSegmentationAction->setEnabled(enabled && hasSelectedSegmentation());
+    connectedComponentSplitConnectivityFullAction->setEnabled(enabled);
+    connectedComponentSplitConnectivitySixAction->setEnabled(enabled);
+    connectedComponentSplitAction->setEnabled(
+        enabled && connectedComponentSplitTargetAvailable(selectedConnectedComponentSplitTarget()));
     transferWithVolumeAction->setEnabled(enabled && hasSelectedSegmentation());
     transferWithRefinementAction->setEnabled(enabled && hasSelectedSegmentation() && hasSelectedRefinement());
     transferAllAction->setEnabled(enabled && hasSelectedSegmentation());
@@ -1465,6 +1515,15 @@ void SignalControl::populateSegmentationsMenu(QMenu *menu) {
     menu->addAction(dilateSegmentationAction);
     menu->addAction(erodeSegmentationAction);
     menu->addSeparator();
+    QMenu *connectedComponentMenu = menu->addMenu(tr("Connected Component Split"));
+    connectedComponentMenu->addAction(connectedComponentSplitAction);
+    connectedComponentMenu->addSeparator();
+    connectedComponentMenu->addAction(connectedComponentSplitTargetInitialAction);
+    connectedComponentMenu->addAction(connectedComponentSplitTargetSegmentationAction);
+    connectedComponentMenu->addSeparator();
+    connectedComponentMenu->addAction(connectedComponentSplitConnectivityFullAction);
+    connectedComponentMenu->addAction(connectedComponentSplitConnectivitySixAction);
+    menu->addSeparator();
     menu->addAction(transferWithVolumeAction);
     menu->addAction(transferAllAction);
     menu->addAction(transferWithRefinementAction);
@@ -1491,9 +1550,31 @@ void SignalControl::createMenuActions() {
     createAction(setPaintIdAction, tr("Set Paint Label ID"), &SignalControl::setPaintId);
     createAction(dilateSegmentationAction, tr("Dilate Label One Step"), &SignalControl::activateDilateTool);
     createAction(erodeSegmentationAction, tr("Erode Label One Step"), &SignalControl::activateErodeTool);
+    createAction(connectedComponentSplitAction, tr("Run Connected Component Split"), &SignalControl::runConnectedComponentSplit);
+    connectedComponentSplitAction->setShortcut(Qt::Key_F7);
     createAction(transferWithVolumeAction, tr("Transfer Supervoxels by Volume"), &SignalControl::transferSegmentsWithVolume);
     createAction(transferAllAction, tr("Transfer All Supervoxels"), &SignalControl::transferAllSegments);
     createAction(transferWithRefinementAction, tr("Transfer Supervoxels by Refinement Overlap"), &SignalControl::transferSupervoxelsByRefinementOverlap);
+
+    connectedComponentSplitTargetGroup = new QActionGroup(this);
+    connectedComponentSplitTargetInitialAction = new QAction(tr("Target: Initial Segments"), this);
+    connectedComponentSplitTargetSegmentationAction = new QAction(tr("Target: Selected Segmentation"), this);
+    connectedComponentSplitTargetInitialAction->setCheckable(true);
+    connectedComponentSplitTargetSegmentationAction->setCheckable(true);
+    connectedComponentSplitTargetGroup->addAction(connectedComponentSplitTargetInitialAction);
+    connectedComponentSplitTargetGroup->addAction(connectedComponentSplitTargetSegmentationAction);
+    connectedComponentSplitTargetInitialAction->setChecked(true);
+    connect(connectedComponentSplitTargetInitialAction, &QAction::triggered, this, &SignalControl::refreshUiState);
+    connect(connectedComponentSplitTargetSegmentationAction, &QAction::triggered, this, &SignalControl::refreshUiState);
+
+    connectedComponentSplitConnectivityGroup = new QActionGroup(this);
+    connectedComponentSplitConnectivityFullAction = new QAction(tr("Connectivity: Full"), this);
+    connectedComponentSplitConnectivitySixAction = new QAction(tr("Connectivity: 6-Connected"), this);
+    connectedComponentSplitConnectivityFullAction->setCheckable(true);
+    connectedComponentSplitConnectivitySixAction->setCheckable(true);
+    connectedComponentSplitConnectivityGroup->addAction(connectedComponentSplitConnectivityFullAction);
+    connectedComponentSplitConnectivityGroup->addAction(connectedComponentSplitConnectivitySixAction);
+    connectedComponentSplitConnectivityFullAction->setChecked(true);
     updateModeActionTexts();
 }
 
@@ -1781,10 +1862,13 @@ void SignalControl::setupSegmentationTreeWidget() {
 
     togglePaintBrushButton = new QPushButton();
     setPaintIdButton = new QPushButton();
+    connectedComponentSplitButton = new QPushButton();
     togglePaintBrushButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     setPaintIdButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    connectedComponentSplitButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     segmentationButtonRow->addWidget(togglePaintBrushButton);
     segmentationButtonRow->addWidget(setPaintIdButton);
+    segmentationButtonRow->addWidget(connectedComponentSplitButton);
     segmentationButtonRow->addStretch();
 
     segmentationWidgetLayout->addLayout(segmentationButtonRow);
@@ -1794,6 +1878,7 @@ void SignalControl::setupSegmentationTreeWidget() {
     bindButtonToAction(exportSegmentationButton, exportSegmentationAction, tr("Export Selected"));
     bindButtonToAction(togglePaintBrushButton, togglePaintModeAction);
     bindButtonToAction(setPaintIdButton, setPaintIdAction);
+    bindButtonToAction(connectedComponentSplitButton, connectedComponentSplitAction, tr("CC Split"));
 
     connect(segmentationTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(segmentationTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::segmentationClicked);
@@ -1993,6 +2078,93 @@ void SignalControl::activateDilateTool() {
 
 void SignalControl::activateErodeTool() {
     setAnnotationToolMode(SliceViewer::ToolMode::Erode);
+}
+
+void SignalControl::runConnectedComponentSplit() {
+    using segment_puzzler::connected_components::ConnectedComponentSplitOptions;
+    using segment_puzzler::connected_components::ConnectedComponentSplitStats;
+    using segment_puzzler::connected_components::connectivityStencilName;
+    using segment_puzzler::connected_components::splitDisconnectedLabelComponentsInPlace;
+
+    if (orthoViewer != nullptr) {
+        orthoViewer->flashShortcutLegendKey("f7");
+    }
+
+    ensureConnectedComponentSplitTargetAvailable();
+    const auto target = selectedConnectedComponentSplitTarget();
+    const auto connectivity = selectedConnectedComponentConnectivity();
+    const QString connectivityName = QString::fromLatin1(connectivityStencilName(connectivity));
+
+    if (target == ConnectedComponentSplitTarget::InitialSegments) {
+        if (!hasWorkingSegments()) {
+            showInfoMessage("Please load supervoxels first.");
+            return;
+        }
+
+        taskRunner->runWithLabel(
+            tr("Splitting disconnected initial segments..."),
+            [this, connectivity]() {
+                return graphBase->pGraph->splitDisconnectedInitialSegments(connectivity);
+            },
+            [this, connectivityName](ConnectedComponentSplitStats stats) {
+                if (graphBase->pWorkingSegments != nullptr) {
+                    graphBase->pWorkingSegments->checkAndResizeLUT(stats.maxLabel);
+                }
+                if (graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
+                    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+                }
+                SP_LOG_INFO("segmentation",
+                            QStringLiteral("Connected component split on initial segments used %1 connectivity, split %2 labels into %3 new components")
+                                .arg(connectivityName)
+                                .arg(stats.labelsSplit)
+                                .arg(stats.componentsCreated));
+                refreshViewers();
+                refreshUiState();
+            });
+        return;
+    }
+
+    if (!hasSelectedSegmentation()) {
+        showInfoMessage("Please load or create a segmentation first.");
+        return;
+    }
+
+    std::unordered_set<dataType::SegmentIdType> ignoredLabels;
+    ignoredLabels.insert(0);
+    if (graphBase->pGraph != nullptr) {
+        ignoredLabels.insert(graphBase->pGraph->backgroundId);
+    }
+    ignoredLabels.insert(graphBase->ignoredSegmentLabels.begin(), graphBase->ignoredSegmentLabels.end());
+
+    const auto selectedSegmentation = graphBase->pSelectedSegmentation;
+    const dataType::SegmentIdType nextFreeLabel =
+        graphBase->pGraph != nullptr
+            ? graphBase->pGraph->getNextFreeId(selectedSegmentation)
+            : static_cast<dataType::SegmentIdType>(graphBase->selectedSegmentationMaxSegmentId + 1);
+
+    taskRunner->runWithLabel(
+        tr("Splitting disconnected segmentation labels..."),
+        [selectedSegmentation, ignoredLabels = std::move(ignoredLabels), connectivity, nextFreeLabel]() {
+            ConnectedComponentSplitOptions options;
+            options.connectivity = connectivity;
+            options.ignoredLabels = ignoredLabels;
+            options.nextFreeLabel = nextFreeLabel;
+            return splitDisconnectedLabelComponentsInPlace(selectedSegmentation, options);
+        },
+        [this, connectivityName](ConnectedComponentSplitStats stats) {
+            graphBase->selectedSegmentationMaxSegmentId =
+                graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
+            if (graphBase->pSelectedSegmentationSignal != nullptr) {
+                graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
+            }
+            SP_LOG_INFO("segmentation",
+                        QStringLiteral("Connected component split on selected segmentation used %1 connectivity, split %2 labels into %3 new components")
+                            .arg(connectivityName)
+                            .arg(stats.labelsSplit)
+                            .arg(stats.componentsCreated));
+            refreshViewers();
+            refreshUiState();
+        });
 }
 
 

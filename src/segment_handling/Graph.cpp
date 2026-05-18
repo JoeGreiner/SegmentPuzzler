@@ -485,6 +485,10 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
 
 void Graph::initializeEdgeVolumeAndEdgeStatus() {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Initializing edge volume and edge status"));
+    graphBase->edgeCounter = 0;
+    graphBase->edgeStatus.clear();
+    graphBase->colorLookUpEdgesStatus.clear();
+    initialEdgeIdLookup.clear();
     graphBase->pEdgesInitialSegmentsImage = GraphBase::EdgeImageType::New();
     graphBase->pEdgesInitialSegmentsImage->SetRegions(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
     graphBase->pEdgesInitialSegmentsImage->Allocate(true);
@@ -503,8 +507,12 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
             std::pair<char, std::vector<unsigned char>>(2, {0, 255, 0, 255}));
 
 
-    ownedEdgesSignal = std::make_unique<itkSignal<dataType::MappedEdgeIdType>>(
-            graphBase->pEdgesInitialSegmentsImage);
+    if (ownedEdgesSignal == nullptr) {
+        ownedEdgesSignal = std::make_unique<itkSignal<dataType::MappedEdgeIdType>>(
+                graphBase->pEdgesInitialSegmentsImage);
+    } else {
+        ownedEdgesSignal->updateImage(graphBase->pEdgesInitialSegmentsImage);
+    }
     graphBase->pEdgesInitialSegmentsITKSignal = ownedEdgesSignal.get();
     graphBase->pEdgesInitialSegmentsITKSignal->setLUTEdgeMap(&graphBase->edgeStatus,
                                                              &graphBase->colorLookUpEdgesStatus);
@@ -1347,6 +1355,350 @@ void Graph::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit)
         }
     }
 
+}
+
+segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::splitDisconnectedInitialSegments(
+        segment_puzzler::connected_components::ConnectivityStencil connectivity) {
+    using segment_puzzler::connected_components::ConnectedComponentSplitOptions;
+    using segment_puzzler::connected_components::ConnectedComponentSplitStats;
+    using segment_puzzler::connected_components::connectivityStencilName;
+    using segment_puzzler::connected_components::splitDisconnectedLabelComponentsInPlace;
+
+    ScopedGraphTimer timer(
+        verbose,
+        __func__,
+        QStringLiteral("Splitting disconnected initial segments (%1 connectivity)")
+            .arg(QString::fromLatin1(connectivityStencilName(connectivity))));
+
+    ConnectedComponentSplitStats stats;
+    stats.nextFreeLabel = nextFreeId;
+    stats.maxLabel = nextFreeId > 0 ? static_cast<SegmentIdType>(nextFreeId - 1) : 0;
+
+    if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr || pIgnoredSegmentLabels == nullptr) {
+        return stats;
+    }
+
+    struct SavedWorkingGroup {
+        SegmentIdType workingLabel = 0;
+        std::vector<SegmentIdType> initialLabels;
+    };
+
+    std::vector<SavedWorkingGroup> savedWorkingGroups;
+    savedWorkingGroups.reserve(workingNodes.size());
+    for (const auto &workingEntry : workingNodes) {
+        if (workingEntry.second == nullptr) {
+            continue;
+        }
+
+        SavedWorkingGroup group;
+        group.workingLabel = workingEntry.first;
+        group.initialLabels.reserve(workingEntry.second->subInitialNodes.size());
+        for (const auto &initialEntry : workingEntry.second->subInitialNodes) {
+            group.initialLabels.push_back(initialEntry.first);
+        }
+        std::sort(group.initialLabels.begin(), group.initialLabels.end());
+        savedWorkingGroups.push_back(std::move(group));
+    }
+
+    auto rewriteInitialLabelsToWorkingImage = [this]() {
+        graphBase->pWorkingSegmentsImage->FillBuffer(backgroundId);
+        for (const auto &initialEntry : initialNodes) {
+            if (initialEntry.second == nullptr || isIgnoredId(initialEntry.first)) {
+                continue;
+            }
+            for (const Voxel &voxel : initialEntry.second->voxels) {
+                graphBase->pWorkingSegmentsImage->SetPixel({voxel.x, voxel.y, voxel.z}, initialEntry.first);
+            }
+        }
+    };
+
+    auto rewriteWorkingLabelsToWorkingImage = [this]() {
+        graphBase->pWorkingSegmentsImage->FillBuffer(backgroundId);
+        for (const auto &workingEntry : workingNodes) {
+            if (workingEntry.second != nullptr && !isIgnoredId(workingEntry.first)) {
+                insertWorkingNodeInSegmentImage(*workingEntry.second);
+            }
+        }
+    };
+
+    rewriteInitialLabelsToWorkingImage();
+
+    std::unordered_set<SegmentIdType> ignoredLabels;
+    ignoredLabels.insert(0);
+    ignoredLabels.insert(backgroundId);
+    ignoredLabels.insert(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
+
+    ConnectedComponentSplitOptions options;
+    options.connectivity = connectivity;
+    options.ignoredLabels = std::move(ignoredLabels);
+    options.nextFreeLabel = nextFreeId;
+    stats = splitDisconnectedLabelComponentsInPlace(graphBase->pWorkingSegmentsImage, options);
+    nextFreeId = std::max(nextFreeId, stats.nextFreeLabel);
+
+    if (!stats.changed()) {
+        rewriteWorkingLabelsToWorkingImage();
+        return stats;
+    }
+
+    initializeEdgeVolumeAndEdgeStatus();
+    constructInitialNodes(graphBase->pWorkingSegmentsImage);
+    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes();
+    segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
+
+    std::unordered_set<SegmentIdType> assignedInitialLabels;
+    assignedInitialLabels.reserve(initialNodes.size());
+    std::unordered_set<SegmentIdType> usedWorkingLabels;
+    usedWorkingLabels.reserve(savedWorkingGroups.size() + initialNodes.size());
+
+    auto nextUnusedWorkingLabel = [this, &usedWorkingLabels](SegmentIdType preferredLabel) {
+        SegmentIdType label = preferredLabel;
+        while (usedWorkingLabels.count(label) > 0) {
+            label = nextFreeId++;
+        }
+        usedWorkingLabels.insert(label);
+        return label;
+    };
+
+    for (const SavedWorkingGroup &savedGroup : savedWorkingGroups) {
+        std::vector<SegmentIdType> restoredInitialLabels;
+        for (const SegmentIdType oldInitialLabel : savedGroup.initialLabels) {
+            const auto splitIt = stats.finalLabelsByOriginalLabel.find(oldInitialLabel);
+            if (splitIt != stats.finalLabelsByOriginalLabel.end()) {
+                restoredInitialLabels.insert(restoredInitialLabels.end(),
+                                             splitIt->second.begin(),
+                                             splitIt->second.end());
+            } else if (initialNodes.count(oldInitialLabel) > 0) {
+                restoredInitialLabels.push_back(oldInitialLabel);
+            }
+        }
+
+        std::sort(restoredInitialLabels.begin(), restoredInitialLabels.end());
+        restoredInitialLabels.erase(std::unique(restoredInitialLabels.begin(), restoredInitialLabels.end()),
+                                    restoredInitialLabels.end());
+        restoredInitialLabels.erase(
+            std::remove_if(restoredInitialLabels.begin(),
+                           restoredInitialLabels.end(),
+                           [this](SegmentIdType label) { return initialNodes.count(label) == 0 || isIgnoredId(label); }),
+            restoredInitialLabels.end());
+
+        if (restoredInitialLabels.empty()) {
+            continue;
+        }
+
+        for (const SegmentIdType initialLabel : restoredInitialLabels) {
+            assignedInitialLabels.insert(initialLabel);
+        }
+
+        const SegmentIdType workingLabel = nextUnusedWorkingLabel(savedGroup.workingLabel);
+        auto *workingNode = new WorkingNode(restoredInitialLabels, workingLabel, initialNodes);
+        segmentManager.addWorkingNode(workingNode);
+    }
+
+    for (const auto &initialEntry : initialNodes) {
+        if (initialEntry.second == nullptr || assignedInitialLabels.count(initialEntry.first) > 0 ||
+            isIgnoredId(initialEntry.first)) {
+            continue;
+        }
+
+        assignedInitialLabels.insert(initialEntry.first);
+        const SegmentIdType workingLabel = nextUnusedWorkingLabel(initialEntry.first);
+        auto *workingNode = new WorkingNode(initialEntry.second.get(), workingLabel, initialNodes);
+        segmentManager.addWorkingNode(workingNode);
+    }
+
+    auto recalculateAllWorkingEdges = [this]() {
+        std::vector<SegmentIdType> labels;
+        labels.reserve(workingNodes.size());
+        for (const auto &workingEntry : workingNodes) {
+            labels.push_back(workingEntry.first);
+        }
+
+        for (const SegmentIdType label : labels) {
+            if (workingNodes.count(label) > 0) {
+                segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(label).get());
+            }
+        }
+    };
+
+    auto splitWorkingNodeByVoxelConnectivity = [this, connectivity](SegmentIdType workingLabel) {
+        const auto workingIt = workingNodes.find(workingLabel);
+        if (workingIt == workingNodes.end() || workingIt->second == nullptr ||
+            workingIt->second->subInitialNodes.size() <= 1) {
+            return false;
+        }
+
+        WorkingNode *workingNode = workingIt->second.get();
+        std::vector<SegmentIdType> labels;
+        labels.reserve(workingNode->subInitialNodes.size());
+        std::unordered_map<SegmentIdType, std::size_t> labelToIndex;
+        labelToIndex.reserve(workingNode->subInitialNodes.size());
+        std::vector<std::size_t> voxelCounts;
+        voxelCounts.reserve(workingNode->subInitialNodes.size());
+
+        for (const auto &initialEntry : workingNode->subInitialNodes) {
+            labelToIndex[initialEntry.first] = labels.size();
+            labels.push_back(initialEntry.first);
+            voxelCounts.push_back(initialEntry.second != nullptr ? initialEntry.second->voxels.size() : 0);
+        }
+
+        std::vector<std::size_t> parent(labels.size());
+        for (std::size_t index = 0; index < parent.size(); ++index) {
+            parent[index] = index;
+        }
+
+        auto findRoot = [&parent](std::size_t index) {
+            while (parent[index] != index) {
+                parent[index] = parent[parent[index]];
+                index = parent[index];
+            }
+            return index;
+        };
+
+        auto unionLabels = [&parent, &findRoot](std::size_t lhs, std::size_t rhs) {
+            lhs = findRoot(lhs);
+            rhs = findRoot(rhs);
+            if (lhs != rhs) {
+                parent[rhs] = lhs;
+            }
+        };
+
+        const auto image = graphBase->pWorkingSegmentsImage;
+        const auto size = image->GetLargestPossibleRegion().GetSize();
+        const int dimX = static_cast<int>(size[0]);
+        const int dimY = static_cast<int>(size[1]);
+        const int dimZ = static_cast<int>(size[2]);
+
+        const auto useOffset = [connectivity](int dx, int dy, int dz) {
+            if (dx == 0 && dy == 0 && dz == 0) {
+                return false;
+            }
+            if (connectivity == segment_puzzler::connected_components::ConnectivityStencil::Full) {
+                return true;
+            }
+            return std::abs(dx) + std::abs(dy) + std::abs(dz) == 1;
+        };
+
+        for (const auto &initialEntry : workingNode->subInitialNodes) {
+            if (initialEntry.second == nullptr) {
+                continue;
+            }
+            const auto ownIndex = labelToIndex.at(initialEntry.first);
+            for (const Voxel &voxel : initialEntry.second->voxels) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            if (!useOffset(dx, dy, dz)) {
+                                continue;
+                            }
+
+                            const int nx = voxel.x + dx;
+                            const int ny = voxel.y + dy;
+                            const int nz = voxel.z + dz;
+                            if (nx < 0 || ny < 0 || nz < 0 || nx >= dimX || ny >= dimY || nz >= dimZ) {
+                                continue;
+                            }
+
+                            const SegmentIdType neighborLabel = image->GetPixel({nx, ny, nz});
+                            const auto neighborIt = labelToIndex.find(neighborLabel);
+                            if (neighborIt == labelToIndex.end()) {
+                                continue;
+                            }
+                            unionLabels(ownIndex, neighborIt->second);
+                        }
+                    }
+                }
+            }
+        }
+
+        std::unordered_map<std::size_t, std::vector<SegmentIdType>> labelsByRoot;
+        std::unordered_map<std::size_t, std::size_t> voxelsByRoot;
+        labelsByRoot.reserve(labels.size());
+        voxelsByRoot.reserve(labels.size());
+        for (std::size_t labelIndex = 0; labelIndex < labels.size(); ++labelIndex) {
+            const std::size_t root = findRoot(labelIndex);
+            labelsByRoot[root].push_back(labels[labelIndex]);
+            voxelsByRoot[root] += voxelCounts[labelIndex];
+        }
+
+        if (labelsByRoot.size() <= 1) {
+            return false;
+        }
+
+        struct WorkingComponent {
+            std::vector<SegmentIdType> initialLabels;
+            std::size_t voxelCount = 0;
+        };
+        std::vector<WorkingComponent> components;
+        components.reserve(labelsByRoot.size());
+        for (auto &rootEntry : labelsByRoot) {
+            std::sort(rootEntry.second.begin(), rootEntry.second.end());
+            components.push_back({rootEntry.second, voxelsByRoot[rootEntry.first]});
+        }
+        std::sort(components.begin(), components.end(), [](const WorkingComponent &lhs, const WorkingComponent &rhs) {
+            if (lhs.voxelCount != rhs.voxelCount) {
+                return lhs.voxelCount > rhs.voxelCount;
+            }
+            return lhs.initialLabels.front() < rhs.initialLabels.front();
+        });
+
+        segmentManager.removeWorkingNode(workingNode);
+        for (std::size_t componentIndex = 0; componentIndex < components.size(); ++componentIndex) {
+            const SegmentIdType componentWorkingLabel =
+                componentIndex == 0 ? workingLabel : nextFreeId++;
+            auto *componentWorkingNode =
+                new WorkingNode(components[componentIndex].initialLabels, componentWorkingLabel, initialNodes);
+            segmentManager.addWorkingNode(componentWorkingNode);
+        }
+        return true;
+    };
+
+    recalculateAllWorkingEdges();
+
+    std::vector<SegmentIdType> labelsToCheck;
+    labelsToCheck.reserve(workingNodes.size());
+    for (const auto &workingEntry : workingNodes) {
+        labelsToCheck.push_back(workingEntry.first);
+    }
+    for (const SegmentIdType workingLabel : labelsToCheck) {
+        splitWorkingNodeByVoxelConnectivity(workingLabel);
+    }
+
+    recalculateAllWorkingEdges();
+
+    graphBase->pWorkingSegmentsImage->FillBuffer(backgroundId);
+    for (const auto &workingEntry : workingNodes) {
+        if (workingEntry.second != nullptr && !isIgnoredId(workingEntry.first)) {
+            insertWorkingNodeInSegmentImage(*workingEntry.second);
+        }
+    }
+
+    for (const auto &workingEntry : workingNodes) {
+        if (workingEntry.second == nullptr) {
+            continue;
+        }
+        const auto &subInitialNodes = workingEntry.second->subInitialNodes;
+        for (const auto &initialEntry : subInitialNodes) {
+            if (initialEntry.second == nullptr) {
+                continue;
+            }
+            for (const auto &edgeEntry : initialEntry.second->twosidedEdges) {
+                if (subInitialNodes.count(edgeEntry.first) == 0 || edgeEntry.second == nullptr) {
+                    continue;
+                }
+                edgeEntry.second->setShouldMergeYes();
+                graphBase->edgeStatus[edgeEntry.second->numId] = 2;
+            }
+        }
+    }
+
+    if (graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
+        graphBase->pEdgesInitialSegmentsITKSignal->computeExtrema();
+        graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    }
+
+    stats.nextFreeLabel = nextFreeId;
+    stats.maxLabel = getLargestIdInSegmentVolume(graphBase->pWorkingSegmentsImage);
+    return stats;
 }
 
 bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &request,

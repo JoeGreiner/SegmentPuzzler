@@ -20,12 +20,14 @@
 #include "src/file_definitions/dataTypes.h"
 #include "src/segment_handling/graphBase.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/ConnectedComponentLabelSplitter.h"
 
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <src/qtUtils/QBackgroundIdRadioBox.h>
 
 class OrthoViewer;
 class TaskRunner;
+class QActionGroup;
 class QMenu;
 class QLabel;
 class QVBoxLayout;
@@ -181,6 +183,8 @@ public slots:
 
     void setTransparentLabelIdInRefinement();
 
+    void runConnectedComponentSplit();
+
     void runWatershed();
 
     void receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer);
@@ -220,6 +224,7 @@ private:
     QSplitter *sectionSplitter = nullptr;
     QPushButton *togglePaintBrushButton = nullptr;
     QPushButton *setPaintIdButton = nullptr;
+    QPushButton *connectedComponentSplitButton = nullptr;
     QPushButton *toggleROISelectionButton = nullptr;
     QPushButton *runWatershedButton = nullptr;
     QPushButton *exportSegmentationButton = nullptr;
@@ -248,6 +253,13 @@ private:
     QAction *setPaintIdAction = nullptr;
     QAction *dilateSegmentationAction = nullptr;
     QAction *erodeSegmentationAction = nullptr;
+    QAction *connectedComponentSplitAction = nullptr;
+    QAction *connectedComponentSplitTargetInitialAction = nullptr;
+    QAction *connectedComponentSplitTargetSegmentationAction = nullptr;
+    QAction *connectedComponentSplitConnectivityFullAction = nullptr;
+    QAction *connectedComponentSplitConnectivitySixAction = nullptr;
+    QActionGroup *connectedComponentSplitTargetGroup = nullptr;
+    QActionGroup *connectedComponentSplitConnectivityGroup = nullptr;
 
     QAction *transferWithVolumeAction = nullptr;
     QAction *transferAllAction = nullptr;
@@ -293,6 +305,14 @@ private:
     bool hasSelectedSegmentation() const;
     bool hasSelectedRefinement() const;
     bool hasSelectedBoundary() const;
+    enum class ConnectedComponentSplitTarget {
+        InitialSegments,
+        SelectedSegmentation
+    };
+    ConnectedComponentSplitTarget selectedConnectedComponentSplitTarget() const;
+    segment_puzzler::connected_components::ConnectivityStencil selectedConnectedComponentConnectivity() const;
+    bool connectedComponentSplitTargetAvailable(ConnectedComponentSplitTarget target) const;
+    void ensureConnectedComponentSplitTargetAvailable();
     std::optional<FloatBoundaryConversionMode> askForFloatBoundaryConversionMode(const QString &fileName) const;
 
 
