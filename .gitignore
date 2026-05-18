@@ -47,3 +47,12 @@ cmake-build-*/
 /ideas.md
 /thirdparty/
 thirdparty/perfetto-cpp-sdk-src/
+
+# Linux deploy/AppImage artifacts
+/deploy/*.AppImage
+/deploy/appimage-build-docker/
+/deploy/appimagetool
+/deploy/export_linux/
+/deploy/linuxdeploy-plugin-qt-x86_64.AppImage
+/deploy/linuxdeploy-x86_64.AppImage
+/deploy/tmp_QT6_env_var.txt
