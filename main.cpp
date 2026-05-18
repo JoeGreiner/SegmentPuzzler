@@ -124,7 +124,9 @@ int main(int argc, char *argv[]) {
     #endif
 
 #ifdef USE_OMP
+#if defined(_OPENMP) && _OPENMP >= 200805
     omp_set_max_active_levels(1);
+#endif
     SP_LOG_INFO("app", QStringLiteral("OpenMP enabled, maxThreads=%1").arg(omp_get_max_threads()));
 #else
     SP_LOG_INFO("app", QStringLiteral("OpenMP disabled"));

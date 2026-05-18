@@ -1,3 +1,5 @@
 build project with deploy on, e.g. with QtCreator
 run 'cpack <build-dir> -G NSIS'
 or 'cpack .' for both zip and NSIS
+
+its a good idea to test it in windows sandbox for correct packaging

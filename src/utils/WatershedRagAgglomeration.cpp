@@ -149,6 +149,14 @@ double elapsedMilliseconds(double startTimeSeconds) {
     return (currentTimeSeconds() - startTimeSeconds) * 1000.0;
 }
 
+void updateBoundaryRange(double value, double &boundaryMin, double &boundaryMax) {
+    if (!std::isfinite(value)) {
+        return;
+    }
+    boundaryMin = std::min(boundaryMin, value);
+    boundaryMax = std::max(boundaryMax, value);
+}
+
 void logStepTime(double startTimeSeconds, const char *description) {
     std::ostringstream stream;
     stream << description << ' ' << (currentTimeSeconds() - startTimeSeconds);
@@ -653,16 +661,29 @@ void computeBoundaryRange(AgglomerationContext<IsActiveVoxel> &ctx) {
     double boundaryMax = -std::numeric_limits<double>::infinity();
     const int threadCount = effectiveThreadCount(ctx.options);
 #ifdef USE_OMP
-#pragma omp parallel for num_threads(threadCount) reduction(min:boundaryMin) reduction(max:boundaryMax)
-#endif
-    for (long long index = 0; index < static_cast<long long>(ctx.voxelCount); ++index) {
-        const double value = static_cast<double>(ctx.boundaryBuffer[index]);
-        if (!std::isfinite(value)) {
-            continue;
+    std::vector<double> threadMinimums(static_cast<size_t>(threadCount), boundaryMin);
+    std::vector<double> threadMaximums(static_cast<size_t>(threadCount), boundaryMax);
+#pragma omp parallel num_threads(threadCount)
+    {
+        double localMin = std::numeric_limits<double>::infinity();
+        double localMax = -std::numeric_limits<double>::infinity();
+#pragma omp for nowait
+        for (long long index = 0; index < static_cast<long long>(ctx.voxelCount); ++index) {
+            updateBoundaryRange(static_cast<double>(ctx.boundaryBuffer[index]), localMin, localMax);
         }
-        boundaryMin = std::min(boundaryMin, value);
-        boundaryMax = std::max(boundaryMax, value);
+        const int threadId = omp_get_thread_num();
+        threadMinimums[static_cast<size_t>(threadId)] = localMin;
+        threadMaximums[static_cast<size_t>(threadId)] = localMax;
     }
+    for (int threadId = 0; threadId < threadCount; ++threadId) {
+        boundaryMin = std::min(boundaryMin, threadMinimums[static_cast<size_t>(threadId)]);
+        boundaryMax = std::max(boundaryMax, threadMaximums[static_cast<size_t>(threadId)]);
+    }
+#else
+    for (long long index = 0; index < static_cast<long long>(ctx.voxelCount); ++index) {
+        updateBoundaryRange(static_cast<double>(ctx.boundaryBuffer[index]), boundaryMin, boundaryMax);
+    }
+#endif
     if (!std::isfinite(boundaryMin) || !std::isfinite(boundaryMax)) {
         boundaryMin = 0.0;
         boundaryMax = 0.0;
