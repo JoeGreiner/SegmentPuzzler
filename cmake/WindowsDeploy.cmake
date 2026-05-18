@@ -34,7 +34,6 @@ function(windeployqt target directory)
             env PATH="${_qt_bin_dir}" "${WINDEPLOYQT_EXECUTABLE}"
             --verbose 0
             --no-compiler-runtime
-            --no-angle
             --no-opengl-sw
             \"$<TARGET_FILE:${target}>\"
             )
@@ -55,7 +54,6 @@ function(windeployqt target directory)
                 env PATH=\"${_qt_bin_dir}\" \"${WINDEPLOYQT_EXECUTABLE}\"
                     --dry-run
                     --no-compiler-runtime
-                    --no-angle
                     --no-opengl-sw
                     --list mapping
                     \${_file}
@@ -90,11 +88,15 @@ function(windeployqt target directory)
 endfunction()
 set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL TRUE)
 set(CPACK_NSIS_MUI_FINISHPAGE_RUN "${BIN_INSTALL_DIR}/SegmentPuzzler.exe")
+set(SEGMENT_PUZZLER_WINDOWS_ICON "${CMAKE_SOURCE_DIR}/resources/images/SegmentPuzzler.ico")
+set(CPACK_NSIS_MUI_ICON "${SEGMENT_PUZZLER_WINDOWS_ICON}")
+set(CPACK_NSIS_MUI_UNIICON "${SEGMENT_PUZZLER_WINDOWS_ICON}")
+set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\SegmentPuzzler.exe")
 set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
 set(CMAKE_INSTALL_OPENMP_LIBRARIES TRUE)
 
 set(CPACK_NSIS_CREATE_ICONS_EXTRA
-        "CreateShortCut '$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\SegmentPuzzler.lnk' '$INSTDIR\\\\bin\\\\SegmentPuzzler.exe'"
+        "CreateShortCut '$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\SegmentPuzzler.lnk' '$INSTDIR\\\\bin\\\\SegmentPuzzler.exe' '' '$INSTDIR\\\\bin\\\\SegmentPuzzler.exe' 0"
         )
 #    set(CPACK_NSIS_CREATE_ICONS_EXTRA
 #        "CreateShortCut '$DESKTOP\\\\SegmentPuzzler.lnk' '$INSTDIR\\\\bin\\\\SegmentPuzzler.exe'"
@@ -102,6 +104,13 @@ set(CPACK_NSIS_CREATE_ICONS_EXTRA
 
 include(InstallRequiredSystemLibraries)
 install(TARGETS SegmentPuzzler DESTINATION bin)
+if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.21)
+    install(FILES $<TARGET_RUNTIME_DLLS:SegmentPuzzler> DESTINATION bin)
+else()
+    message(WARNING
+            "Automatic runtime DLL install requires CMake 3.21 or newer. "
+            "VTK, ITK, HDF5, Qt, and OpenMP DLLs may need to be copied manually.")
+endif()
 if (OPENSSL_DLLS)
     install(FILES ${OPENSSL_DLLS} DESTINATION bin)
 endif()

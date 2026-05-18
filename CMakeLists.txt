@@ -314,6 +314,9 @@ set(QT_RESOURCES
         qdarkstyle/dark/style.qrc
         )
 set(SRC_CORRECT_ORDER ${SRC_UTILS} ${SRC_ITKIMAGEFILTERS} ${SRC_SEGMENTHANDLERS} ${SRC_VIEWERS} ${SRCS} ${QT_RESOURCES})
+if (WIN32)
+    list(APPEND SRC_CORRECT_ORDER resources/SegmentPuzzler.rc)
+endif()
 
 
 
