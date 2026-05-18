@@ -821,7 +821,7 @@ void SegmentTableDialog::onView3DPreparationFinished() {
                     navigateOrthoViewerToIndex(orthoViewer, index);
                 });
             dialog->setAttribute(Qt::WA_DeleteOnClose);
-            dialog->show();
+            dialog->presentInFront();
         } else {
             QMessageBox::information(this, "3D View", "No 3D surface could be generated for the selected labels.");
         }

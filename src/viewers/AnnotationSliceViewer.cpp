@@ -580,7 +580,7 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
             }
         });
     }
-    dialog->show();
+    dialog->presentInFront();
 
     if (targetWorkingLabel != 0) {
         SP_LOG_DEBUG(

@@ -22,6 +22,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QWindow>
 #include "src/qtUtils/TaskRunner.h"
 #include "src/utils/AppLogger.h"
 #include <QVTKOpenGLNativeWidget.h>
@@ -1668,6 +1669,25 @@ Segment3DViewerDialog::cameraOrientationForSliceAxis(int sliceAxis)
 
 void Segment3DViewerDialog::setNavigateToLabelHandler(NavigateToLabelHandler handler) {
     m_navigateToLabelHandler = std::move(handler);
+}
+
+void Segment3DViewerDialog::presentInFront() {
+    show();
+    raiseAndRequestActivation();
+    QTimer::singleShot(0, this, [this]() { raiseAndRequestActivation(); });
+    QTimer::singleShot(100, this, [this]() { raiseAndRequestActivation(); });
+}
+
+void Segment3DViewerDialog::raiseAndRequestActivation() {
+    if (!isVisible()) {
+        return;
+    }
+
+    raise();
+    activateWindow();
+    if (windowHandle() != nullptr) {
+        windowHandle()->requestActivate();
+    }
 }
 
 void Segment3DViewerDialog::showEvent(QShowEvent *event) {

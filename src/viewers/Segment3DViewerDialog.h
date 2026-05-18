@@ -90,6 +90,7 @@ public:
                                    int launchSliceAxis = -1);
 
     void setNavigateToLabelHandler(NavigateToLabelHandler handler);
+    void presentInFront();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -116,6 +117,7 @@ private:
                                   Qt::KeyboardModifiers modifiers,
                                   const char *sourceTag);
     void handleInteractorLeftButtonPress();
+    void raiseAndRequestActivation();
     void applyInitialCameraOrientation(int launchSliceAxis);
     void finishInitialRender();
 
