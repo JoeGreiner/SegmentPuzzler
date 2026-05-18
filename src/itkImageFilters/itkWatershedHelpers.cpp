@@ -17,7 +17,7 @@
 #include <itkDiscreteGaussianImageFilter.h>
 #include <itkImageRegionIterator.h>
 #include <itkInvertIntensityImageFilter.h>
-#include <itkLabelGeometryImageFilter.h>
+#include <itkLabelImageToShapeLabelMapFilter.h>
 #include <itkMorphologicalWatershedFromMarkersImageFilter.h>
 #include <itkSignedMaurerDistanceMapImageFilter.h>
 #include <itkStatisticsImageFilter.h>
@@ -532,21 +532,22 @@ void filterSmallSegmentSeeds(itk::Image<unsigned int, 3>::Pointer &watershedIn,
                              float volumeThreshold) {
     emitWatershedLog("Filtering");
     using SegmentType = itk::Image<unsigned int, 3>;
-    using LabelGeometryImageFilterType = itk::LabelGeometryImageFilter<SegmentType, SegmentType>;
-    LabelGeometryImageFilterType::Pointer labelGeometryImageFilter = LabelGeometryImageFilterType::New();
-    labelGeometryImageFilter->SetInput(watershedIn);
-    labelGeometryImageFilter->Update();
-
-    LabelGeometryImageFilterType::LabelsType allLabels = labelGeometryImageFilter->GetLabels();
-    LabelGeometryImageFilterType::LabelsType::iterator allLabelsIt;
+    using ShapeFilterType = itk::LabelImageToShapeLabelMapFilter<SegmentType>;
+    ShapeFilterType::Pointer shapeFilter = ShapeFilterType::New();
+    shapeFilter->SetInput(watershedIn);
+    shapeFilter->SetBackgroundValue(0);
+    shapeFilter->Update();
 
     using ChangeLabelImageFilterType = itk::ChangeLabelImageFilter<SegmentType, SegmentType>;
     std::map<unsigned int, unsigned int> changeMap;
-    for (allLabelsIt = allLabels.begin(); allLabelsIt != allLabels.end(); ++allLabelsIt) {
-        LabelGeometryImageFilterType::LabelPixelType labelValue = *allLabelsIt;
-        auto labelVolume = labelGeometryImageFilter->GetVolume(labelValue);
+    const auto *labelMap = shapeFilter->GetOutput();
+    const auto labelCount = labelMap->GetNumberOfLabelObjects();
+    for (size_t i = 0; i < labelCount; ++i) {
+        const auto *labelObject = labelMap->GetNthLabelObject(i);
+        const auto labelValue = labelObject->GetLabel();
+        const auto labelVolume = labelObject->GetNumberOfPixels();
 
-        if (labelVolume < volumeThreshold) {
+        if (static_cast<double>(labelVolume) < volumeThreshold) {
             changeMap[labelValue] = 0;
         }
     }

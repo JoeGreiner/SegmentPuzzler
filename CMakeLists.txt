@@ -157,18 +157,18 @@ set(SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES
         ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES}
         ${SEGMENT_PUZZLER_QT_PACKAGE}::Network)
 
-find_package(ITK REQUIRED QUIET)
+find_package(ITK 6 QUIET)
 if (NOT ITK_FOUND)
-    message(STATUS "ITK not found. Please install ITK and set ITK_DIR to the path to ITKConfig.cmake")
-    set(ITK_DIR "" CACHE PATH "Path to ITK, e.g.  /home/user/ITK/build/")
-    if (NOT EXISTS "${ITK_DIR}")
-        message(FATAL_ERROR "ITK_DIR is not set or invalid. Please provide the path to -DITK_DIR=<path>, e.g.\n"
-                "Linux: cmake -DITK_DIR=/home/user/ITK/build/ build/\n"
-                "Windows: cmake -DITK_DIR=C:/ITK/build/ build/\n"
-                "Mac: cmake -DITK_DIR=/Users/user/ITK/build/ build/")
-    endif ()
+    set(ITK_DIR "" CACHE PATH "Path to ITK 6, e.g. /usr/local/lib/cmake/ITK-6.0")
+    message(FATAL_ERROR "ITK 6 was not found. Please provide the path to ITKConfig.cmake with -DITK_DIR=<path>, e.g.\n"
+            "Linux: cmake -DITK_DIR=/usr/local/lib/cmake/ITK-6.0 build/\n"
+            "Windows: cmake -DITK_DIR=C:/ITK/lib/cmake/ITK-6.0 build/\n"
+            "Mac: cmake -DITK_DIR=/usr/local/lib/cmake/ITK-6.0 build/")
 endif ()
-include(${ITK_USE_FILE})
+itk_generate_factory_registration(ImageIO)
+set(SEGMENT_PUZZLER_ITK_LIBRARIES
+        ${ITK_INTERFACE_LIBRARIES}
+        ITK::ITKImageIO)
 
 find_package(VTK REQUIRED COMPONENTS
         CommonCore CommonDataModel
@@ -239,7 +239,7 @@ endif()
 
 
 MESSAGE(STATUS "${SEGMENT_PUZZLER_QT_PACKAGE}_DIR: " ${${SEGMENT_PUZZLER_QT_PACKAGE}_DIR})
-MESSAGE(STATUS "ITK_USE_FILE: " ${ITK_USE_FILE})
+MESSAGE(STATUS "SEGMENT_PUZZLER_ITK_LIBRARIES: " ${SEGMENT_PUZZLER_ITK_LIBRARIES})
 MESSAGE(STATUS "${SEGMENT_PUZZLER_QT_PACKAGE}Widgets_INCLUDE_DIRS:" ${${SEGMENT_PUZZLER_QT_PACKAGE}Widgets_INCLUDE_DIRS})
 
 
@@ -332,7 +332,7 @@ else ()
 endif ()
 
 
-target_link_libraries(SegmentPuzzler ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+target_link_libraries(SegmentPuzzler ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)
     target_compile_definitions(SegmentPuzzler PRIVATE USE_OMP)
     target_link_libraries(SegmentPuzzler OpenMP::OpenMP_CXX)
@@ -405,14 +405,14 @@ if (BUILD_TESTING)
             examples/benchmarks/test_fast_marker_reference.cpp
             ${SRC_WATERSHED_HELPER_DEPS}
             src/utils/DistanceMapCliIO.cpp)
-    target_link_libraries(profile_SliceViewer ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(profile_Projected3DCut ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_Projected3DCut ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_SliceViewer ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_OrthoViewer ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_ConnectedComponentSplit ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_WatershedPipeline ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
-    target_link_libraries(test_FastMarkerReference ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_CORE_LIBRARY} ${SEGMENT_PUZZLER_QT_PACKAGE}::Network)
+    target_link_libraries(profile_SliceViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(profile_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_SliceViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_OrthoViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_ConnectedComponentSplit ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_WatershedPipeline ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_link_libraries(test_FastMarkerReference ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_CORE_LIBRARY} ${SEGMENT_PUZZLER_QT_PACKAGE}::Network)
     vtk_module_autoinit(TARGETS profile_SliceViewer MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS profile_Projected3DCut MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS test_Projected3DCut MODULES ${VTK_LIBRARIES})
@@ -438,16 +438,16 @@ if (BUILD_TESTING)
         target_link_libraries(test_WatershedPipeline OpenMP::OpenMP_CXX)
         target_link_libraries(test_FastMarkerReference OpenMP::OpenMP_CXX)
     endif ()
-#    target_link_libraries(test_customwatershed ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-#    target_link_libraries(test_watershed ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-#    target_link_libraries(test_watershedControl ${ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+#    target_link_libraries(test_customwatershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+#    target_link_libraries(test_watershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
+#    target_link_libraries(test_watershedControl ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 endif ()
 
 if (BUILD_BENCHMARKS)
     function(configure_benchmark_target target_name)
         target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR})
         set_target_properties(${target_name} PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
-        target_link_libraries(${target_name} ${ITK_LIBRARIES})
+        target_link_libraries(${target_name} ${SEGMENT_PUZZLER_ITK_LIBRARIES})
         if (USE_OMP)
             target_compile_definitions(${target_name} PRIVATE USE_OMP)
             target_link_libraries(${target_name} OpenMP::OpenMP_CXX)

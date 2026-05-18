@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <itkLabelGeometryImageFilter.h>
 #include <itkRegionOfInterestImageFilter.h>
 #include <itkBinaryBallStructuringElement.h>
 #include <itkBinaryDilateImageFilter.h>
