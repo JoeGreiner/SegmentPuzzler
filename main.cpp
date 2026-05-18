@@ -137,8 +137,11 @@ int main(int argc, char *argv[]) {
     QFile f(":qdarkstyle/dark/style.qss");
     if (!f.exists()) {
         SP_LOG_WARNING("app", QStringLiteral("Unable to set stylesheet because :qdarkstyle/dark/style.qss was not found"));
+    } else if (!f.open(QFile::ReadOnly | QFile::Text)) {
+        SP_LOG_WARNING("app",
+                       QStringLiteral("Unable to open stylesheet :qdarkstyle/dark/style.qss: %1")
+                               .arg(f.errorString()));
     } else {
-        f.open(QFile::ReadOnly | QFile::Text);
         QTextStream ts(&f);
         a.setStyleSheet(ts.readAll());
     }

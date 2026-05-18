@@ -13,6 +13,7 @@
 #include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 #include <itkImageRegionConstIteratorWithIndex.h>
+#include <QDir>
 #include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
@@ -619,8 +620,14 @@ void SliceViewer::exportCurrentImageToFile(std::string filePrefix) {
     filePrefix = "imgExport/" + filePrefix + ".png";
 
     SP_LOG_INFO("io", QStringLiteral("Saving current view to %1").arg(QString::fromStdString(filePrefix)));
+    QDir().mkpath(QStringLiteral("imgExport"));
     QFile file(filePrefix.c_str());
-    file.open(QIODevice::WriteOnly);
+    if (!file.open(QIODevice::WriteOnly)) {
+        SP_LOG_WARNING("io",
+                       QStringLiteral("Unable to open %1 for writing: %2")
+                               .arg(QString::fromStdString(filePrefix), file.errorString()));
+        return;
+    }
 
     QPixmap newPixmap = QPixmap::fromImage(backGroundImage);
 
@@ -633,8 +640,9 @@ void SliceViewer::exportCurrentImageToFile(std::string filePrefix) {
         }
     }
 
-
-    newPixmap.save(&file, "PNG");
+    if (!newPixmap.save(&file, "PNG")) {
+        SP_LOG_WARNING("io", QStringLiteral("Unable to save PNG to %1").arg(QString::fromStdString(filePrefix)));
+    }
 }
 
 int SliceViewer::getDimX() const {
