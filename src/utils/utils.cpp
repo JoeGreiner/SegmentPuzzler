@@ -2,6 +2,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <QFile>
 #include <QString>
 #include <itkImageRegionConstIterator.h>
 
@@ -40,13 +41,8 @@ void utils::toc(double start_time, std::string description) {
 }
 
 bool utils::check_if_file_exists(QString path_to_file) {
-    std::string path_to_file_std = path_to_file.toStdString();
-    if (FILE *file = fopen(path_to_file_std.c_str(), "r")) {
-        fclose(file);
-        return true;
-    } else {
-        return false;
-    }
+    QFile file(path_to_file);
+    return file.open(QIODevice::ReadOnly);
 }
 
 

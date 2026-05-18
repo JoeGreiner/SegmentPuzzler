@@ -8,9 +8,43 @@
 #include <QFileDialog>
 #include <src/viewers/itkSignal.h>
 #include <itkImage.h>
+#include <sstream>
 #include "src/segment_handling/graphBase.h"
 #include "src/utils/AppLogger.h"
 #include "fileIO.h"
+
+namespace {
+
+void parseDatasetHeader(const std::string &line,
+                        unsigned long &numberEntries,
+                        unsigned long &numberFeatures,
+                        unsigned long &labelsProvided) {
+    std::istringstream stream(line);
+    std::string numberEntriesLabel;
+    std::string numberFeaturesLabel;
+    std::string labelsProvidedLabel;
+
+    if (!(stream >> numberEntriesLabel >> numberEntries
+                 >> numberFeaturesLabel >> numberFeatures
+                 >> labelsProvidedLabel >> labelsProvided)) {
+        throw std::logic_error("Invalid dataset header");
+    }
+}
+
+int parseDatasetLabel(const std::string &line) {
+    std::istringstream stream(line);
+    long long firstIdentifier = 0;
+    long long secondIdentifier = 0;
+    int label = 0;
+
+    if (!(stream >> firstIdentifier >> secondIdentifier >> label)) {
+        throw std::logic_error("Invalid dataset label row");
+    }
+
+    return label;
+}
+
+}
 
 
 void writeDataSetToFile(std::string outputPath,
@@ -166,7 +200,7 @@ void appendDataSetToFile(std::vector<std::vector<float>> features,
     std::getline(headerFile, tmpLine); // NumberEntries: 7470 NumberFeatures: 39 LabelsProvided: 1
     unsigned long numberFeaturesFile, numberEntriesFile, labelProvidedFile;
     unsigned long numberFeatures = featureNames.size();
-    sscanf(tmpLine.c_str(), "%*s %lu %*s %lu %*s %lu", &numberEntriesFile, &numberFeaturesFile, &labelProvidedFile);
+    parseDatasetHeader(tmpLine, numberEntriesFile, numberFeaturesFile, labelProvidedFile);
     SP_LOG_DEBUG("io",
                  QStringLiteral("Dataset header entries=%1 features=%2 labelsProvided=%3")
                      .arg(numberEntriesFile)
@@ -302,7 +336,7 @@ std::vector<int> readLabelsFromFile(const std::string &fileName) {
     std::string tmpLine;
     std::getline(headerFile, tmpLine);
     unsigned long numberFeaturesFile, numberEntriesFile, labelProvidedFile;
-    sscanf(tmpLine.c_str(), "%*s %lu %*s %lu %*s %lu", &numberEntriesFile, &numberFeaturesFile, &labelProvidedFile);
+    parseDatasetHeader(tmpLine, numberEntriesFile, numberFeaturesFile, labelProvidedFile);
     SP_LOG_DEBUG("io",
                  QStringLiteral("Label header entries=%1 features=%2 labelsProvided=%3")
                      .arg(numberEntriesFile)
@@ -315,7 +349,7 @@ std::vector<int> readLabelsFromFile(const std::string &fileName) {
     std::vector<int> labels(numberEntriesFile, 0);
     for (unsigned int row = 0; row < numberEntriesFile; ++row) {
         std::getline(inFile, tmpLine);
-        sscanf(tmpLine.c_str(), "%*d %*d %d", &labels[row]);
+        labels[row] = parseDatasetLabel(tmpLine);
     }
 
     inFile.close();
@@ -347,7 +381,7 @@ std::vector<std::vector<float>> readFeaturesFromFile(const std::string &fileName
     std::string tmpLine;
     std::getline(headerFile, tmpLine);
     unsigned long numberFeaturesFile, numberEntriesFile, labelProvidedFile;
-    sscanf(tmpLine.c_str(), "%*s %lu %*s %lu %*s %lu", &numberEntriesFile, &numberFeaturesFile, &labelProvidedFile);
+    parseDatasetHeader(tmpLine, numberEntriesFile, numberFeaturesFile, labelProvidedFile);
     SP_LOG_DEBUG("io",
                  QStringLiteral("Feature header entries=%1 features=%2 labelsProvided=%3")
                      .arg(numberEntriesFile)
@@ -377,19 +411,16 @@ std::vector<std::vector<float>> readFeaturesFromFile(const std::string &fileName
 
 void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut,
                                                   itk::ImageIOBase::IOComponentType &dataTypeOut) {
-    char *fileNameC = new char[fileName.length() + 1];
-    strcpy(fileNameC, fileName.toStdString().c_str());
+    const std::string fileNameStd = fileName.toStdString();
 
     itk::ImageIOBase::Pointer imageIO =
             itk::ImageIOFactory::CreateImageIO(
-                    fileNameC,
+                    fileNameStd.c_str(),
                     itk::ImageIOFactory::ReadMode);
 
-    imageIO->SetFileName(fileNameC);
+    imageIO->SetFileName(fileNameStd);
     imageIO->ReadImageInformation();
 
     dataTypeOut = imageIO->GetComponentType();
     dimensionOut = imageIO->GetNumberOfDimensions();
-
-    delete[] fileNameC;
 }
