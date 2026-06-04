@@ -10,6 +10,8 @@
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
 #include <QColorDialog>
+#include <QDir>
+#include <QFileInfo>
 #include <QFont>
 #include <QActionGroup>
 #include <QInputDialog>
@@ -48,6 +50,16 @@ constexpr int kSectionSpacing = 4;
 constexpr int kLayersVisibleRows = 4;
 constexpr int kOtherSectionVisibleRows = 2;
 constexpr int kApproximateTreeRowPadding = 8;
+
+QString stemForLoadedSourcePath(const QString &filePath) {
+    const QFileInfo fileInfo(filePath);
+    const QString fileName = fileInfo.fileName();
+    const QString niiGzSuffix = QStringLiteral(".nii.gz");
+    if (fileName.endsWith(niiGzSuffix, Qt::CaseInsensitive)) {
+        return fileName.left(fileName.size() - niiGzSuffix.size());
+    }
+    return fileInfo.completeBaseName();
+}
 
 bool debugLayerLayoutEnabled() {
     static const bool enabled = !qgetenv("SEGMENTPUZZLER_DEBUG_LAYER_LAYOUT").isEmpty();
@@ -1018,6 +1030,39 @@ QString SignalControl::resolvedDisplayName(const QString &fileName, const QStrin
     return signal_name_utils::makeUniqueSignalName(allSignalList, requestedName);
 }
 
+void SignalControl::rememberLoadedSourceFile(const QString &fileName) {
+    if (fileName.isEmpty()) {
+        return;
+    }
+
+    const QFileInfo fileInfo(fileName);
+    lastLoadedSourcePath = fileInfo.absoluteFilePath();
+}
+
+QString SignalControl::suggestedSegmentationExportPath(const QString &storedDefaultSavePath) const {
+    QString directoryPath;
+    if (!storedDefaultSavePath.isEmpty()) {
+        const QFileInfo storedDefaultInfo(storedDefaultSavePath);
+        directoryPath = storedDefaultInfo.exists() && storedDefaultInfo.isDir()
+                            ? storedDefaultInfo.absoluteFilePath()
+                            : storedDefaultInfo.absolutePath();
+    }
+    if (directoryPath.isEmpty() && !lastLoadedSourcePath.isEmpty()) {
+        directoryPath = QFileInfo(lastLoadedSourcePath).absolutePath();
+    }
+
+    QString stem = lastLoadedSourcePath.isEmpty() ? QString() : stemForLoadedSourcePath(lastLoadedSourcePath);
+    if (stem.isEmpty() && graphBase->pSelectedSegmentationSignal != nullptr) {
+        stem = graphBase->pSelectedSegmentationSignal->name;
+    }
+    stem = stem.trimmed();
+    const QString fileName = QStringLiteral("%1.nrrd").arg(stem.isEmpty() ? QStringLiteral("Segmentation") : stem);
+    if (directoryPath.isEmpty()) {
+        return fileName;
+    }
+    return QDir(directoryPath).filePath(fileName);
+}
+
 std::optional<slice_geometry::Dimensions3D> SignalControl::expectedDimensionsForNewSignal(
     bool forceShapeOfSegments) const {
     itkSignalBase *referenceSignal = nullptr;
@@ -1332,6 +1377,7 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
             size_t signalIndexGlobal = 0;
             bool ok = insertLoadedImage(loadedImage, signalIndexGlobal, true);
             if (ok) {
+                rememberLoadedSourceFile(fileName);
                 registerImageSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
             }
             invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
@@ -1404,6 +1450,7 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(result.segmentationImage, signalIndexGlobal, hadWorkingSegments);
             if (ok) {
+                rememberLoadedSourceFile(fileName);
                 if (result.workingSegmentsImage != nullptr) {
                     size_t segmentIndexGlobal = 0;
                     const bool insertedSegments = insertImageSegmenttype(result.workingSegmentsImage, segmentIndexGlobal, false);
@@ -1430,6 +1477,7 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, true);
             if (ok) {
+                rememberLoadedSourceFile(fileName);
                 registerRefinementSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
             }
             invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
@@ -1468,7 +1516,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             graphBase->pGraph->constructFromVolume(pImage);
             return result;
         },
-        [this, then = std::move(then)](SegmentsGraphLoadResult result) mutable {
+        [this, fileName, then = std::move(then)](SegmentsGraphLoadResult result) mutable {
             if (result.dimensionMismatch && result.image != nullptr) {
                 const auto dimensions = imageDimensions(result.image);
                 reportDimensionMismatch(dimensions.x, dimensions.y, dimensions.z, false);
@@ -1479,6 +1527,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(result.image, signalIndexGlobal, false);
             if (ok) {
+                rememberLoadedSourceFile(fileName);
                 registerSegmentsGraphSignal(signalIndexGlobal);
             } else {
                 QMessageBox::critical(this, tr("Error"), tr("Failed to load the supervoxels."));
@@ -1547,6 +1596,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                 signalIndexGlobal,
                 !createEmptySegments);
             if (ok) {
+                rememberLoadedSourceFile(fileName);
                 if (result.createdEmptySegments) {
                     size_t segmentIndexGlobal = 0;
                     const bool insertedSegments = insertImageSegmenttype(result.emptySegmentsImage, segmentIndexGlobal, false);
@@ -1706,7 +1756,6 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
     verbose = verboseIn;
     allSignalList.reserve(10);
     segmentsGraph = nullptr;
-    DEFAULT_SAVE_DIR = "";
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -2114,14 +2163,15 @@ void SignalControl::exportSelectedSegmentation() {
     // TODO: decide computer-wide vs application instance wide usage of settings
     QSettings MySettings;
     const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
-    //    QString default_save_dir = MySettings.value(DEFAULT_SAVE_DIR_KEY).toString();
+    const QString defaultSavePath = MySettings.value(DEFAULT_SAVE_DIR_KEY).toString();
+    const QString suggestedPath = suggestedSegmentationExportPath(defaultSavePath);
     QString path =
-            QFileDialog::getSaveFileName(this, "Export Selected Segmentation", DEFAULT_SAVE_DIR,
+            QFileDialog::getSaveFileName(this, "Export Selected Segmentation", suggestedPath,
                                          "Same Type as Watershed!!! (*.nrrd *.shlat *.uilat)");
     SP_LOG_INFO("io", QStringLiteral("Export selected segmentation dialog returned path=%1").arg(path));
     if (!path.isEmpty()) {
-        QDir CurrentDir;
-        MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(path));
+        const QString absolutePath = QFileInfo(path).absoluteFilePath();
+        MySettings.setValue(DEFAULT_SAVE_DIR_KEY, absolutePath);
         try {
             {
                 auto spacing = graphBase->pSelectedSegmentation->GetSpacing();
@@ -2641,7 +2691,6 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
         QDir CurrentDir;
         const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
         MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        DEFAULT_SAVE_DIR = CurrentDir.absoluteFilePath(fileName);
         SP_LOG_DEBUG("io", QStringLiteral("Updated default save dir from %1").arg(fileName));
 
         bool forceOnly3D = false;
@@ -2735,6 +2784,10 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
 
         } else {
             throw (std::logic_error("Image is not 3D!"));
+        }
+
+        if (loadingWasSuccessful) {
+            rememberLoadedSourceFile(fileName);
         }
     }
     return loadingWasSuccessful;

@@ -268,7 +268,7 @@ private:
     bool preferredSidebarWidthChangePending = false;
     int lastEmittedPreferredSidebarWidth = -1;
 
-    QString DEFAULT_SAVE_DIR;
+    QString lastLoadedSourcePath;
 
     void askForBackgroundStrategy();
     void loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice);
@@ -327,6 +327,8 @@ private:
     void setGuiBusy(bool busy);
     void refreshViewers();
     QString resolvedDisplayName(const QString &fileName, const QString &displayedName) const;
+    void rememberLoadedSourceFile(const QString &fileName);
+    QString suggestedSegmentationExportPath(const QString &storedDefaultSavePath) const;
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
     GraphSegmentImageType::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage);
     std::optional<slice_geometry::Dimensions3D> expectedDimensionsForNewSignal(bool forceShapeOfSegments) const;
