@@ -102,7 +102,7 @@ public:
         Erode,       // K: single-step erosion on the clicked segmentation label
         Insert,      // H: insert segmentation segment into initial segments (clears after click)
         View3D,      // M: open a 3D view for the clicked segment (clears after click)
-        View3DCut    // Menu: open a cut-enabled 3D view for the clicked working segment
+        View3DCut    // T/menu: resolve the active 3D source to a WorkingNode and open the cut view
     };
     ToolMode activeTool = ToolMode::None;
 

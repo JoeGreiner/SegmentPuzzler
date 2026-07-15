@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <optional>
 #include <itkRegionOfInterestImageFilter.h>
 #include <itkBinaryBallStructuringElement.h>
 #include <itkBinaryDilateImageFilter.h>
@@ -42,6 +43,17 @@ bool hasIdentityDirection(dataType::SegmentsImageType::Pointer image, double eps
         }
     }
     return true;
+}
+
+bool haveMatchingImageRegions(dataType::SegmentsImageType::Pointer left,
+                              dataType::SegmentsImageType::Pointer right) {
+    if (left == nullptr || right == nullptr) {
+        return false;
+    }
+    const auto leftRegion = left->GetLargestPossibleRegion();
+    const auto rightRegion = right->GetLargestPossibleRegion();
+    return leftRegion.GetIndex() == rightRegion.GetIndex() &&
+           leftRegion.GetSize() == rightRegion.GetSize();
 }
 
 bool toolWorksWithoutWorkingSegments(SliceViewer::ToolMode tool) {
@@ -545,16 +557,49 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
             return QStringLiteral(
                 "3D cut currently assumes identity-direction segmentation volumes and may be inaccurate on rotated or flipped data.");
         };
+        cutSession.progressText =
+            QStringLiteral("Applying 3D cut and transferring results to selected segmentation...");
         cutSession.applyCut = [this](const Projected3DCutRequest &request) {
             Segment3DViewerDialog::CutApplyResult result;
             if (graphBase == nullptr || graphBase->pGraph == nullptr) {
                 result.message = QStringLiteral("Graph unavailable.");
                 return result;
             }
+            if (graphBase->pWorkingSegmentsImage == nullptr) {
+                result.message = QStringLiteral("Working segments are unavailable.");
+                return result;
+            }
+            if (graphBase->pSelectedSegmentation == nullptr) {
+                result.message = QStringLiteral(
+                    "A selected segmentation is required because the cut results are transferred to it.");
+                return result;
+            }
+            if (!haveMatchingImageRegions(graphBase->pSelectedSegmentation,
+                                          graphBase->pWorkingSegmentsImage)) {
+                result.message = QStringLiteral(
+                    "The selected segmentation and working segments must have matching image regions.");
+                return result;
+            }
 
-            result.mutated = graphBase->pGraph->splitWorkingNodeByProjected3DCut(request);
+            std::vector<dataType::SegmentIdType> resultingWorkingLabels;
+            result.mutated = graphBase->pGraph->splitWorkingNodeByProjected3DCut(
+                request,
+                nullptr,
+                &resultingWorkingLabels);
             if (!result.mutated) {
                 result.message = QStringLiteral("The painted cut did not split the working segment.");
+                return result;
+            }
+
+            const auto assignedSelectedLabels =
+                graphBase->pGraph->transferWorkingNodesToSegmentation(resultingWorkingLabels);
+            if (resultingWorkingLabels.empty()) {
+                result.message = QStringLiteral(
+                    "The 3D cut was applied, but its resulting working segments could not be identified for transfer.");
+            } else if (assignedSelectedLabels.size() != resultingWorkingLabels.size()) {
+                result.message = QStringLiteral(
+                    "The 3D cut was applied, but its resulting parts could not be transferred "
+                    "to the selected segmentation.");
             }
             return result;
         };
@@ -621,47 +666,67 @@ quint32 AnnotationSliceViewer::workingSegmentColor(dataType::SegmentIdType label
     return graphBase->pWorkingSegments->LUT[label];
 }
 
-bool AnnotationSliceViewer::show3DWorkingSegmentCutView(int posX, int posY) {
+void AnnotationSliceViewer::refreshWorkingGraphPresentationAfterInsertion(
+    dataType::SegmentIdType workingLabel)
+{
+    if (graphBase != nullptr && graphBase->pWorkingSegments != nullptr) {
+        graphBase->pWorkingSegments->checkAndResizeLUT(workingLabel);
+    }
+    if (graphBase != nullptr && graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
+        graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    }
+    if (orthoViewer() != nullptr) {
+        orthoViewer()->refreshViewers();
+    }
+}
+
+bool AnnotationSliceViewer::handleWorkingSegmentResolution(
+    const Graph::WorkingSegmentResolution &resolution)
+{
+    using Status = Graph::WorkingSegmentResolution::Status;
+    switch (resolution.status) {
+    case Status::ReusedExisting:
+        return true;
+    case Status::Inserted:
+        refreshWorkingGraphPresentationAfterInsertion(resolution.workingLabel);
+        return true;
+    case Status::NoForeground:
+        sendStatusMessage(QStringLiteral("3D cut: clicked background in the selected segmentation."));
+        return false;
+    case Status::Failed:
+        sendStatusMessage(QStringLiteral("Could not resolve the selected segment in the working graph."));
+        return false;
+    }
+
+    sendStatusMessage(QStringLiteral("Could not resolve the selected segment in the working graph."));
+    return false;
+}
+
+bool AnnotationSliceViewer::prepare3DWorkingSegmentCutView(
+    dataType::SegmentIdType workingLabel,
+    int launchSliceAxis)
+{
     if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr || graphBase->pGraph == nullptr) {
         SP_LOG_WARNING("viewer.three_d",
-                       QStringLiteral("[3DCutDebug] working-segment cut click ignored: missing working-segments image"));
+                       QStringLiteral("[3DCutDebug] 3D cut preparation ignored: missing working-segments image"));
         sendStatusMessage(QStringLiteral("Load working segments before opening a 3D cut view."));
         return false;
     }
 
-    int x, y, z;
-    getXYZfromPixmapPos(posX, posY, x, y, z);
     const auto segImage = graphBase->pWorkingSegmentsImage;
-    const dataType::SegmentIdType label = segImage->GetPixel({x, y, z});
-
-    SP_LOG_DEBUG("viewer.three_d",
-                 QStringLiteral("[3DCutDebug] click widgetPos=%1,%2 imagePos=%3,%4,%5 workingLabel=%6 taskRunnerBusy=%7")
-                     .arg(posX)
-                     .arg(posY)
-                     .arg(x)
-                     .arg(y)
-                     .arg(z)
-                     .arg(label)
-                     .arg(taskRunner != nullptr && taskRunner->isBusy()));
-
-    if (label == 0) {
-        sendStatusMessage(QStringLiteral("3D cut: clicked background, no working segment selected."));
-        return false;
-    }
-
-    const quint32 lutColor = workingSegmentColor(label);
-    const std::vector<std::pair<dataType::SegmentIdType, quint32>> labels{{label, lutColor}};
-    const auto workingNodeIt = graphBase->pGraph->workingNodes.find(label);
+    const auto workingNodeIt = graphBase->pGraph->workingNodes.find(workingLabel);
     if (workingNodeIt == graphBase->pGraph->workingNodes.end() || workingNodeIt->second == nullptr) {
-        sendStatusMessage(QStringLiteral("The clicked working segment is unavailable."));
+        sendStatusMessage(QStringLiteral("The resolved working segment is unavailable."));
         return false;
     }
+
+    const quint32 lutColor = workingSegmentColor(workingLabel);
+    const std::vector<std::pair<dataType::SegmentIdType, quint32>> labels{{workingLabel, lutColor}};
     const Roi workingNodeRoi = workingNodeIt->second->roi;
-    const int launchSliceAxis = sliceAxis;
 
     if (taskRunner == nullptr) {
         auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, labels, workingNodeRoi);
-        openPrepared3DView(std::move(preparedScene), launchSliceAxis, label);
+        openPrepared3DView(std::move(preparedScene), launchSliceAxis, workingLabel);
         return true;
     }
 
@@ -670,8 +735,101 @@ bool AnnotationSliceViewer::show3DWorkingSegmentCutView(int posX, int posY) {
         [segImage, labels, workingNodeRoi]() mutable {
             return Segment3DViewerDialog::prepareScene(segImage, std::move(labels), workingNodeRoi);
         },
-        [this, label, launchSliceAxis](Segment3DViewerDialog::PreparedScene preparedScene) {
-            openPrepared3DView(std::move(preparedScene), launchSliceAxis, label);
+        [this, workingLabel, launchSliceAxis](Segment3DViewerDialog::PreparedScene preparedScene) {
+            openPrepared3DView(std::move(preparedScene), launchSliceAxis, workingLabel);
+        });
+    return true;
+}
+
+bool AnnotationSliceViewer::show3DSegmentCutView(int posX, int posY) {
+    if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr || graphBase->pGraph == nullptr) {
+        SP_LOG_WARNING("viewer.three_d",
+                       QStringLiteral("[3DCutDebug] 3D cut click ignored: missing working-segments image"));
+        sendStatusMessage(QStringLiteral("Load working segments before opening a 3D cut view."));
+        return false;
+    }
+    if (graphBase->pSelectedSegmentation == nullptr) {
+        sendStatusMessage(QStringLiteral(
+            "Select a segmentation first; every successful 3D cut transfers its resulting parts to it."));
+        return false;
+    }
+    if (!haveMatchingImageRegions(graphBase->pSelectedSegmentation,
+                                  graphBase->pWorkingSegmentsImage)) {
+        sendStatusMessage(QStringLiteral(
+            "The selected segmentation and working segments must have matching image regions for a 3D cut."));
+        return false;
+    }
+    if (taskRunner != nullptr && taskRunner->isBusy()) {
+        sendStatusMessage(QStringLiteral("Wait for the current task before opening a 3D cut view."));
+        return false;
+    }
+
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    const int launchSliceAxis = sliceAxis;
+
+    if (!graphBase->useSelectedSegmentationFor3DView) {
+        const dataType::SegmentIdType workingLabel = graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
+        SP_LOG_DEBUG("viewer.three_d",
+                     QStringLiteral("[3DCutDebug] click source=working widgetPos=%1,%2 imagePos=%3,%4,%5 workingLabel=%6")
+                         .arg(posX)
+                         .arg(posY)
+                         .arg(x)
+                         .arg(y)
+                         .arg(z)
+                         .arg(workingLabel));
+        if (workingLabel == graphBase->pGraph->backgroundId) {
+            sendStatusMessage(QStringLiteral("3D cut: clicked background, no working segment selected."));
+            return false;
+        }
+        return prepare3DWorkingSegmentCutView(workingLabel, launchSliceAxis);
+    }
+
+    dataType::SegmentsImageType::IndexType selectedIndex{{x, y, z}};
+    const auto selectedRegion = graphBase->pSelectedSegmentation->GetLargestPossibleRegion();
+    if (!selectedRegion.IsInside(selectedIndex)) {
+        sendStatusMessage(QStringLiteral("The clicked point lies outside the selected segmentation."));
+        return false;
+    }
+    if (graphBase->pSelectedSegmentation->GetPixel(selectedIndex) == graphBase->pGraph->backgroundId) {
+        sendStatusMessage(QStringLiteral("3D cut: clicked background in the selected segmentation."));
+        return false;
+    }
+
+    SP_LOG_DEBUG("viewer.three_d",
+                 QStringLiteral("[3DCutDebug] click source=selected widgetPos=%1,%2 imagePos=%3,%4,%5")
+                     .arg(posX)
+                     .arg(posY)
+                     .arg(x)
+                     .arg(y)
+                     .arg(z));
+
+    if (taskRunner == nullptr) {
+        const auto resolution =
+            graphBase->pGraph->ensureSelectedSegmentationComponentInWorkingGraph(x, y, z);
+        if (!handleWorkingSegmentResolution(resolution)) {
+            return false;
+        }
+        return prepare3DWorkingSegmentCutView(resolution.workingLabel, launchSliceAxis);
+    }
+
+    auto resolvedWorkingLabel = std::make_shared<std::optional<dataType::SegmentIdType>>();
+    Graph *const graph = graphBase->pGraph;
+    taskRunner->runWithLabel(
+        QStringLiteral("Checking segment; inserting into working graph if needed..."),
+        [graph, x, y, z]() {
+            return graph->ensureSelectedSegmentationComponentInWorkingGraph(x, y, z);
+        },
+        [this, resolvedWorkingLabel](Graph::WorkingSegmentResolution resolution) {
+            if (handleWorkingSegmentResolution(resolution)) {
+                *resolvedWorkingLabel = resolution.workingLabel;
+            }
+        },
+        [this, resolvedWorkingLabel, launchSliceAxis]() {
+            if (!resolvedWorkingLabel->has_value()) {
+                return;
+            }
+            prepare3DWorkingSegmentCutView(resolvedWorkingLabel->value(), launchSliceAxis);
         });
     return true;
 }
@@ -865,7 +1023,7 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
                          .arg(event->pos().x())
                          .arg(event->pos().y())
                          .arg(static_cast<int>(event->button())));
-        if (show3DWorkingSegmentCutView(event->pos().x(), event->pos().y())) {
+        if (show3DSegmentCutView(event->pos().x(), event->pos().y())) {
             setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         }
         break;
@@ -887,17 +1045,20 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
     SP_LOG_INFO("segmentation", QStringLiteral("Insert segmentation segment at %1,%2,%3").arg(x).arg(y).arg(z));
 
     if (taskRunner == nullptr) {
-        graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z);
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->refreshViewers();
+        const auto insertedLabel = graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z);
+        if (insertedLabel.has_value()) {
+            refreshWorkingGraphPresentationAfterInsertion(insertedLabel.value());
         }
         return;
     }
 
-    taskRunner->run(
-        [this, x, y, z]() { graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z); },
-        [this]() {
-            orthoViewer()->refreshViewers();
+    taskRunner->runWithLabel(
+        QStringLiteral("Inserting selected segment into working graph..."),
+        [this, x, y, z]() { return graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z); },
+        [this](std::optional<dataType::SegmentIdType> insertedLabel) {
+            if (insertedLabel.has_value()) {
+                refreshWorkingGraphPresentationAfterInsertion(insertedLabel.value());
+            }
         });
 }
 

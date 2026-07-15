@@ -1938,6 +1938,9 @@ void Segment3DViewerDialog::applyProjectedCut() {
 
     const auto finishApply = [this](CutApplyResult result) {
         if (result.mutated) {
+            if (!result.message.isEmpty()) {
+                QMessageBox::warning(this, tr("3D Cut"), result.message);
+            }
             accept();
             return;
         }

@@ -2,6 +2,7 @@
 #define graph_h
 
 #include <memory>
+#include <optional>
 #include <QElapsedTimer>
 #include "src/utils/voxel.h"
 #include "Projected3DCut.h"
@@ -89,19 +90,6 @@ template<typename T> class itkSignal;
 
 class Graph {
 public:
-    Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
-    ~Graph();  // defined in Graph.cpp (needed for unique_ptr<itkSignal<...>> with forward decl)
-
-    // Refine using the currently selected refinement image and signal at the given voxel.
-    void refineWithSelectedRefinementAtPosition(int x, int y, int z);
-    bool splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &request,
-                                          Projected3DCutProfile *profileOut = nullptr);
-    void transferSegmentationSegmentToInitialSegment(int x, int y, int z);
-    void setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn);
-    segment_puzzler::connected_components::ConnectedComponentSplitStats splitDisconnectedInitialSegments(
-        segment_puzzler::connected_components::ConnectivityStencil connectivity);
-
-
     static constexpr int Dimension = 3;
     using SegmentIdType = dataType::SegmentIdType;
     using SegmentsImageType = dataType::SegmentsImageType;
@@ -110,6 +98,34 @@ public:
     using LandscapeType = dataType::LandscapeType;
     using DistanceType = dataType::DistanceType;
 
+    struct WorkingSegmentResolution {
+        enum class Status {
+            ReusedExisting,
+            Inserted,
+            NoForeground,
+            Failed
+        };
+
+        Status status = Status::Failed;
+        SegmentIdType workingLabel = 0;
+    };
+
+    Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
+    ~Graph();  // defined in Graph.cpp (needed for unique_ptr<itkSignal<...>> with forward decl)
+
+    // Refine using the currently selected refinement image and signal at the given voxel.
+    void refineWithSelectedRefinementAtPosition(int x, int y, int z);
+    bool splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &request,
+                                          Projected3DCutProfile *profileOut = nullptr,
+                                          std::vector<SegmentIdType> *resultingWorkingLabelsOut = nullptr);
+    // Reuse the clicked WorkingNode when its voxels exactly match the clicked
+    // selected-segmentation component; otherwise insert that component via H's path.
+    WorkingSegmentResolution ensureSelectedSegmentationComponentInWorkingGraph(int x, int y, int z);
+    // Returns the fresh WorkingNode label when insertion succeeds.
+    std::optional<SegmentIdType> transferSegmentationSegmentToInitialSegment(int x, int y, int z);
+    void setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn);
+    segment_puzzler::connected_components::ConnectedComponentSplitStats splitDisconnectedInitialSegments(
+        segment_puzzler::connected_components::ConnectivityStencil connectivity);
 
     //    Implemented: backgroundIsHighestId, backgroundIsLowestId
     std::string backgroundIdStrategy;
@@ -157,9 +173,14 @@ public:
     DistanceType::Pointer shortestPath(InitialEdge &initialEdge, LandscapeType::Pointer pLandscape);
 
     // transfer working node at a given coordinate to the segmentation image
-    void transferWorkingNodeToSegmentation(int x, int y, int z);
+    std::optional<SegmentIdType> transferWorkingNodeToSegmentation(int x, int y, int z);
 
-    void transferWorkingNodeToSegmentation(SegmentIdType labelOfNodeToTransfer);
+    std::optional<SegmentIdType> transferWorkingNodeToSegmentation(SegmentIdType labelOfNodeToTransfer);
+
+    // Transfers each unique WorkingNode under one fresh label into the selected segmentation.
+    // Returns the assigned selected-segmentation labels in the same order.
+    std::vector<SegmentIdType>
+    transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &workingLabelsToTransfer);
 
     // Delete all pixels with the given label from pSelectedSegmentation (sets them to backgroundId).
     void deleteSegmentationLabel(SegmentIdType label);

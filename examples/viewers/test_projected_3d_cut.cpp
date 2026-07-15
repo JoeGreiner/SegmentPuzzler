@@ -4,7 +4,9 @@
 #include <array>
 #include <cstddef>
 #include <iostream>
+#include <limits>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -59,6 +61,18 @@ std::size_t countNonBackgroundVoxels(const dataType::SegmentsImageType::Pointer 
         result += buffer[index] != backgroundId ? 1U : 0U;
     }
     return result;
+}
+
+bool imagesEqual(const dataType::SegmentsImageType::Pointer &left,
+                 const dataType::SegmentsImageType::Pointer &right) {
+    if (left.IsNull() || right.IsNull() ||
+        left->GetLargestPossibleRegion() != right->GetLargestPossibleRegion()) {
+        return false;
+    }
+    const auto voxelCount = left->GetLargestPossibleRegion().GetNumberOfPixels();
+    return std::equal(left->GetBufferPointer(),
+                      left->GetBufferPointer() + voxelCount,
+                      right->GetBufferPointer());
 }
 
 bool labelIsConnectedInImage(const dataType::SegmentsImageType::Pointer &image, SegmentIdType label) {
@@ -228,21 +242,52 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    {
+        auto failedFixture = sample::buildGraphFixture(originalSegmentsImage);
+        auto failedWorkingBefore =
+            sample::duplicateSegmentsImage(failedFixture.graphBase->pWorkingSegmentsImage);
+        auto failedSelected =
+            sample::duplicateSegmentsImage(failedFixture.graphBase->pWorkingSegmentsImage);
+        failedSelected->FillBuffer(failedFixture.graph->backgroundId);
+        failedFixture.graphBase->pSelectedSegmentation = failedSelected;
+        failedFixture.graphBase->selectedSegmentationMaxSegmentId =
+            failedFixture.graph->getLargestIdInSegmentVolume(failedSelected);
+        auto failedSelectedBefore = sample::duplicateSegmentsImage(failedSelected);
+        const SegmentIdType failedSelectedMaxBefore =
+            failedFixture.graphBase->selectedSegmentationMaxSegmentId;
+
+        Projected3DCutRequest unsuccessfulRequest = candidates.front().request;
+        unsuccessfulRequest.strokePixels = {{-100.0, -100.0}, {-50.0, -50.0}};
+        std::vector<SegmentIdType> unsuccessfulLabels{largestSegment.label};
+        if (failedFixture.graph->splitWorkingNodeByProjected3DCut(
+                unsuccessfulRequest, nullptr, &unsuccessfulLabels) ||
+            !unsuccessfulLabels.empty() ||
+            !imagesEqual(failedWorkingBefore, failedFixture.graphBase->pWorkingSegmentsImage) ||
+            !imagesEqual(failedSelectedBefore, failedSelected) ||
+            failedFixture.graphBase->selectedSegmentationMaxSegmentId != failedSelectedMaxBefore) {
+            return failTest("An unsuccessful projected cut should leave both segmentations and labels unchanged.");
+        }
+    }
+
     sample::GraphFixture successfulFixture;
     dataType::SegmentsImageType::Pointer beforeCutImage;
     sample::CandidateCut chosenCandidate;
+    std::vector<SegmentIdType> cutResultWorkingLabels;
     bool foundSuccessfulCut = false;
 
     for (const auto &candidate : candidates) {
         auto candidateFixture = sample::buildGraphFixture(originalSegmentsImage);
         auto candidateBeforeImage = sample::duplicateSegmentsImage(candidateFixture.graphBase->pWorkingSegmentsImage);
-        if (!candidateFixture.graph->splitWorkingNodeByProjected3DCut(candidate.request)) {
+        std::vector<SegmentIdType> candidateResultWorkingLabels;
+        if (!candidateFixture.graph->splitWorkingNodeByProjected3DCut(
+                candidate.request, nullptr, &candidateResultWorkingLabels)) {
             continue;
         }
 
         successfulFixture = std::move(candidateFixture);
         beforeCutImage = candidateBeforeImage;
         chosenCandidate = candidate;
+        cutResultWorkingLabels = std::move(candidateResultWorkingLabels);
         foundSuccessfulCut = true;
         break;
     }
@@ -293,6 +338,16 @@ int main(int argc, char **argv) {
     if (resultingWorkingLabels.count(largestSegment.label) == 0) {
         return failTest("Projected cut did not reuse the original target working label.");
     }
+    if (cutResultWorkingLabels.size() != resultingWorkingLabels.size() ||
+        cutResultWorkingLabels.empty() ||
+        cutResultWorkingLabels.front() != largestSegment.label) {
+        return failTest("Projected cut did not report all result labels with the preserved target first.");
+    }
+    for (const SegmentIdType workingLabel : cutResultWorkingLabels) {
+        if (resultingWorkingLabels.count(workingLabel) == 0) {
+            return failTest("Projected cut reported a label outside the split target.");
+        }
+    }
 
     std::unordered_set<SegmentIdType> seenInitialLabels;
     seenInitialLabels.reserve(16);
@@ -335,6 +390,111 @@ int main(int argc, char **argv) {
                 return failTest("A resulting initial node does not map back to its owning working label.");
             }
         }
+    }
+
+    const auto selectedMaxBeforeMissingTransfer = successfulFixture.graphBase->selectedSegmentationMaxSegmentId;
+    if (!successfulFixture.graph->transferWorkingNodesToSegmentation(cutResultWorkingLabels).empty() ||
+        successfulFixture.graphBase->selectedSegmentationMaxSegmentId != selectedMaxBeforeMissingTransfer) {
+        return failTest("Batch transfer without a selected segmentation should fail without consuming labels.");
+    }
+
+    auto selectedSegmentation = sample::duplicateSegmentsImage(postCutImage);
+    selectedSegmentation->FillBuffer(backgroundId);
+    successfulFixture.graphBase->pSelectedSegmentation = selectedSegmentation;
+    successfulFixture.graphBase->selectedSegmentationMaxSegmentId =
+        successfulFixture.graph->getLargestIdInSegmentVolume(selectedSegmentation);
+    const SegmentIdType selectedMaxBeforeTransfer =
+        successfulFixture.graphBase->selectedSegmentationMaxSegmentId;
+
+    const auto assignedSegmentationLabels =
+        successfulFixture.graph->transferWorkingNodesToSegmentation(cutResultWorkingLabels);
+    if (assignedSegmentationLabels.size() != cutResultWorkingLabels.size()) {
+        return failTest("Batch transfer did not assign one selected-segmentation label per cut result.");
+    }
+    for (std::size_t resultIndex = 0; resultIndex < cutResultWorkingLabels.size(); ++resultIndex) {
+        const SegmentIdType expectedSegmentationLabel =
+            static_cast<SegmentIdType>(selectedMaxBeforeTransfer + resultIndex + 1);
+        if (assignedSegmentationLabels[resultIndex] != expectedSegmentationLabel) {
+            return failTest("Batch transfer did not assign consecutive selected-segmentation labels.");
+        }
+
+        const auto &workingNode = successfulFixture.graph->workingNodes.at(cutResultWorkingLabels[resultIndex]);
+        for (const auto &initialEntry : workingNode->subInitialNodes) {
+            for (const Voxel &voxel : initialEntry.second->voxels) {
+                if (selectedSegmentation->GetPixel({voxel.x, voxel.y, voxel.z}) != expectedSegmentationLabel) {
+                    return failTest("Batch transfer did not copy a cut-result voxel into the selected segmentation.");
+                }
+            }
+        }
+    }
+    if (successfulFixture.graphBase->selectedSegmentationMaxSegmentId != assignedSegmentationLabels.back()) {
+        return failTest("Batch transfer did not update the selected-segmentation maximum label.");
+    }
+    if (successfulFixture.graphBase->selectedSegmentationMaxSegmentId !=
+        static_cast<SegmentIdType>(selectedMaxBeforeTransfer + assignedSegmentationLabels.size())) {
+        return failTest("Batch transfer did not increase the selected-segmentation maximum by the result count.");
+    }
+
+    const std::unordered_set<SegmentIdType> distinctAssignedLabels(
+        assignedSegmentationLabels.begin(), assignedSegmentationLabels.end());
+    if (distinctAssignedLabels.size() != assignedSegmentationLabels.size()) {
+        return failTest("Cut results were not transferred under distinct selected-segmentation labels.");
+    }
+
+    std::unordered_map<SegmentIdType, SegmentIdType> selectedLabelByWorkingLabel;
+    selectedLabelByWorkingLabel.reserve(cutResultWorkingLabels.size());
+    for (std::size_t resultIndex = 0; resultIndex < cutResultWorkingLabels.size(); ++resultIndex) {
+        selectedLabelByWorkingLabel.emplace(
+            cutResultWorkingLabels[resultIndex], assignedSegmentationLabels[resultIndex]);
+    }
+
+    std::unordered_map<SegmentIdType, std::size_t> transferredVoxelCounts;
+    transferredVoxelCounts.reserve(assignedSegmentationLabels.size());
+    const auto *selectedBuffer = selectedSegmentation->GetBufferPointer();
+    for (std::size_t voxelIndex = 0; voxelIndex < voxelCount; ++voxelIndex) {
+        if (beforeBuffer[voxelIndex] != largestSegment.label) {
+            if (selectedBuffer[voxelIndex] != backgroundId) {
+                return failTest("Batch transfer changed a selected-segmentation voxel outside the cut target.");
+            }
+            continue;
+        }
+
+        const auto expectedLabelIt = selectedLabelByWorkingLabel.find(afterBuffer[voxelIndex]);
+        if (expectedLabelIt == selectedLabelByWorkingLabel.end() ||
+            selectedBuffer[voxelIndex] != expectedLabelIt->second) {
+            return failTest("Batch transfer did not completely cover every projected-cut result voxel.");
+        }
+        ++transferredVoxelCounts[expectedLabelIt->second];
+    }
+    for (const SegmentIdType assignedLabel : assignedSegmentationLabels) {
+        if (transferredVoxelCounts[assignedLabel] == 0) {
+            return failTest("A projected-cut result received no voxels in the selected segmentation.");
+        }
+    }
+
+    SegmentIdType missingWorkingLabel = std::numeric_limits<SegmentIdType>::max();
+    while (successfulFixture.graph->workingNodes.count(missingWorkingLabel) > 0) {
+        --missingWorkingLabel;
+    }
+    const SegmentIdType selectedMaxBeforeInvalidBatch =
+        successfulFixture.graphBase->selectedSegmentationMaxSegmentId;
+    const auto &firstTransferredNode =
+        successfulFixture.graph->workingNodes.at(cutResultWorkingLabels.front());
+    const Voxel firstTransferredVoxel = firstTransferredNode->subInitialNodes.begin()->second->voxels.front();
+    const SegmentIdType firstTransferredVoxelLabelBefore =
+        selectedSegmentation->GetPixel({firstTransferredVoxel.x, firstTransferredVoxel.y, firstTransferredVoxel.z});
+    if (!successfulFixture.graph->transferWorkingNodesToSegmentation(
+            {cutResultWorkingLabels.front(), missingWorkingLabel}).empty() ||
+        successfulFixture.graphBase->selectedSegmentationMaxSegmentId != selectedMaxBeforeInvalidBatch ||
+        selectedSegmentation->GetPixel(
+            {firstTransferredVoxel.x, firstTransferredVoxel.y, firstTransferredVoxel.z}) !=
+            firstTransferredVoxelLabelBefore) {
+        return failTest("An invalid batch should fail before mutating labels or selected-segmentation voxels.");
+    }
+    if (!successfulFixture.graph->transferWorkingNodesToSegmentation(
+            {cutResultWorkingLabels.front(), cutResultWorkingLabels.front()}).empty() ||
+        successfulFixture.graphBase->selectedSegmentationMaxSegmentId != selectedMaxBeforeInvalidBatch) {
+        return failTest("A duplicate-label batch should fail without consuming selected-segmentation labels.");
     }
 
     std::cout << "Projected 3D cut test passed.\n";

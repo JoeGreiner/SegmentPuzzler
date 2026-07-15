@@ -241,7 +241,7 @@ MainWindow::MainWindow() {
         }
     });
     connect(showSegmentTableAction, &QAction::triggered, this, &MainWindow::showSegmentTable);
-    splitWorkingSegment3DCutAction = new QAction(tr("Split Working Segment by 3D Cut..."), this);
+    splitWorkingSegment3DCutAction = new QAction(tr("Open Segment in 3D Cut View..."), this);
     segmentationsMenu->addAction(splitWorkingSegment3DCutAction);
     connect(splitWorkingSegment3DCutAction, &QAction::triggered, this, &MainWindow::arm3DWorkingSegmentCut);
 
@@ -324,12 +324,13 @@ MainWindow::MainWindow() {
     connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);
     settingsMenu->addSeparator();
     QAction *useSelectedSegmentationFor3DViewsAction =
-        new QAction(tr("Use Selected Segmentation For 3D Views"), this);
+        new QAction(tr("Use Selected Segmentation For 3D Views/Cuts"), this);
     useSelectedSegmentationFor3DViewsAction->setCheckable(true);
     useSelectedSegmentationFor3DViewsAction->setChecked(graphBase->useSelectedSegmentationFor3DView);
     settingsMenu->addAction(useSelectedSegmentationFor3DViewsAction);
     connect(useSelectedSegmentationFor3DViewsAction, &QAction::toggled, this, [this](bool checked) {
         graphBase->useSelectedSegmentationFor3DView = checked;
+        update3DWorkingSegmentCutActionState();
     });
 
 
@@ -1099,7 +1100,7 @@ void MainWindow::showHotkeys() {
 <p>Open the Segment Feature Table: shape features for all labels in the selected segmentation, sortable and color-coded. Click a row to navigate to that label.</p>
 
 <p class="bold_header">T</p>
-<p>Hold T and click a working segment to open the cut-enabled 3D view.</p>
+<p>Hold T and click a segment to open the cut-enabled 3D view. A selected segmentation is always required because applying a cut automatically transfers every resulting part into it as a separate label. When "Use Selected Segmentation For 3D Views/Cuts" is enabled, the clicked component from the selected segmentation is reused if it already matches a working segment, or inserted into the working graph first. When disabled, the clicked working segment opens directly.</p>
 
 <p class="bold_header">F9</p>
 <p>Jump to explicit X, Y, Z coordinates.</p>
@@ -1113,8 +1114,8 @@ void MainWindow::showHotkeys() {
 <p class="bold_header">N</p>
 <p>Open a 3D surface view of all segments at once.</p>
 
-<p class="bold_header">Segmentations -> Split Working Segment by 3D Cut...</p>
-<p>Same as holding T. In the 3D dialog, orient the segment, press Draw Cut, paint the cut stroke, then Apply. Press ? or F1 in that dialog for the step-by-step helper.</p>
+<p class="bold_header">Segmentations -> Open Segment in 3D Cut View...</p>
+<p>Same as holding T. In the 3D dialog, orient the segment, press Draw Cut, paint the cut stroke, then Apply. All resulting cut parts are transferred automatically as separate labels into the selected segmentation. Press ? or F1 in that dialog for the step-by-step helper.</p>
 
 </body>
 </html>
@@ -1155,12 +1156,31 @@ void MainWindow::arm3DWorkingSegmentCut() {
         myOrthowindow->setAnnotationToolMode(SliceViewer::ToolMode::View3DCut);
         myOrthowindow->flashShortcutLegendKey("3dcut");
     }
-    receiveStatusMessage(QStringLiteral("Click a working segment to open the 3D cut view."));
+    if (graphBase != nullptr && graphBase->useSelectedSegmentationFor3DView) {
+        receiveStatusMessage(QStringLiteral(
+            "Click a segment in the selected segmentation to prepare it in the working graph and open the 3D cut view; "
+            "applying the cut transfers all resulting parts back as separate labels."));
+    } else {
+        receiveStatusMessage(QStringLiteral(
+            "Click a working segment to open the 3D cut view; applying the cut transfers all resulting parts "
+            "as separate labels into the selected segmentation."));
+    }
 }
 
 void MainWindow::update3DWorkingSegmentCutActionState() {
     if (splitWorkingSegment3DCutAction == nullptr || mySignalControl == nullptr || taskRunner == nullptr) {
         return;
     }
-    splitWorkingSegment3DCutAction->setEnabled(mySignalControl->hasWorkingSegments() && !taskRunner->isBusy());
+    const bool usesSelectedSegmentation =
+        graphBase != nullptr && graphBase->useSelectedSegmentationFor3DView;
+    const bool selectedSegmentationAvailable =
+        graphBase != nullptr && graphBase->pSelectedSegmentation != nullptr;
+    splitWorkingSegment3DCutAction->setEnabled(
+        mySignalControl->hasWorkingSegments() && selectedSegmentationAvailable && !taskRunner->isBusy());
+
+    const QString sourceDescription = usesSelectedSegmentation
+        ? tr("Open a segment from the selected segmentation in the 3D cut view; it is inserted into the working graph if needed. Applying the cut transfers every resulting part back as a separate label.")
+        : tr("Open a working segment in the 3D cut view. A selected segmentation is required because applying the cut transfers every resulting part into it as a separate label.");
+    splitWorkingSegment3DCutAction->setStatusTip(sourceDescription);
+    splitWorkingSegment3DCutAction->setToolTip(sourceDescription);
 }

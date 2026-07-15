@@ -9,6 +9,7 @@
 #include <QHash>
 #include <QPainter>
 #include "SliceViewer.h"
+#include "SliceViewerCoordinateMapping.h"
 #include "SliceViewerITKSignal.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
@@ -859,22 +860,29 @@ unsigned long SliceViewer::get3DIndexFromAnnotationSliceXY(int x, int y) {
 
 void
 SliceViewer::getXYZfromPixmapPos(int posX, int posY, int &xOut, int &yOut, int &zOut, bool adjustForZoom) {
+    const int sliceX = adjustForZoom
+            ? slice_viewer_geometry::sourcePixelForPaintedPixel(posX, getCurrentSliceWidth(), width())
+            : posX;
+    const int sliceY = adjustForZoom
+            ? slice_viewer_geometry::sourcePixelForPaintedPixel(posY, getCurrentSliceHeight(), height())
+            : posY;
+
     switch (sliceAxis) {
         case 0: {
             xOut = sliceIndex;
-            yOut = adjustForZoom ? static_cast<int>(posY / zoomFactor) : posY;
-            zOut = adjustForZoom ? static_cast<int>(posX / zoomFactor) : posX;
+            yOut = sliceY;
+            zOut = sliceX;
             break;
         }
         case 1: {
-            xOut = adjustForZoom ? static_cast<int>(posX / zoomFactor) : posX;
+            xOut = sliceX;
             yOut = sliceIndex;
-            zOut = adjustForZoom ? static_cast<int>(posY / zoomFactor) : posY;
+            zOut = sliceY;
             break;
         }
         case 2: {
-            xOut = adjustForZoom ? static_cast<int>(posX / zoomFactor) : posX;
-            yOut = adjustForZoom ? static_cast<int>(posY / zoomFactor) : posY;
+            xOut = sliceX;
+            yOut = sliceY;
             zOut = sliceIndex;
             break;
         }

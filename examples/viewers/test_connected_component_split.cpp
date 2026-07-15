@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "src/segment_handling/Graph.h"
 #include "src/segment_handling/graphBase.h"
@@ -43,6 +44,12 @@ std::size_t countLabel(const ImagePointer &image, SegmentIdType label) {
         count += buffer[index] == label ? 1U : 0U;
     }
     return count;
+}
+
+std::vector<SegmentIdType> copyImageBuffer(const ImagePointer &image) {
+    const auto total = image->GetLargestPossibleRegion().GetNumberOfPixels();
+    const SegmentIdType *buffer = image->GetBufferPointer();
+    return {buffer, buffer + total};
 }
 
 struct GraphFixture {
@@ -201,6 +208,165 @@ int testGraphPreservesMergesAndSplitsWorkingOutput() {
     return 0;
 }
 
+int testEnsureReusesExactSelectedComponent() {
+    auto workingImage = makeImage(4, 3, 1);
+    workingImage->SetPixel({1, 1, 0}, 1);
+    workingImage->SetPixel({2, 1, 0}, 1);
+
+    auto selectedImage = makeImage(4, 3, 1);
+    selectedImage->SetPixel({1, 1, 0}, 9);
+    selectedImage->SetPixel({2, 1, 0}, 9);
+    selectedImage->SetPixel({3, 2, 0}, 9); // Diagonal only: not part of the clicked 6-component.
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    const auto imageBefore = copyImageBuffer(workingImage);
+    const auto nextFreeIdBefore = fixture.graph->nextFreeId;
+    const auto initialNodeCountBefore = fixture.graph->initialNodes.size();
+    const auto workingNodeCountBefore = fixture.graph->workingNodes.size();
+
+    const auto result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
+    if (result.status != Graph::WorkingSegmentResolution::Status::ReusedExisting || result.workingLabel != 1) {
+        return failTest("An exact selected component should reuse the existing working node despite different labels.");
+    }
+    if (fixture.graph->nextFreeId != nextFreeIdBefore ||
+        fixture.graph->initialNodes.size() != initialNodeCountBefore ||
+        fixture.graph->workingNodes.size() != workingNodeCountBefore ||
+        copyImageBuffer(workingImage) != imageBefore) {
+        return failTest("The exact-component fast path must not mutate the graph or working image.");
+    }
+    return 0;
+}
+
+int expectSelectedGeometryInsertion(const std::vector<std::array<int, 3>> &workingVoxels,
+                                    const std::vector<std::array<int, 3>> &selectedVoxels,
+                                    const std::string &scenario,
+                                    bool verifyRefinementRestore = false,
+                                    const std::vector<std::array<int, 3>> &disconnectedSelectedVoxels = {}) {
+    auto workingImage = makeImage(6, 4, 1);
+    for (const auto &voxel : workingVoxels) {
+        workingImage->SetPixel({voxel[0], voxel[1], voxel[2]}, 1);
+    }
+
+    auto selectedImage = makeImage(6, 4, 1);
+    for (const auto &voxel : selectedVoxels) {
+        selectedImage->SetPixel({voxel[0], voxel[1], voxel[2]}, 9);
+    }
+    for (const auto &voxel : disconnectedSelectedVoxels) {
+        selectedImage->SetPixel({voxel[0], voxel[1], voxel[2]}, 9);
+    }
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    const SegmentIdType expectedWorkingLabel = fixture.graph->nextFreeId;
+
+    auto previousRefinement = makeImage(6, 4, 1);
+    itkSignal<SegmentIdType> previousRefinementSignal(previousRefinement, false);
+    if (verifyRefinementRestore) {
+        fixture.graphBase->pSelectedRefinement = previousRefinement;
+        fixture.graphBase->pSelectedRefinementSignal = &previousRefinementSignal;
+    }
+
+    const auto &seed = selectedVoxels.front();
+    const auto result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(
+        seed[0], seed[1], seed[2]);
+    if (result.status != Graph::WorkingSegmentResolution::Status::Inserted ||
+        result.workingLabel != expectedWorkingLabel) {
+        return failTest(scenario + ": differing geometry should insert one working segment.");
+    }
+    if (fixture.graph->nextFreeId != expectedWorkingLabel + 1 ||
+        fixture.graph->workingNodes.count(expectedWorkingLabel) != 1) {
+        return failTest(scenario + ": insertion should create exactly the expected fresh working label.");
+    }
+    for (const auto &voxel : selectedVoxels) {
+        if (workingImage->GetPixel({voxel[0], voxel[1], voxel[2]}) != expectedWorkingLabel) {
+            return failTest(scenario + ": inserted component is missing from the working image.");
+        }
+    }
+    for (const auto &voxel : disconnectedSelectedVoxels) {
+        if (workingImage->GetPixel({voxel[0], voxel[1], voxel[2]}) == expectedWorkingLabel) {
+            return failTest(scenario + ": a disconnected occurrence of the selected label was inserted.");
+        }
+    }
+    if (verifyRefinementRestore &&
+        (fixture.graphBase->pSelectedRefinement != previousRefinement ||
+         fixture.graphBase->pSelectedRefinementSignal != &previousRefinementSignal)) {
+        return failTest(scenario + ": temporary refinement pointers were not restored.");
+    }
+    return 0;
+}
+
+int testEnsureInsertsDifferentSelectedGeometry() {
+    if (int result = expectSelectedGeometryInsertion(
+            {{1, 1, 0}, {2, 1, 0}},
+            {{1, 1, 0}, {1, 2, 0}},
+            "equal-size shifted component",
+            true,
+            {{5, 3, 0}})) {
+        return result;
+    }
+    if (int result = expectSelectedGeometryInsertion(
+            {{1, 1, 0}, {2, 1, 0}, {3, 1, 0}},
+            {{1, 1, 0}, {2, 1, 0}},
+            "selected subset")) {
+        return result;
+    }
+    if (int result = expectSelectedGeometryInsertion(
+            {{1, 1, 0}, {2, 1, 0}},
+            {{1, 1, 0}, {2, 1, 0}, {3, 1, 0}},
+            "selected superset")) {
+        return result;
+    }
+    if (int result = expectSelectedGeometryInsertion(
+            {{5, 3, 0}},
+            {{1, 1, 0}, {2, 1, 0}},
+            "working-background click")) {
+        return result;
+    }
+    if (int result = expectSelectedGeometryInsertion(
+            {{1, 1, 0}, {5, 3, 0}},
+            {{1, 1, 0}},
+            "disconnected working node")) {
+        return result;
+    }
+    return 0;
+}
+
+int testEnsureHandlesNoForegroundAndInconsistentWorkingNode() {
+    auto workingImage = makeImage(3, 2, 1);
+    workingImage->SetPixel({1, 1, 0}, 1);
+    auto fixture = buildGraphFixture(workingImage);
+
+    auto selectedBackground = makeImage(3, 2, 1);
+    fixture.graphBase->pSelectedSegmentation = selectedBackground;
+    const auto nextFreeIdBefore = fixture.graph->nextFreeId;
+    auto result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
+    if (result.status != Graph::WorkingSegmentResolution::Status::NoForeground ||
+        fixture.graph->nextFreeId != nextFreeIdBefore) {
+        return failTest("A selected-background click should not mutate the graph.");
+    }
+
+    auto mismatchedSelected = makeImage(4, 2, 1);
+    mismatchedSelected->SetPixel({1, 1, 0}, 7);
+    fixture.graphBase->pSelectedSegmentation = mismatchedSelected;
+    result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
+    if (result.status != Graph::WorkingSegmentResolution::Status::Failed ||
+        fixture.graph->nextFreeId != nextFreeIdBefore) {
+        return failTest("Mismatched selected and working regions should fail without insertion.");
+    }
+
+    auto selectedForeground = makeImage(3, 2, 1);
+    selectedForeground->SetPixel({1, 1, 0}, 7);
+    fixture.graphBase->pSelectedSegmentation = selectedForeground;
+    fixture.graph->workingNodes.erase(1);
+    result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
+    if (result.status != Graph::WorkingSegmentResolution::Status::Failed ||
+        fixture.graph->nextFreeId != nextFreeIdBefore) {
+        return failTest("A non-background working label without a WorkingNode should fail without insertion.");
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -216,6 +382,15 @@ int main(int argc, char **argv) {
         return result;
     }
     if (int result = testGraphPreservesMergesAndSplitsWorkingOutput()) {
+        return result;
+    }
+    if (int result = testEnsureReusesExactSelectedComponent()) {
+        return result;
+    }
+    if (int result = testEnsureInsertsDifferentSelectedGeometry()) {
+        return result;
+    }
+    if (int result = testEnsureHandlesNoForegroundAndInconsistentWorkingNode()) {
         return result;
     }
 

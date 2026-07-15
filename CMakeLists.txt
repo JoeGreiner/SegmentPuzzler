@@ -386,6 +386,8 @@ if (BUILD_TESTING)
     add_executable(test_SliceViewer examples/viewers/example_sliceviewer.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_OrthoViewer examples/viewers/example_orthoviewer.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_ConnectedComponentSplit examples/viewers/test_connected_component_split.cpp ${SRC_CORRECT_ORDER})
+    add_executable(test_SliceViewerCoordinateMapping
+            examples/viewers/test_slice_viewer_coordinate_mapping.cpp)
 #    add_executable(test_customwatershed examples/viewers/example_orthoviewer.cpp ${SRC_CORRECT_ORDER})
 #    add_executable(test_watershed examples/viewers/example_watershed.cpp ${SRC_CORRECT_ORDER})
 #    add_executable(test_watershedControl examples/viewers/example_watershedControl.cpp ${SRC_CORRECT_ORDER})

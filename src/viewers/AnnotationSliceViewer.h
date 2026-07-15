@@ -134,7 +134,10 @@ private:
                             const QString &progressText,
                             int launchSliceAxis);
     void show3DSegmentView(int posX, int posY);
-    bool show3DWorkingSegmentCutView(int posX, int posY);
+    bool show3DSegmentCutView(int posX, int posY);
+    bool prepare3DWorkingSegmentCutView(dataType::SegmentIdType workingLabel, int launchSliceAxis);
+    bool handleWorkingSegmentResolution(const Graph::WorkingSegmentResolution &resolution);
+    void refreshWorkingGraphPresentationAfterInsertion(dataType::SegmentIdType workingLabel);
     void show3DAllLabelsView();
     quint32 workingSegmentColor(dataType::SegmentIdType label) const;
     void openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
