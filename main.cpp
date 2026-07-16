@@ -12,10 +12,13 @@
 #include <QItemSelection>
 #include <mainWindow.h>
 #include <QMetaType>
+#include <QtGlobal>
 #include <sys/stat.h>
 #include <cstdlib>
 #include <clocale>
 #include <optional>
+
+#include <vtkSMPTools.h>
 
 #include "src/utils/AppLogger.h"
 
@@ -71,6 +74,23 @@ std::string getEnvVar(const char* name) {
 }
 #endif
 
+void configureVtkSmpBackend() {
+    const bool backendChosenByUser = qEnvironmentVariableIsSet("VTK_SMP_BACKEND_IN_USE");
+    const QString initialBackend = QString::fromLatin1(vtkSMPTools::GetBackend());
+
+    if (!backendChosenByUser && initialBackend == QStringLiteral("Sequential")) {
+        if (vtkSMPTools::SetBackend("STDThread")) {
+            vtkSMPTools::Initialize();
+        } else {
+            SP_LOG_WARNING("app", QStringLiteral("VTK STDThread backend unavailable; continuing sequentially"));
+        }
+    }
+
+    SP_LOG_INFO("app",
+                QStringLiteral("VTK SMP backend=%1, estimatedThreads=%2")
+                    .arg(QString::fromLatin1(vtkSMPTools::GetBackend()))
+                    .arg(vtkSMPTools::GetEstimatedNumberOfThreads()));
+}
 
 int main(int argc, char *argv[]) {
     QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
@@ -131,6 +151,7 @@ int main(int argc, char *argv[]) {
 #else
     SP_LOG_INFO("app", QStringLiteral("OpenMP disabled"));
 #endif
+    configureVtkSmpBackend();
     qRegisterMetaType<QVector<int> >("QVector<int>");
     qRegisterMetaType<QItemSelection>("QItemSelection");
 

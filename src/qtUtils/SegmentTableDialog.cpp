@@ -805,7 +805,7 @@ void SegmentTableDialog::onView3DPreparationFinished() {
     try {
         auto preparedScene = view3DWatcher->future().result();
         const auto segImage = currentTableSegmentation;
-        if (preparedScene.hasCombinedMesh || !preparedScene.meshes.empty()) {
+        if (!preparedScene.meshes.empty()) {
             auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
             dialog->setNavigateToLabelHandler(
                 [segImage, orthoViewer = orthoViewer](dataType::SegmentIdType labelId) {

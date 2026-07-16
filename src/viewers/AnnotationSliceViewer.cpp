@@ -836,32 +836,35 @@ bool AnnotationSliceViewer::show3DSegmentCutView(int posX, int posY) {
 
 void AnnotationSliceViewer::show3DAllLabelsView() {
     const auto segImage = active3DViewSegmentsImage();
-    if (segImage == nullptr) return;
-
-    const auto *buf = segImage->GetBufferPointer();
-    const auto &sz = segImage->GetLargestPossibleRegion().GetSize();
-    const size_t total = sz[0] * sz[1] * sz[2];
-    auto *activeSignal = active3DViewSignal();
-
-    std::unordered_map<dataType::SegmentIdType, quint32> labelColors;
-    for (size_t i = 0; i < total; ++i) {
-        const dataType::SegmentIdType id = buf[i];
-        if (id == 0 || labelColors.count(id)) continue;
-        quint32 color = 0xFFAAAAAA;
-        if (activeSignal != nullptr &&
-            id < static_cast<dataType::SegmentIdType>(activeSignal->LUT.size())) {
-            color = activeSignal->LUT[id];
-        }
-        labelColors[id] = color;
+    if (segImage == nullptr) {
+        return;
     }
 
-    if (labelColors.empty()) return;
+    std::vector<quint32> labelColors;
+    if (const auto *activeSignal = active3DViewSignal(); activeSignal != nullptr) {
+        labelColors = activeSignal->LUT;
+    }
 
-    std::vector<std::pair<dataType::SegmentIdType, quint32>> labels(labelColors.begin(), labelColors.end());
-    showPrepared3DView(
-        std::move(labels),
-        "Preparing 3D view for all segments...",
-        2);
+    if (taskRunner == nullptr) {
+        auto preparedScene =
+            Segment3DViewerDialog::prepareAllLabelsScene(segImage, std::move(labelColors));
+        if (!preparedScene.meshes.empty()) {
+            openPrepared3DView(std::move(preparedScene), 2, 0);
+        }
+        return;
+    }
+
+    taskRunner->runWithLabel(
+        QStringLiteral("Preparing 3D view for all segments..."),
+        [segImage, labelColors = std::move(labelColors)]() mutable {
+            return Segment3DViewerDialog::prepareAllLabelsScene(
+                segImage, std::move(labelColors));
+        },
+        [this](Segment3DViewerDialog::PreparedScene preparedScene) {
+            if (!preparedScene.meshes.empty()) {
+                openPrepared3DView(std::move(preparedScene), 2, 0);
+            }
+        });
 }
 
 void AnnotationSliceViewer::exportDebugInformation() {

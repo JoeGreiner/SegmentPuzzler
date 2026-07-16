@@ -1,7 +1,9 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <iostream>
 #include <limits>
@@ -10,6 +12,14 @@
 #include <unordered_set>
 #include <vector>
 
+#include <vtkAOSDataArrayTemplate.h>
+#include <vtkCellArray.h>
+#include <vtkCellData.h>
+#include <vtkPoints.h>
+#include <vtkPolyData.h>
+#include <vtkPolyDataMapper.h>
+
+#include "src/viewers/Segment3DViewerDialog.h"
 #include "projected_3d_cut_sample_utils.h"
 
 namespace {
@@ -139,6 +149,181 @@ bool labelIsConnectedInImage(const dataType::SegmentsImageType::Pointer &image, 
     return visitedLabelCount == totalLabelCount;
 }
 
+int testExplodedMeshSplit() {
+    auto points = vtkSmartPointer<vtkPoints>::New();
+    points->InsertNextPoint(0.0, 0.0, 0.0);
+    points->InsertNextPoint(2.0, 0.0, 0.0);
+    points->InsertNextPoint(0.0, 2.0, 0.0);
+    points->InsertNextPoint(10.0, 0.0, 0.0);
+    points->InsertNextPoint(12.0, 0.0, 0.0);
+    points->InsertNextPoint(10.0, 2.0, 0.0);
+    points->InsertNextPoint(20.0, 0.0, 0.0);
+    points->InsertNextPoint(22.0, 0.0, 0.0);
+    points->InsertNextPoint(20.0, 2.0, 0.0);
+    points->InsertNextPoint(1000.0, 1000.0, 1000.0); // Deliberately unused.
+
+    auto polys = vtkSmartPointer<vtkCellArray>::New();
+    const vtkIdType outerA[3]{0, 1, 2};
+    const vtkIdType shared[3]{3, 4, 5};
+    const vtkIdType outerB[3]{6, 7, 8};
+    polys->InsertNextCell(3, outerA);
+    polys->InsertNextCell(3, shared);
+    polys->InsertNextCell(3, outerB);
+
+    auto boundaryLabels =
+        vtkSmartPointer<vtkAOSDataArrayTemplate<SegmentIdType>>::New();
+    boundaryLabels->SetName("BoundaryLabels");
+    boundaryLabels->SetNumberOfComponents(2);
+    const SegmentIdType boundary0[2]{1, 0};
+    const SegmentIdType boundary1[2]{1, 2};
+    const SegmentIdType boundary2[2]{2, 0};
+    boundaryLabels->InsertNextTypedTuple(boundary0);
+    boundaryLabels->InsertNextTypedTuple(boundary1);
+    boundaryLabels->InsertNextTypedTuple(boundary2);
+
+    auto source = vtkSmartPointer<vtkPolyData>::New();
+    source->SetPoints(points);
+    source->SetPolys(polys);
+    source->GetCellData()->AddArray(boundaryLabels);
+
+    const std::vector<Segment3DViewerDialog::LabelWithColor> labels{
+        {1, 0xFF0000}, {2, 0x00FF00}, {3, 0x0000FF}};
+    const auto meshes = Segment3DViewerDialog::prepareExplodedMeshes(source, labels);
+    if (meshes.size() != 2 || meshes[0].labelId != 1 || meshes[1].labelId != 2) {
+        return failTest("Explode split did not produce the expected non-empty label meshes.");
+    }
+
+    const std::array<std::array<double, 6>, 2> expectedBounds{{
+        {0.0, 12.0, 0.0, 2.0, 0.0, 0.0},
+        {10.0, 22.0, 0.0, 2.0, 0.0, 0.0}}};
+    const std::array<std::array<double, 3>, 2> expectedCenters{{
+        {6.0, 1.0, 0.0}, {16.0, 1.0, 0.0}}};
+    for (std::size_t meshIndex = 0; meshIndex < meshes.size(); ++meshIndex) {
+        const auto &mesh = meshes[meshIndex];
+        if (mesh.polyData->GetPoints() != points
+            || mesh.polyData->GetNumberOfCells() != 2) {
+            return failTest("Explode mesh does not share points or has the wrong cell count.");
+        }
+
+        auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+        mapper->SetInputData(mesh.polyData);
+        const double *mapperBounds = mapper->GetBounds();
+        for (int component = 0; component < 6; ++component) {
+            if (std::abs(mapperBounds[component] - expectedBounds[meshIndex][component]) > 1e-9) {
+                return failTest("Explode mapper bounds include points from another label.");
+            }
+        }
+        for (int component = 0; component < 3; ++component) {
+            if (std::abs(mesh.centerWorld[component] - expectedCenters[meshIndex][component]) > 1e-9) {
+                return failTest("Explode mesh center is incorrect.");
+            }
+        }
+    }
+
+    vtkIdType pointCount = 0;
+    const vtkIdType *pointIds = nullptr;
+    meshes[0].polyData->GetCellPoints(1, pointCount, pointIds);
+    if (pointCount != 3 || !std::equal(pointIds, pointIds + 3, shared)) {
+        return failTest("Explode split did not retain the shared interface for the first label.");
+    }
+    meshes[1].polyData->GetCellPoints(0, pointCount, pointIds);
+    if (pointCount != 3 || !std::equal(pointIds, pointIds + 3, shared)) {
+        return failTest("Explode split did not duplicate the shared interface for the second label.");
+    }
+
+    const std::vector<Segment3DViewerDialog::LabelWithColor> duplicateLabels{
+        {1, 0xFF0000}, {1, 0x00FF00}};
+    if (!Segment3DViewerDialog::prepareExplodedMeshes(source, duplicateLabels).empty()) {
+        return failTest("Explode split accepted duplicate labels.");
+    }
+
+    auto shortBoundaryLabels =
+        vtkSmartPointer<vtkAOSDataArrayTemplate<SegmentIdType>>::New();
+    shortBoundaryLabels->SetName("BoundaryLabels");
+    shortBoundaryLabels->SetNumberOfComponents(2);
+    shortBoundaryLabels->InsertNextTypedTuple(boundary0);
+    shortBoundaryLabels->InsertNextTypedTuple(boundary1);
+    auto shortBoundarySource = vtkSmartPointer<vtkPolyData>::New();
+    shortBoundarySource->SetPoints(points);
+    shortBoundarySource->SetPolys(polys);
+    shortBoundarySource->GetCellData()->AddArray(shortBoundaryLabels);
+    if (!Segment3DViewerDialog::prepareExplodedMeshes(shortBoundarySource, labels).empty()) {
+        return failTest("Explode split accepted a short BoundaryLabels array.");
+    }
+
+    auto invalidPolys = vtkSmartPointer<vtkCellArray>::New();
+    const vtkIdType invalidCell[3]{6, 7, 99};
+    invalidPolys->InsertNextCell(3, outerA);
+    invalidPolys->InsertNextCell(3, shared);
+    invalidPolys->InsertNextCell(3, invalidCell);
+    auto invalidSource = vtkSmartPointer<vtkPolyData>::New();
+    invalidSource->SetPoints(points);
+    invalidSource->SetPolys(invalidPolys);
+    invalidSource->GetCellData()->AddArray(boundaryLabels);
+    if (!Segment3DViewerDialog::prepareExplodedMeshes(invalidSource, labels).empty()) {
+        return failTest("Explode split accepted an out-of-range point id.");
+    }
+    return 0;
+}
+
+dataType::SegmentsImageType::Pointer makeSmallSegmentsImage(bool includeSecondLabel) {
+    dataType::SegmentsImageType::SizeType size{{6, 6, 6}};
+    dataType::SegmentsImageType::IndexType start{{0, 0, 0}};
+    dataType::SegmentsImageType::RegionType region;
+    region.SetIndex(start);
+    region.SetSize(size);
+
+    auto image = dataType::SegmentsImageType::New();
+    image->SetRegions(region);
+    image->Allocate();
+    image->FillBuffer(0);
+
+    for (int z = 1; z <= 4; ++z) {
+        for (int y = 1; y <= 4; ++y) {
+            for (int x = 1; x <= 4; ++x) {
+                dataType::SegmentsImageType::IndexType index{{x, y, z}};
+                image->SetPixel(index, includeSecondLabel && x >= 3 ? 2 : 1);
+            }
+        }
+    }
+    return image;
+}
+
+int testAllLabelsSceneUsesSegmentMeshes() {
+    constexpr quint32 red = 0xFF0000;
+    constexpr quint32 green = 0x00FF00;
+    const std::vector<quint32> colors{0, red, green};
+
+    auto scene = Segment3DViewerDialog::prepareAllLabelsScene(
+        makeSmallSegmentsImage(true), colors);
+    if (scene.targetLabelId != 0 || scene.meshes.size() != 2) {
+        return failTest("All-label scene did not produce one mesh per label.");
+    }
+    if (scene.meshes[0].labelId != 1 || scene.meshes[0].lutColor != red
+        || scene.meshes[1].labelId != 2 || scene.meshes[1].lutColor != green) {
+        return failTest("All-label scene did not preserve label colors.");
+    }
+    if (scene.meshes[0].polyData->GetPoints()
+        != scene.meshes[1].polyData->GetPoints()) {
+        return failTest("All-label scene meshes do not share their points.");
+    }
+    if (!std::isfinite(scene.sceneExtent) || scene.sceneExtent <= 0.0
+        || !std::all_of(scene.sceneCenterWorld.begin(),
+                        scene.sceneCenterWorld.end(),
+                        [](double value) { return std::isfinite(value); })) {
+        return failTest("All-label scene bounds are invalid.");
+    }
+
+    auto singleLabelScene = Segment3DViewerDialog::prepareAllLabelsScene(
+        makeSmallSegmentsImage(false), colors);
+    if (singleLabelScene.targetLabelId != 0
+        || singleLabelScene.meshes.size() != 1
+        || singleLabelScene.meshes.front().labelId != 1) {
+        return failTest("Single-label all-label scene did not use the segment-mesh path.");
+    }
+    return 0;
+}
+
 bool voxelListIsConnected(const std::vector<Voxel> &voxels, const Roi &roi) {
     if (voxels.empty()) {
         return false;
@@ -209,6 +394,14 @@ int main(int argc, char **argv) {
     ProgramOptions options;
     if (!parseArgs(argc, argv, options)) {
         return 1;
+    }
+
+    if (const int explodeTestResult = testExplodedMeshSplit(); explodeTestResult != 0) {
+        return explodeTestResult;
+    }
+    if (const int allLabelsTestResult = testAllLabelsSceneUsesSegmentMeshes();
+        allLabelsTestResult != 0) {
+        return allLabelsTestResult;
     }
 
     if (!QFileInfo::exists(options.segmentsPath)) {

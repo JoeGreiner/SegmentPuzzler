@@ -18,7 +18,6 @@
 
 class vtkOrientationMarkerWidget;
 class QVTKOpenGLNativeWidget;
-class QCheckBox;
 class QEvent;
 class QPushButton;
 class QShowEvent;
@@ -43,21 +42,15 @@ public:
         dataType::SegmentIdType labelId = 0;
         vtkSmartPointer<vtkPolyData> polyData;
         quint32 lutColor = 0xAAAAAA;
-        bool useCellScalars = false;
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
     };
 
     struct PreparedScene {
         QString windowTitle;
         dataType::SegmentIdType targetLabelId = 0;
-        PreparedMesh combinedMesh;
-        bool hasCombinedMesh = false;
         std::vector<PreparedMesh> meshes;
         std::array<double, 3> sceneCenterWorld{0.0, 0.0, 0.0};
         double sceneExtent = 1.0;
-        // Stored for deferred background split when the user activates the explode toggle
-        vtkSmartPointer<vtkPolyData> splitSourcePolyData;
-        std::vector<LabelWithColor> splitLabels;
     };
 
     static PreparedScene prepareScene(
@@ -67,6 +60,16 @@ public:
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<LabelWithColor> labels,
         Roi requestedBounds);
+    static PreparedScene prepareAllLabelsScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        std::vector<quint32> labelColors);
+    // Expects triangulated vtkSurfaceNets3D output with BoundaryLabels.
+    // Each result shares combinedPolyData's points to avoid duplicate VBOs.
+    // Treat points and cells as immutable. GetBounds() covers all shared points;
+    // use centerWorld or vtkPolyData::GetCellsBounds() for label-local bounds.
+    static std::vector<PreparedMesh> prepareExplodedMeshes(
+        vtkPolyData *combinedPolyData,
+        const std::vector<LabelWithColor> &labels);
     static std::optional<CameraOrientation> cameraOrientationForSliceAxis(int sliceAxis);
 
     struct CutApplyResult {
@@ -97,15 +100,19 @@ protected:
     void showEvent(QShowEvent *event) override;
 
 private:
-    struct ActorInfo {
+    static PreparedScene prepareScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        std::vector<LabelWithColor> labels,
+        Roi requestedBounds,
+        bool allLabelsInImage);
+
+    struct SegmentActorInfo {
         vtkSmartPointer<vtkActor> actor;
         dataType::SegmentIdType labelId = 0;
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
     };
 
     void stepExplodeSlider(int direction);
-    void onExplodeToggled(bool checked);
-    void activateExplodeActors(const std::vector<PreparedMesh> &meshes);
     void beginCutDrawing();
     void clearCutStroke();
     void applyProjectedCut();
@@ -122,16 +129,12 @@ private:
     void finishInitialRender();
 
     vtkSmartPointer<vtkRenderer> m_renderer;
-    vtkSmartPointer<vtkActor> m_combinedActor;
-    std::vector<ActorInfo> m_explodeActors;
+    std::vector<SegmentActorInfo> m_segmentActors;
     std::array<double, 3> m_sceneCenterWorld{};
     double m_sceneExtent = 1.0;
     dataType::SegmentIdType m_targetLabelId = 0;
-    vtkSmartPointer<vtkPolyData> m_splitSourcePolyData;
-    std::vector<LabelWithColor> m_splitLabels;
 
     QSlider *m_explodeSlider = nullptr;
-    QCheckBox *m_explodeToggle = nullptr;
     QPushButton *m_drawCutButton = nullptr;
     QPushButton *m_clearCutButton = nullptr;
     QPushButton *m_applyCutButton = nullptr;
@@ -139,8 +142,6 @@ private:
     QVTKOpenGLNativeWidget *m_vtkWidget = nullptr;
     CutStrokeOverlay *m_cutOverlay = nullptr;
     vtkSmartPointer<vtkOrientationMarkerWidget> m_orientationWidget;
-    TaskRunner *m_ownedTaskRunner = nullptr;
-    TaskRunner *m_taskRunner = nullptr;
     CutSessionConfig m_cutSession;
     NavigateToLabelHandler m_navigateToLabelHandler;
     int m_launchSliceAxis = -1;
