@@ -53,6 +53,12 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
 
         auto orthoViewer = window->findChild<OrthoViewer *>();
         if (orthoViewer) {
+            // Keep 2D at native scale when it fits; 3D retains the exact fitted startup below.
+            if (orthoViewer->xy->getDimZ() == 1) {
+                orthoViewer->setViewToMiddleOfStack();
+                return;
+            }
+
             const double fittedZoom = orthoViewer->computeFittedZoom();
             if (fittedZoom > 0) {
                 const double initialZoom = fittedZoom;

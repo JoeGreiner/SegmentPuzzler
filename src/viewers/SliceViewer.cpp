@@ -11,6 +11,7 @@
 #include "SliceViewer.h"
 #include "SliceViewerCoordinateMapping.h"
 #include "SliceViewerITKSignal.h"
+#include "SliceViewerZoomPolicy.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 #include <itkImageRegionConstIteratorWithIndex.h>
@@ -24,8 +25,6 @@
 #include <mutex>
 
 namespace {
-
-constexpr double kMaximumScaledSliceExtent = 8192.0;
 
 QString planeNameForSliceAxis(int sliceAxis) {
     switch (sliceAxis) {
@@ -708,26 +707,17 @@ void SliceViewer::modifyZoomInAllViewers(double factor) {
         return;
     }
 
-    const double fittedZoom = viewer->computeFittedZoom();
-    const double minimumZoom = fittedZoom;
-    const int maxSliceExtent = std::max(std::max(viewer->xy->getCurrentSliceWidth(),
-                                                 viewer->xy->getCurrentSliceHeight()),
-                                        std::max(std::max(viewer->xz->getCurrentSliceWidth(),
-                                                          viewer->xz->getCurrentSliceHeight()),
-                                                 std::max(viewer->zy->getCurrentSliceWidth(),
-                                                          viewer->zy->getCurrentSliceHeight())));
-    const double maximumZoom = std::max(minimumZoom,
-                                        kMaximumScaledSliceExtent / std::max(1, maxSliceExtent));
+    const int maxSliceExtent = viewer->maximumSliceExtent();
+    const auto zoomLimits = slice_viewer_zoom::limitsForMaximumSliceExtent(maxSliceExtent);
     const double proposedZoom = currentZoom * factor;
-    const double clampedZoom = std::clamp(proposedZoom, minimumZoom, maximumZoom);
+    const double clampedZoom = std::clamp(proposedZoom, zoomLimits.minimum, zoomLimits.maximum);
     if (std::abs(clampedZoom - proposedZoom) > 1e-9) {
-        const QString message = QString("[SliceViewerZoomClamp] current=%1 proposed=%2 minimum=%3 maximum=%4 applied=%5 fitted=%6 maxSliceExtent=%7")
+        const QString message = QString("[SliceViewerZoomClamp] current=%1 proposed=%2 minimum=%3 maximum=%4 applied=%5 maxSliceExtent=%6")
                 .arg(currentZoom, 0, 'f', 6)
                 .arg(proposedZoom, 0, 'f', 6)
-                .arg(minimumZoom, 0, 'f', 6)
-                .arg(maximumZoom, 0, 'f', 6)
+                .arg(zoomLimits.minimum, 0, 'f', 6)
+                .arg(zoomLimits.maximum, 0, 'f', 6)
                 .arg(clampedZoom, 0, 'f', 6)
-                .arg(fittedZoom, 0, 'f', 6)
                 .arg(maxSliceExtent);
         logSliceViewerState("SliceViewerZoomClamp", message);
     }

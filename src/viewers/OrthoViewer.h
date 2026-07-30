@@ -75,6 +75,7 @@ public:
 
     void refreshZoomLayout();
     double computeFittedZoom() const;
+    int maximumSliceExtent() const;
     void refreshInteractionModeIndicators();
     void flashShortcutLegendKey(const QString &shortcutId);
     void setShortcutLegendProfile(ShortcutLegendProfile profile);
@@ -118,6 +119,7 @@ protected:
 
 private:
     void initialize();
+    void applyInitialZoom();
     void onViewportResized();
     void placeSplittersForZoom(double zoom);
     void reclaimBoundarySlack();

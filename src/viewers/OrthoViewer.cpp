@@ -1,5 +1,6 @@
 #include "OrthoViewer.h"
 #include "SliceViewerITKSignal.h"
+#include "SliceViewerZoomPolicy.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/utils/AppLogger.h"
 #include <QDebug>
@@ -23,6 +24,8 @@
 namespace {
 constexpr int kIndicatorBorderWidth = 4;
 constexpr int kIndicatorMargin = kIndicatorBorderWidth;
+// QSplitter can realize a requested pane one pixel smaller after relayout.
+constexpr int kTwoDimensionalPlacementSlack = 1;
 
 struct PlaneAccent {
     QColor indicatorColor;
@@ -1087,6 +1090,16 @@ double OrthoViewer::computeFittedZoom() const {
     return fittedZoom;
 }
 
+int OrthoViewer::maximumSliceExtent() const {
+    if (xy == nullptr || xz == nullptr || zy == nullptr) {
+        return 1;
+    }
+
+    return std::max(std::max(xy->getCurrentSliceWidth(), xy->getCurrentSliceHeight()),
+                    std::max(std::max(xz->getCurrentSliceWidth(), xz->getCurrentSliceHeight()),
+                             std::max(zy->getCurrentSliceWidth(), zy->getCurrentSliceHeight())));
+}
+
 void OrthoViewer::placeSplittersForZoom(double zoom) {
     if (!initialized || xy == nullptr || xz == nullptr || zy == nullptr) {
         return;
@@ -1124,8 +1137,13 @@ void OrthoViewer::placeSplittersForZoom(double zoom) {
     const int topChromeHeight = std::max(viewXY->height() - scrollAreaXY->viewport()->height(),
                                          viewZY->height() - scrollAreaZY->viewport()->height());
 
-    int leftWidth = leftChromeWidth + static_cast<int>(std::lround(static_cast<double>(dimX) * zoom));
-    int topHeight = topChromeHeight + static_cast<int>(std::lround(static_cast<double>(dimY) * zoom));
+    const int placementSlack = xy->getDimZ() == 1 ? kTwoDimensionalPlacementSlack : 0;
+    int leftWidth = leftChromeWidth +
+                    static_cast<int>(std::lround(static_cast<double>(dimX) * zoom)) +
+                    placementSlack;
+    int topHeight = topChromeHeight +
+                    static_cast<int>(std::lround(static_cast<double>(dimY) * zoom)) +
+                    placementSlack;
 
     leftWidth = std::clamp(leftWidth, 1, std::max(1, availableWidth - 1));
     topHeight = std::clamp(topHeight, 1, std::max(1, availableHeight - 1));
@@ -1419,36 +1437,54 @@ void OrthoViewer::setViewToMiddleOfStack() {
     xz->setSliceIndex(xy->getDimY() / 2);
     zy->setSliceIndex(xy->getDimX() / 2);
 
-    QTimer::singleShot(0, this, [this]() {
-        if (!initialized) {
-            return;
-        }
+    QTimer::singleShot(0, this, &OrthoViewer::applyInitialZoom);
+}
 
-        const double fittedZoom = computeFittedZoom();
-        if (fittedZoom <= 0.0) {
-            return;
-        }
+void OrthoViewer::applyInitialZoom() {
+    if (!initialized) {
+        return;
+    }
 
-        const double initialZoom = std::max(1.0, fittedZoom);
-        const double currentZoom = xy->zoomFactor;
-        if (currentZoom <= 0.0) {
-            return;
-        }
+    const bool isTwoDimensional = xy->getDimZ() == 1;
+    double fittedZoom = 1.0;
+    if (isTwoDimensional) {
+        // Measure from a defined native-scale layout, not from the previous zoom state.
+        placeSplittersForZoom(1.0);
+        fittedZoom = slice_viewer_zoom::fittedZoomForViewport(
+                scrollAreaXY->viewport()->width(),
+                scrollAreaXY->viewport()->height(),
+                xy->getDimX(),
+                xy->getDimY());
+    } else {
+        fittedZoom = computeFittedZoom();
+    }
 
-        const QString currentLog = QString("[SplitterInitialZoom] fittedZoom=%1 initialZoom=%2 currentZoom=%3")
-                .arg(fittedZoom, 0, 'f', 6)
-                .arg(initialZoom, 0, 'f', 6)
-                .arg(currentZoom, 0, 'f', 6);
-        logOrthoRenderState(QStringLiteral("SplitterInitialZoom"), currentLog);
+    const double initialZoom = slice_viewer_zoom::initialZoom(
+            fittedZoom,
+            isTwoDimensional,
+            maximumSliceExtent());
+    if (initialZoom <= 0.0) {
+        return;
+    }
 
-        if (std::abs(initialZoom - currentZoom) <= 1e-9) {
-            adjustSplittersForCurrentZoom();
-            updatePlaneIndicators();
-            return;
-        }
+    const double currentZoom = xy->zoomFactor;
+    if (currentZoom <= 0.0) {
+        return;
+    }
 
-        xy->modifyZoomInAllViewers(initialZoom / currentZoom);
-    });
+    const QString currentLog = QString("[SplitterInitialZoom] fittedZoom=%1 initialZoom=%2 currentZoom=%3")
+            .arg(fittedZoom, 0, 'f', 6)
+            .arg(initialZoom, 0, 'f', 6)
+            .arg(currentZoom, 0, 'f', 6);
+    logOrthoRenderState(QStringLiteral("SplitterInitialZoom"), currentLog);
+
+    if (std::abs(initialZoom - currentZoom) <= 1e-9) {
+        adjustSplittersForCurrentZoom();
+        updatePlaneIndicators();
+        return;
+    }
+
+    xy->modifyZoomInAllViewers(initialZoom / currentZoom);
 }
 
 bool OrthoViewer::eventFilter(QObject *watched, QEvent *event) {
