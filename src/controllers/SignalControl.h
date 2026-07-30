@@ -123,10 +123,8 @@ public:
     void importGeneratedSegments(GraphSegmentImageType::Pointer pImage, const QString &name = QStringLiteral("Supervoxels"));
 
     bool hasWorkingSegments() const;
-    void populateAddDataMenu(QMenu *menu, QAction *loadSampleDataAction);
-    void populateBoundariesMenu(QMenu *menu);
-    void populateRefinementsMenu(QMenu *menu);
-    void populateSegmentationsMenu(QMenu *menu);
+    void populateDataMenu(QMenu *menu, QAction *loadSampleDataAction);
+    void populateSegmentationMenu(QMenu *menu);
     int preferredSidebarWidthHint() const;
 
 signals:

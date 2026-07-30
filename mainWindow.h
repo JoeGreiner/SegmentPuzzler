@@ -39,14 +39,11 @@ private slots:
 
 private:
     OrthoViewer *myOrthowindow;
-    QMenu *addDataMenu;
-    QMenu *layersMenu;
-    QMenu *boundariesMenu;
-    QMenu *refinementsMenu;
-    QMenu *segmentationsMenu;
+    QMenu *dataMenu;
+    QMenu *segmentationMenu;
+    QMenu *viewMenu;
     QMenu *settingsMenu;
     QMenu *helpMenu;
-    QMenu *goToMenu;
 
     QAction *openHotkeysAction;
     QAction *loadSampleSegmentationAction;

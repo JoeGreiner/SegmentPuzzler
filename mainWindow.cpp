@@ -6,6 +6,8 @@
 #include <QScreen>
 #include <QDialogButtonBox>
 #include <QDropEvent>
+#include <QFont>
+#include <QHeaderView>
 #include <QMimeData>
 #include <QLineEdit>
 #include <QLabel>
@@ -14,12 +16,15 @@
 #include <QPointer>
 #include <QStyle>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QWindow>
 #include <algorithm>
+#include <initializer_list>
 #include <optional>
+#include <utility>
 #include "src/utils/utils.h"
 #include "src/utils/systemStats.h"
 #include "src/qtUtils/WindowStats.h"
@@ -291,30 +296,19 @@ MainWindow::MainWindow() {
 
     setCentralWidget(horizontalSplitter);
 
-    addDataMenu = menuBar()->addMenu(tr("&Add Data"));
+    dataMenu = menuBar()->addMenu(tr("&Data"));
     loadSampleSegmentationAction = new QAction(tr("&Download Sample Dataset (100 MB)"), this);
-    mySignalControl->populateAddDataMenu(addDataMenu, loadSampleSegmentationAction);
+    mySignalControl->populateDataMenu(dataMenu, loadSampleSegmentationAction);
     connect(loadSampleSegmentationAction, &QAction::triggered, this, [this]() {
         QMetaObject::invokeMethod(this, "loadSegmentationSample", Qt::QueuedConnection);
     });
 
-    layersMenu = menuBar()->addMenu(tr("&Layers"));
-    auto *renderOrderAction = new QAction(tr("&Render Order..."), this);
-    layersMenu->addAction(renderOrderAction);
-    connect(renderOrderAction, &QAction::triggered, this, &MainWindow::showLayerRenderOrder);
-
-    boundariesMenu = menuBar()->addMenu(tr("&Boundaries"));
-    mySignalControl->populateBoundariesMenu(boundariesMenu);
-
-    refinementsMenu = menuBar()->addMenu(tr("&Refinements"));
-    mySignalControl->populateRefinementsMenu(refinementsMenu);
-
-    segmentationsMenu = menuBar()->addMenu(tr("&Segmentations"));
-    mySignalControl->populateSegmentationsMenu(segmentationsMenu);
-    segmentationsMenu->addSeparator();
+    segmentationMenu = menuBar()->addMenu(tr("&Segmentation"));
+    mySignalControl->populateSegmentationMenu(segmentationMenu);
+    segmentationMenu->addSeparator();
     showSegmentTableAction = new QAction(tr("&Segment Feature Table"), this);
     showSegmentTableAction->setShortcut(Qt::Key_F8);
-    segmentationsMenu->addAction(showSegmentTableAction);
+    segmentationMenu->addAction(showSegmentTableAction);
     connect(showSegmentTableAction, &QAction::triggered, this, [this]() {
         if (myOrthowindow != nullptr) {
             myOrthowindow->flashShortcutLegendKey("f8");
@@ -322,12 +316,18 @@ MainWindow::MainWindow() {
     });
     connect(showSegmentTableAction, &QAction::triggered, this, &MainWindow::showSegmentTable);
     splitWorkingSegment3DCutAction = new QAction(tr("Open Segment in 3D Cut View..."), this);
-    segmentationsMenu->addAction(splitWorkingSegment3DCutAction);
+    segmentationMenu->addAction(splitWorkingSegment3DCutAction);
     connect(splitWorkingSegment3DCutAction, &QAction::triggered, this, &MainWindow::arm3DWorkingSegmentCut);
 
+    viewMenu = menuBar()->addMenu(tr("&View"));
+    auto *renderOrderAction = new QAction(tr("&Render Order..."), this);
+    viewMenu->addAction(renderOrderAction);
+    connect(renderOrderAction, &QAction::triggered, this, &MainWindow::showLayerRenderOrder);
+
     settingsMenu = menuBar()->addMenu(tr("&Settings"));
+    QMenu *morphologyMenu = settingsMenu->addMenu(tr("Morphology Parameters"));
     QAction *setClosingRadiusAction = new QAction(tr("Set Closing Radius"), this);
-    settingsMenu->addAction(setClosingRadiusAction);
+    morphologyMenu->addAction(setClosingRadiusAction);
     connect(setClosingRadiusAction, &QAction::triggered, this, [this]() {
         const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
                                       ? myOrthowindow->xy->getClosingRadius()
@@ -345,7 +345,7 @@ MainWindow::MainWindow() {
     });
 
     QAction *setOpeningRadiusAction = new QAction(tr("Set Opening Radius"), this);
-    settingsMenu->addAction(setOpeningRadiusAction);
+    morphologyMenu->addAction(setOpeningRadiusAction);
     connect(setOpeningRadiusAction, &QAction::triggered, this, [this]() {
         const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
                                       ? myOrthowindow->xy->getOpeningRadius()
@@ -363,7 +363,7 @@ MainWindow::MainWindow() {
     });
 
     QAction *setDilationRadiusAction = new QAction(tr("Set Dilation Radius"), this);
-    settingsMenu->addAction(setDilationRadiusAction);
+    morphologyMenu->addAction(setDilationRadiusAction);
     connect(setDilationRadiusAction, &QAction::triggered, this, [this]() {
         const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
                                       ? myOrthowindow->xy->getDilationRadius()
@@ -381,7 +381,7 @@ MainWindow::MainWindow() {
     });
 
     QAction *setErosionRadiusAction = new QAction(tr("Set Erosion Radius"), this);
-    settingsMenu->addAction(setErosionRadiusAction);
+    morphologyMenu->addAction(setErosionRadiusAction);
     connect(setErosionRadiusAction, &QAction::triggered, this, [this]() {
         const int currentRadius = myOrthowindow != nullptr && myOrthowindow->xy != nullptr
                                       ? myOrthowindow->xy->getErosionRadius()
@@ -399,10 +399,6 @@ MainWindow::MainWindow() {
     });
 
     settingsMenu->addSeparator();
-    QAction *loggingSettingsAction = new QAction(tr("Logging..."), this);
-    settingsMenu->addAction(loggingSettingsAction);
-    connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);
-    settingsMenu->addSeparator();
     QAction *useSelectedSegmentationFor3DViewsAction =
         new QAction(tr("Use Selected Segmentation For 3D Views/Cuts"), this);
     useSelectedSegmentationFor3DViewsAction->setCheckable(true);
@@ -412,12 +408,16 @@ MainWindow::MainWindow() {
         graphBase->useSelectedSegmentationFor3DView = checked;
         update3DWorkingSegmentCutActionState();
     });
+    settingsMenu->addSeparator();
+    QAction *loggingSettingsAction = new QAction(tr("Logging..."), this);
+    settingsMenu->addAction(loggingSettingsAction);
+    connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);
 
 
-    goToMenu = menuBar()->addMenu(tr("&Go To"));
+    viewMenu->addSeparator();
     QAction *openGoToCoordinatesAction = new QAction(tr("&Go to Coordinates"), this);
     openGoToCoordinatesAction->setShortcut(Qt::Key_F9);
-    goToMenu->addAction(openGoToCoordinatesAction);
+    viewMenu->addAction(openGoToCoordinatesAction);
     connect(openGoToCoordinatesAction, &QAction::triggered, this, [this]() {
         if (myOrthowindow != nullptr) {
             myOrthowindow->flashShortcutLegendKey("f9");
@@ -463,7 +463,7 @@ MainWindow::MainWindow() {
 
     QAction *openGoToLabelAction = new QAction(tr("&Go to Label ID"), this);
     openGoToLabelAction->setShortcut(Qt::Key_F10);
-    goToMenu->addAction(openGoToLabelAction);
+    viewMenu->addAction(openGoToLabelAction);
     connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
         if (myOrthowindow != nullptr) {
             myOrthowindow->flashShortcutLegendKey("f10");
@@ -546,7 +546,7 @@ MainWindow::MainWindow() {
     }
     );
     helpMenu = menuBar()->addMenu(tr("&Help"));
-    openHotkeysAction = new QAction(tr("&Show Hotkeys"), this);
+    openHotkeysAction = new QAction(tr("&Keyboard Shortcuts..."), this);
     openHotkeysAction->setShortcut(Qt::Key_F1);
     helpMenu->addAction(openHotkeysAction);
     connect(openHotkeysAction, &QAction::triggered, this, [this]() {
@@ -559,7 +559,7 @@ MainWindow::MainWindow() {
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, renderOrderAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this]() { update3DWorkingSegmentCutActionState(); });
-    connect(segmentationsMenu, &QMenu::aboutToShow, this, &MainWindow::update3DWorkingSegmentCutActionState);
+    connect(segmentationMenu, &QMenu::aboutToShow, this, &MainWindow::update3DWorkingSegmentCutActionState);
     installInitialFileDropHandling();
     update3DWorkingSegmentCutActionState();
 
@@ -1110,131 +1110,80 @@ void MainWindow::showLoggingSettings() {
 }
 
 void MainWindow::showHotkeys() {
-    QString hotKeyText = R"(
-<html>
-<head>
-<style>
-  body {
-    font-family: Arial, sans-serif;
-  }
-  .bold_header {
-    font-weight: bold;
-    font-size: 10pt ;
-    margin-top: 0pt;
-    margin-bottom: 0pt;
-  }
-  p {
-    font-size: 10pt;
-    margin-top: 0pt;
-    margin-bottom: 1em;
-  }
-</style>
-</head>
-<body>
-
-<p class="bold_header">S + Click</p>
-<p>Transfer the working [S]upervoxel under the cursor to the selected segmentation.</p>
-
-<p class="bold_header">D + Click</p>
-<p>[D]elete the label under the cursor in the selected segmentation.</p>
-
-<p class="bold_header">C + Click</p>
-<p>[C]ut the initial label under the cursor from the current working supervoxel.</p>
-
-<p class="bold_header">F + Click</p>
-<p>[F]ill holes in the segmentation label with the initial label under the cursor.</p>
-
-<p class="bold_header">G + Click</p>
-<p>Run an [O]pening operation on the segmentation label under the cursor.</p>
-
-<p class="bold_header">H + Click</p>
-<p>Insert Segment from Segmentation into initial nodes.</p>
-
-<p class="bold_header">E</p>
-<p>[E]xport debug information.</p>
-
-<p class="bold_header">X + Click</p>
-<p>Split working node into its initial nodes.</p>
-
-<p class="bold_header">Q + Click</p>
-<p>In paint mode, set the brush to the label ID of the segmentation under the cursor.</p>
-
-<p class="bold_header">Left/Right Click in Paint Mode</p>
-<p>Left: add to the current label ID. Right: remove from the current label ID.</p>
-
-<p class="bold_header">+/-</p>
-<p>Zoom to/away from cursor.</p>
-
-<p class="bold_header">Arrow Up/Down</p>
-<p>Increase/Decrease slice index (go up/down in stack).</p>
-
-<p class="bold_header">V</p>
-<p>Export Image Series for generation of [V]ideos.</p>
-
-<p class="bold_header">U</p>
-<p>Export Screenshot of current views.</p>
-
-<p class="bold_header">0-9</p>
-<p>Change brush size (1 smallest, 10 biggest).</p>
-
-<p class="bold_header">R</p>
-<p>Apply a [R]andom color scheme to the working supervoxels.</p>
-
-<p class="bold_header">P + Click</p>
-<p>Refine by [P]osition of the cursor with the selected refinement.</p>
-
-<p class="bold_header">J + Click</p>
-<p>Dilate the clicked segmentation label by one step.</p>
-
-<p class="bold_header">K + Click</p>
-<p>Erode the clicked segmentation label by one step.</p>
-
-<p class="bold_header">CMD + Click</p>
-<p>Set other orthogonal views to slice through the point under the cursor.</p>
-
-<p class="bold_header">F7</p>
-<p>Run the connected component split filter with the selected target and connectivity.</p>
-
-<p class="bold_header">F8</p>
-<p>Open the Segment Feature Table: shape features for all labels in the selected segmentation, sortable and color-coded. Click a row to navigate to that label.</p>
-
-<p class="bold_header">T</p>
-<p>Hold T and click a segment to open the cut-enabled 3D view. A selected segmentation is always required because applying a cut automatically transfers every resulting part into it as a separate label. When "Use Selected Segmentation For 3D Views/Cuts" is enabled, the clicked component from the selected segmentation is reused if it already matches a working segment, or inserted into the working graph first. When disabled, the clicked working segment opens directly.</p>
-
-<p class="bold_header">F9</p>
-<p>Jump to explicit X, Y, Z coordinates.</p>
-
-<p class="bold_header">F10</p>
-<p>Jump to a label ID in the selected segmentation.</p>
-
-<p class="bold_header">M</p>
-<p>Hold [M] and click a segment to open its 3D surface mesh view.</p>
-
-<p class="bold_header">N</p>
-<p>Open a 3D surface view of all segments at once.</p>
-
-<p class="bold_header">Segmentations -> Open Segment in 3D Cut View...</p>
-<p>Same as holding T. In the 3D dialog, orient the segment, press Draw Cut, paint the cut stroke, then Apply. All resulting cut parts are transferred automatically as separate labels into the selected segmentation. Press ? or F1 in that dialog for the step-by-step helper.</p>
-
-</body>
-</html>
-)";
-
     QDialog dialog(this);
-    dialog.setWindowTitle("Hotkeys");
-    dialog.resize(800, 400);
+    dialog.setWindowTitle(tr("Keyboard Shortcuts"));
+    dialog.resize(820, 620);
+    dialog.setMinimumSize(640, 420);
 
     auto *layout = new QVBoxLayout(&dialog);
+    auto *shortcutTree = new QTreeWidget(&dialog);
+    shortcutTree->setColumnCount(2);
+    shortcutTree->setHeaderLabels({tr("Shortcut"), tr("Action")});
+    shortcutTree->setAlternatingRowColors(true);
+    shortcutTree->setRootIsDecorated(true);
+    shortcutTree->setUniformRowHeights(false);
+    shortcutTree->setWordWrap(true);
+    shortcutTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    shortcutTree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
 
-    auto *label = new QLabel(&dialog);
-    label->setTextFormat(Qt::RichText);
-    label->setWordWrap(true);
-    label->setText(hotKeyText);
+    const auto addSection = [shortcutTree](const QString &title,
+                                           std::initializer_list<std::pair<QString, QString>> entries) {
+        auto *section = new QTreeWidgetItem(shortcutTree, {title});
+        section->setFirstColumnSpanned(true);
+        QFont sectionFont = section->font(0);
+        sectionFont.setBold(true);
+        section->setFont(0, sectionFont);
+        for (const auto &[shortcut, description] : entries) {
+            new QTreeWidgetItem(section, {shortcut, description});
+        }
+        section->setExpanded(true);
+    };
 
-    layout->addWidget(label);
+    addSection(tr("Navigation & View"), {
+        {tr("Command/Ctrl + Click"), tr("Center all orthogonal views on the clicked point.")},
+        {tr("Middle Drag"), tr("Pan the current view.")},
+        {tr("+ / −"), tr("Zoom all linked views in or out.")},
+        {tr("↑ / ↓"), tr("Move one slice up or down in the stack.")},
+        {tr("F9"), tr("Go to explicit X, Y, Z coordinates.")},
+        {tr("F10"), tr("Go to a label ID in the selected segmentation.")}
+    });
+    addSection(tr("Segmentation Editing"), {
+        {tr("D + Click"), tr("Delete the segmentation label under the cursor.")},
+        {tr("F + Click"), tr("Fill holes in the segmentation label under the cursor.")},
+        {tr("G + Click"), tr("Apply a morphological opening to the clicked label.")},
+        {tr("J + Click"), tr("Dilate the clicked label by one step.")},
+        {tr("K + Click"), tr("Erode the clicked label by one step.")}
+    });
+    addSection(tr("Paint Mode"), {
+        {tr("Q + Click"), tr("Use the clicked segmentation label as the paint label.")},
+        {tr("0–9"), tr("Set the paint brush size from small to large.")},
+        {tr("Left / Right Click"), tr("In paint mode, add to or erase from the current label.")}
+    });
+    addSection(tr("Supervoxels & Refinement"), {
+        {tr("S + Click"), tr("Transfer the clicked working supervoxel to the selected segmentation.")},
+        {tr("X + Click"), tr("Split the clicked working node into its initial nodes.")},
+        {tr("C + Click"), tr("Cut the clicked initial label out of its working supervoxel.")},
+        {tr("H + Click"), tr("Insert the clicked segmentation segment into the initial nodes.")},
+        {tr("P + Click"), tr("Apply the selected refinement at the clicked position.")},
+        {tr("R"), tr("Randomize categorical layer colors.")},
+        {tr("F7"), tr("Run connected component split with the selected settings.")}
+    });
+    addSection(tr("3D & Analysis"), {
+        {tr("M + Click"), tr("Open the clicked segment in the 3D surface view.")},
+        {tr("N"), tr("Open all segments in a 3D surface view.")},
+        {tr("T + Click"), tr("Open the clicked segment in the 3D cut view; press F1 there for detailed help.")},
+        {tr("F8"), tr("Open the Segment Feature Table.")}
+    });
+    addSection(tr("Export & Diagnostics"), {
+        {tr("U"), tr("Export a screenshot of the current orthogonal views.")},
+        {tr("V"), tr("Export the current view series for video generation.")},
+        {tr("E"), tr("Export debug graph and image information.")}
+    });
 
-    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
-    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    layout->addWidget(shortcutTree, 1);
+
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     layout->addWidget(buttonBox);
 
     dialog.exec();

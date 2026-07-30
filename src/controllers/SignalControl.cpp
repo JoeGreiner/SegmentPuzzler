@@ -1906,7 +1906,7 @@ void SignalControl::addImage(QString fileName, QString displayedName) {
     addImageAsync(fileName, displayedName);
 }
 
-void SignalControl::populateAddDataMenu(QMenu *menu, QAction *loadSampleDataAction) {
+void SignalControl::populateDataMenu(QMenu *menu, QAction *loadSampleDataAction) {
     if (menu == nullptr) {
         return;
     }
@@ -1915,52 +1915,32 @@ void SignalControl::populateAddDataMenu(QMenu *menu, QAction *loadSampleDataActi
         menu->addAction(loadSampleDataAction);
         menu->addSeparator();
     }
-    menu->addAction(addSegmentsAction);
     menu->addAction(addImageAction);
+    menu->addAction(addSegmentsAction);
     menu->addAction(addBoundariesAction);
     menu->addAction(loadRefinementAction);
     menu->addAction(loadSegmentationAction);
     menu->addSeparator();
-    menu->addAction(createEmptySegmentationAction);
-}
-
-void SignalControl::populateBoundariesMenu(QMenu *menu) {
-    if (menu == nullptr) {
-        return;
-    }
-
-    menu->addAction(addBoundariesAction);
-    menu->addSeparator();
-    menu->addAction(toggleROISelectionAction);
-    menu->addAction(runWatershedAction);
-}
-
-void SignalControl::populateRefinementsMenu(QMenu *menu) {
-    if (menu == nullptr) {
-        return;
-    }
-
-    menu->addAction(loadRefinementAction);
-    menu->addSeparator();
-    menu->addAction(mergeWithRefinementAction);
-    menu->addAction(setIdTransparentAction);
-}
-
-void SignalControl::populateSegmentationsMenu(QMenu *menu) {
-    if (menu == nullptr) {
-        return;
-    }
-
-    menu->addAction(loadSegmentationAction);
     menu->addAction(createEmptySegmentationAction);
     menu->addAction(exportSegmentationAction);
-    menu->addSeparator();
-    menu->addAction(togglePaintModeAction);
-    menu->addAction(setPaintIdAction);
-    menu->addAction(dilateSegmentationAction);
-    menu->addAction(erodeSegmentationAction);
-    menu->addSeparator();
-    QMenu *connectedComponentMenu = menu->addMenu(tr("Connected Component Split"));
+}
+
+void SignalControl::populateSegmentationMenu(QMenu *menu) {
+    if (menu == nullptr) {
+        return;
+    }
+
+    QMenu *watershedMenu = menu->addMenu(tr("Watershed"));
+    watershedMenu->addAction(toggleROISelectionAction);
+    watershedMenu->addAction(runWatershedAction);
+
+    QMenu *editMenu = menu->addMenu(tr("Edit"));
+    editMenu->addAction(togglePaintModeAction);
+    editMenu->addAction(setPaintIdAction);
+    editMenu->addAction(dilateSegmentationAction);
+    editMenu->addAction(erodeSegmentationAction);
+    editMenu->addSeparator();
+    QMenu *connectedComponentMenu = editMenu->addMenu(tr("Connected Component Split"));
     connectedComponentMenu->addAction(connectedComponentSplitAction);
     connectedComponentMenu->addSeparator();
     connectedComponentMenu->addAction(connectedComponentSplitTargetInitialAction);
@@ -1968,10 +1948,15 @@ void SignalControl::populateSegmentationsMenu(QMenu *menu) {
     connectedComponentMenu->addSeparator();
     connectedComponentMenu->addAction(connectedComponentSplitConnectivityFullAction);
     connectedComponentMenu->addAction(connectedComponentSplitConnectivitySixAction);
-    menu->addSeparator();
-    menu->addAction(transferWithVolumeAction);
-    menu->addAction(transferAllAction);
-    menu->addAction(transferWithRefinementAction);
+
+    QMenu *transferMenu = menu->addMenu(tr("Transfer"));
+    transferMenu->addAction(transferAllAction);
+    transferMenu->addAction(transferWithVolumeAction);
+    transferMenu->addAction(transferWithRefinementAction);
+
+    QMenu *refinementMenu = menu->addMenu(tr("Refinement"));
+    refinementMenu->addAction(mergeWithRefinementAction);
+    refinementMenu->addAction(setIdTransparentAction);
 }
 
 void SignalControl::createMenuActions() {
