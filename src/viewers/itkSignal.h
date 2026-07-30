@@ -225,6 +225,9 @@ public:
 
 private:
     static QString displayDataTypeName();
+    void applyLUTValueOverrides();
+    double normalizeContinuousValue(double value) const;
+    QRgb makeContinuousPixel(double value) const;
 
 };
 
@@ -486,25 +489,52 @@ void itkSignal<dType>::calculateLUTContinuous(long long) {
                          .arg(normUpper));
     }
 
-    double normFactorDecimal = 255. / (normUpper - normLower);
-    if (verbose) {
-        SP_LOG_DEBUG("viewer.render",
-                     QStringLiteral("Continuous LUT norm factor=%1")
-                         .arg(normFactorDecimal, 0, 'g', 6));
+    for (size_t i = 0; i < LUT.size(); ++i) {
+        LUT.at(static_cast<unsigned long>(i)) = makeContinuousPixel(static_cast<double>(i));
+    }
+    applyLUTValueOverrides();
+}
+
+template<typename dType>
+void itkSignal<dType>::applyLUTValueOverrides() {
+    for (const auto value : blackLUTValues) {
+        LUT.at(value) = qRgba(0, 0, 0, 255);
+    }
+    for (const auto value : transparentLUTValues) {
+        LUT.at(value) = qRgba(0, 0, 0, 0);
+    }
+}
+
+template<typename dType>
+double itkSignal<dType>::normalizeContinuousValue(double value) const {
+    if (!std::isfinite(value) ||
+        !std::isfinite(normLower) ||
+        !std::isfinite(normUpper) ||
+        normUpper < normLower) {
+        return 0.0;
+    }
+    if (normUpper == normLower) {
+        // A zero-width range is inclusive, except that [0, 0] keeps zero transparent.
+        const bool visible =
+            value > normLower || (value == normLower && normLower != 0.0);
+        return visible ? 255.0 : 0.0;
+    }
+    return std::clamp((value - normLower) * 255.0 / (normUpper - normLower), 0.0, 255.0);
+}
+
+template<typename dType>
+QRgb itkSignal<dType>::makeContinuousPixel(double value) const {
+    const double normedValue = normalizeContinuousValue(value);
+    // Encode intensity in either RGB or alpha so compositing never applies it twice.
+    if (getBlendMode() == itkSignalBase::BlendMode::Additive) {
+        const auto colorR = static_cast<unsigned char>(normedValue * (qRed(mainColor) / 255.));
+        const auto colorG = static_cast<unsigned char>(normedValue * (qGreen(mainColor) / 255.));
+        const auto colorB = static_cast<unsigned char>(normedValue * (qBlue(mainColor) / 255.));
+        return qRgba(colorR, colorG, colorB, alpha);
     }
 
-    for (size_t i = 0; i < LUT.size(); ++i) {
-        double normedValue = std::min<double>(std::max<double>(i - normLower, 0) * normFactorDecimal, 255);
-        auto colorR = static_cast<unsigned char>(normedValue * (qRed(mainColor) / 255.));
-        auto colorG = static_cast<unsigned char>(normedValue * (qGreen(mainColor) / 255.));
-        auto colorB = static_cast<unsigned char>(normedValue * (qBlue(mainColor) / 255.));
-        auto colorA = static_cast<unsigned char>(normedValue * (alpha / 255.));
-        LUT.at(static_cast<unsigned long>(i)) = qRgba(colorR, colorG, colorB, colorA);
-//        if (verbose) {
-//            std::cout << i << " " << normedValue << " " << (int) colorR << " " << (int) colorG
-//                      << " " << (int) colorB << " " << (int) colorA << std::endl;
-//        }
-    }
+    const auto colorA = static_cast<unsigned char>(normedValue * (alpha / 255.));
+    return qRgba(qRed(mainColor), qGreen(mainColor), qBlue(mainColor), colorA);
 }
 
 template<typename dType>
@@ -526,13 +556,7 @@ void itkSignal<dType>::calculateLUTCategorical(long long, size_t startIndex) {
     for (size_t i = 0; i < startIndex; ++i) {
         LUT[i] = qRgba(qRed(LUT[i]), qGreen(LUT[i]), qBlue(LUT[i]), alpha);
     }
-    for (auto val: blackLUTValues) {
-        LUT.at(val) = qRgba(0, 0, 0, 255);
-    }
-    for (auto val: transparentLUTValues) {
-        LUT.at(val) = qRgba(0, 0, 0, 0);
-    }
-
+    applyLUTValueOverrides();
 }
 
 template<typename dType>
@@ -758,6 +782,7 @@ void itkSignal<dType>::calculateLUTEdge(long long) {
         checkAndResizeLUT(labelMapping.first);
         LUT.at(labelMapping.first) = qRgba(colorVec.at(0), colorVec.at(1), colorVec.at(2), alpha);
     }
+    applyLUTValueOverrides();
 }
 
 template<typename dType>
@@ -903,26 +928,21 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
 //            }
         }
     } else {
-            while (!it.IsAtEnd()) {
-                const auto value = it.Get();
-                const auto &coords = it.GetIndex();
-                double normFactorDecimal = 255. / (normUpper - normLower);
-                double normedValue = std::min<double>(std::max<double>(value - normLower, 0) * normFactorDecimal, 255);
-                auto colorR = static_cast<unsigned char>(normedValue * (qRed(mainColor) / 255.));
-                auto colorG = static_cast<unsigned char>(normedValue * (qGreen(mainColor) / 255.));
-                auto colorB = static_cast<unsigned char>(normedValue * (qBlue(mainColor) / 255.));
-                auto colorA = static_cast<unsigned char>(normedValue * (alpha / 255.));
-                try {
-                    sliceBuffer->at(getPixMapIndex(coords, sliceAxis)) = qRgba(colorR, colorG, colorB, colorA);
-                } catch (const std::out_of_range &e) {
-                    SP_LOG_ERROR("viewer.render",
-                                 QStringLiteral("Out-of-range slice buffer access index=%1 exception=%2")
-                                     .arg(getPixMapIndex(coords, sliceAxis))
-                                     .arg(QString::fromUtf8(e.what())));
-                }
-                ++it;
+        while (!it.IsAtEnd()) {
+            const auto value = it.Get();
+            const auto &coords = it.GetIndex();
+            try {
+                sliceBuffer->at(getPixMapIndex(coords, sliceAxis)) =
+                    makeContinuousPixel(static_cast<double>(value));
+            } catch (const std::out_of_range &e) {
+                SP_LOG_ERROR("viewer.render",
+                             QStringLiteral("Out-of-range slice buffer access index=%1 exception=%2")
+                                 .arg(getPixMapIndex(coords, sliceAxis))
+                                 .arg(QString::fromUtf8(e.what())));
             }
+            ++it;
         }
+    }
 
 //    while (!it.IsAtEnd()) {
 //        const auto value = it.Get();

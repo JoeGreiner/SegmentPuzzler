@@ -185,6 +185,21 @@ QString opacityChipText(itkSignalBase *signal) {
     return QString("%1%").arg(opacityPercent);
 }
 
+QString blendModeChipText(itkSignalBase *signal) {
+    if (signal == nullptr || !signal->supportsNormControl()) {
+        return QString();
+    }
+    return signal->getBlendMode() == itkSignalBase::BlendMode::Additive
+               ? QStringLiteral("Add")
+               : QStringLiteral("Over");
+}
+
+void configureImageDisplay(itkSignalBase *signal) {
+    signal->setBlendMode(itkSignalBase::BlendMode::Additive);
+    signal->setAlpha(255);
+    signal->setLUTContinuous();
+}
+
 int alphaToPercent(unsigned int alpha) {
     return static_cast<int>(std::lround((static_cast<double>(alpha) / 255.0) * 100.0));
 }
@@ -209,6 +224,7 @@ QString layerToolTipText(itkSignalBase *signal) {
     }
     if (signal->supportsNormControl()) {
         toolTip += "\nClick contrast to adjust the display range.";
+        toolTip += "\nClick Add/Over to change the blend mode.";
     }
     toolTip += "\nClick opacity to adjust the overlay strength.";
     return toolTip;
@@ -498,6 +514,19 @@ void WatershedControl::attachLayerWidgetToItem(QTreeWidget *treeWidget, QTreeWid
     connect(layerWidget, &SignalLayerWidget::contrastRequested, this, [this, item](QWidget *anchor) {
         openNormPopup(item, anchor);
     });
+    connect(layerWidget, &SignalLayerWidget::blendModeRequested, this, [this, treeWidget, item]() {
+        itkSignalBase *signal = signalForItem(item);
+        if (signal == nullptr || !signal->supportsNormControl()) {
+            return;
+        }
+        const auto nextMode =
+            signal->getBlendMode() == itkSignalBase::BlendMode::Additive
+                ? itkSignalBase::BlendMode::SourceOver
+                : itkSignalBase::BlendMode::Additive;
+        signal->setBlendMode(nextMode);
+        refreshLayerWidget(treeWidget, item);
+        refreshViewers();
+    });
     connect(layerWidget, &SignalLayerWidget::opacityRequested, this, [this, item](QWidget *anchor) {
         openOpacityPopup(item, anchor);
     });
@@ -542,9 +571,11 @@ void WatershedControl::refreshLayerWidget(QTreeWidget *treeWidget, QTreeWidgetIt
     presentation.layerVisible = active;
     presentation.selected = item == signal_tree::topLevelSignalItem(treeWidget->currentItem());
     presentation.contrastText = contrastChipText(signal);
+    presentation.blendModeText = blendModeChipText(signal);
     presentation.opacityText = opacityChipText(signal);
     presentation.toolTip = layerToolTipText(signal);
     presentation.contrastAvailable = signal->supportsNormControl();
+    presentation.blendModeAvailable = signal->supportsNormControl();
     layerWidget->applyPresentation(presentation);
 }
 
@@ -1347,7 +1378,11 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
     allSignalList.push_back(raw);
     raw->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     raw->setupTreeWidget(signalTreeWidget, idx);
-    if (categorical) raw->setLUTCategorical(); else raw->setLUTContinuous();
+    if (categorical) {
+        raw->setLUTCategorical();
+    } else {
+        configureImageDisplay(raw);
+    }
     if (transparentZero) raw->setLUTValueToTransparent(0);
     attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(raw);
@@ -1390,7 +1425,7 @@ void WatershedControl::addImage(QString fileName) {
         size_t signalIndexGlobal;
         bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false);
         if (loadSuccessFull) {
-            allSignalList[signalIndexGlobal]->setLUTContinuous();
+            configureImageDisplay(allSignalList[signalIndexGlobal]);
             allSignalList[signalIndexGlobal]->setName(
                 signal_name_utils::makeUniqueSignalName(allSignalList, QFileInfo(fileName).baseName()));
             allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
@@ -2683,7 +2718,7 @@ void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *
     graphBase->pWorkingSegments = itkSignalSegmentsGraph;
     graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
     if (!graphBase->ignoredSegmentLabels.empty()) {
-        segmentsSignal->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
+        segmentsSignal->setLUTValueToTransparent(graphBase->ignoredSegmentLabels.front());
     }
 
     const size_t edgeSignalIndex = allSignalList.size();

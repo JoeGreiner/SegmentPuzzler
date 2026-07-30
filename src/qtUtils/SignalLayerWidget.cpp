@@ -350,13 +350,24 @@ int leftZoneWidth() {
     return kVisibilityButtonSize.width() + kOuterSpacing + kColorButtonSize.width();
 }
 
-int minimumTextColumnWidth(const QFontMetrics &metrics, const QString &contrastText, const QString &opacityText) {
+int minimumTextColumnWidth(const QFontMetrics &metrics,
+                           const QString &contrastText,
+                           const QString &blendModeText,
+                           const QString &opacityText) {
     const int titleWidth = textWidth(metrics, QString::fromLatin1(kMinimumTitleSample));
-    const int contrastWidth = contrastText.isEmpty() ? 0 : textWidth(metrics, contrastText);
-    const int opacityWidth = opacityText.isEmpty() ? 0 : textWidth(metrics, opacityText);
-    const int metadataWidth = contrastWidth > 0 && opacityWidth > 0
-                                  ? contrastWidth + kMetadataSpacing + opacityWidth
-                                  : std::max(contrastWidth, opacityWidth);
+    const std::array<QString, 3> metadataTexts = {contrastText, blendModeText, opacityText};
+    int metadataWidth = 0;
+    int visibleChipCount = 0;
+    for (const QString &metadataText : metadataTexts) {
+        if (metadataText.isEmpty()) {
+            continue;
+        }
+        metadataWidth += textWidth(metrics, metadataText);
+        ++visibleChipCount;
+    }
+    if (visibleChipCount > 1) {
+        metadataWidth += (visibleChipCount - 1) * kMetadataSpacing;
+    }
     return std::max(titleWidth, metadataWidth);
 }
 
@@ -604,6 +615,17 @@ SignalLayerWidget::SignalLayerWidget(QWidget *parent) : QFrame(parent) {
         emit contrastRequested(contrastButton);
     });
 
+    blendModeButton = new QToolButton(metadataRow);
+    blendModeButton->setAutoRaise(true);
+    blendModeButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    blendModeButton->setCursor(Qt::PointingHandCursor);
+    blendModeButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    blendModeButton->setToolTip("Change blend mode");
+    blendModeButton->setAccessibleName("Blend mode");
+    blendModeButton->setAccessibleDescription("Change blend mode");
+    blendModeButton->setIconSize(QSize(0, 0));
+    connect(blendModeButton, &QToolButton::clicked, this, &SignalLayerWidget::blendModeRequested);
+
     opacityButton = new QToolButton(metadataRow);
     opacityButton->setAutoRaise(true);
     opacityButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -616,6 +638,8 @@ SignalLayerWidget::SignalLayerWidget(QWidget *parent) : QFrame(parent) {
     });
 
     metadataLayout->addWidget(contrastButton, 0, Qt::AlignLeft | Qt::AlignVCenter);
+    metadataLayout->addStretch(1);
+    metadataLayout->addWidget(blendModeButton, 0, Qt::AlignHCenter | Qt::AlignVCenter);
     metadataLayout->addStretch(1);
     metadataLayout->addWidget(opacityButton, 0, Qt::AlignRight | Qt::AlignVCenter);
     textLayout->addWidget(metadataRow);
@@ -637,8 +661,10 @@ void SignalLayerWidget::applyPresentation(const Presentation &presentation) {
     setLayerVisible(presentation.layerVisible);
     setSelected(presentation.selected);
     setContrastText(presentation.contrastText);
+    setBlendModeText(presentation.blendModeText);
     setOpacityText(presentation.opacityText);
     setContrastAvailable(presentation.contrastAvailable);
+    setBlendModeAvailable(presentation.blendModeAvailable);
     setLayerToolTip(presentation.toolTip);
     --presentationUpdateDepth;
 
@@ -651,6 +677,7 @@ QSize SignalLayerWidget::minimumSizeHint() const {
     const QFontMetrics metrics(font());
     const int textWidth = minimumTextColumnWidth(metrics,
                                                  hasSemanticContrastChip() ? contrastButton->text() : QString(),
+                                                 hasSemanticBlendModeChip() ? blendModeButton->text() : QString(),
                                                  hasSemanticOpacityChip() ? opacityButton->text() : QString());
     const int width = kRowMargins.left() + leftZoneWidth() + kOuterSpacing + textWidth + kRowMargins.right();
     return QSize(width, rowFixedHeightForFont(metrics));
@@ -710,6 +737,15 @@ void SignalLayerWidget::setContrastText(const QString &text) {
     requestLayoutRefresh();
 }
 
+void SignalLayerWidget::setBlendModeText(const QString &text) {
+    blendModeButton->setText(text);
+    blendModeButton->setAccessibleDescription(text.isEmpty()
+                                                  ? QStringLiteral("Change blend mode")
+                                                  : QStringLiteral("Current blend mode: %1").arg(text));
+    updateChipVisibilityState();
+    requestLayoutRefresh();
+}
+
 void SignalLayerWidget::setOpacityText(const QString &text) {
     opacityButton->setText(text);
     updateChipVisibilityState();
@@ -718,6 +754,12 @@ void SignalLayerWidget::setOpacityText(const QString &text) {
 
 void SignalLayerWidget::setContrastAvailable(bool available) {
     contrastButton->setVisible(available);
+    updateChipVisibilityState();
+    requestLayoutRefresh();
+}
+
+void SignalLayerWidget::setBlendModeAvailable(bool available) {
+    blendModeAvailable = available;
     updateChipVisibilityState();
     requestLayoutRefresh();
 }
@@ -802,16 +844,20 @@ void SignalLayerWidget::updateDisplayedLayerName() {
 
 void SignalLayerWidget::updateChipVisibilityState() {
     const bool semanticHasContrastChip = hasSemanticContrastChip();
+    const bool semanticHasBlendModeChip = hasSemanticBlendModeChip();
     const bool semanticHasOpacityChip = hasSemanticOpacityChip();
 
     if (contrastButton != nullptr && contrastButton->isVisible() != semanticHasContrastChip) {
         contrastButton->setVisible(semanticHasContrastChip);
     }
+    if (blendModeButton != nullptr) {
+        blendModeButton->setVisible(semanticHasBlendModeChip);
+    }
     if (opacityButton != nullptr && opacityButton->isVisible() != semanticHasOpacityChip) {
         opacityButton->setVisible(semanticHasOpacityChip);
     }
     if (metadataRow != nullptr) {
-        metadataRow->setVisible(semanticHasContrastChip || semanticHasOpacityChip);
+        metadataRow->setVisible(semanticHasContrastChip || semanticHasBlendModeChip || semanticHasOpacityChip);
     }
 }
 
@@ -889,6 +935,7 @@ void SignalLayerWidget::updateStyle() {
     setFont(textFont);
     nameLabel->setFont(textFont);
     contrastButton->setFont(textFont);
+    blendModeButton->setFont(textFont);
     opacityButton->setFont(textFont);
 
     const QFontMetrics metrics(textFont);
@@ -914,6 +961,7 @@ void SignalLayerWidget::updateStyle() {
         "QToolButton:hover { color: %2; }")
         .arg(mutedText.name(QColor::HexArgb), whiteText.name(QColor::HexArgb));
     contrastButton->setStyleSheet(metadataStyle);
+    blendModeButton->setStyleSheet(metadataStyle);
     opacityButton->setStyleSheet(metadataStyle);
 
     updateDisplayedLayerName();
@@ -937,4 +985,10 @@ bool SignalLayerWidget::hasSemanticContrastChip() const {
 bool SignalLayerWidget::hasSemanticOpacityChip() const {
     return opacityButton != nullptr
            && !opacityButton->text().isEmpty();
+}
+
+bool SignalLayerWidget::hasSemanticBlendModeChip() const {
+    return blendModeButton != nullptr
+           && blendModeAvailable
+           && !blendModeButton->text().isEmpty();
 }

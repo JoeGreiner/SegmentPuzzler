@@ -22,6 +22,7 @@ public:
         QString layerName;
         QColor layerColor = Qt::white;
         QString contrastText;
+        QString blendModeText;
         QString opacityText;
         QString toolTip;
         bool usesCategoricalPalette = false;
@@ -29,6 +30,7 @@ public:
         bool layerVisible = true;
         bool selected = false;
         bool contrastAvailable = true;
+        bool blendModeAvailable = false;
     };
 
     explicit SignalLayerWidget(QWidget *parent = nullptr);
@@ -50,8 +52,10 @@ public:
     void setLayerVisible(bool visible);
     void setSelected(bool selected);
     void setContrastText(const QString &text);
+    void setBlendModeText(const QString &text);
     void setOpacityText(const QString &text);
     void setContrastAvailable(bool available);
+    void setBlendModeAvailable(bool available);
     void setLayerToolTip(const QString &toolTip);
 
 signals:
@@ -61,6 +65,7 @@ signals:
     void visibilityToggled(bool visible);
     void colorRequested();
     void contrastRequested(QWidget *anchor);
+    void blendModeRequested();
     void opacityRequested(QWidget *anchor);
 
 protected:
@@ -82,6 +87,7 @@ private:
     void updateStyle();
     void updateVisibilityIcon();
     bool hasSemanticContrastChip() const;
+    bool hasSemanticBlendModeChip() const;
     bool hasSemanticOpacityChip() const;
 
     QWidget *leftZone = nullptr;
@@ -91,6 +97,7 @@ private:
     QPushButton *colorButton = nullptr;
     QLabel *nameLabel = nullptr;
     QToolButton *contrastButton = nullptr;
+    QToolButton *blendModeButton = nullptr;
     QToolButton *opacityButton = nullptr;
 
     QString fullLayerName;
@@ -102,6 +109,7 @@ private:
     bool selected = false;
     bool hovered = false;
     bool suppressNextNameRelease = false;
+    bool blendModeAvailable = false;
     int presentationUpdateDepth = 0;
 };
 

@@ -429,6 +429,21 @@ QString opacityChipText(itkSignalBase *signal) {
     return QString("%1%").arg(opacityPercent);
 }
 
+QString blendModeChipText(itkSignalBase *signal) {
+    if (signal == nullptr || !signal->supportsNormControl()) {
+        return QString();
+    }
+    return signal->getBlendMode() == itkSignalBase::BlendMode::Additive
+               ? QStringLiteral("Add")
+               : QStringLiteral("Over");
+}
+
+void configureImageDisplay(itkSignalBase *signal) {
+    signal->setBlendMode(itkSignalBase::BlendMode::Additive);
+    signal->setAlpha(255);
+    signal->setLUTContinuous();
+}
+
 int alphaToPercent(unsigned int alpha) {
     return static_cast<int>(std::lround((static_cast<double>(alpha) / 255.0) * 100.0));
 }
@@ -453,6 +468,7 @@ QString layerToolTipText(itkSignalBase *signal) {
     }
     if (signal->supportsNormControl()) {
         toolTip += "\nClick contrast to adjust the display range.";
+        toolTip += "\nClick Add/Over to change the blend mode.";
     }
     toolTip += "\nClick opacity to adjust the overlay strength.";
     return toolTip;
@@ -813,6 +829,20 @@ void SignalControl::attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *
         openNormPopup(item, anchor);
     });
 
+    connect(layerWidget, &SignalLayerWidget::blendModeRequested, this, [this, tree, item]() {
+        itkSignalBase *signal = signalForItem(item);
+        if (signal == nullptr || !signal->supportsNormControl()) {
+            return;
+        }
+        const auto nextMode =
+            signal->getBlendMode() == itkSignalBase::BlendMode::Additive
+                ? itkSignalBase::BlendMode::SourceOver
+                : itkSignalBase::BlendMode::Additive;
+        signal->setBlendMode(nextMode);
+        refreshLayerWidget(tree, item);
+        refreshViewers();
+    });
+
     connect(layerWidget, &SignalLayerWidget::opacityRequested, this, [this, item](QWidget *anchor) {
         openOpacityPopup(item, anchor);
     });
@@ -874,9 +904,11 @@ void SignalControl::refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item)
     presentation.layerVisible = active;
     presentation.selected = item == signal_tree::topLevelSignalItem(tree->currentItem());
     presentation.contrastText = contrastChipText(signal);
+    presentation.blendModeText = blendModeChipText(signal);
     presentation.opacityText = opacityChipText(signal);
     presentation.toolTip = layerToolTipText(signal);
     presentation.contrastAvailable = signal->supportsNormControl();
+    presentation.blendModeAvailable = signal->supportsNormControl();
     layerWidget->applyPresentation(presentation);
 
     if (debugLayerLayoutEnabled()) {
@@ -1499,7 +1531,7 @@ bool SignalControl::insertLoadedImage(const LoadedImageLayer &loadedLayer,
 
 void SignalControl::registerImageSignal(size_t signalIndexGlobal, const QString &name) {
     const bool centerFirstStandaloneLayer = !hasWorkingSegments() && allSignalList.size() == 1;
-    allSignalList[signalIndexGlobal]->setLUTContinuous();
+    configureImageDisplay(allSignalList[signalIndexGlobal]);
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
     attachLayerWidgetToLastItem(signalTreeWidget);
@@ -1526,7 +1558,7 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
 }
 
 void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QString &name) {
-    allSignalList[signalIndexGlobal]->setLUTContinuous();
+    configureImageDisplay(allSignalList[signalIndexGlobal]);
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
     attachLayerWidgetToLastItem(probabilityTreeWidget);
@@ -1562,7 +1594,7 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     graphBase->pWorkingSegments = typedSegmentsSignal;
     graphBase->pWorkingSegmentsImage = typedSegmentsSignal->pImage;
 
-    allSignalList[signalIndexGlobal]->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
+    allSignalList[signalIndexGlobal]->setLUTValueToTransparent(graphBase->ignoredSegmentLabels.front());
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
 
     const size_t edgeSignalIndex = allSignalList.size();

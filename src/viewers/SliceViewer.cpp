@@ -393,6 +393,39 @@ int SliceViewer::getCurrentSliceHeight() {
     return slice_geometry::sliceHeight(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
+void SliceViewer::drawActiveSignalLayers(QPainter &painter, const QRect &targetRect) {
+    painter.save();
+
+    for (auto *signal : signalList) {
+        if (signal == nullptr || !signal->getIsActive()) {
+            continue;
+        }
+
+        itkSignalBase *sourceSignal = signal->getSignal();
+        if (sourceSignal == nullptr) {
+            continue;
+        }
+
+        QImage *sliceImage = signal->getAddressSliceQImage();
+        if (sliceImage == nullptr) {
+            SP_LOG_WARNING("viewer.render",
+                           QStringLiteral("SliceViewer encountered an active signal without a slice image"));
+            continue;
+        }
+
+        painter.setCompositionMode(
+            sourceSignal->getBlendMode() == itkSignalBase::BlendMode::Additive
+                ? QPainter::CompositionMode_Plus
+                : QPainter::CompositionMode_SourceOver);
+        if (verbose) {
+            SP_LOG_DEBUG("viewer.render", QStringLiteral("Painting active SliceViewer signal"));
+        }
+        painter.drawImage(targetRect, *sliceImage, sliceImage->rect());
+    }
+
+    painter.restore();
+}
+
 void SliceViewer::paintEvent(QPaintEvent *event) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
 
@@ -412,19 +445,7 @@ void SliceViewer::paintEvent(QPaintEvent *event) {
         SP_LOG_WARNING("viewer.render", QStringLiteral("SliceViewer paint skipped because sliceIndicatorImage is not initialized"));
     }
     painter.drawImage(targetRect, backGroundImage, backGroundImage.rect());
-    for (auto &signal : signalList) {
-        if (signal->getIsActive()) {
-            if (verbose) {
-                SP_LOG_DEBUG("viewer.render", QStringLiteral("Painting active SliceViewer signal"));
-            }
-            if (signal->getAddressSliceQImage() == nullptr) {
-                SP_LOG_WARNING("viewer.render", QStringLiteral("SliceViewer encountered an active signal without a slice image"));
-            }
-            painter.drawImage(targetRect,
-                              *(signal->getAddressSliceQImage()),
-                              signal->getAddressSliceQImage()->rect());
-        }
-    }
+    drawActiveSignalLayers(painter, targetRect);
     painter.drawImage(targetRect, sliceIndicatorImage, sliceIndicatorImage.rect());
 
     const QString planeName = planeNameForSliceAxis(sliceAxis);
@@ -651,11 +672,7 @@ void SliceViewer::exportCurrentImageToFile(std::string filePrefix) {
     QPainter painter(&newPixmap);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
     painter.drawImage(0, 0, backGroundImage);
-    for (auto &signal : signalList) {
-        if (signal->getIsActive()) {
-            painter.drawImage(0, 0, *(signal->getAddressSliceQImage()));
-        }
-    }
+    drawActiveSignalLayers(painter, backGroundImage.rect());
 
     if (!newPixmap.save(&file, "PNG")) {
         SP_LOG_WARNING("io", QStringLiteral("Unable to save PNG to %1").arg(QString::fromStdString(filePrefix)));

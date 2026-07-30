@@ -50,15 +50,7 @@ void ROIExtractionSliceViewer::paintEvent(QPaintEvent *event) {
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
     painter.drawImage(0, 0, backGroundImage);
-
-    for (auto &signal : signalList) {
-        if (signal->getIsActive()) {
-            if (verbose) {
-                SP_LOG_DEBUG("viewer.render", QStringLiteral("ROIExtractionSliceViewer painting active signal"));
-            }
-            painter.drawImage(0, 0, *(signal->getAddressSliceQImage()));
-        }
-    }
+    drawActiveSignalLayers(painter, backGroundImage.rect());
 
     sliceIndicatorImage.fill(QColor(0, 0, 0, 0)); // erase old slice indicator image!
     for (auto *viewer : linkedViewerList) {

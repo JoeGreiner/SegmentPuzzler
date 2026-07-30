@@ -245,17 +245,7 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
     const QRect sourceRect = backGroundImage.rect();
 
     painter.drawImage(targetRect, backGroundImage, sourceRect);
-
-    for (auto &signal : signalList) {
-        if (signal->getIsActive()) {
-            if (verbose) {
-                SP_LOG_DEBUG("viewer.render", QStringLiteral("Painting active annotation signal"));
-            }
-            painter.drawImage(targetRect,
-                              *(signal->getAddressSliceQImage()),
-                              signal->getAddressSliceQImage()->rect());
-        }
-    }
+    drawActiveSignalLayers(painter, targetRect);
 
     painter.drawImage(targetRect, annotationImage, annotationImage.rect());
 
@@ -357,9 +347,6 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             signal->randomizeCategoricalLUT();
         }
 
-        if (graphBase->pWorkingSegments != nullptr && !graphBase->ignoredSegmentLabels.empty()) {
-            graphBase->pWorkingSegments->setLUTValueToBlack(graphBase->ignoredSegmentLabels.front());
-        }
         for (auto *viewer : linkedViewerList) {
             viewer->recalculateQImages();
         }

@@ -114,6 +114,10 @@ inline RegionType makeSliceRegion(unsigned int sliceIndex,
 class itkSignalBase {
 
 public:
+    enum class BlendMode {
+        SourceOver,
+        Additive
+    };
 
     virtual ~itkSignalBase() {};
 
@@ -197,6 +201,18 @@ public:
 
     virtual bool getIsActive() = 0;
 
+    BlendMode getBlendMode() const {
+        return blendMode;
+    }
+
+    void setBlendMode(BlendMode blendModeIn) {
+        if (blendMode == blendModeIn) {
+            return;
+        }
+        blendMode = blendModeIn;
+        calculateLUT();
+    }
+
 //    virtual void isContinuous() = 0;
 
     virtual void setName(QString name) = 0;
@@ -206,6 +222,8 @@ public:
 
     QString name;
 
+private:
+    BlendMode blendMode = BlendMode::SourceOver;
 };
 
 
