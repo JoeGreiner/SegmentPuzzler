@@ -16,6 +16,7 @@ class QLineEdit;
 class QProgressDialog;
 class QPushButton;
 class QSortFilterProxyModel;
+class QSpinBox;
 class QStackedWidget;
 class QStandardItemModel;
 class QTableView;
@@ -39,6 +40,7 @@ public:
         bool isIsolated        = true;
         bool physicalSize      = false;
         bool pixelsOnBorder    = false;
+        int borderDistancePx   = 0;
         bool perimeterOnBorder = false;
         bool centroid          = true;   // always computed; flag controls column visibility only
         bool bbox              = false;
@@ -74,6 +76,7 @@ public:
     struct ComputeResult {
         std::vector<SegmentRow> rows;
         FeatureFlags flags;
+        bool is2D = false;
         double elapsedSeconds = 0.0;
     };
 
@@ -136,10 +139,11 @@ private:
     FeatureFlags collectFlags() const;
     void populateTable(const ComputeResult &result);
     void applyColumnColoring();
-    void updateColumnVisibility(const FeatureFlags &flags);
     void navigateTo(int x, int y, int z);
     void setAllChecked(bool checked);
     void updateResultsActionState();
+    void updateColumnHeaders(bool is2D, int borderDistancePx);
+    void updateColumnVisibility(const FeatureFlags &flags, bool is2D);
     std::vector<std::pair<dataType::SegmentIdType, quint32>> collectSelectedLabelsFor3D() const;
 
     // ---- Shared state ----
@@ -152,6 +156,7 @@ private:
     // ---- Setup page ----
     QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr, *cbPhysicalSize = nullptr;
     QCheckBox *cbPixelsOnBorder = nullptr, *cbPerimeterOnBorder = nullptr;
+    QSpinBox *borderDistanceSpinBox = nullptr;
     QCheckBox *cbCentroid = nullptr, *cbBBox = nullptr;
     QCheckBox *cbElongation = nullptr, *cbFlatness = nullptr, *cbRoundness = nullptr;
     QCheckBox *cbEquivSphRadius = nullptr, *cbEquivSphPerimeter = nullptr;

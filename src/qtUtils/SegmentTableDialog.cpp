@@ -1,5 +1,7 @@
 #include "SegmentTableDialog.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
@@ -20,6 +22,7 @@
 #include <QProgressDialog>
 #include <QScrollArea>
 #include <QSortFilterProxyModel>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QTableView>
@@ -28,6 +31,7 @@
 #include <QtConcurrent/QtConcurrent>
 
 #include <itkContinuousIndex.h>
+#include <itkExtractImageFilter.h>
 #include <itkLabelImageToShapeLabelMapFilter.h>
 
 #include "src/segment_handling/Graph.h"
@@ -152,6 +156,148 @@ std::unordered_map<dataType::SegmentIdType, bool> computeIsolationByLabel(
     return isolationByLabel;
 }
 
+template<typename ImageType>
+std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
+    typename ImageType::Pointer image,
+    const SegmentTableDialog::FeatureFlags &flags) {
+    static_assert(ImageType::ImageDimension == 2 || ImageType::ImageDimension == 3);
+
+    using FilterType = itk::LabelImageToShapeLabelMapFilter<ImageType>;
+    using LabelObjectType = typename FilterType::LabelObjectType;
+    auto filter = FilterType::New();
+    filter->SetInput(image);
+    // Roundness is computed inside the perimeter pass.
+    filter->SetComputePerimeter(flags.perimeter || flags.roundness);
+    filter->SetComputeOrientedBoundingBox(flags.orientedBBox);
+    const itk::ThreadIdType nThreads = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
+    filter->SetNumberOfWorkUnits(nThreads);
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("Running %1D LabelImageToShapeLabelMapFilter with %2 ITK work units")
+            .arg(ImageType::ImageDimension)
+            .arg(nThreads));
+    filter->Update();
+
+    auto *labelMap = filter->GetOutput();
+    const auto labelCount = labelMap->GetNumberOfLabelObjects();
+    std::vector<SegmentTableDialog::SegmentRow> rows;
+    rows.reserve(labelCount);
+
+    const auto region = image->GetLargestPossibleRegion();
+    const auto regionStart = region.GetIndex();
+    const auto regionSize = region.GetSize();
+    const long long borderDistance = std::max(0, flags.borderDistancePx);
+
+    for (unsigned int i = 0; i < labelCount; ++i) {
+        const auto *labelObject = labelMap->GetNthLabelObject(i);
+        SegmentTableDialog::SegmentRow row;
+        row.label = labelObject->GetLabel();
+
+        const auto centroid = labelObject->GetCentroid();
+        itk::ContinuousIndex<double, ImageType::ImageDimension> continuousIndex;
+        [[maybe_unused]] const bool inside =
+            image->TransformPhysicalPointToContinuousIndex(centroid, continuousIndex);
+        row.centroidX = static_cast<int>(std::round(continuousIndex[0]));
+        row.centroidY = static_cast<int>(std::round(continuousIndex[1]));
+        if constexpr (ImageType::ImageDimension == 3) {
+            row.centroidZ = static_cast<int>(std::round(continuousIndex[2]));
+        }
+
+        if (flags.volume) {
+            row.volume = static_cast<double>(labelObject->GetNumberOfPixels());
+        }
+        if (flags.physicalSize) {
+            row.physicalSize = labelObject->GetPhysicalSize();
+        }
+        if (flags.pixelsOnBorder) {
+            std::size_t count = 0;
+            typename LabelObjectType::ConstIndexIterator indexIt(labelObject);
+            while (!indexIt.IsAtEnd()) {
+                const auto &index = indexIt.GetIndex();
+                for (unsigned int dimension = 0; dimension < ImageType::ImageDimension; ++dimension) {
+                    const long long distanceFromMinimum =
+                        static_cast<long long>(index[dimension]) -
+                        static_cast<long long>(regionStart[dimension]);
+                    const long long distanceFromMaximum =
+                        static_cast<long long>(regionSize[dimension]) - 1 - distanceFromMinimum;
+                    if (distanceFromMinimum <= borderDistance ||
+                        distanceFromMaximum <= borderDistance) {
+                        ++count;
+                        break;
+                    }
+                }
+                ++indexIt;
+            }
+            row.pixelsOnBorder = static_cast<double>(count);
+        }
+        if (flags.perimeterOnBorder) {
+            row.perimeterOnBorder = labelObject->GetPerimeterOnBorder();
+        }
+
+        if (flags.bbox) {
+            const auto bbox = labelObject->GetBoundingBox();
+            row.bboxW = static_cast<double>(bbox.GetSize()[0]);
+            row.bboxH = static_cast<double>(bbox.GetSize()[1]);
+            if constexpr (ImageType::ImageDimension == 3) {
+                row.bboxD = static_cast<double>(bbox.GetSize()[2]);
+            }
+        }
+
+        if (flags.elongation) {
+            row.elongation = labelObject->GetElongation();
+        }
+        if (flags.flatness) {
+            row.flatness = labelObject->GetFlatness();
+        }
+        if (flags.roundness) {
+            row.roundness = labelObject->GetRoundness();
+        }
+        if (flags.equivSphRadius) {
+            row.equivSphRadius = labelObject->GetEquivalentSphericalRadius();
+        }
+        if (flags.equivSphPerimeter) {
+            row.equivSphPerimeter = labelObject->GetEquivalentSphericalPerimeter();
+        }
+
+        if (flags.equivEllipsoid) {
+            const auto diameters = labelObject->GetEquivalentEllipsoidDiameter();
+            row.equivEllipD0 = diameters[0];
+            row.equivEllipD1 = diameters[1];
+            if constexpr (ImageType::ImageDimension == 3) {
+                row.equivEllipD2 = diameters[2];
+            }
+        }
+        if (flags.principalMoments) {
+            const auto moments = labelObject->GetPrincipalMoments();
+            row.principalMom0 = moments[0];
+            row.principalMom1 = moments[1];
+            if constexpr (ImageType::ImageDimension == 3) {
+                row.principalMom2 = moments[2];
+            }
+        }
+
+        if (flags.perimeter) {
+            row.perimeter = labelObject->GetPerimeter();
+        }
+
+        if (flags.orientedBBox) {
+            const auto size = labelObject->GetOrientedBoundingBoxSize();
+            row.obboxW = size[0];
+            row.obboxH = size[1];
+            if constexpr (ImageType::ImageDimension == 2) {
+                row.obboxVolume = size[0] * size[1];
+            } else {
+                row.obboxD = size[2];
+                row.obboxVolume = size[0] * size[1] * size[2];
+            }
+        }
+
+        rows.push_back(row);
+    }
+
+    return rows;
+}
+
 bool segmentationSelectionMatchesCurrent(const GraphBase *graphBase,
                                          const dataType::SegmentsImageType::Pointer &currentTableSegmentation,
                                          const itkSignalBase *currentTableSegmentationSignal) {
@@ -241,16 +387,26 @@ QWidget *SegmentTableDialog::createSetupPage() {
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Basic Measurements", grid);
-        cbVolume            = new QCheckBox("Volume (voxels)");                  cbVolume->setChecked(true);
+        cbVolume            = new QCheckBox("Pixel / voxel count");              cbVolume->setChecked(true);
         cbIsIsolated        = new QCheckBox("Is Isolated");                      cbIsIsolated->setChecked(true);
         cbPhysicalSize      = new QCheckBox("Physical Size");                    cbPhysicalSize->setChecked(false);
         cbPixelsOnBorder    = new QCheckBox("Pixels on Border");                 cbPixelsOnBorder->setChecked(false);
         cbPerimeterOnBorder = new QCheckBox("Perimeter on Border (physical)");   cbPerimeterOnBorder->setChecked(false);
+        auto *borderDistanceLabel = new QLabel("Pixels on Border distance:");
+        borderDistanceSpinBox = new QSpinBox();
+        borderDistanceSpinBox->setRange(0, 1'000'000);
+        borderDistanceSpinBox->setValue(0);
+        borderDistanceSpinBox->setSuffix(" px");
+        borderDistanceSpinBox->setToolTip(
+            "Used by Pixels on Border. 0 counts only the outermost pixels; "
+            "N also counts pixels up to and including N pixels inward.");
         grid->addWidget(cbVolume,            0, 0);
         grid->addWidget(cbIsIsolated,        0, 1);
         grid->addWidget(cbPhysicalSize,      1, 0);
-        grid->addWidget(cbPixelsOnBorder,    1, 1);
-        grid->addWidget(cbPerimeterOnBorder, 2, 0);
+        grid->addWidget(borderDistanceLabel, 2, 0);
+        grid->addWidget(borderDistanceSpinBox, 2, 1);
+        grid->addWidget(cbPixelsOnBorder,    3, 0);
+        grid->addWidget(cbPerimeterOnBorder, 3, 1);
         vContent->addWidget(gb);
     }
 
@@ -258,8 +414,8 @@ QWidget *SegmentTableDialog::createSetupPage() {
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Position & Extent", grid);
-        cbCentroid = new QCheckBox("Centroid (CX, CY, CZ in voxels)");      cbCentroid->setChecked(true);
-        cbBBox     = new QCheckBox("Axis-Aligned Bounding Box (W, H, D)");   cbBBox->setChecked(false);
+        cbCentroid = new QCheckBox("Centroid (voxel coordinates)");          cbCentroid->setChecked(true);
+        cbBBox     = new QCheckBox("Axis-Aligned Bounding Box");              cbBBox->setChecked(false);
         grid->addWidget(cbCentroid, 0, 0);
         grid->addWidget(cbBBox,     1, 0);
         vContent->addWidget(gb);
@@ -272,10 +428,10 @@ QWidget *SegmentTableDialog::createSetupPage() {
         cbElongation        = new QCheckBox("Elongation");                          cbElongation->setChecked(true);
         cbFlatness          = new QCheckBox("Flatness");                            cbFlatness->setChecked(true);
         cbRoundness         = new QCheckBox("Roundness");                           cbRoundness->setChecked(true);
-        cbEquivSphRadius    = new QCheckBox("Equiv. Spherical Radius");             cbEquivSphRadius->setChecked(true);
-        cbEquivSphPerimeter = new QCheckBox("Equiv. Spherical Perimeter");          cbEquivSphPerimeter->setChecked(false);
-        cbEquivEllipsoid    = new QCheckBox("Equiv. Ellipsoid Diameters (3 axes)"); cbEquivEllipsoid->setChecked(false);
-        cbPrincipalMoments  = new QCheckBox("Principal Moments (3 values)");        cbPrincipalMoments->setChecked(false);
+        cbEquivSphRadius    = new QCheckBox("Equiv. Circle / Spherical Radius");    cbEquivSphRadius->setChecked(true);
+        cbEquivSphPerimeter = new QCheckBox("Equiv. Circle / Spherical Perimeter"); cbEquivSphPerimeter->setChecked(false);
+        cbEquivEllipsoid    = new QCheckBox("Equiv. Ellipsoid Diameters");          cbEquivEllipsoid->setChecked(false);
+        cbPrincipalMoments  = new QCheckBox("Principal Moments");                   cbPrincipalMoments->setChecked(false);
         grid->addWidget(cbElongation,        0, 0);
         grid->addWidget(cbFlatness,          0, 1);
         grid->addWidget(cbRoundness,         1, 0);
@@ -290,8 +446,8 @@ QWidget *SegmentTableDialog::createSetupPage() {
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Advanced (slower)", grid);
-        cbPerimeter    = new QCheckBox("Surface Area (marching cubes)");   cbPerimeter->setChecked(false);
-        cbOrientedBBox = new QCheckBox("Oriented Bounding Box (size + volume)"); cbOrientedBBox->setChecked(false);
+        cbPerimeter    = new QCheckBox("Perimeter / Surface Area");                cbPerimeter->setChecked(false);
+        cbOrientedBBox = new QCheckBox("Oriented Bounding Box (size + area/volume)"); cbOrientedBBox->setChecked(false);
         grid->addWidget(cbPerimeter,    0, 0);
         grid->addWidget(cbOrientedBBox, 1, 0);
         vContent->addWidget(gb);
@@ -424,6 +580,7 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     f.isIsolated        = cbIsIsolated->isChecked();
     f.physicalSize      = cbPhysicalSize->isChecked();
     f.pixelsOnBorder    = cbPixelsOnBorder->isChecked();
+    f.borderDistancePx  = borderDistanceSpinBox->value();
     f.perimeterOnBorder = cbPerimeterOnBorder->isChecked();
     f.centroid          = cbCentroid->isChecked();
     f.bbox              = cbBBox->isChecked();
@@ -478,8 +635,8 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
         "segmentation",
         QStringLiteral("Segment table featureFlags volume=%1 isIsolated=%2 centroid=%3 elongation=%4 "
                        "flatness=%5 roundness=%6 bbox=%7 physicalSize=%8 pixelsOnBorder=%9 "
-                       "perimeterOnBorder=%10 equivSphRadius=%11 equivSphPerimeter=%12 "
-                       "equivEllipsoid=%13 principalMoments=%14 perimeter=%15 orientedBBox=%16")
+                       "borderDistancePx=%10 perimeterOnBorder=%11 equivSphRadius=%12 equivSphPerimeter=%13 "
+                       "equivEllipsoid=%14 principalMoments=%15 perimeter=%16 orientedBBox=%17")
             .arg(flags.volume)
             .arg(flags.isIsolated)
             .arg(flags.centroid)
@@ -489,6 +646,7 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
             .arg(flags.bbox)
             .arg(flags.physicalSize)
             .arg(flags.pixelsOnBorder)
+            .arg(flags.borderDistancePx)
             .arg(flags.perimeterOnBorder)
             .arg(flags.equivSphRadius)
             .arg(flags.equivSphPerimeter)
@@ -676,91 +834,39 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
     QElapsedTimer timer;
     timer.start();
 
-    using FilterType = itk::LabelImageToShapeLabelMapFilter<dataType::SegmentsImageType>;
-    auto filter = FilterType::New();
-    filter->SetInput(segImage);
-    // Roundness is computed inside the perimeter pass (SetRoundness is called
-    // only when ComputePerimeter runs), so enable it whenever either is needed.
-    filter->SetComputePerimeter(flags.perimeter || flags.roundness);
-    filter->SetComputeOrientedBoundingBox(flags.orientedBBox);
-    // ITK processes each LabelObject in parallel via its internal thread pool.
-    // SetNumberOfWorkUnits defaults to hardware_concurrency; set it explicitly
-    // so the parallelism is visible and reproducible.
-    const itk::ThreadIdType nThreads = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
-    filter->SetNumberOfWorkUnits(nThreads);
-    SP_LOG_INFO("segmentation",
-                QStringLiteral("Running LabelImageToShapeLabelMapFilter with %1 ITK work units").arg(nThreads));
-    filter->Update();
+    const auto region = segImage->GetLargestPossibleRegion();
+    const auto size = region.GetSize();
+    result.is2D = size[2] == 1;
 
-    auto       *labelMap = filter->GetOutput();
-    const auto  n        = labelMap->GetNumberOfLabelObjects();
-    result.rows.reserve(n);
-    const auto isolationByLabel = computeIsolationByLabel(segImage);
+    if (result.is2D) {
+        using Image2D = itk::Image<dataType::SegmentIdType, 2>;
+        using ExtractFilter = itk::ExtractImageFilter<dataType::SegmentsImageType, Image2D>;
 
-    for (unsigned int i = 0; i < n; ++i) {
-        const auto *lo = labelMap->GetNthLabelObject(i);
-        SegmentRow row;
-        row.label = lo->GetLabel();
+        auto extractionRegion = region;
+        auto extractionSize = extractionRegion.GetSize();
+        extractionSize[2] = 0;
+        extractionRegion.SetSize(extractionSize);
 
-        // Centroid — always computed; needed for row-click navigation.
-        const auto centroid = lo->GetCentroid();
-        itk::ContinuousIndex<double, 3> ci;
-        [[maybe_unused]] const bool inside =
-            segImage->TransformPhysicalPointToContinuousIndex(centroid, ci);
-        row.centroidX = static_cast<int>(std::round(ci[0]));
-        row.centroidY = static_cast<int>(std::round(ci[1]));
-        row.centroidZ = static_cast<int>(std::round(ci[2]));
+        auto extract = ExtractFilter::New();
+        extract->SetInput(segImage);
+        extract->SetExtractionRegion(extractionRegion);
+        extract->SetDirectionCollapseToSubmatrix();
+        result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), flags);
 
-        if (flags.volume)
-            row.volume = static_cast<double>(lo->GetNumberOfPixels());
-        if (flags.isIsolated) {
+        const int singletonZ = static_cast<int>(region.GetIndex()[2]);
+        for (SegmentRow &row : result.rows) {
+            row.centroidZ = singletonZ;
+        }
+    } else {
+        result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(segImage, flags);
+    }
+
+    if (flags.isIsolated) {
+        const auto isolationByLabel = computeIsolationByLabel(segImage);
+        for (SegmentRow &row : result.rows) {
             const auto isolationIt = isolationByLabel.find(row.label);
             row.isIsolated = isolationIt == isolationByLabel.end() || isolationIt->second;
         }
-        if (flags.physicalSize)
-            row.physicalSize = lo->GetPhysicalSize();
-        if (flags.pixelsOnBorder)
-            row.pixelsOnBorder = static_cast<double>(lo->GetNumberOfPixelsOnBorder());
-        if (flags.perimeterOnBorder)
-            row.perimeterOnBorder = lo->GetPerimeterOnBorder();
-
-        if (flags.bbox) {
-            const auto bbox = lo->GetBoundingBox();
-            row.bboxW = static_cast<double>(bbox.GetSize()[0]);
-            row.bboxH = static_cast<double>(bbox.GetSize()[1]);
-            row.bboxD = static_cast<double>(bbox.GetSize()[2]);
-        }
-
-        if (flags.elongation)        row.elongation       = lo->GetElongation();
-        if (flags.flatness)          row.flatness         = lo->GetFlatness();
-        if (flags.roundness)         row.roundness        = lo->GetRoundness();
-        if (flags.equivSphRadius)    row.equivSphRadius   = lo->GetEquivalentSphericalRadius();
-        if (flags.equivSphPerimeter) row.equivSphPerimeter= lo->GetEquivalentSphericalPerimeter();
-
-        if (flags.equivEllipsoid) {
-            const auto ed = lo->GetEquivalentEllipsoidDiameter();
-            row.equivEllipD0 = ed[0];
-            row.equivEllipD1 = ed[1];
-            row.equivEllipD2 = ed[2];
-        }
-        if (flags.principalMoments) {
-            const auto pm = lo->GetPrincipalMoments();
-            row.principalMom0 = pm[0];
-            row.principalMom1 = pm[1];
-            row.principalMom2 = pm[2];
-        }
-
-        if (flags.perimeter)    row.perimeter    = lo->GetPerimeter();
-
-        if (flags.orientedBBox) {
-            const auto sz = lo->GetOrientedBoundingBoxSize();
-            row.obboxW      = sz[0];
-            row.obboxH      = sz[1];
-            row.obboxD      = sz[2];
-            row.obboxVolume = sz[0] * sz[1] * sz[2];
-        }
-
-        result.rows.push_back(row);
     }
 
     result.elapsedSeconds = timer.elapsed() / 1000.0;
@@ -837,6 +943,7 @@ void SegmentTableDialog::onView3DPreparationFinished() {
 // ---- table population -------------------------------------------------------
 
 void SegmentTableDialog::populateTable(const ComputeResult &result) {
+    updateColumnHeaders(result.is2D, result.flags.borderDistancePx);
     model->removeRows(0, model->rowCount());
     model->setRowCount(static_cast<int>(result.rows.size()));
 
@@ -883,7 +990,7 @@ void SegmentTableDialog::populateTable(const ComputeResult &result) {
     }
 
     applyColumnColoring();
-    updateColumnVisibility(result.flags);
+    updateColumnVisibility(result.flags, result.is2D);
     tableView->resizeColumnsToContents();
 }
 
@@ -929,7 +1036,28 @@ void SegmentTableDialog::applyColumnColoring() {
 
 // ---- column visibility ------------------------------------------------------
 
-void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f) {
+void SegmentTableDialog::updateColumnHeaders(bool is2D, int borderDistancePx) {
+    model->setHeaderData(SegmentTableDialog::COL_VOLUME, Qt::Horizontal,
+                         is2D ? "Area (px)" : "Volume");
+    model->setHeaderData(SegmentTableDialog::COL_PHYSICAL_SIZE, Qt::Horizontal,
+                         is2D ? "Physical Area" : "Physical Size");
+    model->setHeaderData(
+        SegmentTableDialog::COL_PIXELS_ON_BORDER,
+        Qt::Horizontal,
+        borderDistancePx == 0
+            ? QStringLiteral("Px on Border")
+            : QStringLiteral("Px ≤ %1 px from Border").arg(borderDistancePx));
+    model->setHeaderData(SegmentTableDialog::COL_EQUIV_SPH_RADIUS, Qt::Horizontal,
+                         is2D ? "Equiv Circle R" : "Equiv Sph R");
+    model->setHeaderData(SegmentTableDialog::COL_EQUIV_SPH_PERIM, Qt::Horizontal,
+                         is2D ? "Equiv Circle Perim" : "Equiv Sph Perim");
+    model->setHeaderData(SegmentTableDialog::COL_PERIMETER, Qt::Horizontal,
+                         is2D ? "Perimeter" : "Surface Area");
+    model->setHeaderData(SegmentTableDialog::COL_OBBOX_VOLUME, Qt::Horizontal,
+                         is2D ? "OBBox Area" : "OBBox Vol");
+}
+
+void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f, bool is2D) {
     // Hide every non-label column first, then reveal only what was computed.
     for (int col = SegmentTableDialog::COL_VOLUME; col < SegmentTableDialog::COL_COUNT; ++col) {
         tableView->setColumnHidden(col, true);
@@ -943,12 +1071,16 @@ void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f) {
     if (f.centroid) {
         tableView->setColumnHidden(SegmentTableDialog::COL_CX, false);
         tableView->setColumnHidden(SegmentTableDialog::COL_CY, false);
-        tableView->setColumnHidden(SegmentTableDialog::COL_CZ, false);
+        if (!is2D) {
+            tableView->setColumnHidden(SegmentTableDialog::COL_CZ, false);
+        }
     }
     if (f.bbox) {
         tableView->setColumnHidden(SegmentTableDialog::COL_BBOX_W, false);
         tableView->setColumnHidden(SegmentTableDialog::COL_BBOX_H, false);
-        tableView->setColumnHidden(SegmentTableDialog::COL_BBOX_D, false);
+        if (!is2D) {
+            tableView->setColumnHidden(SegmentTableDialog::COL_BBOX_D, false);
+        }
     }
     if (f.elongation)        tableView->setColumnHidden(SegmentTableDialog::COL_ELONGATION, false);
     if (f.flatness)          tableView->setColumnHidden(SegmentTableDialog::COL_FLATNESS, false);
@@ -958,18 +1090,24 @@ void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f) {
     if (f.equivEllipsoid) {
         tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_ELLIP_D0, false);
         tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_ELLIP_D1, false);
-        tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_ELLIP_D2, false);
+        if (!is2D) {
+            tableView->setColumnHidden(SegmentTableDialog::COL_EQUIV_ELLIP_D2, false);
+        }
     }
     if (f.principalMoments) {
         tableView->setColumnHidden(SegmentTableDialog::COL_PRINCIPAL_MOM0, false);
         tableView->setColumnHidden(SegmentTableDialog::COL_PRINCIPAL_MOM1, false);
-        tableView->setColumnHidden(SegmentTableDialog::COL_PRINCIPAL_MOM2, false);
+        if (!is2D) {
+            tableView->setColumnHidden(SegmentTableDialog::COL_PRINCIPAL_MOM2, false);
+        }
     }
     if (f.perimeter)    tableView->setColumnHidden(SegmentTableDialog::COL_PERIMETER, false);
     if (f.orientedBBox) {
         tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_W, false);
         tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_H, false);
-        tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_D, false);
+        if (!is2D) {
+            tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_D, false);
+        }
         tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_VOLUME, false);
     }
 }
