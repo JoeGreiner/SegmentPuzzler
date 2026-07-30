@@ -67,6 +67,8 @@ public:
 
     void addSignal(itkSignalBase *signal);
     void removeSignal(itkSignalBase *signal);
+    std::vector<itkSignalBase *> signalRenderOrder();
+    void setSignalRenderOrder(const std::vector<itkSignalBase *> &order);
     void refreshViewers();
     bool isBusy() const;
     TaskRunner *getTaskRunner() const;

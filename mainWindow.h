@@ -33,12 +33,14 @@ public slots:
 private slots:
     void showHotkeys();
     void showSegmentTable();
+    void showLayerRenderOrder();
     void arm3DWorkingSegmentCut();
     void showLoggingSettings();
 
 private:
     OrthoViewer *myOrthowindow;
     QMenu *addDataMenu;
+    QMenu *layersMenu;
     QMenu *boundariesMenu;
     QMenu *refinementsMenu;
     QMenu *segmentationsMenu;

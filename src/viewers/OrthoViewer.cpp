@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <unordered_map>
 
 #define CHECK_IF_MAIN_THREAD True
 
@@ -1286,6 +1287,52 @@ void OrthoViewer::removeSignal(itkSignalBase *signal) {
     zy->removeSignal(signal);
     xz->removeSignal(signal);
     xy->removeSignal(signal);
+}
+
+std::vector<itkSignalBase *> OrthoViewer::signalRenderOrder() {
+    std::lock_guard<std::mutex> viewerLock(viewerListMutex);
+    std::vector<itkSignalBase *> order;
+    if (xy == nullptr) {
+        return order;
+    }
+
+    std::lock_guard<std::mutex> signalLock(xy->signalListMutex);
+    order.reserve(xy->signalList.size());
+    for (const auto *sliceSignal : xy->signalList) {
+        order.push_back(sliceSignal->getSignal());
+    }
+    return order;
+}
+
+void OrthoViewer::setSignalRenderOrder(const std::vector<itkSignalBase *> &order) {
+    std::unordered_map<itkSignalBase *, std::size_t> rankBySignal;
+    rankBySignal.reserve(order.size());
+    for (std::size_t rank = 0; rank < order.size(); ++rank) {
+        rankBySignal.try_emplace(order[rank], rank);
+    }
+
+    std::lock_guard<std::mutex> viewerLock(viewerListMutex);
+    for (auto *viewer : viewerList) {
+        if (viewer == nullptr) {
+            continue;
+        }
+
+        {
+            std::lock_guard<std::mutex> signalLock(viewer->signalListMutex);
+            const auto rankOf = [&rankBySignal, fallbackRank = order.size()](
+                                    const SliceViewerITKSignal *sliceSignal) {
+                const auto rankIt = rankBySignal.find(sliceSignal->getSignal());
+                return rankIt == rankBySignal.end() ? fallbackRank : rankIt->second;
+            };
+            std::stable_sort(
+                viewer->signalList.begin(),
+                viewer->signalList.end(),
+                [&rankOf](const SliceViewerITKSignal *left, const SliceViewerITKSignal *right) {
+                    return rankOf(left) < rankOf(right);
+                });
+        }
+        viewer->updateFunction();
+    }
 }
 
 void OrthoViewer::receiveStatusMessage(QString string) {

@@ -68,6 +68,14 @@ QString summarizeActiveSignalImageRects(const std::vector<SliceViewerITKSignal *
     return entries.join(",");
 }
 
+bool isLabelLayer(const SliceViewerITKSignal *sliceSignal) {
+    if (sliceSignal == nullptr || sliceSignal->getSignal() == nullptr) {
+        return false;
+    }
+    const itkSignalBase *signal = sliceSignal->getSignal();
+    return signal->usesCategoricalLUT() || signal->usesEdgeStatusColors();
+}
+
 } // namespace
 
 
@@ -332,11 +340,20 @@ void SliceViewer::addSignal(SliceViewerITKSignal *signal) {
         SP_LOG_DEBUG("viewer.render", QStringLiteral("Adding signal to SliceViewer"));
     }
     std::lock_guard<std::mutex> lock(signalListMutex);
-    signalList.push_back(signal);
+    auto insertionPoint = signalList.end();
+    if (isLabelLayer(signal)) {
+        insertionPoint = std::find_if(
+            signalList.begin(),
+            signalList.end(),
+            [](const SliceViewerITKSignal *existingSignal) {
+                return !isLabelLayer(existingSignal);
+            });
+    }
+    signalList.insert(insertionPoint, signal);
     int newDimX, newDimY, newDimZ;
-    newDimX = signalList.back()->getDimX();
-    newDimY = signalList.back()->getDimY();
-    newDimZ = signalList.back()->getDimZ();
+    newDimX = signal->getDimX();
+    newDimY = signal->getDimY();
+    newDimZ = signal->getDimZ();
     if (verbose) {
         SP_LOG_DEBUG("viewer.render", QStringLiteral("SliceViewer dimensions=%1x%2x%3").arg(newDimX).arg(newDimY).arg(newDimZ));
     }
@@ -350,8 +367,8 @@ void SliceViewer::addSignal(SliceViewerITKSignal *signal) {
             throw std::logic_error("Loaded image has a different dimension!");
         }
     }
-    signalList.back()->setSliceIndex(sliceIndex);
-    signalList.back()->setSliceAxis(sliceAxis);
+    signal->setSliceIndex(sliceIndex);
+    signal->setSliceAxis(sliceAxis);
     numberSignals++;
     recalculateQImages();
     updateFunction();

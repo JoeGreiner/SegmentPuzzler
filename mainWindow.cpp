@@ -1,5 +1,7 @@
 #include "mainWindow.h"
+#include <QAbstractItemView>
 #include <QApplication>
+#include <QDialog>
 #include <QStatusBar>
 #include <QScreen>
 #include <QDialogButtonBox>
@@ -8,6 +10,7 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QInputDialog>
+#include <QListWidget>
 #include <QPointer>
 #include <QStyle>
 #include <QTimer>
@@ -16,6 +19,7 @@
 #include <QFormLayout>
 #include <QWindow>
 #include <algorithm>
+#include <optional>
 #include "src/utils/utils.h"
 #include "src/utils/systemStats.h"
 #include "src/qtUtils/WindowStats.h"
@@ -49,6 +53,64 @@ QStringList localFilesFromMimeData(const QMimeData *mimeData) {
     }
 
     return localFiles;
+}
+
+std::optional<std::vector<itkSignalBase *>> requestLayerRenderOrder(
+    QWidget *parent,
+    const std::vector<itkSignalBase *> &currentOrder) {
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Layer Render Order"));
+    dialog.resize(420, 360);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *instructions = new QLabel(
+        QObject::tr(
+            "Layers are drawn from top to bottom. The first item is at the bottom of the "
+            "composite; the last item is on top. Drag items to change the order."),
+        &dialog);
+    instructions->setWordWrap(true);
+    layout->addWidget(instructions);
+
+    auto *layerList = new QListWidget(&dialog);
+    layerList->setDragDropMode(QAbstractItemView::InternalMove);
+    layerList->setDefaultDropAction(Qt::MoveAction);
+    for (std::size_t index = 0; index < currentOrder.size(); ++index) {
+        itkSignalBase *signal = currentOrder[index];
+        QString displayName = signal != nullptr ? signal->name : QObject::tr("<missing layer>");
+        if (signal != nullptr && !signal->getIsActive()) {
+            displayName += QObject::tr(" (hidden)");
+        }
+
+        auto *item = new QListWidgetItem(displayName, layerList);
+        item->setData(Qt::UserRole, QVariant::fromValue(static_cast<qulonglong>(index)));
+    }
+    if (layerList->count() > 0) {
+        layerList->setCurrentRow(0);
+    }
+    layout->addWidget(layerList, 1);
+
+    auto *buttonBox =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return std::nullopt;
+    }
+
+    std::vector<itkSignalBase *> reorderedSignals;
+    reorderedSignals.reserve(currentOrder.size());
+    for (int row = 0; row < layerList->count(); ++row) {
+        bool validIndex = false;
+        const qulonglong index =
+            layerList->item(row)->data(Qt::UserRole).toULongLong(&validIndex);
+        if (!validIndex || index >= currentOrder.size()) {
+            return std::nullopt;
+        }
+        reorderedSignals.push_back(currentOrder[static_cast<std::size_t>(index)]);
+    }
+    return reorderedSignals;
 }
 
 void showWindowWithinAvailableScreen(QMainWindow *window) {
@@ -222,6 +284,11 @@ MainWindow::MainWindow() {
     connect(loadSampleSegmentationAction, &QAction::triggered, this, [this]() {
         QMetaObject::invokeMethod(this, "loadSegmentationSample", Qt::QueuedConnection);
     });
+
+    layersMenu = menuBar()->addMenu(tr("&Layers"));
+    auto *renderOrderAction = new QAction(tr("&Render Order..."), this);
+    layersMenu->addAction(renderOrderAction);
+    connect(renderOrderAction, &QAction::triggered, this, &MainWindow::showLayerRenderOrder);
 
     boundariesMenu = menuBar()->addMenu(tr("&Boundaries"));
     mySignalControl->populateBoundariesMenu(boundariesMenu);
@@ -477,6 +544,7 @@ MainWindow::MainWindow() {
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
+    connect(taskRunner.get(), &TaskRunner::busyChanged, renderOrderAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this]() { update3DWorkingSegmentCutActionState(); });
     connect(segmentationsMenu, &QMenu::aboutToShow, this, &MainWindow::update3DWorkingSegmentCutActionState);
     installInitialFileDropHandling();
@@ -1002,6 +1070,24 @@ void MainWindow::showSegmentTable() {
     segmentTableDialog->show();
     segmentTableDialog->raise();
     segmentTableDialog->activateWindow();
+}
+
+void MainWindow::showLayerRenderOrder() {
+    if (myOrthowindow == nullptr || myOrthowindow->isBusy()) {
+        return;
+    }
+
+    const auto currentOrder = myOrthowindow->signalRenderOrder();
+    const auto requestedOrder = requestLayerRenderOrder(this, currentOrder);
+    if (!requestedOrder.has_value()) {
+        return;
+    }
+
+    myOrthowindow->setSignalRenderOrder(*requestedOrder);
+    SP_LOG_INFO("viewer.render",
+                QStringLiteral("Updated render order for %1 layers")
+                    .arg(requestedOrder->size()));
+    statusBar()->showMessage(tr("Layer render order updated"), 3000);
 }
 
 void MainWindow::showLoggingSettings() {
