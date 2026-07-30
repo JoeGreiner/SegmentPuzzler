@@ -155,6 +155,7 @@ private:
     void updateResultsActionState();
     void updateColumnHeaders(const FeatureFlags &flags, bool is2D);
     void updateColumnVisibility(const FeatureFlags &flags, bool is2D);
+    QString suggestedCsvExportPath(const QString &storedDefaultSavePath) const;
     std::vector<std::pair<dataType::SegmentIdType, quint32>> collectSelectedLabelsFor3D() const;
 
     // ---- Shared state ----

@@ -12,6 +12,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -25,6 +26,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QProgressDialog>
+#include <QSaveFile>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSizePolicy>
@@ -44,6 +46,7 @@
 
 #include "src/segment_handling/Graph.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/ExportPathUtils.h"
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/viewers/OrthoViewer.h"
 
@@ -1363,12 +1366,31 @@ void SegmentTableDialog::navigateTo(int x, int y, int z) {
 
 // ---- CSV export (only visible columns, current sort order) ------------------
 
+QString SegmentTableDialog::suggestedCsvExportPath(const QString &storedDefaultSavePath) const {
+    const QString segmentationName =
+        currentTableSegmentationSignal != nullptr
+            ? currentTableSegmentationSignal->name
+            : QString();
+    return export_path_utils::suggestedExportPath(
+        storedDefaultSavePath,
+        graphBase->lastLoadedSourcePath,
+        segmentationName,
+        QStringLiteral("Segmentation"),
+        QStringLiteral("_features.csv"));
+}
+
 void SegmentTableDialog::onExportCsvClicked() {
+    QSettings settings;
+    const QString defaultSavePath =
+        settings.value(QStringLiteral("default_save_dir")).toString();
     const QString path = QFileDialog::getSaveFileName(
-        this, "Export CSV", QString(), "CSV files (*.csv)");
+        this,
+        "Export CSV",
+        suggestedCsvExportPath(defaultSavePath),
+        "CSV files (*.csv)");
     if (path.isEmpty()) { return; }
 
-    QFile file(path);
+    QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(this, "Export Failed",
                              "Could not open file for writing:\n" + path);
@@ -1428,5 +1450,16 @@ void SegmentTableDialog::onExportCsvClicked() {
             << elementCount << "\n";
     }
 
+    out.flush();
+    const bool exportSucceeded =
+        out.status() == QTextStream::Ok && file.commit();
+    if (!exportSucceeded) {
+        QMessageBox::warning(this, "Export Failed",
+                             "Could not write file completely:\n" + path);
+        return;
+    }
+
+    settings.setValue(QStringLiteral("default_save_dir"),
+                      QFileInfo(path).absoluteFilePath());
     statusLabel->setText("Exported to " + path);
 }

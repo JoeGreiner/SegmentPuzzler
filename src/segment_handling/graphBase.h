@@ -5,6 +5,7 @@
 #include <itkImage.h>
 #include <src/viewers/itkSignal.h>
 #include "src/file_definitions/dataTypes.h"
+#include <QString>
 #include <unordered_map>
 
 
@@ -45,6 +46,8 @@ public:
     SegmentsVoxelType selectedSegmentationMaxSegmentId;
     // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pSelectedSegmentationSignal;
+    // Shared source for consistent export filename suggestions.
+    QString lastLoadedSourcePath;
 
 
     // Non-owning — owned by Graph (via Graph::ownedEdgesSignal)

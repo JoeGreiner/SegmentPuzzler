@@ -268,8 +268,6 @@ private:
     bool preferredSidebarWidthChangePending = false;
     int lastEmittedPreferredSidebarWidth = -1;
 
-    QString lastLoadedSourcePath;
-
     void askForBackgroundStrategy();
     void loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice);
 

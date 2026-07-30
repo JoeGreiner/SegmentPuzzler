@@ -41,6 +41,7 @@
 
 #include "src/utils/SignalNameUtils.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/ExportPathUtils.h"
 
 namespace {
 
@@ -50,16 +51,6 @@ constexpr int kSectionSpacing = 4;
 constexpr int kLayersVisibleRows = 4;
 constexpr int kOtherSectionVisibleRows = 2;
 constexpr int kApproximateTreeRowPadding = 8;
-
-QString stemForLoadedSourcePath(const QString &filePath) {
-    const QFileInfo fileInfo(filePath);
-    const QString fileName = fileInfo.fileName();
-    const QString niiGzSuffix = QStringLiteral(".nii.gz");
-    if (fileName.endsWith(niiGzSuffix, Qt::CaseInsensitive)) {
-        return fileName.left(fileName.size() - niiGzSuffix.size());
-    }
-    return fileInfo.completeBaseName();
-}
 
 bool debugLayerLayoutEnabled() {
     static const bool enabled = !qgetenv("SEGMENTPUZZLER_DEBUG_LAYER_LAYOUT").isEmpty();
@@ -1036,31 +1027,20 @@ void SignalControl::rememberLoadedSourceFile(const QString &fileName) {
     }
 
     const QFileInfo fileInfo(fileName);
-    lastLoadedSourcePath = fileInfo.absoluteFilePath();
+    graphBase->lastLoadedSourcePath = fileInfo.absoluteFilePath();
 }
 
 QString SignalControl::suggestedSegmentationExportPath(const QString &storedDefaultSavePath) const {
-    QString directoryPath;
-    if (!storedDefaultSavePath.isEmpty()) {
-        const QFileInfo storedDefaultInfo(storedDefaultSavePath);
-        directoryPath = storedDefaultInfo.exists() && storedDefaultInfo.isDir()
-                            ? storedDefaultInfo.absoluteFilePath()
-                            : storedDefaultInfo.absolutePath();
-    }
-    if (directoryPath.isEmpty() && !lastLoadedSourcePath.isEmpty()) {
-        directoryPath = QFileInfo(lastLoadedSourcePath).absolutePath();
-    }
-
-    QString stem = lastLoadedSourcePath.isEmpty() ? QString() : stemForLoadedSourcePath(lastLoadedSourcePath);
-    if (stem.isEmpty() && graphBase->pSelectedSegmentationSignal != nullptr) {
-        stem = graphBase->pSelectedSegmentationSignal->name;
-    }
-    stem = stem.trimmed();
-    const QString fileName = QStringLiteral("%1.nrrd").arg(stem.isEmpty() ? QStringLiteral("Segmentation") : stem);
-    if (directoryPath.isEmpty()) {
-        return fileName;
-    }
-    return QDir(directoryPath).filePath(fileName);
+    const QString selectedSegmentationName =
+        graphBase->pSelectedSegmentationSignal != nullptr
+            ? graphBase->pSelectedSegmentationSignal->name
+            : QString();
+    return export_path_utils::suggestedExportPath(
+        storedDefaultSavePath,
+        graphBase->lastLoadedSourcePath,
+        selectedSegmentationName,
+        QStringLiteral("Segmentation"),
+        QStringLiteral(".nrrd"));
 }
 
 std::optional<slice_geometry::Dimensions3D> SignalControl::expectedDimensionsForNewSignal(

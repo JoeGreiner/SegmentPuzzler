@@ -84,6 +84,10 @@ void MainWindowWatershedControl::receiveStatusMessage(QString string) {
 void MainWindowWatershedControl::setLinkedSignalControl(SignalControl* linkedSignalControlIn){
     linkedSignalControl = linkedSignalControlIn;
     myWatershedControl->linkedSignalControl = linkedSignalControlIn;
+    if (linkedSignalControl != nullptr) {
+        myWatershedControl->graphBase->lastLoadedSourcePath =
+            linkedSignalControl->graphBase->lastLoadedSourcePath;
+    }
     SP_LOG_INFO("watershed", QStringLiteral("Linked watershed window to the main SignalControl"));
 }
 
