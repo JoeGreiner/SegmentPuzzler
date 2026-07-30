@@ -1973,6 +1973,12 @@ void AnnotationSliceViewer::updateFunction() {
 
 void AnnotationSliceViewer::togglePaintMode() {
     paintModeIsActive = !paintModeIsActive;
+    if (paintModeIsActive) {
+        setPaintId(labelOfClickedSegmentation);
+    } else if (!paintBoundaryModeIsActive) {
+        cursorColor = Qt::white;
+        setUpCustomCursor();
+    }
     notifyOrthoViewerInteractionModeChanged();
 }
 
