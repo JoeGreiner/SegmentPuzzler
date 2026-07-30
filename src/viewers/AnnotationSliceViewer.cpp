@@ -28,6 +28,8 @@
 
 namespace {
 
+constexpr double kKeyboardZoomFactor = 1.25;
+
 bool hasIdentityDirection(dataType::SegmentsImageType::Pointer image, double epsilon = 1e-6) {
     if (image == nullptr) {
         return true;
@@ -354,12 +356,12 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("zoom");
         }
-        modifyZoomInAllViewers(2);
+        modifyZoomInAllViewers(kKeyboardZoomFactor);
     } else if (event->key() == Qt::Key_Minus) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("zoom");
         }
-        modifyZoomInAllViewers(0.5);
+        modifyZoomInAllViewers(1.0 / kKeyboardZoomFactor);
     } else if (event->key() == Qt::Key_1) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("brush");
