@@ -24,15 +24,29 @@ inline bool signalNameExists(const std::vector<itkSignalBase *> &signalList, con
     return false;
 }
 
-inline QString makeUniqueSignalName(const std::vector<itkSignalBase *> &signalList, const QString &requestedName) {
-    if (requestedName.isEmpty() || !signalNameExists(signalList, requestedName)) {
+inline QString makeUniqueSignalName(const std::vector<itkSignalBase *> &signalList,
+                                    const QString &requestedName,
+                                    const std::vector<QString> &reservedSuffixes = {}) {
+    const auto nameExists = [&](const QString &name) {
+        if (signalNameExists(signalList, name)) {
+            return true;
+        }
+        for (const QString &suffix : reservedSuffixes) {
+            if (signalNameExists(signalList, name + suffix)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (requestedName.isEmpty() || !nameExists(requestedName)) {
         return requestedName;
     }
 
     const QString stem = signalNameStem(requestedName);
     for (int suffix = 1;; ++suffix) {
         const QString candidate = QStringLiteral("%1 (%2)").arg(stem).arg(suffix);
-        if (!signalNameExists(signalList, candidate)) {
+        if (!nameExists(candidate)) {
             return candidate;
         }
     }

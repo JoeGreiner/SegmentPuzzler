@@ -30,14 +30,21 @@
 #include <QSettings>
 #include <QThread>
 #include <QApplication>
+#include <QImageReader>
 #include <QTimer>
 #include <clocale>
+#include <array>
 #include <algorithm>
 #include <itkImageDuplicator.h>
 #include <itkImageRegionConstIterator.h>
 #include <itkImageRegionIterator.h>
+#include <itkImageIORegion.h>
+#include <itkTIFFImageIO.h>
+#include <itkVectorImage.h>
+#include <itkVectorIndexSelectionCastImageFilter.h>
 #include <limits>
 #include <cmath>
+#include <type_traits>
 
 #include "src/utils/SignalNameUtils.h"
 #include "src/utils/AppLogger.h"
@@ -51,6 +58,155 @@ constexpr int kSectionSpacing = 4;
 constexpr int kLayersVisibleRows = 4;
 constexpr int kOtherSectionVisibleRows = 2;
 constexpr int kApproximateTreeRowPadding = 8;
+
+class FirstPageTIFFImageIO final : public itk::TIFFImageIO {
+public:
+    ITK_DISALLOW_COPY_AND_MOVE(FirstPageTIFFImageIO);
+
+    using Self = FirstPageTIFFImageIO;
+    using Superclass = itk::TIFFImageIO;
+    using Pointer = itk::SmartPointer<Self>;
+
+    itkNewMacro(Self);
+    itkOverrideGetNameOfClassMacro(FirstPageTIFFImageIO);
+
+    void ReadImageInformation() override {
+        Superclass::ReadImageInformation();
+        SetNumberOfDimensions(2);
+    }
+
+    void Read(void *buffer) override {
+        const itk::ImageIORegion originalRegion = GetIORegion();
+        itk::ImageIORegion firstPageRegion(2);
+        for (unsigned int axis = 0; axis < 2; ++axis) {
+            firstPageRegion.SetIndex(axis, originalRegion.GetIndex(axis));
+            firstPageRegion.SetSize(axis, originalRegion.GetSize(axis));
+        }
+
+        SetIORegion(firstPageRegion);
+        try {
+            Superclass::Read(buffer);
+        } catch (...) {
+            SetIORegion(originalRegion);
+            throw;
+        }
+        SetIORegion(originalRegion);
+    }
+
+protected:
+    FirstPageTIFFImageIO() = default;
+    ~FirstPageTIFFImageIO() override = default;
+};
+
+bool hasConfirmedDifferentlySizedTiffPages(const QString &fileName) {
+    QImageReader reader(fileName, QByteArrayLiteral("tiff"));
+    auto inspectionFailed = [&](const QString &reason) {
+        SP_LOG_WARNING(
+            "io",
+            QStringLiteral(
+                "Could not inspect TIFF page dimensions for %1 (%2); using the normal ITK reader")
+                .arg(fileName, reason));
+        return false;
+    };
+
+    if (!reader.canRead()) {
+        return inspectionFailed(reader.errorString());
+    }
+
+    const int pageCount = reader.imageCount();
+    if (pageCount <= 1) {
+        return inspectionFailed(
+            QStringLiteral("QImageReader reported %1 pages").arg(pageCount));
+    }
+    if (!reader.jumpToImage(0)) {
+        return inspectionFailed(
+            QStringLiteral("could not select page 0: %1").arg(reader.errorString()));
+    }
+
+    const QSize firstPageSize = reader.size();
+    if (!firstPageSize.isValid()) {
+        return inspectionFailed(
+            QStringLiteral("invalid size for page 0: %1").arg(reader.errorString()));
+    }
+
+    for (int pageIndex = 1; pageIndex < pageCount; ++pageIndex) {
+        if (!reader.jumpToImage(pageIndex)) {
+            return inspectionFailed(
+                QStringLiteral("could not select page %1: %2")
+                    .arg(pageIndex)
+                    .arg(reader.errorString()));
+        }
+        const QSize pageSize = reader.size();
+        if (!pageSize.isValid()) {
+            return inspectionFailed(
+                QStringLiteral("invalid size for page %1: %2")
+                    .arg(pageIndex)
+                    .arg(reader.errorString()));
+        }
+        if (pageSize != firstPageSize) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template<typename ComponentType>
+std::array<typename itk::Image<ComponentType, 3>::Pointer, 3>
+loadRgbChannels(const QString &fileName, bool firstTiffPageOnly) {
+    using VectorImageType = itk::VectorImage<ComponentType, 3>;
+    using ScalarImageType = itk::Image<ComponentType, 3>;
+    using ReaderType = itk::ImageFileReader<VectorImageType>;
+    using ChannelFilterType =
+        itk::VectorIndexSelectionCastImageFilter<VectorImageType, ScalarImageType>;
+
+    SP_LOG_INFO("io", QStringLiteral("Reading RGB image %1").arg(fileName));
+
+    typename ReaderType::Pointer reader = ReaderType::New();
+    if (firstTiffPageOnly) {
+        reader->SetImageIO(FirstPageTIFFImageIO::New());
+    }
+    reader->SetFileName(fileName.toStdString());
+    reader->Update();
+
+    typename VectorImageType::Pointer vectorImage = reader->GetOutput();
+    vectorImage->DisconnectPipeline();
+    if (firstTiffPageOnly) {
+        SP_LOG_WARNING(
+            "io",
+            QStringLiteral(
+                "TIFF contains differently sized pages; loaded only the first page of %1")
+                .arg(fileName));
+    }
+
+    if (vectorImage->GetNumberOfComponentsPerPixel() != 3) {
+        throw std::logic_error(
+            "Expected an RGB image with exactly three components: " + fileName.toStdString());
+    }
+
+    std::array<typename ScalarImageType::Pointer, 3> channels;
+    for (unsigned int channelIndex = 0; channelIndex < channels.size(); ++channelIndex) {
+        typename ChannelFilterType::Pointer channelFilter = ChannelFilterType::New();
+        channelFilter->SetInput(vectorImage);
+        channelFilter->SetIndex(channelIndex);
+        channelFilter->Update();
+
+        channels[channelIndex] = channelFilter->GetOutput();
+        channels[channelIndex]->SetMetaDataDictionary(vectorImage->GetMetaDataDictionary());
+        channels[channelIndex]->DisconnectPipeline();
+    }
+    return channels;
+}
+
+const itk::ImageBase<3> *asImageBase(const itk::DataObject::Pointer &image) {
+    return dynamic_cast<const itk::ImageBase<3> *>(image.GetPointer());
+}
+
+bool hasSameGeometry(const itk::ImageBase<3> &left, const itk::ImageBase<3> &right) {
+    return left.GetLargestPossibleRegion() == right.GetLargestPossibleRegion() &&
+           left.GetSpacing() == right.GetSpacing() &&
+           left.GetOrigin() == right.GetOrigin() &&
+           left.GetDirection() == right.GetDirection();
+}
 
 bool debugLayerLayoutEnabled() {
     static const bool enabled = !qgetenv("SEGMENTPUZZLER_DEBUG_LAYER_LAYOUT").isEmpty();
@@ -1016,9 +1172,11 @@ void SignalControl::refreshViewers() {
     orthoViewer->refreshViewers();
 }
 
-QString SignalControl::resolvedDisplayName(const QString &fileName, const QString &displayedName) const {
+QString SignalControl::resolvedDisplayName(const QString &fileName,
+                                           const QString &displayedName,
+                                           const std::vector<QString> &suffixes) const {
     const QString requestedName = !displayedName.isEmpty() ? displayedName : QFileInfo(fileName).baseName();
-    return signal_name_utils::makeUniqueSignalName(allSignalList, requestedName);
+    return signal_name_utils::makeUniqueSignalName(allSignalList, requestedName, suffixes);
 }
 
 void SignalControl::rememberLoadedSourceFile(const QString &fileName) {
@@ -1131,126 +1289,206 @@ SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
         return loadedImage;
     }
 
-    unsigned int dimension = 0;
     SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
-    getDimensionAndDataTypeOfFile(fileName, dimension, loadedImage.dataType);
-    SP_LOG_INFO("io", QStringLiteral("Detected image dimension=%1 for %2").arg(dimension).arg(fileName));
+    const ImageFileInfo imageInfo = getImageFileInfo(fileName);
+    SP_LOG_INFO(
+        "io",
+        QStringLiteral("Detected image dimension=%1 pixelType=%2 components=%3 componentType=%4 for %5")
+            .arg(imageInfo.dimension)
+            .arg(QString::fromStdString(itk::ImageIOBase::GetPixelTypeAsString(imageInfo.pixelType)))
+            .arg(imageInfo.componentCount)
+            .arg(QString::fromStdString(itk::ImageIOBase::GetComponentTypeAsString(imageInfo.componentType)))
+            .arg(fileName));
 
-    if (dimension != 2 && dimension != 3) {
+    if (imageInfo.dimension != 2 && imageInfo.dimension != 3) {
         throw std::logic_error("Only 2D and 3D images are supported.");
     }
 
-    if (forceSegmentDataTypeUInt) {
-        loadedImage.dataType = forcedDataType;
+    const bool isScalar =
+        imageInfo.pixelType == itk::IOPixelEnum::SCALAR && imageInfo.componentCount == 1;
+    const bool isRgb =
+        imageInfo.pixelType == itk::IOPixelEnum::RGB && imageInfo.componentCount == 3;
+
+    if (!isScalar && !isRgb) {
+        throw std::logic_error(
+            QStringLiteral(
+                "Unsupported image pixel type %1 with %2 components: %3. "
+                "Only scalar images and three-component RGB images are supported.")
+                .arg(QString::fromStdString(itk::ImageIOBase::GetPixelTypeAsString(imageInfo.pixelType)))
+                .arg(imageInfo.componentCount)
+                .arg(fileName)
+                .toStdString());
     }
+
+    const bool hasSupportedRgbComponentType =
+        imageInfo.componentType == itk::ImageIOBase::IOComponentType::UCHAR ||
+        imageInfo.componentType == itk::ImageIOBase::IOComponentType::USHORT;
+    if (isRgb && !hasSupportedRgbComponentType) {
+        throw std::logic_error(
+            QStringLiteral(
+                "Unsupported RGB component type %1: %2. "
+                "Only unsigned 8-bit and unsigned 16-bit RGB images are supported.")
+                .arg(QString::fromStdString(
+                    itk::ImageIOBase::GetComponentTypeAsString(imageInfo.componentType)))
+                .arg(fileName)
+                .toStdString());
+    }
+
+    if (forceSegmentDataTypeUInt && !isScalar) {
+        throw std::logic_error("Forced component conversion is only supported for scalar images.");
+    }
+
+    const QString fileSuffix = QFileInfo(fileName).suffix().toLower();
+    const bool isMultipageTiff =
+        imageInfo.dimension == 3 &&
+        (fileSuffix == QStringLiteral("tif") || fileSuffix == QStringLiteral("tiff"));
+    const bool firstTiffPageOnly =
+        isRgb && isMultipageTiff && hasConfirmedDifferentlySizedTiffPages(fileName);
+
+    loadedImage.dataType = forceSegmentDataTypeUInt ? forcedDataType : imageInfo.componentType;
+
+    auto loadTypedImage = [&](auto componentValue) {
+        using ComponentType = decltype(componentValue);
+        if constexpr (std::is_same_v<ComponentType, unsigned char> ||
+                      std::is_same_v<ComponentType, unsigned short>) {
+            if (isRgb) {
+                const auto channels =
+                    loadRgbChannels<ComponentType>(fileName, firstTiffPageOnly);
+                loadedImage.layers = {
+                    {channels[0].GetPointer(), QStringLiteral(" [R]"), QColor(255, 0, 0)},
+                    {channels[1].GetPointer(), QStringLiteral(" [G]"), QColor(0, 255, 0)},
+                    {channels[2].GetPointer(), QStringLiteral(" [B]"), QColor(0, 0, 255)}
+                };
+                return;
+            }
+        }
+        loadedImage.layers.push_back(
+            {ITKImageLoader<ComponentType>(fileName).GetPointer(), {}, std::nullopt});
+    };
 
     switch (loadedImage.dataType) {
         case itk::ImageIOBase::IOComponentType::UCHAR:
-            loadedImage.image = ITKImageLoader<unsigned char>(fileName).GetPointer();
+            loadTypedImage(static_cast<unsigned char>(0));
             break;
         case itk::ImageIOBase::IOComponentType::CHAR:
-            loadedImage.image = ITKImageLoader<char>(fileName).GetPointer();
+            loadTypedImage(static_cast<char>(0));
             break;
         case itk::ImageIOBase::IOComponentType::USHORT:
-            loadedImage.image = ITKImageLoader<unsigned short>(fileName).GetPointer();
+            loadTypedImage(static_cast<unsigned short>(0));
             break;
         case itk::ImageIOBase::IOComponentType::SHORT:
-            loadedImage.image = ITKImageLoader<short>(fileName).GetPointer();
+            loadTypedImage(static_cast<short>(0));
             break;
         case itk::ImageIOBase::IOComponentType::UINT:
-            loadedImage.image = ITKImageLoader<unsigned int>(fileName).GetPointer();
+            loadTypedImage(static_cast<unsigned int>(0));
             break;
         case itk::ImageIOBase::IOComponentType::INT:
-            loadedImage.image = ITKImageLoader<int>(fileName).GetPointer();
+            loadTypedImage(static_cast<int>(0));
             break;
         case itk::ImageIOBase::IOComponentType::ULONG:
-            loadedImage.image = ITKImageLoader<unsigned long>(fileName).GetPointer();
+            loadTypedImage(static_cast<unsigned long>(0));
             break;
         case itk::ImageIOBase::IOComponentType::LONG:
-            loadedImage.image = ITKImageLoader<long>(fileName).GetPointer();
+            loadTypedImage(static_cast<long>(0));
             break;
         case itk::ImageIOBase::IOComponentType::ULONGLONG:
-            loadedImage.image = ITKImageLoader<unsigned long long>(fileName).GetPointer();
+            loadTypedImage(static_cast<unsigned long long>(0));
             break;
         case itk::ImageIOBase::IOComponentType::LONGLONG:
-            loadedImage.image = ITKImageLoader<long long>(fileName).GetPointer();
+            loadTypedImage(static_cast<long long>(0));
             break;
         case itk::ImageIOBase::IOComponentType::FLOAT:
-            loadedImage.image = ITKImageLoader<float>(fileName).GetPointer();
+            loadTypedImage(0.0F);
             break;
         case itk::ImageIOBase::IOComponentType::DOUBLE:
-            loadedImage.image = ITKImageLoader<double>(fileName).GetPointer();
+            loadTypedImage(0.0);
             break;
         case itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE:
         default:
             throw std::logic_error("SignalControl::loadImageData unknown component type encountered.");
     }
 
+    if (loadedImage.layers.empty()) {
+        throw std::logic_error("SignalControl::loadImageData produced no image layers.");
+    }
+
+    const itk::ImageBase<3> *referenceImage = asImageBase(loadedImage.layers.front().image);
+    if (referenceImage == nullptr) {
+        throw std::logic_error("SignalControl::loadImageData produced an invalid image layer.");
+    }
+    for (const LoadedImageLayer &layer : loadedImage.layers) {
+        const itk::ImageBase<3> *image = asImageBase(layer.image);
+        if (image == nullptr || !hasSameGeometry(*referenceImage, *image)) {
+            throw std::logic_error("Loaded image channels do not share the same geometry.");
+        }
+    }
+
     return loadedImage;
 }
 
-bool SignalControl::insertLoadedImage(const LoadedImageData &loadedImage,
+bool SignalControl::insertLoadedImage(const LoadedImageLayer &loadedLayer,
+                                      itk::ImageIOBase::IOComponentType dataType,
                                       size_t &signalIndexGlobalOut,
                                       bool forceShapeOfSegments) {
-    switch (loadedImage.dataType) {
+    switch (dataType) {
         case itk::ImageIOBase::IOComponentType::UCHAR:
             return insertTypedImage<unsigned char>(
-                dynamic_cast<itk::Image<unsigned char, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<unsigned char, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::CHAR:
             return insertTypedImage<char>(
-                dynamic_cast<itk::Image<char, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<char, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::USHORT:
             return insertTypedImage<unsigned short>(
-                dynamic_cast<itk::Image<unsigned short, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<unsigned short, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::SHORT:
             return insertTypedImage<short>(
-                dynamic_cast<itk::Image<short, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<short, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::UINT:
             return insertTypedImage<unsigned int>(
-                dynamic_cast<itk::Image<unsigned int, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<unsigned int, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::INT:
             return insertTypedImage<int>(
-                dynamic_cast<itk::Image<int, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<int, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::ULONG:
             return insertTypedImage<unsigned long>(
-                dynamic_cast<itk::Image<unsigned long, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<unsigned long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::LONG:
             return insertTypedImage<long>(
-                dynamic_cast<itk::Image<long, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::ULONGLONG:
             return insertTypedImage<unsigned long long>(
-                dynamic_cast<itk::Image<unsigned long long, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<unsigned long long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::LONGLONG:
             return insertTypedImage<long long>(
-                dynamic_cast<itk::Image<long long, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<long long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::FLOAT:
             return insertTypedImage<float>(
-                dynamic_cast<itk::Image<float, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<float, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::DOUBLE:
             return insertTypedImage<double>(
-                dynamic_cast<itk::Image<double, 3> *>(loadedImage.image.GetPointer()),
+                dynamic_cast<itk::Image<double, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
                 forceShapeOfSegments);
         case itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE:
@@ -1354,13 +1592,54 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
         QStringLiteral("Loading image..."),
         [this, fileName]() { return loadImageData(fileName); },
         [this, fileName, displayedName, then = std::move(then)](LoadedImageData loadedImage) mutable {
-            size_t signalIndexGlobal = 0;
-            bool ok = insertLoadedImage(loadedImage, signalIndexGlobal, true);
-            if (ok) {
-                rememberLoadedSourceFile(fileName);
-                registerImageSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+            if (loadedImage.layers.empty()) {
+                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                return;
             }
-            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+
+            const itk::ImageBase<3> *image = asImageBase(loadedImage.layers.front().image);
+            if (image == nullptr) {
+                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                return;
+            }
+
+            const auto dimensions = image->GetLargestPossibleRegion().GetSize();
+            if (!dimensionsMatchExpectedDimensions(dimensions[0], dimensions[1], dimensions[2], true)) {
+                reportDimensionMismatch(dimensions[0], dimensions[1], dimensions[2], true);
+                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                return;
+            }
+
+            std::vector<QString> suffixes;
+            suffixes.reserve(loadedImage.layers.size());
+            for (const LoadedImageLayer &layer : loadedImage.layers) {
+                suffixes.push_back(layer.suffix);
+            }
+            const QString baseName = resolvedDisplayName(fileName, displayedName, suffixes);
+            LoadResult firstSignalIndex;
+            bool insertedAllLayers = true;
+            for (const LoadedImageLayer &layer : loadedImage.layers) {
+                size_t signalIndexGlobal = 0;
+                if (!insertLoadedImage(layer, loadedImage.dataType, signalIndexGlobal, true)) {
+                    insertedAllLayers = false;
+                    break;
+                }
+
+                if (layer.color) {
+                    allSignalList[signalIndexGlobal]->setMainColor(*layer.color);
+                }
+                registerImageSignal(signalIndexGlobal, baseName + layer.suffix);
+                if (!firstSignalIndex) {
+                    firstSignalIndex = signalIndexGlobal;
+                }
+            }
+
+            if (insertedAllLayers) {
+                rememberLoadedSourceFile(fileName);
+            }
+            invokeLoadCallbackLater(
+                std::move(then),
+                insertedAllLayers ? firstSignalIndex : std::nullopt);
         });
 }
 

@@ -3,9 +3,11 @@
 
 
 #include <QString>
+#include <QColor>
 #include <type_traits>
 #include <functional>
 #include <optional>
+#include <vector>
 #include <itkImage.h>
 #include <itkDataObject.h>
 #include <src/viewers/itkSignal.h>
@@ -59,6 +61,7 @@ public:
 
     using GraphSegmentType = dataType::SegmentIdType;
     using GraphSegmentImageType = dataType::SegmentsImageType;
+    // Multi-layer imports return the index of the first inserted layer.
     using LoadResult = std::optional<size_t>;
     using LoadCallback = std::function<void(LoadResult)>;
 
@@ -195,9 +198,15 @@ public slots:
 
 
 private:
+    struct LoadedImageLayer {
+        itk::DataObject::Pointer image;
+        QString suffix;
+        std::optional<QColor> color;
+    };
+
     struct LoadedImageData {
         itk::ImageIOBase::IOComponentType dataType = itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE;
-        itk::DataObject::Pointer image;
+        std::vector<LoadedImageLayer> layers;
     };
 
     struct BoundaryLoadResult {
@@ -324,7 +333,9 @@ private:
     bool getDimensionMatchWithSegmentImage();
     void setGuiBusy(bool busy);
     void refreshViewers();
-    QString resolvedDisplayName(const QString &fileName, const QString &displayedName) const;
+    QString resolvedDisplayName(const QString &fileName,
+                                const QString &displayedName,
+                                const std::vector<QString> &suffixes = {}) const;
     void rememberLoadedSourceFile(const QString &fileName);
     QString suggestedSegmentationExportPath(const QString &storedDefaultSavePath) const;
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
@@ -342,7 +353,8 @@ private:
     LoadedImageData loadImageData(QString fileName,
                                   bool forceSegmentDataTypeUInt = false,
                                   itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType);
-    bool insertLoadedImage(const LoadedImageData &loadedImage,
+    bool insertLoadedImage(const LoadedImageLayer &loadedLayer,
+                           itk::ImageIOBase::IOComponentType dataType,
                            size_t &signalIndexGlobalOut,
                            bool forceShapeOfSegments);
     void loadSegmentationVolumeAsync(QString fileName,

@@ -4,6 +4,7 @@ set_target_properties(SegmentPuzzler PROPERTIES MACOSX_BUNDLE True)
 # based on code from CMake's QtDialog/CMakeLists.txt
 macro(install_qt_plugin _qt_plugin_name _qt_plugins_var _prefix)
     get_target_property(_qt_plugin_path "${_qt_plugin_name}" LOCATION)
+    get_filename_component(_qt_plugin_path "${_qt_plugin_path}" REALPATH)
     if(EXISTS "${_qt_plugin_path}")
         get_filename_component(_qt_plugin_file "${_qt_plugin_path}" NAME)
         get_filename_component(_qt_plugin_type "${_qt_plugin_path}" PATH)
@@ -12,17 +13,19 @@ macro(install_qt_plugin _qt_plugin_name _qt_plugins_var _prefix)
         install(FILES "${_qt_plugin_path}"
                 DESTINATION "${_qt_plugin_dest}")
         set(${_qt_plugins_var}
-                "${${_qt_plugins_var}};\$ENV{DEST_DIR}\${CMAKE_INSTALL_PREFIX}/${_qt_plugin_dest}/${_qt_plugin_file}")
+                "${${_qt_plugins_var}};\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${_qt_plugin_dest}/${_qt_plugin_file}")
     else()
         message(FATAL_ERROR "QT plugin ${_qt_plugin_name} not found")
     endif()
 endmacro()
 
 
-find_package(${SEGMENT_PUZZLER_QT_PACKAGE}Gui REQUIRED COMPONENTS QCocoaIntegrationPlugin)
+find_package(${SEGMENT_PUZZLER_QT_PACKAGE}Gui REQUIRED
+        COMPONENTS QCocoaIntegrationPlugin QTiffPlugin)
 install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QCocoaIntegrationPlugin" QT_PLUGINS ${prefix})
+install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QTiffPlugin" QT_PLUGINS ${prefix})
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/qt.conf"
-        "[Paths]\nPlugins = ${_qt_plugin_dir}\n")
+        "[Paths]\nPlugins = PlugIns\n")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/qt.conf"
         DESTINATION "${INSTALL_CMAKE_DIR}")
 

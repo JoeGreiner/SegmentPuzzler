@@ -8,6 +8,7 @@
 #include <itkImage.h>
 #include <itkImageFileReader.h>
 #include <itkImageFileWriter.h>
+#include <itkImageIOBase.h>
 #include "src/utils/AppLogger.h"
 
 //#include "H5Cpp.h"
@@ -18,6 +19,15 @@
 #include <fstream>
 
 
+struct ImageFileInfo {
+    unsigned int dimension = 0;
+    itk::ImageIOBase::IOComponentType componentType =
+        itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE;
+    itk::IOPixelEnum pixelType = itk::IOPixelEnum::UNKNOWNPIXELTYPE;
+    unsigned int componentCount = 0;
+};
+
+ImageFileInfo getImageFileInfo(const QString &fileName);
 
 void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut,
                                    itk::ImageIOBase::IOComponentType &dataTypeOut);

@@ -425,23 +425,32 @@ std::vector<std::vector<float>> readFeaturesFromFile(const std::string &fileName
 
 void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut,
                                                   itk::ImageIOBase::IOComponentType &dataTypeOut) {
-    const itk::ImageIOBase::Pointer imageIO = readImageInformation(fileName);
+    const ImageFileInfo imageInfo = getImageFileInfo(fileName);
 
-    dataTypeOut = imageIO->GetComponentType();
-    dimensionOut = imageIO->GetNumberOfDimensions();
+    dataTypeOut = imageInfo.componentType;
+    dimensionOut = imageInfo.dimension;
+}
+
+ImageFileInfo getImageFileInfo(const QString &fileName) {
+    const itk::ImageIOBase::Pointer imageIO = readImageInformation(fileName);
+    return {
+        imageIO->GetNumberOfDimensions(),
+        imageIO->GetComponentType(),
+        imageIO->GetPixelType(),
+        imageIO->GetNumberOfComponents()
+    };
 }
 
 void validateScalarImageFile(const QString &fileName) {
-    const itk::ImageIOBase::Pointer imageIO = readImageInformation(fileName);
-    const unsigned int dimension = imageIO->GetNumberOfDimensions();
+    const ImageFileInfo imageInfo = getImageFileInfo(fileName);
 
-    if (dimension != 2 && dimension != 3) {
+    if (imageInfo.dimension != 2 && imageInfo.dimension != 3) {
         throw std::logic_error(
             "Only 2D and 3D images are supported: " + fileName.toStdString());
     }
 
-    if (imageIO->GetPixelType() != itk::ImageIOBase::IOPixelType::SCALAR ||
-        imageIO->GetNumberOfComponents() != 1) {
+    if (imageInfo.pixelType != itk::IOPixelEnum::SCALAR ||
+        imageInfo.componentCount != 1) {
         throw std::logic_error(
             "Only scalar images are supported. Convert RGB/RGBA or other multi-component "
             "images to separate scalar channel files: " + fileName.toStdString());
