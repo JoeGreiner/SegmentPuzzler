@@ -1062,7 +1062,7 @@ void MainWindow::loadSegmentationSample() {
                                             mySignalControl->setIsActive(probabilityItem, false);
                                         }
                                         if (*imageIndex < mySignalControl->allSignalList.size()) {
-                                            mySignalControl->setSignalNormAndRefresh(*imageIndex, 0, 100);
+                                            mySignalControl->setSignalNormAndRefresh(*imageIndex, 0, 175);
                                         }
                                     });
                             });
