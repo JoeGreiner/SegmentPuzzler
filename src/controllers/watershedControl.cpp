@@ -2709,7 +2709,7 @@ bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponent
         unsigned int dimension;
         getDimensionAndDataTypeOfFile(fileName, dimension, dataTypeOut);
         SP_LOG_INFO("io", QStringLiteral("Detected watershed image dimension=%1 for %2").arg(dimension).arg(fileName));
-        if (dimension == 3) {
+        if (dimension == 2 || dimension == 3) {
             if (forceSegmentDataType) {
                 dataTypeOut = itk::ImageIOBase::IOComponentType::UINT;
             }
@@ -2799,7 +2799,7 @@ bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponent
 
 
         } else {
-            throw (std::logic_error("Image is not 3D!"));
+            throw std::logic_error("Only 2D and 3D images are supported.");
         }
     }
     return loadingWasSuccessful;

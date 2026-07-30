@@ -1156,8 +1156,8 @@ SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
     getDimensionAndDataTypeOfFile(fileName, dimension, loadedImage.dataType);
     SP_LOG_INFO("io", QStringLiteral("Detected image dimension=%1 for %2").arg(dimension).arg(fileName));
 
-    if (dimension != 3) {
-        throw std::logic_error("Image is not 3D!");
+    if (dimension != 2 && dimension != 3) {
+        throw std::logic_error("Only 2D and 3D images are supported.");
     }
 
     if (forceSegmentDataTypeUInt) {
@@ -2693,8 +2693,7 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
         MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
         SP_LOG_DEBUG("io", QStringLiteral("Updated default save dir from %1").arg(fileName));
 
-        bool forceOnly3D = false;
-        if ((dimension == 3) | !forceOnly3D) {
+        if (dimension == 2 || dimension == 3) {
             if (forceSegmentDataTypeUInt) {
                 dataTypeOut = forcedDataType;
             }
@@ -2783,7 +2782,7 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
 
 
         } else {
-            throw (std::logic_error("Image is not 3D!"));
+            throw std::logic_error("Only 2D and 3D images are supported.");
         }
 
         if (loadingWasSuccessful) {

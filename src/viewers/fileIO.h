@@ -22,11 +22,15 @@
 void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut,
                                    itk::ImageIOBase::IOComponentType &dataTypeOut);
 
+void validateScalarImageFile(const QString &fileName);
+
 template<typename dType>
 typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
     using ImageType = itk::Image<dType, 3>;
     using ReaderType = itk::ImageFileReader<ImageType>;
     SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
+
+    validateScalarImageFile(fileName);
 
     typename ReaderType::Pointer reader = ReaderType::New();
     reader->SetFileName(fileName.toStdString());

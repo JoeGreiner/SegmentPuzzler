@@ -44,6 +44,20 @@ int parseDatasetLabel(const std::string &line) {
     return label;
 }
 
+itk::ImageIOBase::Pointer readImageInformation(const QString &fileName) {
+    const std::string fileNameStd = fileName.toStdString();
+    itk::ImageIOBase::Pointer imageIO =
+        itk::ImageIOFactory::CreateImageIO(fileNameStd.c_str(), itk::ImageIOFactory::ReadMode);
+
+    if (imageIO == nullptr) {
+        throw std::logic_error("No ITK image reader is available for: " + fileNameStd);
+    }
+
+    imageIO->SetFileName(fileNameStd);
+    imageIO->ReadImageInformation();
+    return imageIO;
+}
+
 }
 
 
@@ -411,16 +425,25 @@ std::vector<std::vector<float>> readFeaturesFromFile(const std::string &fileName
 
 void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut,
                                                   itk::ImageIOBase::IOComponentType &dataTypeOut) {
-    const std::string fileNameStd = fileName.toStdString();
-
-    itk::ImageIOBase::Pointer imageIO =
-            itk::ImageIOFactory::CreateImageIO(
-                    fileNameStd.c_str(),
-                    itk::ImageIOFactory::ReadMode);
-
-    imageIO->SetFileName(fileNameStd);
-    imageIO->ReadImageInformation();
+    const itk::ImageIOBase::Pointer imageIO = readImageInformation(fileName);
 
     dataTypeOut = imageIO->GetComponentType();
     dimensionOut = imageIO->GetNumberOfDimensions();
+}
+
+void validateScalarImageFile(const QString &fileName) {
+    const itk::ImageIOBase::Pointer imageIO = readImageInformation(fileName);
+    const unsigned int dimension = imageIO->GetNumberOfDimensions();
+
+    if (dimension != 2 && dimension != 3) {
+        throw std::logic_error(
+            "Only 2D and 3D images are supported: " + fileName.toStdString());
+    }
+
+    if (imageIO->GetPixelType() != itk::ImageIOBase::IOPixelType::SCALAR ||
+        imageIO->GetNumberOfComponents() != 1) {
+        throw std::logic_error(
+            "Only scalar images are supported. Convert RGB/RGBA or other multi-component "
+            "images to separate scalar channel files: " + fileName.toStdString());
+    }
 }
