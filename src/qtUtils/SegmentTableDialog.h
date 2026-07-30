@@ -3,6 +3,7 @@
 
 #include <QDialog>
 #include <QFutureWatcher>
+#include <QString>
 #include <memory>
 #include <vector>
 #include "src/segment_handling/graphBase.h"
@@ -11,6 +12,8 @@
 #include "src/viewers/itkSignalBase.h"
 
 class QCheckBox;
+class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QProgressDialog;
@@ -41,6 +44,9 @@ public:
         bool physicalSize      = false;
         bool pixelsOnBorder    = false;
         int borderDistancePx   = 0;
+        bool overridePixelSize = false;
+        double pixelSize       = 1.0;
+        QString physicalUnit   = QStringLiteral("nm");
         bool perimeterOnBorder = false;
         bool centroid          = true;   // always computed; flag controls column visibility only
         bool bbox              = false;
@@ -141,8 +147,13 @@ private:
     void applyColumnColoring();
     void navigateTo(int x, int y, int z);
     void setAllChecked(bool checked);
+    void applyFlagsToUi(const FeatureFlags &flags);
+    void loadSettings();
+    void saveSettings(const FeatureFlags &flags) const;
+    void resetSettingsToDefaults();
+    void updateCalibrationControls();
     void updateResultsActionState();
-    void updateColumnHeaders(bool is2D, int borderDistancePx);
+    void updateColumnHeaders(const FeatureFlags &flags, bool is2D);
     void updateColumnVisibility(const FeatureFlags &flags, bool is2D);
     std::vector<std::pair<dataType::SegmentIdType, quint32>> collectSelectedLabelsFor3D() const;
 
@@ -151,12 +162,17 @@ private:
     OrthoViewer *orthoViewer;
     dataType::SegmentsImageType::Pointer currentTableSegmentation;
     itkSignalBase *currentTableSegmentationSignal = nullptr;
+    FeatureFlags currentResultFlags;
+    bool currentResultIs2D = false;
     QStackedWidget *stack = nullptr;
 
     // ---- Setup page ----
     QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr, *cbPhysicalSize = nullptr;
     QCheckBox *cbPixelsOnBorder = nullptr, *cbPerimeterOnBorder = nullptr;
     QSpinBox *borderDistanceSpinBox = nullptr;
+    QCheckBox *overridePixelSizeCheckBox = nullptr;
+    QDoubleSpinBox *pixelSizeSpinBox = nullptr;
+    QComboBox *physicalUnitComboBox = nullptr;
     QCheckBox *cbCentroid = nullptr, *cbBBox = nullptr;
     QCheckBox *cbElongation = nullptr, *cbFlatness = nullptr, *cbRoundness = nullptr;
     QCheckBox *cbEquivSphRadius = nullptr, *cbEquivSphPerimeter = nullptr;

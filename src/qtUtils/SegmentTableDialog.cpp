@@ -1,12 +1,16 @@
 #include "SegmentTableDialog.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 
 #include <QCheckBox>
+#include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFrame>
 #include <QGridLayout>
@@ -16,11 +20,14 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
 #include <QProgressDialog>
 #include <QScrollArea>
+#include <QSettings>
+#include <QSizePolicy>
 #include <QSortFilterProxyModel>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -30,6 +37,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
 
+#include <itkChangeInformationImageFilter.h>
 #include <itkContinuousIndex.h>
 #include <itkExtractImageFilter.h>
 #include <itkLabelImageToShapeLabelMapFilter.h>
@@ -42,6 +50,32 @@
 // ---- helpers ----------------------------------------------------------------
 
 namespace {
+
+constexpr char kSettingsGroup[] = "SegmentFeatureTable";
+using FeatureBoolMember = bool SegmentTableDialog::FeatureFlags::*;
+const std::array<std::pair<const char *, FeatureBoolMember>, 17> kFeatureBoolSettings{{
+    {"volume", &SegmentTableDialog::FeatureFlags::volume},
+    {"isIsolated", &SegmentTableDialog::FeatureFlags::isIsolated},
+    {"physicalSize", &SegmentTableDialog::FeatureFlags::physicalSize},
+    {"pixelsOnBorder", &SegmentTableDialog::FeatureFlags::pixelsOnBorder},
+    {"overridePixelSize", &SegmentTableDialog::FeatureFlags::overridePixelSize},
+    {"perimeterOnBorder", &SegmentTableDialog::FeatureFlags::perimeterOnBorder},
+    {"centroid", &SegmentTableDialog::FeatureFlags::centroid},
+    {"bbox", &SegmentTableDialog::FeatureFlags::bbox},
+    {"elongation", &SegmentTableDialog::FeatureFlags::elongation},
+    {"flatness", &SegmentTableDialog::FeatureFlags::flatness},
+    {"roundness", &SegmentTableDialog::FeatureFlags::roundness},
+    {"equivSphRadius", &SegmentTableDialog::FeatureFlags::equivSphRadius},
+    {"equivSphPerimeter", &SegmentTableDialog::FeatureFlags::equivSphPerimeter},
+    {"equivEllipsoid", &SegmentTableDialog::FeatureFlags::equivEllipsoid},
+    {"principalMoments", &SegmentTableDialog::FeatureFlags::principalMoments},
+    {"perimeter", &SegmentTableDialog::FeatureFlags::perimeter},
+    {"orientedBBox", &SegmentTableDialog::FeatureFlags::orientedBBox},
+}};
+
+QString physicalUnitLabel(const QString &unitId) {
+    return unitId == QStringLiteral("um") ? QStringLiteral("µm") : unitId;
+}
 
 // t=0 → green, t=0.5 → yellow, t=1 → red (HSV hue 120°→0°)
 QColor colorForNormalizedValue(double t) {
@@ -340,6 +374,7 @@ SegmentTableDialog::SegmentTableDialog(std::shared_ptr<GraphBase> graphBaseIn,
     stack = new QStackedWidget(this);
     stack->addWidget(createSetupPage());
     stack->addWidget(createResultsPage());
+    loadSettings();
     stack->setCurrentIndex(0);
 
     auto *mainLayout = new QVBoxLayout(this);
@@ -382,6 +417,58 @@ QWidget *SegmentTableDialog::createSetupPage() {
         gridOut = grid;
         return gb;
     };
+
+    // --- Physical calibration ---
+    {
+        QGridLayout *grid = nullptr;
+        auto *gb = makeGroup("2D Physical Calibration", grid);
+        overridePixelSizeCheckBox = new QCheckBox("Override image spacing");
+        pixelSizeSpinBox = new QDoubleSpinBox();
+        pixelSizeSpinBox->setRange(0.000000001, 1'000'000'000.0);
+        pixelSizeSpinBox->setDecimals(9);
+        pixelSizeSpinBox->setSingleStep(0.1);
+        pixelSizeSpinBox->setValue(1.0);
+        pixelSizeSpinBox->setKeyboardTracking(false);
+        physicalUnitComboBox = new QComboBox();
+        physicalUnitComboBox->addItem("nm", QStringLiteral("nm"));
+        physicalUnitComboBox->addItem(QStringLiteral("µm"), QStringLiteral("um"));
+        physicalUnitComboBox->addItem("mm", QStringLiteral("mm"));
+        physicalUnitComboBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        physicalUnitComboBox->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        physicalUnitComboBox->setMinimumWidth(72);
+        physicalUnitComboBox->setMaxVisibleItems(3);
+        physicalUnitComboBox->setStyleSheet(
+            "QComboBox { combobox-popup: 0; }"
+            "QComboBox QAbstractItemView { padding: 0px; margin: 0px; outline: 0; }"
+            "QComboBox QAbstractItemView::item { margin: 0px; padding: 2px 6px; min-height: 0px; }");
+        auto *unitView = new QListView(physicalUnitComboBox);
+        unitView->setUniformItemSizes(true);
+        unitView->setSpacing(0);
+        unitView->setMinimumWidth(72);
+        physicalUnitComboBox->setView(unitView);
+
+        auto *valueWidget = new QWidget(gb);
+        auto *valueLayout = new QHBoxLayout(valueWidget);
+        valueLayout->setContentsMargins(0, 0, 0, 0);
+        valueLayout->addWidget(pixelSizeSpinBox, 1);
+        valueLayout->addWidget(physicalUnitComboBox);
+
+        const QString calibrationToolTip =
+            "Overrides X/Y spacing only for this 2D feature calculation. "
+            "The loaded segmentation is not modified.";
+        overridePixelSizeCheckBox->setToolTip(calibrationToolTip);
+        pixelSizeSpinBox->setToolTip(calibrationToolTip);
+        physicalUnitComboBox->setToolTip(calibrationToolTip);
+
+        grid->addWidget(overridePixelSizeCheckBox, 0, 0, 1, 2);
+        grid->addWidget(new QLabel("Physical pixel size:"), 1, 0);
+        grid->addWidget(valueWidget, 1, 1);
+        vContent->addWidget(gb);
+
+        connect(overridePixelSizeCheckBox, &QCheckBox::toggled,
+                this, &SegmentTableDialog::updateCalibrationControls);
+        updateCalibrationControls();
+    }
 
     // --- Basic Measurements ---
     {
@@ -461,15 +548,19 @@ QWidget *SegmentTableDialog::createSetupPage() {
     computeButton->setDefault(true);
     auto *selectAllButton  = new QPushButton("Select All");
     auto *selectNoneButton = new QPushButton("Select None");
+    auto *resetDefaultsButton = new QPushButton("Reset Defaults");
     auto *btnRow = new QHBoxLayout();
     btnRow->addWidget(selectAllButton);
     btnRow->addWidget(selectNoneButton);
+    btnRow->addWidget(resetDefaultsButton);
     btnRow->addStretch();
     btnRow->addWidget(computeButton);
     outer->addLayout(btnRow);
 
     connect(selectAllButton,  &QPushButton::clicked, this, [this]{ setAllChecked(true);  });
     connect(selectNoneButton, &QPushButton::clicked, this, [this]{ setAllChecked(false); });
+    connect(resetDefaultsButton, &QPushButton::clicked,
+            this, &SegmentTableDialog::resetSettingsToDefaults);
     connect(computeButton, &QPushButton::clicked,
             this, &SegmentTableDialog::onComputeClicked);
 
@@ -581,6 +672,9 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     f.physicalSize      = cbPhysicalSize->isChecked();
     f.pixelsOnBorder    = cbPixelsOnBorder->isChecked();
     f.borderDistancePx  = borderDistanceSpinBox->value();
+    f.overridePixelSize = overridePixelSizeCheckBox->isChecked();
+    f.pixelSize         = pixelSizeSpinBox->value();
+    f.physicalUnit      = physicalUnitComboBox->currentData().toString();
     f.perimeterOnBorder = cbPerimeterOnBorder->isChecked();
     f.centroid          = cbCentroid->isChecked();
     f.bbox              = cbBBox->isChecked();
@@ -594,6 +688,80 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     f.perimeter         = cbPerimeter->isChecked();
     f.orientedBBox      = cbOrientedBBox->isChecked();
     return f;
+}
+
+void SegmentTableDialog::applyFlagsToUi(const FeatureFlags &flags) {
+    cbVolume->setChecked(flags.volume);
+    cbIsIsolated->setChecked(flags.isIsolated);
+    cbPhysicalSize->setChecked(flags.physicalSize);
+    cbPixelsOnBorder->setChecked(flags.pixelsOnBorder);
+    borderDistanceSpinBox->setValue(flags.borderDistancePx);
+    overridePixelSizeCheckBox->setChecked(flags.overridePixelSize);
+    pixelSizeSpinBox->setValue(flags.pixelSize);
+    const int unitIndex = physicalUnitComboBox->findData(flags.physicalUnit);
+    physicalUnitComboBox->setCurrentIndex(unitIndex >= 0 ? unitIndex : 0);
+    cbPerimeterOnBorder->setChecked(flags.perimeterOnBorder);
+    cbCentroid->setChecked(flags.centroid);
+    cbBBox->setChecked(flags.bbox);
+    cbElongation->setChecked(flags.elongation);
+    cbFlatness->setChecked(flags.flatness);
+    cbRoundness->setChecked(flags.roundness);
+    cbEquivSphRadius->setChecked(flags.equivSphRadius);
+    cbEquivSphPerimeter->setChecked(flags.equivSphPerimeter);
+    cbEquivEllipsoid->setChecked(flags.equivEllipsoid);
+    cbPrincipalMoments->setChecked(flags.principalMoments);
+    cbPerimeter->setChecked(flags.perimeter);
+    cbOrientedBBox->setChecked(flags.orientedBBox);
+    updateCalibrationControls();
+}
+
+void SegmentTableDialog::loadSettings() {
+    FeatureFlags flags;
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    for (const auto &[key, member] : kFeatureBoolSettings) {
+        flags.*member = settings.value(key, flags.*member).toBool();
+    }
+    flags.borderDistancePx =
+        settings.value(QStringLiteral("borderDistancePx"), flags.borderDistancePx).toInt();
+    flags.pixelSize = settings.value(QStringLiteral("pixelSize"), flags.pixelSize).toDouble();
+    flags.physicalUnit =
+        settings.value(QStringLiteral("physicalUnit"), flags.physicalUnit).toString();
+    settings.endGroup();
+
+    if (!std::isfinite(flags.pixelSize) || flags.pixelSize <= 0.0) {
+        flags.pixelSize = FeatureFlags{}.pixelSize;
+    }
+    applyFlagsToUi(flags);
+}
+
+void SegmentTableDialog::saveSettings(const FeatureFlags &flags) const {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    for (const auto &[key, member] : kFeatureBoolSettings) {
+        settings.setValue(key, flags.*member);
+    }
+    settings.setValue(QStringLiteral("borderDistancePx"), flags.borderDistancePx);
+    settings.setValue(QStringLiteral("pixelSize"), flags.pixelSize);
+    settings.setValue(QStringLiteral("physicalUnit"), flags.physicalUnit);
+    settings.endGroup();
+}
+
+void SegmentTableDialog::resetSettingsToDefaults() {
+    QSettings settings;
+    settings.remove(kSettingsGroup);
+    applyFlagsToUi(FeatureFlags{});
+}
+
+void SegmentTableDialog::updateCalibrationControls() {
+    const bool enabled = overridePixelSizeCheckBox != nullptr
+                         && overridePixelSizeCheckBox->isChecked();
+    if (pixelSizeSpinBox != nullptr) {
+        pixelSizeSpinBox->setEnabled(enabled);
+    }
+    if (physicalUnitComboBox != nullptr) {
+        physicalUnitComboBox->setEnabled(enabled);
+    }
 }
 
 void SegmentTableDialog::setQuickComputeMode() {
@@ -636,7 +804,8 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
         QStringLiteral("Segment table featureFlags volume=%1 isIsolated=%2 centroid=%3 elongation=%4 "
                        "flatness=%5 roundness=%6 bbox=%7 physicalSize=%8 pixelsOnBorder=%9 "
                        "borderDistancePx=%10 perimeterOnBorder=%11 equivSphRadius=%12 equivSphPerimeter=%13 "
-                       "equivEllipsoid=%14 principalMoments=%15 perimeter=%16 orientedBBox=%17")
+                       "equivEllipsoid=%14 principalMoments=%15 perimeter=%16 orientedBBox=%17 "
+                       "overridePixelSize=%18 pixelSize=%19 physicalUnit=%20")
             .arg(flags.volume)
             .arg(flags.isIsolated)
             .arg(flags.centroid)
@@ -653,7 +822,10 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
             .arg(flags.equivEllipsoid)
             .arg(flags.principalMoments)
             .arg(flags.perimeter)
-            .arg(flags.orientedBBox));
+            .arg(flags.orientedBBox)
+            .arg(flags.overridePixelSize)
+            .arg(flags.pixelSize)
+            .arg(flags.physicalUnit));
 
     // Switch to results page immediately so the user sees the computing state.
     computeButton->setEnabled(false);
@@ -670,6 +842,7 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
 }
 
 void SegmentTableDialog::onComputeClicked() {
+    saveSettings(collectFlags());
     startCompute();
 }
 
@@ -851,7 +1024,18 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
         extract->SetInput(segImage);
         extract->SetExtractionRegion(extractionRegion);
         extract->SetDirectionCollapseToSubmatrix();
-        result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), flags);
+        if (flags.overridePixelSize && std::isfinite(flags.pixelSize) && flags.pixelSize > 0.0) {
+            using ChangeInformationFilter = itk::ChangeInformationImageFilter<Image2D>;
+            auto changeInformation = ChangeInformationFilter::New();
+            Image2D::SpacingType spacing;
+            spacing.Fill(flags.pixelSize);
+            changeInformation->SetInput(extract->GetOutput());
+            changeInformation->SetOutputSpacing(spacing);
+            changeInformation->ChangeSpacingOn();
+            result.rows = computeShapeFeatureRows<Image2D>(changeInformation->GetOutput(), flags);
+        } else {
+            result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), flags);
+        }
 
         const int singletonZ = static_cast<int>(region.GetIndex()[2]);
         for (SegmentRow &row : result.rows) {
@@ -882,10 +1066,15 @@ void SegmentTableDialog::onComputeFinished() {
     computeButton->setEnabled(true);
     recomputeButton->setEnabled(true);
     exportCsvButton->setEnabled(!result.rows.empty());
-    statusLabel->setText(
-        QString("%1 labels | Computed in %2 s")
-            .arg(result.rows.size())
-            .arg(result.elapsedSeconds, 0, 'f', 2));
+    QString status = QString("%1 labels | Computed in %2 s")
+                         .arg(result.rows.size())
+                         .arg(result.elapsedSeconds, 0, 'f', 2);
+    if (result.is2D && result.flags.overridePixelSize) {
+        status += QStringLiteral(" | Calibration: %1 %2/px")
+                      .arg(result.flags.pixelSize, 0, 'g', 10)
+                      .arg(physicalUnitLabel(result.flags.physicalUnit));
+    }
+    statusLabel->setText(status);
     SP_LOG_INFO(
         "segmentation",
         QStringLiteral("Segment table computeFinished currentTableSegmentation=%1 "
@@ -943,7 +1132,9 @@ void SegmentTableDialog::onView3DPreparationFinished() {
 // ---- table population -------------------------------------------------------
 
 void SegmentTableDialog::populateTable(const ComputeResult &result) {
-    updateColumnHeaders(result.is2D, result.flags.borderDistancePx);
+    currentResultFlags = result.flags;
+    currentResultIs2D = result.is2D;
+    updateColumnHeaders(result.flags, result.is2D);
     model->removeRows(0, model->rowCount());
     model->setRowCount(static_cast<int>(result.rows.size()));
 
@@ -1036,25 +1227,62 @@ void SegmentTableDialog::applyColumnColoring() {
 
 // ---- column visibility ------------------------------------------------------
 
-void SegmentTableDialog::updateColumnHeaders(bool is2D, int borderDistancePx) {
+void SegmentTableDialog::updateColumnHeaders(const FeatureFlags &flags, bool is2D) {
+    const bool calibrated = is2D && flags.overridePixelSize;
+    const QString unit = physicalUnitLabel(flags.physicalUnit);
+    const auto withUnit = [calibrated, &unit](const QString &name, int power = 1) {
+        if (!calibrated) {
+            return name;
+        }
+        const QString suffix = power == 1 ? unit : unit + QStringLiteral("²");
+        return QStringLiteral("%1 (%2)").arg(name, suffix);
+    };
+
     model->setHeaderData(SegmentTableDialog::COL_VOLUME, Qt::Horizontal,
-                         is2D ? "Area (px)" : "Volume");
+                         is2D ? QStringLiteral("# Pixels") : QStringLiteral("# Voxels"));
     model->setHeaderData(SegmentTableDialog::COL_PHYSICAL_SIZE, Qt::Horizontal,
-                         is2D ? "Physical Area" : "Physical Size");
+                         is2D ? withUnit("Physical Area", 2) : "Physical Size");
     model->setHeaderData(
         SegmentTableDialog::COL_PIXELS_ON_BORDER,
         Qt::Horizontal,
-        borderDistancePx == 0
+        flags.borderDistancePx == 0
             ? QStringLiteral("Px on Border")
-            : QStringLiteral("Px ≤ %1 px from Border").arg(borderDistancePx));
+            : QStringLiteral("Px ≤ %1 px from Border").arg(flags.borderDistancePx));
+    model->setHeaderData(SegmentTableDialog::COL_PERIMETER_ON_BORDER, Qt::Horizontal,
+                         is2D ? withUnit("Perim on Border") : QStringLiteral("Perim on Border"));
+    model->setHeaderData(SegmentTableDialog::COL_CX, Qt::Horizontal,
+                         is2D ? QStringLiteral("CX (px)") : QStringLiteral("CX"));
+    model->setHeaderData(SegmentTableDialog::COL_CY, Qt::Horizontal,
+                         is2D ? QStringLiteral("CY (px)") : QStringLiteral("CY"));
+    model->setHeaderData(SegmentTableDialog::COL_CZ, Qt::Horizontal, QStringLiteral("CZ"));
+    model->setHeaderData(SegmentTableDialog::COL_BBOX_W, Qt::Horizontal,
+                         is2D ? QStringLiteral("BBox W (px)") : QStringLiteral("BBox W"));
+    model->setHeaderData(SegmentTableDialog::COL_BBOX_H, Qt::Horizontal,
+                         is2D ? QStringLiteral("BBox H (px)") : QStringLiteral("BBox H"));
+    model->setHeaderData(SegmentTableDialog::COL_BBOX_D, Qt::Horizontal, QStringLiteral("BBox D"));
     model->setHeaderData(SegmentTableDialog::COL_EQUIV_SPH_RADIUS, Qt::Horizontal,
-                         is2D ? "Equiv Circle R" : "Equiv Sph R");
+                         is2D ? withUnit("Equiv Circle R") : "Equiv Sph R");
     model->setHeaderData(SegmentTableDialog::COL_EQUIV_SPH_PERIM, Qt::Horizontal,
-                         is2D ? "Equiv Circle Perim" : "Equiv Sph Perim");
+                         is2D ? withUnit("Equiv Circle Perim") : "Equiv Sph Perim");
+    model->setHeaderData(SegmentTableDialog::COL_EQUIV_ELLIP_D0, Qt::Horizontal,
+                         is2D ? withUnit("Ellip D0") : "Ellip D0");
+    model->setHeaderData(SegmentTableDialog::COL_EQUIV_ELLIP_D1, Qt::Horizontal,
+                         is2D ? withUnit("Ellip D1") : "Ellip D1");
+    model->setHeaderData(SegmentTableDialog::COL_EQUIV_ELLIP_D2, Qt::Horizontal, "Ellip D2");
+    model->setHeaderData(SegmentTableDialog::COL_PRINCIPAL_MOM0, Qt::Horizontal,
+                         is2D ? withUnit("PrinMom 0", 2) : "PrinMom 0");
+    model->setHeaderData(SegmentTableDialog::COL_PRINCIPAL_MOM1, Qt::Horizontal,
+                         is2D ? withUnit("PrinMom 1", 2) : "PrinMom 1");
+    model->setHeaderData(SegmentTableDialog::COL_PRINCIPAL_MOM2, Qt::Horizontal, "PrinMom 2");
     model->setHeaderData(SegmentTableDialog::COL_PERIMETER, Qt::Horizontal,
-                         is2D ? "Perimeter" : "Surface Area");
+                         is2D ? withUnit("Perimeter") : "Surface Area");
+    model->setHeaderData(SegmentTableDialog::COL_OBBOX_W, Qt::Horizontal,
+                         is2D ? withUnit("OBBox W") : "OBBox W");
+    model->setHeaderData(SegmentTableDialog::COL_OBBOX_H, Qt::Horizontal,
+                         is2D ? withUnit("OBBox H") : "OBBox H");
+    model->setHeaderData(SegmentTableDialog::COL_OBBOX_D, Qt::Horizontal, "OBBox D");
     model->setHeaderData(SegmentTableDialog::COL_OBBOX_VOLUME, Qt::Horizontal,
-                         is2D ? "OBBox Area" : "OBBox Vol");
+                         is2D ? withUnit("OBBox Area", 2) : "OBBox Vol");
 }
 
 void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f, bool is2D) {
@@ -1169,6 +1397,35 @@ void SegmentTableDialog::onExportCsvClicked() {
                                        Qt::DisplayRole).toString();
         }
         out << rowData.join(",") << "\n";
+    }
+
+    if (currentTableSegmentation != nullptr) {
+        const auto size = currentTableSegmentation->GetLargestPossibleRegion().GetSize();
+        const auto spacing = currentTableSegmentation->GetSpacing();
+        const int dimensions = currentResultIs2D ? 2 : 3;
+        QStringList sizeParts;
+        QStringList spacingParts;
+        quint64 elementCount = 1;
+        for (int dimension = 0; dimension < dimensions; ++dimension) {
+            sizeParts << QString::number(size[dimension]);
+            spacingParts << QString::number(spacing[dimension], 'g', 15);
+            elementCount *= static_cast<quint64>(size[dimension]);
+        }
+
+        out << "\n# metadata\n";
+        if (currentResultIs2D && currentResultFlags.overridePixelSize) {
+            out << "# pixel_size="
+                << QString::number(currentResultFlags.pixelSize, 'g', 15) << " "
+                << physicalUnitLabel(currentResultFlags.physicalUnit) << "/px\n";
+        } else {
+            out << (currentResultIs2D ? "# pixel_spacing=" : "# voxel_spacing=")
+                << spacingParts.join("x") << " image-units/"
+                << (currentResultIs2D ? "px\n" : "voxel\n");
+        }
+        out << "# image_dimensions=" << sizeParts.join("x") << " "
+            << (currentResultIs2D ? "pixels\n" : "voxels\n");
+        out << (currentResultIs2D ? "# total_image_pixels=" : "# total_image_voxels=")
+            << elementCount << "\n";
     }
 
     statusLabel->setText("Exported to " + path);
