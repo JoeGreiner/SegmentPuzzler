@@ -251,6 +251,7 @@ if __name__ == "__main__":
 A big thank you to the developers and contributors to:
 
 * [ITK](https://github.com/InsightSoftwareConsortium/ITK): Used extensively for image handling and processing.
+* [VTK](https://vtk.org/): Used for 3D visualization and surface extraction.
 * [CMake](https://cmake.org/): Used to build the application.
 * [Qt](https://www.qt.io/): Used for the GUI, licensed under the [LGPLv3](https://www.gnu.org/licenses/lgpl-3.0.en.html).
     - A copy of the license is included in the `licenses` directory.
