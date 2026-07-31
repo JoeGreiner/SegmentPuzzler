@@ -2721,7 +2721,7 @@ void WatershedControl::rebuildGraphFromSegmentsImage(dataType::SegmentsImageType
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     SP_LOG_INFO("watershed", QStringLiteral("Building graph from watershed segments volume"));
-    graphBase->pGraph->constructFromVolume(segmentsImage);
+    graphBase->pGraph->constructFromVolume(segmentsImage, workerThreadCount);
     SP_LOG_INFO("watershed",
                 QStringLiteral("Finished building graph from watershed segments volume in %1 ms")
                     .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));

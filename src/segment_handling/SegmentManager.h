@@ -77,7 +77,7 @@ public:
 
     void computeSurfaceAndOneSidedEdgesOnInitialNode(InitialNode *pInitialNode);
 
-    void computeSurfaceAndOneSidedEdgesOnAllInitialNodes();
+    void computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadCount);
 
     void recomputeVoxelListAndOneSidedEdgesIfShrinked(std::vector<SegmentIdType> vecOfConnectedInitialNodeIds);
 

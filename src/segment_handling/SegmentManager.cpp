@@ -5,7 +5,15 @@
 #include <QStringList>
 #include "src/utils/AppLogger.h"
 #include <src/utils/utils.h>
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <exception>
+#include <mutex>
 #include <queue>
+#ifdef USE_OMP
+#include <omp.h>
+#endif
 
 namespace {
 
@@ -511,7 +519,7 @@ void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(
 
 void SegmentManager::computeSurfaceAndOneSidedEdgesOnInitialNode(InitialNode *pInitialNode) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges for one initial node"));
-    pInitialNode->parallelComputeOnesidedSurfaceAndEdges(pIgnoredSegmentLabels);
+    pInitialNode->computeOnesidedSurfaceAndEdges(*pIgnoredSegmentLabels);
 
     for (auto &edge : pInitialNode->onesidedEdges) {
         addOneSidedInitialEdge(edge.second, {pInitialNode->getLabel(), edge.first});
@@ -551,24 +559,123 @@ void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInit
 }
 
 
-void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes() {
+void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadCount) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges on all initial nodes"));
 
-
-    std::vector<SegmentIdType> initialNodeIds = utils::getKeyVecOfSharedPtrMap<SegmentIdType>(*pInitialNodes);
-//#pragma omp parallel for schedule(dynamic) default(none) shared(initialNodeIds)
-    for (long long i = 0; i < static_cast<long long>(initialNodeIds.size()); ++i) {
-        (*pInitialNodes)[initialNodeIds[i]]->parallelComputeOnesidedSurfaceAndEdges(pIgnoredSegmentLabels);
-    }
-//#pragma omp barrier
-
-
-    for (auto &initialNode : *pInitialNodes) {
-        for (auto &edge : initialNode.second->onesidedEdges) {
-            addOneSidedInitialEdge(edge.second, {initialNode.first, edge.first});
+    std::vector<std::shared_ptr<InitialNode>> initialNodes;
+    initialNodes.reserve(pInitialNodes->size());
+    long double totalRoiVoxels = 0.0L;
+    long double maxNodeRoiVoxels = 0.0L;
+    for (const auto &entry : *pInitialNodes) {
+        initialNodes.push_back(entry.second);
+        const Roi &roi = entry.second->roi;
+        if (roi.minX >= 0 && roi.minY >= 0 && roi.minZ >= 0 &&
+            roi.minX <= roi.maxX && roi.minY <= roi.maxY && roi.minZ <= roi.maxZ) {
+            const long double roiVoxels =
+                static_cast<long double>(static_cast<std::int64_t>(roi.maxX) - roi.minX + 1) *
+                static_cast<long double>(static_cast<std::int64_t>(roi.maxY) - roi.minY + 1) *
+                static_cast<long double>(static_cast<std::int64_t>(roi.maxZ) - roi.minZ + 1);
+            totalRoiVoxels += roiVoxels;
+            maxNodeRoiVoxels = std::max(maxNodeRoiVoxels, roiVoxels);
         }
     }
 
+    const std::vector<SegmentIdType> ignoredSegmentLabels = *pIgnoredSegmentLabels;
+    const int requestedThreadCount = std::max(1, threadCount);
+    const bool edgeFeaturesEnabled = !FeatureList::edgeFeaturesList.empty();
+#ifdef USE_OMP
+    const bool runParallel = requestedThreadCount > 1 && initialNodes.size() > 1 && !edgeFeaturesEnabled;
+#else
+    const bool runParallel = false;
+#endif
+
+    if (requestedThreadCount > 1 && edgeFeaturesEnabled) {
+        logSegmentManager(
+            LogLevel::Warning,
+            __func__,
+            QStringLiteral("Using the serial one-sided edge scan because edge feature prototypes are active"));
+    }
+#ifndef USE_OMP
+    if (requestedThreadCount > 1) {
+        logSegmentManagerDebugIf(
+            verbose,
+            __func__,
+            QStringLiteral("Using the serial one-sided edge scan because OpenMP is disabled"));
+    }
+#endif
+
+    QElapsedTimer scanTimer;
+    scanTimer.start();
+    int usedThreadCount = 1;
+
+#ifdef USE_OMP
+    if (runParallel) {
+        std::exception_ptr firstException;
+        std::mutex exceptionMutex;
+        std::atomic<bool> stopRequested{false};
+
+#pragma omp parallel num_threads(requestedThreadCount) default(none) \
+    shared(initialNodes, ignoredSegmentLabels, firstException, exceptionMutex, stopRequested, usedThreadCount)
+        {
+#pragma omp single
+            usedThreadCount = omp_get_num_threads();
+
+#pragma omp for schedule(dynamic, 1)
+            for (long long i = 0; i < static_cast<long long>(initialNodes.size()); ++i) {
+                if (stopRequested.load(std::memory_order_relaxed)) {
+                    continue;
+                }
+                try {
+                    initialNodes[static_cast<std::size_t>(i)]->computeOnesidedSurfaceAndEdges(
+                        ignoredSegmentLabels);
+                } catch (...) {
+                    std::lock_guard<std::mutex> guard(exceptionMutex);
+                    if (!firstException) {
+                        firstException = std::current_exception();
+                    }
+                    stopRequested.store(true, std::memory_order_relaxed);
+                }
+            }
+        }
+
+        if (firstException) {
+            std::rethrow_exception(firstException);
+        }
+    } else
+#endif
+    {
+        for (const auto &initialNode : initialNodes) {
+            initialNode->computeOnesidedSurfaceAndEdges(ignoredSegmentLabels);
+        }
+    }
+    const double scanMs = static_cast<double>(scanTimer.nsecsElapsed()) / 1000000.0;
+
+    QElapsedTimer registrationTimer;
+    registrationTimer.start();
+    std::size_t oneSidedEdgeCount = 0;
+    for (auto &initialNode : *pInitialNodes) {
+        for (auto &edge : initialNode.second->onesidedEdges) {
+            addOneSidedInitialEdge(edge.second, {initialNode.first, edge.first});
+            ++oneSidedEdgeCount;
+        }
+    }
+    const double registrationMs = static_cast<double>(registrationTimer.nsecsElapsed()) / 1000000.0;
+
+    logSegmentManagerDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral(
+            "One-sided edge scan nodes=%1 requested_threads=%2 used_threads=%3 parallel=%4 "
+            "roi_voxels=%5 max_node_roi=%6 edges=%7 scan_ms=%8 registration_ms=%9")
+            .arg(static_cast<qulonglong>(initialNodes.size()))
+            .arg(requestedThreadCount)
+            .arg(usedThreadCount)
+            .arg(runParallel ? QStringLiteral("yes") : QStringLiteral("no"))
+            .arg(static_cast<double>(totalRoiVoxels), 0, 'g', 12)
+            .arg(static_cast<double>(maxNodeRoiVoxels), 0, 'g', 12)
+            .arg(static_cast<qulonglong>(oneSidedEdgeCount))
+            .arg(scanMs, 0, 'f', 3)
+            .arg(registrationMs, 0, 'f', 3));
 }
 
 

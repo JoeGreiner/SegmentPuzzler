@@ -46,7 +46,7 @@ public:
     // get a vector of the ids of the connected nodes. useful to iterate over elements if normal iterators get invalided
     std::vector<SegmentIdType> getVectorOfConnectedNodeIds() override;
 
-    void parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdType> *ignoredSegmentIds);
+    void computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType> &ignoredSegmentIds);
 
     void addTwoSidedEdge(std::shared_ptr<InitialEdge> const &edgeToAdd);
 
@@ -66,7 +66,8 @@ public:
 
 
 private:
-    bool isIgnoredId(SegmentIdType idToCheck, std::vector<SegmentIdType> *ignoredSegmentIds);
+    bool isIgnoredId(SegmentIdType idToCheck,
+                     const std::vector<SegmentIdType> &ignoredSegmentIds) const;
 
     // this indicates the numId of the corresponding segment in the working copy
     SegmentIdType currentWorkingNodeLabel;

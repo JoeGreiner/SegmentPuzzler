@@ -6,6 +6,8 @@
 #include <itkConstShapedNeighborhoodIterator.h>
 #include <itkBinaryThresholdImageFunction.h>
 #include <itkFloodFilledImageFunctionConditionalIterator.h>
+#include <cstdint>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace {
@@ -98,23 +100,18 @@ std::vector<std::vector<Voxel> *> InitialNode::getVoxelPointerArray() {
 
 
 bool InitialNode::isIgnoredId(SegmentIdType idToCheck,
-                              std::vector<SegmentIdType> *ignoredSegmentIds) {
-    // check if idToCFheck is in pIgnoredSegmentsLabel
-    return (std::find(ignoredSegmentIds->begin(), ignoredSegmentIds->end(), idToCheck) != ignoredSegmentIds->end());
+                              const std::vector<SegmentIdType> &ignoredSegmentIds) const {
+    // Check if idToCheck is in the ignored segment labels.
+    return std::find(ignoredSegmentIds.begin(), ignoredSegmentIds.end(), idToCheck) != ignoredSegmentIds.end();
 }
 
-inline bool isValidIndex(int index, size_t dimX, size_t dimY, size_t dimZ) {
-    return index >= 0 && index < (dimX * dimY * dimZ);
-}
-
-void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdType> *ignoredSegmentIds) {
+void InitialNode::computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType> &ignoredSegmentIds) {
     onesidedEdges.clear();
     onesidedSurfaceVoxels.clear();
-    unsigned int estimateNumberEdges = 30;
-    unsigned int estimateNumberSurfaceVoxels = 9.0 * pow(voxels.size(), 2.0/3.0);
-//    double estimatedSurfaceVoxels = k * pow(V, 2.0 / 3.0);
-    onesidedEdges.reserve(estimateNumberEdges);
-    onesidedSurfaceVoxels.reserve(estimateNumberSurfaceVoxels);
+
+    if (voxels.empty()) {
+        return;
+    }
 
     // Dimensions and strides
     const auto dimX = pSegments->GetLargestPossibleRegion().GetSize()[0];
@@ -123,13 +120,21 @@ void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdTy
     const auto sliceStride = dimX * dimY;
     const auto rowStride = dimX;
 
+    if (roi.minX < 0 || roi.minY < 0 || roi.minZ < 0 ||
+        roi.minX > roi.maxX || roi.minY > roi.maxY || roi.minZ > roi.maxZ ||
+        static_cast<std::size_t>(roi.maxX) >= dimX ||
+        static_cast<std::size_t>(roi.maxY) >= dimY ||
+        static_cast<std::size_t>(roi.maxZ) >= dimZ) {
+        throw std::logic_error("Initial node ROI is outside the segment image.");
+    }
+
+    constexpr unsigned int estimateNumberEdges = 30;
+    const unsigned int estimateNumberSurfaceVoxels = 9.0 * pow(voxels.size(), 2.0 / 3.0);
+    onesidedEdges.reserve(estimateNumberEdges);
+    onesidedSurfaceVoxels.reserve(estimateNumberSurfaceVoxels);
+
     // Image buffer
     const SegmentIdType* buffer = pSegments->GetBufferPointer();
-
-    // Neighbor offsets
-    const int offsets[6] = {
-            1, -1, static_cast<int>(dimX), static_cast<int>(-dimX), static_cast<int>(sliceStride), static_cast<int>(-sliceStride)
-    };
 
     static const int offsetsCoords[6][3] = {
             {  1,  0,  0 },
@@ -140,7 +145,6 @@ void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdTy
             {  0,  0, -1 }
     };
 
-    Voxel voxelToAdd;
     std::unordered_set<SegmentIdType> addedToLabelAlready;
     addedToLabelAlready.reserve(6); // 6 neighbors
 
@@ -156,35 +160,36 @@ void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdTy
                     bool isSurface = false;
 
                     for (unsigned int i = 0; i < 6; ++i) {
-                        long nx = static_cast<long>(x) + offsetsCoords[i][0];
-                        long ny = static_cast<long>(y) + offsetsCoords[i][1];
-                        long nz = static_cast<long>(z) + offsetsCoords[i][2];
+                        const std::int64_t nx = static_cast<std::int64_t>(x) + offsetsCoords[i][0];
+                        const std::int64_t ny = static_cast<std::int64_t>(y) + offsetsCoords[i][1];
+                        const std::int64_t nz = static_cast<std::int64_t>(z) + offsetsCoords[i][2];
 
-                        if (nx < 0 || nx >= dimX || ny < 0 || ny >= dimY || nz < 0 || nz >= dimZ) {
+                        if (nx < 0 || static_cast<std::size_t>(nx) >= dimX ||
+                            ny < 0 || static_cast<std::size_t>(ny) >= dimY ||
+                            nz < 0 || static_cast<std::size_t>(nz) >= dimZ) {
                             continue;
                         }
 
-                        size_t neighborIndex = centerIndex + offsets[i];
-//                        could skip this check, but better safe than sorry
-                        if (isValidIndex(neighborIndex, dimX, dimY, dimZ)) {
-                            SegmentIdType newLabel = buffer[neighborIndex];
-                            if (newLabel != label && !isIgnoredId(newLabel, ignoredSegmentIds)) {
-                                isSurface = true;
-                                if (addedToLabelAlready.find(newLabel) == addedToLabelAlready.end()) {
-                                    {
-                                        if (!onesidedEdges.count(newLabel)) {
-                                            onesidedEdges[newLabel] = std::make_shared<InitialEdge>(newLabel, label);
-                                        }
-                                        voxelToAdd = Voxel(x, y, z);
-                                        onesidedEdges[newLabel]->addVoxel(voxelToAdd);
-                                    }
-                                    addedToLabelAlready.insert(newLabel);
+                        const std::size_t neighborIndex =
+                            static_cast<std::size_t>(nx) +
+                            static_cast<std::size_t>(ny) * rowStride +
+                            static_cast<std::size_t>(nz) * sliceStride;
+                        SegmentIdType newLabel = buffer[neighborIndex];
+                        if (newLabel != label && !isIgnoredId(newLabel, ignoredSegmentIds)) {
+                            isSurface = true;
+                            if (addedToLabelAlready.find(newLabel) == addedToLabelAlready.end()) {
+                                if (!onesidedEdges.count(newLabel)) {
+                                    onesidedEdges[newLabel] = std::make_shared<InitialEdge>(newLabel, label);
                                 }
+                                Voxel voxelToAdd(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
+                                onesidedEdges[newLabel]->addVoxel(voxelToAdd);
+                                addedToLabelAlready.insert(newLabel);
                             }
                         }
                     }
                     if (isSurface) {
-                        onesidedSurfaceVoxels.emplace_back(x, y, z);
+                        onesidedSurfaceVoxels.emplace_back(
+                            static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
                     }
                 }
             }
@@ -201,7 +206,7 @@ void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdTy
 // given the roi of the initial edge, this computes onesided edges and onesided surface voxels
 // needs ignoredids to be set for e.g. background (input argument)
 // old function with ITK functions, faster version above
-//void InitialNode::parallelComputeOnesidedSurfaceAndEdges(std::vector<SegmentIdType> *ignoredSegmentIds) {
+//void InitialNode::computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType> &ignoredSegmentIds) {
 //    // clear old values
 //    onesidedEdges.clear();
 //    onesidedSurfaceVoxels.clear();

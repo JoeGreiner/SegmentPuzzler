@@ -500,14 +500,15 @@ StrokeMask rasterizeStrokeMask(const Projected3DCutRequest &request,
 } // namespace
 
 
-void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
+void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
+                                int edgeScanThreadCount) {
     initializeEdgeVolumeAndEdgeStatus();
     updateBackgroundIdFromVolume(pImage);
     pIgnoredSegmentLabels->push_back(backgroundId);
 
     nextFreeId = getNextFreeId(pImage);
     constructInitialNodes(pImage);
-    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes();
+    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes(edgeScanThreadCount);
     segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
     graphBase->pEdgesInitialSegmentsITKSignal->computeExtrema();
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
@@ -1554,7 +1555,7 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
 
     initializeEdgeVolumeAndEdgeStatus();
     constructInitialNodes(graphBase->pWorkingSegmentsImage);
-    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes();
+    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes(1);
     segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
 
     std::unordered_set<SegmentIdType> assignedInitialLabels;
