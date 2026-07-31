@@ -1421,7 +1421,11 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
             break;
     }
 
-    refreshInputSelectors();
+    // Presentation-only signals do not affect workflow selectors. In particular,
+    // registering the agglomeration preview must not schedule another preview.
+    if (stage != SignalStage::None) {
+        refreshInputSelectors();
+    }
     updateStepEnablement();
     return idx;
 }
@@ -1817,7 +1821,7 @@ void WatershedControl::setupAgglomertionWidget() {
     configureInputCombo(agglomertionThresholdMaskComboBox);
     agglomertionBiasSlider->setRange(0, 100);
     agglomertionBiasSpinBox->setRange(0, 100);
-    agglomertionBiasSlider->setValue(50);
+    agglomertionBiasSlider->setValue(9);
 
     auto *biasWidget = new QWidget(this);
     auto *biasLayout = new QVBoxLayout(biasWidget);

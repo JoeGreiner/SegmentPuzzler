@@ -702,8 +702,12 @@ void compactLabels(AgglomerationContext<IsActiveVoxel> &ctx) {
 
     SegmentIdType maxLabel = 0;
     std::size_t activeNonZeroCount = 0;
-    for (size_t index = 0; index < ctx.voxelCount; ++index) {
-        if (!ctx.isActiveVoxel(index)) {
+    const int threadCount = effectiveThreadCount(ctx.options);
+#ifdef USE_OMP
+#pragma omp parallel for num_threads(threadCount) reduction(max:maxLabel) reduction(+:activeNonZeroCount)
+#endif
+    for (long long index = 0; index < static_cast<long long>(ctx.voxelCount); ++index) {
+        if (!ctx.isActiveVoxel(static_cast<size_t>(index))) {
             continue;
         }
         const SegmentIdType label = ctx.labelBuffer[index];
@@ -734,26 +738,9 @@ void compactLabels(AgglomerationContext<IsActiveVoxel> &ctx) {
                 cluster.parent = static_cast<int>(ctx.clusters.size());
                 ctx.clusters.push_back(std::move(cluster));
             }
-        }
-
-        const int threadCount = effectiveThreadCount(ctx.options);
-#ifdef USE_OMP
-#pragma omp parallel for num_threads(threadCount)
-#endif
-        for (long long index = 0; index < static_cast<long long>(ctx.voxelCount); ++index) {
-            if (!ctx.isActiveVoxel(static_cast<size_t>(index))) {
-                continue;
-            }
-            const SegmentIdType label = ctx.labelBuffer[index];
-            if (label == 0) {
-                continue;
-            }
             const int denseId = labelToDense[label];
             ctx.denseLabels[index] = denseId;
-#ifdef USE_OMP
-#pragma omp atomic
-#endif
-            ctx.clusters[denseId].voxelCount += 1;
+            ++ctx.clusters[denseId].voxelCount;
         }
     } else {
         std::unordered_map<SegmentIdType, int> oldToDense;
