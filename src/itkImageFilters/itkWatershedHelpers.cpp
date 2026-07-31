@@ -1,6 +1,7 @@
 #include "itkWatershedHelpers.h"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -48,6 +49,11 @@ void emitWatershedLog(const std::string &message) {
     }
     std::cout << message << std::endl;
 }
+
+double elapsedMilliseconds(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
 SegmentsImageType::Pointer cloneSegmentsImageMetadata(SegmentsImageType::Pointer source) {
     auto image = SegmentsImageType::New();
     image->SetRegions(source->GetLargestPossibleRegion());
@@ -71,10 +77,15 @@ void relabelInjectedBoundaryComponents(
     itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
     SegmentsImageType::Pointer &displayLabels,
     BoundaryConsistentPartitionResult::SplitComponentMap &splitComponentIds) {
+    const auto totalStarted = std::chrono::steady_clock::now();
+    auto stageStarted = totalStarted;
     displayLabels = copySegmentsImage(labels);
     splitComponentIds.clear();
+    emitWatershedLog("Boundary relabel: label copy_ms=" + std::to_string(elapsedMilliseconds(stageStarted)));
 
     if (thresholdedBoundaries.IsNull()) {
+        emitWatershedLog("Boundary relabel: skipped component split (no boundary image), total_ms=" +
+                         std::to_string(elapsedMilliseconds(totalStarted)));
         return;
     }
 
@@ -87,12 +98,16 @@ void relabelInjectedBoundaryComponents(
 
     SegmentIdType *displayBuffer = displayLabels->GetBufferPointer();
     const unsigned char *thresholdBuffer = thresholdedBoundaries->GetBufferPointer();
+    stageStarted = std::chrono::steady_clock::now();
     for (std::ptrdiff_t index = 0; index < total; ++index) {
         if (thresholdBuffer[index] != 0) {
             displayBuffer[index] = 0;
         }
     }
+    emitWatershedLog("Boundary relabel: inject boundaries_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)));
 
+    stageStarted = std::chrono::steady_clock::now();
     auto componentImage = cloneSegmentsImageMetadata(labels);
     componentImage->FillBuffer(0);
     SegmentIdType *componentBuffer = componentImage->GetBufferPointer();
@@ -100,6 +115,8 @@ void relabelInjectedBoundaryComponents(
     std::vector<unsigned char> visited(static_cast<std::size_t>(total), 0);
     std::vector<std::ptrdiff_t> queue;
     queue.reserve(1024);
+    emitWatershedLog("Boundary relabel: workspace allocation_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)));
 
     std::vector<SegmentIdType> componentOriginalLabels(1, 0);
     std::unordered_map<SegmentIdType, std::vector<SegmentIdType>> componentsByOriginalLabel;
@@ -109,6 +126,7 @@ void relabelInjectedBoundaryComponents(
     const std::array<std::ptrdiff_t, 6> offsetY{{0, 0, 1, -1, 0, 0}};
     const std::array<std::ptrdiff_t, 6> offsetZ{{0, 0, 0, 0, 1, -1}};
 
+    stageStarted = std::chrono::steady_clock::now();
     for (std::ptrdiff_t seed = 0; seed < total; ++seed) {
         if (visited[seed] != 0 || displayBuffer[seed] == 0) {
             visited[seed] = 1;
@@ -151,7 +169,11 @@ void relabelInjectedBoundaryComponents(
         componentsByOriginalLabel[originalLabel].push_back(nextComponentId);
         ++nextComponentId;
     }
+    emitWatershedLog("Boundary relabel: component search_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)) +
+                     ", components=" + std::to_string(nextComponentId - 1));
 
+    stageStarted = std::chrono::steady_clock::now();
     SegmentIdType nextFreshLabel = getMaximumOfUIntImage(labels) + 1;
     std::vector<SegmentIdType> componentToFinalLabel(nextComponentId, 0);
     for (auto &entry : componentsByOriginalLabel) {
@@ -170,11 +192,18 @@ void relabelInjectedBoundaryComponents(
             newLabels.push_back(newLabel);
         }
     }
+    emitWatershedLog("Boundary relabel: component mapping_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)) +
+                     ", split_labels=" + std::to_string(splitComponentIds.size()));
 
+    stageStarted = std::chrono::steady_clock::now();
     for (std::ptrdiff_t index = 0; index < total; ++index) {
         const SegmentIdType componentId = componentBuffer[index];
         displayBuffer[index] = componentId == 0 ? 0 : componentToFinalLabel[componentId];
     }
+    emitWatershedLog("Boundary relabel: writeback_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)) +
+                     ", total_ms=" + std::to_string(elapsedMilliseconds(totalStarted)));
 }
 
 SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
@@ -185,11 +214,18 @@ SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
     const WatershedRunOptions &repairOptions,
     DistanceMapAlgorithm distanceMapAlgorithm,
     int threadCount) {
+    const auto totalStarted = std::chrono::steady_clock::now();
+    auto stageStarted = totalStarted;
     auto canonicalLabels = copySegmentsImage(labels);
+    emitWatershedLog("Boundary repair: canonical copy_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)));
     if (thresholdedBoundaries.IsNull() || splitComponentIds.empty()) {
+        emitWatershedLog("Boundary repair: skipped watershed, total_ms=" +
+                         std::to_string(elapsedMilliseconds(totalStarted)));
         return canonicalLabels;
     }
 
+    stageStarted = std::chrono::steady_clock::now();
     auto seeds = cloneSegmentsImageMetadata(labels);
     SegmentIdType *seedBuffer = seeds->GetBufferPointer();
     const SegmentIdType *labelBuffer = labels->GetBufferPointer();
@@ -214,17 +250,31 @@ SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
         }
         seedBuffer[index] = displayBuffer[index];
     }
+    emitWatershedLog("Boundary repair: seed preparation_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)) +
+                     ", split_labels=" + std::to_string(splitComponentIds.size()));
 
+    stageStarted = std::chrono::steady_clock::now();
     itk::Image<float, 3>::Pointer distanceMap;
     auto thresholdCopy = thresholdedBoundaries;
     generateDistanceMap(thresholdCopy, distanceMap, 0, distanceMapAlgorithm, threadCount);
+    emitWatershedLog("Boundary repair: distance map_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)));
 
+    stageStarted = std::chrono::steady_clock::now();
     itk::Image<float, 3>::Pointer invertedDistanceMap;
     invertDistanceMap(distanceMap, invertedDistanceMap);
+    emitWatershedLog("Boundary repair: inversion_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)));
 
+    stageStarted = std::chrono::steady_clock::now();
     WatershedRunOptions options = repairOptions;
     options.showWatershedLines = false;
+    options.threadCount = threadCount;
     runWatershed(invertedDistanceMap, seeds, canonicalLabels, options);
+    emitWatershedLog("Boundary repair: watershed_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)) +
+                     ", total_ms=" + std::to_string(elapsedMilliseconds(totalStarted)));
     return canonicalLabels;
 }
 
@@ -431,6 +481,48 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
                 invertedDistanceMap, seeds, fastOptions, fastMetrics);
             return;
         }
+        case WatershedAlgorithm::BlockwiseFastMarkerWatershed: {
+            segment_puzzler::BlockwiseFastMarkerWatershedOptions blockwiseOptions;
+            blockwiseOptions.threadCount = options.threadCount;
+            blockwiseOptions.blockEdge = options.blockEdge;
+            blockwiseOptions.halo = options.blockHalo;
+            blockwiseOptions.watershed.fullyConnected = options.fullyConnected;
+            blockwiseOptions.watershed.markWatershedLine = options.showWatershedLines;
+            segment_puzzler::BlockwiseFastMarkerWatershedMetrics blockwiseMetrics;
+            watershedOut = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
+                invertedDistanceMap, seeds, blockwiseOptions, &blockwiseMetrics);
+            emitWatershedLog(
+                "Blockwise watershed: edge=" + std::to_string(blockwiseMetrics.blockEdge) +
+                ", halo=" + std::to_string(blockwiseOptions.halo) +
+                ", threads=" + std::to_string(blockwiseOptions.threadCount) +
+                ", red_blocks=" + std::to_string(blockwiseMetrics.redBlockCount) +
+                ", black_blocks=" + std::to_string(blockwiseMetrics.blackBlockCount) +
+                ", deferred=" + std::to_string(blockwiseMetrics.deferredBlockCount) +
+                ", passes=" + std::to_string(blockwiseMetrics.passCount) +
+                ", red_ms=" + std::to_string(blockwiseMetrics.redMs) +
+                ", black_ms=" + std::to_string(blockwiseMetrics.blackMs) +
+                ", elapsed_ms=" + std::to_string(blockwiseMetrics.elapsedMs) +
+                ", global_fallback=" + (blockwiseMetrics.usedGlobalFallback ? "yes" : "no"));
+            for (std::size_t passIndex = 0; passIndex < blockwiseMetrics.passes.size(); ++passIndex) {
+                const auto &pass = blockwiseMetrics.passes[passIndex];
+                const double effectiveParallelism = pass.elapsedMs > 0.0
+                    ? pass.summedBlockMs / pass.elapsedMs
+                    : 0.0;
+                emitWatershedLog(
+                    "Blockwise pass " + std::to_string(passIndex + 1) +
+                    ": color=" + (pass.red ? "red" : "black") +
+                    ", scheduled=" + std::to_string(pass.scheduledBlockCount) +
+                    ", completed=" + std::to_string(pass.completedBlockCount) +
+                    ", deferred=" + std::to_string(pass.deferredBlockCount) +
+                    ", threads_used=" + std::to_string(pass.threadsUsed) +
+                    ", snapshot_ms=" + std::to_string(pass.snapshotMs) +
+                    ", wall_ms=" + std::to_string(pass.elapsedMs) +
+                    ", summed_block_ms=" + std::to_string(pass.summedBlockMs) +
+                    ", max_block_ms=" + std::to_string(pass.maxBlockMs) +
+                    ", effective_parallelism=" + std::to_string(effectiveParallelism));
+            }
+            return;
+        }
     }
 }
 
@@ -463,13 +555,18 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
     bool repairCanonicalLabels,
     DistanceMapAlgorithm distanceMapAlgorithm,
     int threadCount) {
+    const auto totalStarted = std::chrono::steady_clock::now();
     BoundaryConsistentPartitionResult result;
     if (labels.IsNull()) {
         return result;
     }
 
+    auto stageStarted = std::chrono::steady_clock::now();
     relabelInjectedBoundaryComponents(labels, thresholdedBoundaries, result.displayLabels, result.splitComponentIds);
+    emitWatershedLog("Boundary-consistent partition: relabel_ms=" +
+                     std::to_string(elapsedMilliseconds(stageStarted)));
     if (repairCanonicalLabels) {
+        stageStarted = std::chrono::steady_clock::now();
         result.canonicalLabels = repairSplitLabelsWithWatershed(
             labels,
             thresholdedBoundaries,
@@ -478,9 +575,13 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
             repairOptions,
             distanceMapAlgorithm,
             threadCount);
+        emitWatershedLog("Boundary-consistent partition: repair_ms=" +
+                         std::to_string(elapsedMilliseconds(stageStarted)));
     } else {
         result.canonicalLabels = labels;
     }
+    emitWatershedLog("Boundary-consistent partition: total_ms=" +
+                     std::to_string(elapsedMilliseconds(totalStarted)));
     return result;
 }
 

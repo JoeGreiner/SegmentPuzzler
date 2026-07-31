@@ -46,6 +46,8 @@
 namespace {
 
 constexpr size_t kInvalidSignalIndex = static_cast<size_t>(-1);
+constexpr int kDefaultWatershedBlockEdge = 256;
+constexpr int kDefaultWatershedBlockHalo = 16;
 
 int defaultWatershedThreadCount() {
     const int idealThreadCount = QThread::idealThreadCount();
@@ -80,6 +82,8 @@ WatershedRunOptions makeBoundaryRepairOptions(WatershedAlgorithm algorithm) {
     options.algorithm = algorithm;
     options.showWatershedLines = false;
     options.fullyConnected = false;
+    options.blockEdge = kDefaultWatershedBlockEdge;
+    options.blockHalo = kDefaultWatershedBlockHalo;
     return options;
 }
 
@@ -266,6 +270,8 @@ QString watershedOutputToken(WatershedAlgorithm algorithm) {
             return QStringLiteral("Morph");
         case WatershedAlgorithm::FastMarkerWatershed:
             return QStringLiteral("Fast");
+        case WatershedAlgorithm::BlockwiseFastMarkerWatershed:
+            return QStringLiteral("BlockFast");
     }
     return QStringLiteral("Morph");
 }
@@ -1131,6 +1137,9 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
             auto distanceMapInputCopy = distanceMapInput;
             WatershedRunOptions watershedOptions;
             watershedOptions.algorithm = watershedAlgorithm;
+            watershedOptions.threadCount = threadCount;
+            watershedOptions.blockEdge = kDefaultWatershedBlockEdge;
+            watershedOptions.blockHalo = kDefaultWatershedBlockHalo;
             itk::Image<float, 3>::Pointer invertedDistanceMap = itk::Image<float, 3>::New();
             qint64 stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
             invertDistanceMap(distanceMapInputCopy, invertedDistanceMap);
@@ -2033,7 +2042,10 @@ void WatershedControl::setupAlgorithmComboBoxes() {
     watershedAlgorithmComboBox->addItem(
         watershedAlgorithmLabel(WatershedAlgorithm::FastMarkerWatershed),
         static_cast<int>(WatershedAlgorithm::FastMarkerWatershed));
-    watershedAlgorithmComboBox->setCurrentIndex(1);
+    watershedAlgorithmComboBox->addItem(
+        watershedAlgorithmLabel(WatershedAlgorithm::BlockwiseFastMarkerWatershed),
+        static_cast<int>(WatershedAlgorithm::BlockwiseFastMarkerWatershed));
+    watershedAlgorithmComboBox->setCurrentIndex(2);
 
     configureAlgorithmCombo(agglomertionLinkageComboBox);
     agglomertionLinkageComboBox->addItem(
@@ -2472,6 +2484,8 @@ QString WatershedControl::watershedAlgorithmLabel(WatershedAlgorithm algorithm) 
             return "Morphological Watershed";
         case WatershedAlgorithm::FastMarkerWatershed:
             return "Fast Marker Watershed";
+        case WatershedAlgorithm::BlockwiseFastMarkerWatershed:
+            return "Blockwise Fast Marker Watershed";
     }
     return "Morphological Watershed";
 }

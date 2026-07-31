@@ -3,6 +3,7 @@
 
 #include "itkImage.h"
 #include "src/file_definitions/dataTypes.h"
+#include "src/utils/BlockwiseFastMarkerWatershed3D.h"
 #include "src/utils/DistanceMapSeedExtractors.h"
 #include "src/utils/FastMarkerWatershed3D.h"
 
@@ -18,13 +19,17 @@ enum class DistanceMapAlgorithm {
 
 enum class WatershedAlgorithm {
     MorphologicalWatershedFromMarkers,
-    FastMarkerWatershed
+    FastMarkerWatershed,
+    BlockwiseFastMarkerWatershed
 };
 
 struct WatershedRunOptions {
     WatershedAlgorithm algorithm = WatershedAlgorithm::MorphologicalWatershedFromMarkers;
     bool showWatershedLines = false;
     bool fullyConnected = false;
+    int threadCount = 1;
+    int blockEdge = 0;
+    int blockHalo = 16;
 };
 
 struct BoundaryConsistentPartitionResult {

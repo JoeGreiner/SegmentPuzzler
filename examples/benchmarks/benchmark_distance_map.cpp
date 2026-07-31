@@ -130,7 +130,8 @@ enum class BenchmarkMode {
 enum class WatershedAlgorithmSelection {
     All,
     Itk,
-    FastMarker
+    FastMarker,
+    BlockwiseFastMarker
 };
 
 enum class GeneratorKind {
@@ -201,6 +202,8 @@ struct RunMetrics {
     std::size_t inputBytes = 0;
     std::size_t outputBytes = 0;
     std::size_t scratchBytes = 0;
+    int watershedBlockEdge = 0;
+    bool watershedGlobalFallback = false;
 };
 
 struct BackendRunResult {
@@ -246,6 +249,8 @@ struct BenchmarkOptions {
     std::vector<int> threadCounts;
     int repetitions = 3;
     int warmups = 1;
+    int watershedBlockEdge = 0;
+    int watershedBlockHalo = 16;
     double profileMinSeconds = 0.0;
     std::uint32_t seed = 1337;
     std::optional<std::string> inputPath;
@@ -275,6 +280,8 @@ const char *watershedAlgorithmName(WatershedAlgorithmSelection selection) {
             return "itk";
         case WatershedAlgorithmSelection::FastMarker:
             return "fast-marker";
+        case WatershedAlgorithmSelection::BlockwiseFastMarker:
+            return "blockwise-fast-marker";
     }
     return "unknown";
 }
@@ -381,6 +388,9 @@ WatershedAlgorithmSelection parseWatershedAlgorithmSelection(const std::string &
     if (value == "fast-marker") {
         return WatershedAlgorithmSelection::FastMarker;
     }
+    if (value == "blockwise-fast-marker") {
+        return WatershedAlgorithmSelection::BlockwiseFastMarker;
+    }
     throw std::runtime_error("Unknown watershed algorithm selection: " + value);
 }
 
@@ -401,7 +411,9 @@ void printUsage() {
     std::cout << "benchmark_distance_map\n"
               << "  --mode {edt,seeds,watershed}\n"
               << "  --algorithm {all,maurer,fh}\n"
-              << "  --watershed-algorithm {all,itk,fast-marker}\n"
+              << "  --watershed-algorithm {all,itk,fast-marker,blockwise-fast-marker}\n"
+              << "  --watershed-block-edge N (0=auto)\n"
+              << "  --watershed-block-halo N\n"
               << "  --seed-extractor {local-maxima,h-convex,all}\n"
               << "  --generator {shells,packed-spheres,sparse-sites}\n"
               << "  --size XxYxZ\n"
@@ -440,6 +452,10 @@ BenchmarkOptions parseArguments(int argc, char **argv) {
             options.algorithmSelection = parseAlgorithmSelection(requireValue("--algorithm"));
         } else if (argument == "--watershed-algorithm") {
             options.watershedAlgorithmSelection = parseWatershedAlgorithmSelection(requireValue("--watershed-algorithm"));
+        } else if (argument == "--watershed-block-edge") {
+            options.watershedBlockEdge = std::max(0, std::stoi(requireValue("--watershed-block-edge")));
+        } else if (argument == "--watershed-block-halo") {
+            options.watershedBlockHalo = std::max(0, std::stoi(requireValue("--watershed-block-halo")));
         } else if (argument == "--seed-extractor") {
             options.seedExtractor = distance_map_benchmark::parseSeedExtractor(requireValue("--seed-extractor"));
         } else if (argument == "--generator") {
@@ -1010,6 +1026,8 @@ void accumulateRunMetrics(RunMetrics &target, const RunMetrics &source) {
     target.inputBytes = source.inputBytes;
     target.outputBytes = source.outputBytes;
     target.scratchBytes = source.scratchBytes;
+    target.watershedBlockEdge = source.watershedBlockEdge;
+    target.watershedGlobalFallback = target.watershedGlobalFallback || source.watershedGlobalFallback;
 }
 
 template <typename Runner>
@@ -1358,6 +1376,55 @@ BackendRunResult runFastMarkerWatershedOnce(const BenchmarkCase &benchmarkCase,
     return result;
 }
 
+BackendRunResult runBlockwiseFastMarkerWatershedOnce(const BenchmarkCase &benchmarkCase,
+                                                     int threadCount,
+                                                     SeedExtractorKind extractorKind,
+                                                     int blockEdge,
+                                                     int blockHalo) {
+    TRACE_EVENT("watershed", "run_blockwise_fast_marker_watershed",
+                "case", benchmarkCase.name.c_str(),
+                "threads", threadCount,
+                "seed_extractor", seedExtractorNameLiteral(extractorKind));
+    MemorySnapshot before = readProcessMemory();
+    WatershedInputs inputs = buildWatershedInputs(benchmarkCase, threadCount, extractorKind);
+
+    segment_puzzler::BlockwiseFastMarkerWatershedOptions options;
+    options.threadCount = threadCount;
+    options.blockEdge = blockEdge;
+    options.halo = blockHalo;
+    segment_puzzler::BlockwiseFastMarkerWatershedMetrics blockwiseMetrics;
+    const double watershedStart = wallTimeSeconds();
+    auto watershedImage = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
+        inputs.invertedDistanceMap, inputs.seeds, options, &blockwiseMetrics);
+    const double watershedEnd = wallTimeSeconds();
+    MemorySnapshot after = readProcessMemory();
+
+    BackendRunResult result;
+    result.distances = flattenLabelImage<DistanceImageType>(inputs.distanceMap);
+    result.seeds = flattenSeedImage(inputs.seeds);
+    result.watershedLabels = flattenWatershedImage(watershedImage);
+    result.metrics = inputs.metrics;
+    result.metrics.watershedMs = (watershedEnd - watershedStart) * 1000.0;
+    result.metrics.watershedInitMs = blockwiseMetrics.redMs;
+    result.metrics.watershedFloodMs = blockwiseMetrics.blackMs;
+    result.metrics.watershedBlockEdge = blockwiseMetrics.blockEdge;
+    result.metrics.watershedGlobalFallback = blockwiseMetrics.usedGlobalFallback;
+    result.metrics.elapsedMs =
+        result.metrics.distanceMapMs + result.metrics.seedExtractionMs + result.metrics.invertMs + result.metrics.watershedMs;
+    result.metrics.megaVoxelsPerSecond =
+        static_cast<double>(benchmarkCase.mask.size()) / std::max(1e-9, result.metrics.elapsedMs / 1000.0) / 1.0e6;
+    result.metrics.rssBeforeMB = before.currentMB;
+    result.metrics.rssAfterMB = after.currentMB;
+    result.metrics.peakRssMB = after.peakMB;
+    result.metrics.inputBytes = benchmarkCase.mask.size() * sizeof(BinaryVoxelType);
+    result.metrics.outputBytes =
+        result.distances.size() * sizeof(DistanceVoxelType) +
+        result.seeds.size() * sizeof(SeedLabelType) +
+        result.watershedLabels.size() * sizeof(SeedLabelType);
+    result.metrics.scratchBytes = benchmarkCase.mask.size() * sizeof(SeedLabelType);
+    return result;
+}
+
 BackendRunResult runMaurer(const BenchmarkCase &benchmarkCase, int threadCount, double profileMinSeconds) {
     return runWithProfileLoop(
         [&]() { return runMaurerOnce(benchmarkCase, threadCount); },
@@ -1406,13 +1473,29 @@ BackendRunResult runFastMarkerWatershed(const BenchmarkCase &benchmarkCase,
         profileMinSeconds);
 }
 
+BackendRunResult runBlockwiseFastMarkerWatershed(const BenchmarkCase &benchmarkCase,
+                                                 int threadCount,
+                                                 SeedExtractorKind extractorKind,
+                                                 double profileMinSeconds,
+                                                 int blockEdge,
+                                                 int blockHalo) {
+    return runWithProfileLoop(
+        [&]() {
+            return runBlockwiseFastMarkerWatershedOnce(
+                benchmarkCase, threadCount, extractorKind, blockEdge, blockHalo);
+        },
+        profileMinSeconds);
+}
+
 void warmupCase(const BenchmarkCase &benchmarkCase,
                 int threadCount,
                 AlgorithmSelection algorithm,
                 BenchmarkMode mode,
                 SeedExtractorKind seedExtractor,
                 WatershedAlgorithmSelection watershedAlgorithm,
-                int warmups) {
+                int warmups,
+                int blockEdge = 0,
+                int blockHalo = 16) {
     TRACE_EVENT("benchmark", "warmup_case",
                 "case", benchmarkCase.name.c_str(),
                 "threads", threadCount,
@@ -1425,6 +1508,9 @@ void warmupCase(const BenchmarkCase &benchmarkCase,
                 (void)runItkWatershedOnce(benchmarkCase, threadCount, seedExtractor);
             } else if (watershedAlgorithm == WatershedAlgorithmSelection::FastMarker) {
                 (void)runFastMarkerWatershedOnce(benchmarkCase, threadCount, seedExtractor);
+            } else if (watershedAlgorithm == WatershedAlgorithmSelection::BlockwiseFastMarker) {
+                (void)runBlockwiseFastMarkerWatershedOnce(
+                    benchmarkCase, threadCount, seedExtractor, blockEdge, blockHalo);
             }
         } else if (algorithm == AlgorithmSelection::Maurer) {
             (void)(mode == BenchmarkMode::Seeds
@@ -1442,7 +1528,7 @@ void writeCsv(const std::string &path, const std::vector<CsvRow> &rows) {
     std::ofstream csv(path);
     csv << "case_name,source_kind,algorithm,seed_extractor,dim_x,dim_y,dim_z,spacing_x,spacing_y,spacing_z,"
            "foreground_fraction,threads,repetition,loop_count,profile_min_seconds,elapsed_ms,distance_map_ms,seed_extraction_ms,invert_ms,watershed_ms,quantize_ms,watershed_init_ms,watershed_flood_ms,x_pass_ms,y_pass_ms,z_pass_ms,"
-           "mvox_per_s,input_bytes,output_bytes,scratch_bytes,rss_before_mb,rss_after_mb,"
+           "mvox_per_s,input_bytes,output_bytes,scratch_bytes,watershed_block_edge,watershed_global_fallback,rss_before_mb,rss_after_mb,"
            "peak_rss_mb,max_abs_error,mean_abs_error,rmse,mismatch_count,"
            "reference_seed_count,candidate_seed_count,reference_seed_voxels,candidate_seed_voxels,"
            "overlapping_seed_voxels,seed_voxel_iou,matched_seed_count,missed_reference_seeds,"
@@ -1480,6 +1566,8 @@ void writeCsv(const std::string &path, const std::vector<CsvRow> &rows) {
             << row.metrics.inputBytes << ','
             << row.metrics.outputBytes << ','
             << row.metrics.scratchBytes << ','
+            << row.metrics.watershedBlockEdge << ','
+            << (row.metrics.watershedGlobalFallback ? 1 : 0) << ','
             << row.metrics.rssBeforeMB << ','
             << row.metrics.rssAfterMB << ','
             << row.metrics.peakRssMB << ','
@@ -1523,6 +1611,10 @@ void printRowSummary(const CsvRow &row) {
     }
     if (row.metrics.invertMs > 0.0 || row.metrics.watershedMs > 0.0) {
         std::cout << " | invert/ws_ms=" << row.metrics.invertMs << "/" << row.metrics.watershedMs;
+    }
+    if (row.metrics.watershedBlockEdge > 0) {
+        std::cout << " | block_edge=" << row.metrics.watershedBlockEdge
+                  << " | global_fallback=" << (row.metrics.watershedGlobalFallback ? "yes" : "no");
     }
     if (row.metrics.quantizeMs > 0.0 || row.metrics.watershedInitMs > 0.0 || row.metrics.watershedFloodMs > 0.0) {
         std::cout << " | quant/init/flood_ms=" << row.metrics.quantizeMs << "/"
@@ -1647,6 +1739,33 @@ int main(int argc, char **argv) {
                                 row.caseName = benchmarkCase.name;
                                 row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
                                 row.algorithm = "fast-marker";
+                                row.seedExtractor = seedExtractorName;
+                                row.dims = benchmarkCase.dims;
+                                row.spacing = benchmarkCase.spacing;
+                                row.siteFraction = benchmarkCase.siteFraction;
+                                row.threads = threadCount;
+                                row.repetition = repetition;
+                                row.metrics = run.metrics;
+                                row.watershedMetrics = compareWatershedLabels(
+                                    itkReferenceRun.watershedLabels, run.watershedLabels);
+                                rows.push_back(row);
+                                printRowSummary(rows.back());
+                            }
+                        }
+
+                        if (options.watershedAlgorithmSelection == WatershedAlgorithmSelection::All ||
+                            options.watershedAlgorithmSelection == WatershedAlgorithmSelection::BlockwiseFastMarker) {
+                            warmupCase(benchmarkCase, threadCount, AlgorithmSelection::Maurer, options.mode,
+                                       seedExtractor, WatershedAlgorithmSelection::BlockwiseFastMarker, options.warmups,
+                                       options.watershedBlockEdge, options.watershedBlockHalo);
+                            for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
+                                BackendRunResult run = runBlockwiseFastMarkerWatershed(
+                                    benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds,
+                                    options.watershedBlockEdge, options.watershedBlockHalo);
+                                CsvRow row;
+                                row.caseName = benchmarkCase.name;
+                                row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
+                                row.algorithm = "blockwise-fast-marker";
                                 row.seedExtractor = seedExtractorName;
                                 row.dims = benchmarkCase.dims;
                                 row.spacing = benchmarkCase.spacing;

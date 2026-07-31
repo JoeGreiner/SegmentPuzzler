@@ -267,6 +267,7 @@ set(SRC_UTILS
         src/utils/PCA.cxx
         src/utils/systemStats.cpp
         src/utils/FastMarkerWatershed3D.cpp
+        src/utils/BlockwiseFastMarkerWatershed3D.cpp
         src/utils/DistanceMapFH3D.cpp
         src/utils/DistanceMapSeedExtractors.cpp
         src/utils/ConnectedComponentLabelSplitter.cpp
@@ -281,6 +282,7 @@ set(SRC_ITKIMAGEFILTERS
 set(SRC_WATERSHED_HELPER_DEPS
         src/itkImageFilters/itkWatershedHelpers.cpp
         src/utils/FastMarkerWatershed3D.cpp
+        src/utils/BlockwiseFastMarkerWatershed3D.cpp
         src/utils/DistanceMapFH3D.cpp
         src/utils/DistanceMapSeedExtractors.cpp
         )
@@ -401,6 +403,10 @@ if (BUILD_TESTING)
             examples/benchmarks/test_fast_marker_reference.cpp
             ${SRC_WATERSHED_HELPER_DEPS}
             src/utils/DistanceMapCliIO.cpp)
+    add_executable(test_BlockwiseFastMarker
+            examples/benchmarks/test_blockwise_fast_marker.cpp
+            src/utils/FastMarkerWatershed3D.cpp
+            src/utils/BlockwiseFastMarkerWatershed3D.cpp)
     target_link_libraries(profile_SliceViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(profile_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
@@ -410,6 +416,9 @@ if (BUILD_TESTING)
     target_link_libraries(test_ConnectedComponentSplit ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_WatershedPipeline ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_FastMarkerReference ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_CORE_LIBRARY} ${SEGMENT_PUZZLER_QT_PACKAGE}::Network)
+    target_include_directories(test_BlockwiseFastMarker PRIVATE ${CMAKE_SOURCE_DIR})
+    set_target_properties(test_BlockwiseFastMarker PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_BlockwiseFastMarker ${SEGMENT_PUZZLER_ITK_LIBRARIES})
     vtk_module_autoinit(TARGETS profile_SliceViewer MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS profile_Projected3DCut MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS test_Projected3DCut MODULES ${VTK_LIBRARIES})
@@ -428,6 +437,7 @@ if (BUILD_TESTING)
         target_compile_definitions(test_ConnectedComponentSplit PRIVATE USE_OMP)
         target_compile_definitions(test_WatershedPipeline PRIVATE USE_OMP)
         target_compile_definitions(test_FastMarkerReference PRIVATE USE_OMP)
+        target_compile_definitions(test_BlockwiseFastMarker PRIVATE USE_OMP)
         target_link_libraries(profile_SliceViewer OpenMP::OpenMP_CXX)
         target_link_libraries(profile_Projected3DCut OpenMP::OpenMP_CXX)
         target_link_libraries(test_Projected3DCut OpenMP::OpenMP_CXX)
@@ -437,6 +447,7 @@ if (BUILD_TESTING)
         target_link_libraries(test_ConnectedComponentSplit OpenMP::OpenMP_CXX)
         target_link_libraries(test_WatershedPipeline OpenMP::OpenMP_CXX)
         target_link_libraries(test_FastMarkerReference OpenMP::OpenMP_CXX)
+        target_link_libraries(test_BlockwiseFastMarker OpenMP::OpenMP_CXX)
     endif ()
 #    target_link_libraries(test_customwatershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
