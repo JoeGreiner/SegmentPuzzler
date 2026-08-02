@@ -10,6 +10,7 @@
 #include <QFileDialog>
 #include <QColorDialog>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <src/segment_handling/Graph.h>
 #include <src/viewers/OrthoViewer.h>
 #include "src/qtUtils/SignalLayerWidget.h"
@@ -40,8 +41,13 @@
 #include "src/utils/AppLogger.h"
 #include "src/utils/SignalNameUtils.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
+
+#ifdef USE_OMP
+#include <omp.h>
+#endif
 
 namespace {
 
@@ -89,10 +95,24 @@ WatershedRunOptions makeBoundaryRepairOptions(WatershedAlgorithm algorithm) {
 
 dataType::SegmentsImageType::Pointer projectClusterLabelsOntoReference(
     dataType::SegmentsImageType::Pointer referenceLabels,
-    dataType::SegmentsImageType::Pointer clusteredLabels) {
+    dataType::SegmentsImageType::Pointer clusteredLabels,
+    int threadCount) {
     if (referenceLabels.IsNull() || clusteredLabels.IsNull()) {
         return nullptr;
     }
+    if (referenceLabels->GetLargestPossibleRegion().GetSize() !=
+        clusteredLabels->GetLargestPossibleRegion().GetSize()) {
+        throw std::invalid_argument("Agglomeration cluster projection requires matching label shapes.");
+    }
+
+    int executionThreadCount = 1;
+#ifdef USE_OMP
+    executionThreadCount = std::min(std::max(1, threadCount), std::max(1, omp_get_max_threads()));
+#else
+    (void)threadCount;
+#endif
+    QElapsedTimer projectionTimer;
+    projectionTimer.start();
 
     auto projectedLabels = dataType::SegmentsImageType::New();
     projectedLabels->SetRegions(referenceLabels->GetLargestPossibleRegion());
@@ -106,37 +126,118 @@ dataType::SegmentsImageType::Pointer projectClusterLabelsOntoReference(
     const auto *clusteredBuffer = clusteredLabels->GetBufferPointer();
     auto *projectedBuffer = projectedLabels->GetBufferPointer();
 
-    std::unordered_map<dataType::SegmentIdType, dataType::SegmentIdType> labelToCluster;
-    labelToCluster.reserve(1024);
-    dataType::SegmentIdType nextFallbackLabel = 1;
-    for (size_t index = 0; index < voxelCount; ++index) {
-        nextFallbackLabel = std::max(nextFallbackLabel, static_cast<dataType::SegmentIdType>(clusteredBuffer[index] + 1));
-        const dataType::SegmentIdType referenceLabel = referenceBuffer[index];
-        const dataType::SegmentIdType clusterLabel = clusteredBuffer[index];
-        if (referenceLabel == 0 || clusterLabel == 0) {
-            continue;
-        }
+    dataType::SegmentIdType maximumReferenceLabel = 0;
+    dataType::SegmentIdType maximumClusterLabel = 0;
+#ifdef USE_OMP
+#pragma omp parallel for num_threads(executionThreadCount) \
+    reduction(max:maximumReferenceLabel) reduction(max:maximumClusterLabel)
+#endif
+    for (long long index = 0; index < static_cast<long long>(voxelCount); ++index) {
+        maximumReferenceLabel = std::max(maximumReferenceLabel, referenceBuffer[index]);
+        maximumClusterLabel = std::max(maximumClusterLabel, clusteredBuffer[index]);
+    }
 
-        const auto insertResult = labelToCluster.emplace(referenceLabel, clusterLabel);
-        if (!insertResult.second && insertResult.first->second != clusterLabel) {
-            throw std::logic_error("Agglomeration cluster projection produced conflicting labels for one reference segment.");
+    const size_t labelCount = static_cast<size_t>(maximumReferenceLabel) + 1;
+    if (labelCount > std::numeric_limits<size_t>::max() / static_cast<size_t>(executionThreadCount)) {
+        throw std::overflow_error("Agglomeration cluster projection table is too large.");
+    }
+    const size_t threadTableSize = labelCount * static_cast<size_t>(executionThreadCount);
+    std::vector<dataType::SegmentIdType> threadLabelToCluster(threadTableSize, 0);
+    std::vector<size_t> threadFirstReferenceIndex(threadTableSize, voxelCount);
+    std::atomic<bool> conflictingMapping{false};
+
+#ifdef USE_OMP
+#pragma omp parallel num_threads(executionThreadCount)
+#endif
+    {
+#ifdef USE_OMP
+        const size_t tableOffset = static_cast<size_t>(omp_get_thread_num()) * labelCount;
+#pragma omp for schedule(static)
+#else
+        const size_t tableOffset = 0;
+#endif
+        for (long long index = 0; index < static_cast<long long>(voxelCount); ++index) {
+            const dataType::SegmentIdType referenceLabel = referenceBuffer[index];
+            const dataType::SegmentIdType clusterLabel = clusteredBuffer[index];
+            if (referenceLabel == 0) {
+                continue;
+            }
+
+            const size_t tableIndex = tableOffset + referenceLabel;
+            threadFirstReferenceIndex[tableIndex] = std::min(
+                threadFirstReferenceIndex[tableIndex], static_cast<size_t>(index));
+            if (clusterLabel == 0) {
+                continue;
+            }
+
+            dataType::SegmentIdType &mappedCluster = threadLabelToCluster[tableIndex];
+            if (mappedCluster != 0 && mappedCluster != clusterLabel) {
+                conflictingMapping.store(true, std::memory_order_relaxed);
+            } else {
+                mappedCluster = clusterLabel;
+            }
         }
     }
 
-    for (size_t index = 0; index < voxelCount; ++index) {
-        const dataType::SegmentIdType referenceLabel = referenceBuffer[index];
-        if (referenceLabel == 0) {
-            projectedBuffer[index] = 0;
-            continue;
+    std::vector<dataType::SegmentIdType> labelToCluster(labelCount, 0);
+    std::vector<size_t> firstReferenceIndex(labelCount, voxelCount);
+#ifdef USE_OMP
+#pragma omp parallel for num_threads(executionThreadCount)
+#endif
+    for (long long label = 1; label <= static_cast<long long>(maximumReferenceLabel); ++label) {
+        const size_t labelIndex = static_cast<size_t>(label);
+        for (int thread = 0; thread < executionThreadCount; ++thread) {
+            const size_t tableIndex = static_cast<size_t>(thread) * labelCount + labelIndex;
+            firstReferenceIndex[labelIndex] = std::min(
+                firstReferenceIndex[labelIndex], threadFirstReferenceIndex[tableIndex]);
+            const dataType::SegmentIdType clusterLabel = threadLabelToCluster[tableIndex];
+            if (clusterLabel == 0) {
+                continue;
+            }
+            if (labelToCluster[labelIndex] != 0 && labelToCluster[labelIndex] != clusterLabel) {
+                conflictingMapping.store(true, std::memory_order_relaxed);
+            } else {
+                labelToCluster[labelIndex] = clusterLabel;
+            }
         }
-
-        auto it = labelToCluster.find(referenceLabel);
-        if (it == labelToCluster.end()) {
-            const auto insertResult = labelToCluster.emplace(referenceLabel, nextFallbackLabel++);
-            it = insertResult.first;
-        }
-        projectedBuffer[index] = it->second;
     }
+    if (conflictingMapping.load(std::memory_order_relaxed)) {
+        throw std::logic_error("Agglomeration cluster projection produced conflicting labels for one reference segment.");
+    }
+
+    std::vector<std::pair<size_t, dataType::SegmentIdType>> missingLabels;
+    for (uint64_t label = 1; label <= static_cast<uint64_t>(maximumReferenceLabel); ++label) {
+        if (firstReferenceIndex[label] != voxelCount && labelToCluster[label] == 0) {
+            missingLabels.emplace_back(firstReferenceIndex[label], static_cast<dataType::SegmentIdType>(label));
+        }
+    }
+    std::sort(missingLabels.begin(), missingLabels.end());
+
+    uint64_t nextFallbackLabel = static_cast<uint64_t>(maximumClusterLabel) + 1;
+    for (const auto &missingLabel : missingLabels) {
+        if (nextFallbackLabel > std::numeric_limits<dataType::SegmentIdType>::max()) {
+            throw std::overflow_error("Agglomeration cluster projection exceeds the segment label range.");
+        }
+        labelToCluster[missingLabel.second] = static_cast<dataType::SegmentIdType>(nextFallbackLabel++);
+    }
+
+    const qint64 mappingMs = projectionTimer.elapsed();
+    projectionTimer.restart();
+#ifdef USE_OMP
+#pragma omp parallel for num_threads(executionThreadCount)
+#endif
+    for (long long index = 0; index < static_cast<long long>(voxelCount); ++index) {
+        projectedBuffer[index] = labelToCluster[referenceBuffer[index]];
+    }
+    SP_LOG_INFO(
+        "watershed",
+        QStringLiteral("Agglomeration cluster projection: mapping_ms=%1, writeback_ms=%2, "
+                       "max_reference_label=%3, fallback_labels=%4, threads=%5")
+            .arg(mappingMs)
+            .arg(projectionTimer.elapsed())
+            .arg(maximumReferenceLabel)
+            .arg(missingLabels.size())
+            .arg(executionThreadCount));
 
     return projectedLabels;
 }
@@ -423,6 +524,10 @@ void WatershedControl::setWatershedAlgorithm(WatershedAlgorithm algorithm) {
 }
 
 void WatershedControl::setGuiBusy(bool busy) {
+    if (busy && agglomertionPreviewTimer != nullptr) {
+        agglomertionPreviewTimer->stop();
+    }
+
     signalTreeWidget->setEnabled(!busy);
 
     thresholdBoundariesButton->setEnabled(!busy);
@@ -473,7 +578,11 @@ void WatershedControl::setGuiBusy(bool busy) {
     finalOutputInputComboBox->setEnabled(!busy);
     if (!busy) {
         updateStepEnablement();
-        agglomertionPreviewSettingsChanged();
+        if (skipAgglomertionPreviewRefreshAfterCurrentTask) {
+            skipAgglomertionPreviewRefreshAfterCurrentTask = false;
+        } else {
+            agglomertionPreviewSettingsChanged();
+        }
     }
 }
 
@@ -958,7 +1067,8 @@ void WatershedControl::refreshAgglomertionPreview() {
             castFilter->GetOutput(),
             thresholdMask,
             options);
-        previewLabels = projectClusterLabelsOntoReference(watershedInput, result.agglomeratedLabels);
+        previewLabels = projectClusterLabelsOntoReference(
+            watershedInput, result.agglomeratedLabels, options.threadCount);
     } else {
         segment_puzzler::OrthoPlanePreviewSelection previewSelection;
         previewSelection.sliceIndices = {{
@@ -978,14 +1088,12 @@ void WatershedControl::refreshAgglomertionPreview() {
     if (agglomertionPreviewBoundariesCheckBox != nullptr &&
         agglomertionPreviewBoundariesCheckBox->isChecked() &&
         pThresholdedMembrane.IsNotNull()) {
-        auto previewPartition = deriveBoundaryConsistentPartition(
-            previewLabels,
-            pThresholdedMembrane,
-            makeBoundaryRepairOptions(selectedWatershedAlgorithm()),
-            /*repairCanonicalLabels=*/false,
-            selectedDistanceMapAlgorithm(),
-            workerThreadCount);
-        previewLabels = previewPartition.displayLabels;
+        const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
+        insertBoundariesIntoWatershed(previewLabels, pThresholdedMembrane);
+        SP_LOG_INFO(
+            "watershed",
+            QStringLiteral("Agglomeration preview boundary injection finished in %1 ms")
+                .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
     }
 
     if (pAgglomertionPreviewSignal == nullptr) {
@@ -1132,7 +1240,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
     taskRunner->runWithLabel(
         QStringLiteral("Running watershed..."),
         [filterEnabled, minSegmentSize, watershedAlgorithm, distanceMapAlgorithm, distanceMapInput, seedsInput, thresholdInput,
-         threadCount = workerThreadCount]() {
+         threadCount = workerThreadCount, this]() {
             itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto distanceMapInputCopy = distanceMapInput;
             WatershedRunOptions watershedOptions;
@@ -1180,6 +1288,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
                         QStringLiteral("Boundary-consistent watershed labels finished in %1 ms")
                             .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
 
+            rebuildGraphFromSegmentsImage(derivedPartition.displayLabels);
             return derivedPartition;
         },
         [this, signalName](const BoundaryConsistentPartitionResult &watershedOutputs) {
@@ -1193,7 +1302,6 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
                 watershedOutputs.canonicalLabels,
                 watershedOutputs.displayLabels,
                 watershedOutputs.splitComponentIds};
-            rebuildGraphFromSegmentsImage(pWatershed);
             attachSegmentsSignalToGraph(watershedSignal);
             updateStepEnablement();
             deactivateSignalsByIndices(seedOutputSignalIndices);
@@ -1265,7 +1373,8 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
 
             auto canonicalAgglomertionLabels = projectClusterLabelsOntoReference(
                 watershedInput,
-                agglomerationResult.agglomeratedLabels);
+                agglomerationResult.agglomeratedLabels,
+                options.threadCount);
 
             auto derivedPartition = deriveBoundaryConsistentPartition(
                 canonicalAgglomertionLabels,
@@ -1275,6 +1384,7 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
                 distanceMapAlgorithm,
                 workerThreadCount);
 
+            rebuildGraphFromSegmentsImage(derivedPartition.displayLabels);
             return BoundaryConsistentPartitionResult{
                 canonicalAgglomertionLabels,
                 derivedPartition.displayLabels,
@@ -1310,9 +1420,7 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
                 agglomertionOutputs.displayLabels,
                 agglomertionOutputs.splitComponentIds};
             setSignalActive(signalIndex, true);
-            rebuildGraphFromSegmentsImage(pAgglomertion);
             attachSegmentsSignalToGraph(agglomertionSignal);
-            scheduleAgglomertionPreviewRefresh();
             updateStepEnablement();
             deactivateSignalsByIndices(previousWatershedIndices);
             std::vector<size_t> previousBoundaryIndices;
@@ -1325,6 +1433,8 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
             deactivateSignalsByIndices(previousBoundaryIndices);
             const int agglomComboIdx = finalOutputInputComboBox->findData(static_cast<int>(signalIndex));
             if (agglomComboIdx >= 0) finalOutputInputComboBox->setCurrentIndex(agglomComboIdx);
+            // The final result is already current; the idle transition must not recompute its live preview.
+            skipAgglomertionPreviewRefreshAfterCurrentTask = true;
         },
         std::move(then));
 }
@@ -1369,10 +1479,12 @@ void WatershedControl::createRefinementAsync(std::function<void()> then) {
             }
 
             if (outputMode == OutputMode::Segments) {
-                linkedSignalControl->importGeneratedSegments(createdOutput);
+                linkedSignalControl->importGeneratedSegments(createdOutput, workerThreadCount);
             } else {
                 linkedSignalControl->receiveNewRefinement(createdOutput);
             }
+            // Export closes this workflow, so returning to idle must not start another preview.
+            skipAgglomertionPreviewRefreshAfterCurrentTask = true;
             emit sendClosingSignal();
         },
         std::move(then));
@@ -1809,6 +1921,7 @@ void WatershedControl::setupAgglomertionWidget() {
     agglomertionBiasSlider->setObjectName("agglomertionBiasSlider");
     agglomertionBiasSpinBox->setObjectName("agglomertionBiasSpinBox");
     agglomertionPreviewCheckBox = new QCheckBox("Live Preview", this);
+    agglomertionPreviewCheckBox->setObjectName("agglomertionPreviewCheckBox");
     agglomertionPreviewCheckBox->setChecked(true);
     agglomertionApproximatePreviewCheckBox = new QCheckBox("Fast Approx.", this);
     agglomertionApproximatePreviewCheckBox->setChecked(false);

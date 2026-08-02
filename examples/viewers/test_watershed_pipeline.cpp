@@ -7,6 +7,7 @@
 // Build with BUILD_TESTING=ON.  Run from the build directory.
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -245,7 +246,7 @@ int main(int argc, char *argv[]) {
         }
     }
     std::cout << "Thread count: " << threadCount << "\n";
-    std::cout << "Watershed algorithm: " << (useFastMarker ? "fast-marker" : "morphological") << "\n";
+    std::cout << "Watershed algorithm: " << (useFastMarker ? "fast-marker" : "GUI default") << "\n";
 
     // Apply dark stylesheet if available
     QFile styleFile(":qdarkstyle/dark/style.qss");
@@ -326,8 +327,35 @@ int main(int argc, char *argv[]) {
                                 failTest("agglomeration display labels failed to keep the injected boundary cut");
                                 return;
                             }
-                            std::cout << "\n=== Pipeline complete ===\n";
-                            QApplication::quit();
+                            QTimer::singleShot(250, [ws, cutVoxelIndex]() {
+                                if (ws->pAgglomertionPreviewSignal != nullptr &&
+                                    ws->pAgglomertionPreviewSignal->getIsActive()) {
+                                    failTest("final agglomeration scheduled a redundant live preview");
+                                    return;
+                                }
+                                std::cout << "\n=== Explicit live preview refresh ===\n";
+                                auto *livePreviewCheckBox =
+                                    ws->findChild<QCheckBox *>("agglomertionPreviewCheckBox");
+                                if (livePreviewCheckBox == nullptr) {
+                                    failTest("live preview checkbox is missing");
+                                    return;
+                                }
+                                livePreviewCheckBox->setChecked(false);
+                                livePreviewCheckBox->setChecked(true);
+                                QTimer::singleShot(500, [ws, cutVoxelIndex]() {
+                                    if (ws->pAgglomertionPreviewSignal == nullptr ||
+                                        !ws->pAgglomertionPreviewSignal->getIsActive()) {
+                                        failTest("explicit live preview refresh did not create an active preview");
+                                        return;
+                                    }
+                                    if (ws->pAgglomertionPreviewSignal->pImage->GetBufferPointer()[cutVoxelIndex] != 0) {
+                                        failTest("explicit live preview failed to inject a known boundary voxel");
+                                        return;
+                                    }
+                                    std::cout << "\n=== Pipeline complete ===\n";
+                                    QApplication::quit();
+                                });
+                            });
                         });
                     });
                 });

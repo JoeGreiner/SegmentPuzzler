@@ -238,6 +238,7 @@ private:
     int thresholdPreviewSignalIndex = -1;
     size_t hiddenAgglomertionPreviewSourceSignalIndex = static_cast<size_t>(-1);
     QTimer *agglomertionPreviewTimer = nullptr;
+    bool skipAgglomertionPreviewRefreshAfterCurrentTask = false;
     std::vector<size_t> thresholdOutputSignalIndices;
     std::vector<size_t> distanceMapOutputSignalIndices;
     std::vector<size_t> seedOutputSignalIndices;
@@ -344,6 +345,7 @@ private:
     void removeRegisteredEdgeSignal();
     void setSignalActive(size_t signalIdx, bool active);
     void deactivateSignalsByIndices(const std::vector<size_t> &signalIndices);
+    // Data-only graph rebuild; safe in a TaskRunner compute callback while this workflow is blocked.
     void rebuildGraphFromSegmentsImage(dataType::SegmentsImageType::Pointer segmentsImage);
     void attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *segmentsSignal);
 
