@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <fstream>
 #include <memory>
+#include <cstddef>
 
 
 // this should contain all the data for one graph
@@ -56,7 +57,7 @@ public:
 
     void clearGraphAndReserveInitialNodes(std::size_t initialNodeCapacity = 0);
 
-    void addInitialNode(SegmentIdType labelOfNewNode, int reserveMemoryForVoxels = 0);
+    void addInitialNode(SegmentIdType labelOfNewNode, std::size_t voxelCapacity = 0);
 
     void addInitialNode(InitialNode *pInitialNodeToAdd);
 
@@ -74,9 +75,9 @@ public:
 
     void computeCorrospondingOneSidedInitialEdges(InitialNode *pInitialNode);
 
-    void computeSurfaceAndOneSidedEdgesOnInitialNode(InitialNode *pInitialNode);
+    void computeOneSidedEdgesOnInitialNode(InitialNode *pInitialNode);
 
-    void computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadCount);
+    void computeOneSidedEdgesOnAllInitialNodes(int threadCount);
 
     void recomputeVoxelListAndOneSidedEdgesIfShrinked(std::vector<SegmentIdType> vecOfConnectedInitialNodeIds);
 

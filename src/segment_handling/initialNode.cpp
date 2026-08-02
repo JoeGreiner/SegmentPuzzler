@@ -105,9 +105,8 @@ bool InitialNode::isIgnoredId(SegmentIdType idToCheck,
     return std::find(ignoredSegmentIds.begin(), ignoredSegmentIds.end(), idToCheck) != ignoredSegmentIds.end();
 }
 
-void InitialNode::computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType> &ignoredSegmentIds) {
+void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignoredSegmentIds) {
     onesidedEdges.clear();
-    onesidedSurfaceVoxels.clear();
 
     if (voxels.empty()) {
         return;
@@ -129,14 +128,12 @@ void InitialNode::computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType
     }
 
     constexpr unsigned int estimateNumberEdges = 30;
-    const unsigned int estimateNumberSurfaceVoxels = 9.0 * pow(voxels.size(), 2.0 / 3.0);
     onesidedEdges.reserve(estimateNumberEdges);
-    onesidedSurfaceVoxels.reserve(estimateNumberSurfaceVoxels);
 
     // Image buffer
     const SegmentIdType* buffer = pSegments->GetBufferPointer();
 
-    static const int offsetsCoords[6][3] = {
+    static const int neighborOffsets[6][3] = {
             {  1,  0,  0 },
             { -1,  0,  0 },
             {  0,  1,  0 },
@@ -145,24 +142,23 @@ void InitialNode::computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType
             {  0,  0, -1 }
     };
 
-    std::unordered_set<SegmentIdType> addedToLabelAlready;
-    addedToLabelAlready.reserve(6); // 6 neighbors
+    std::unordered_set<SegmentIdType> neighborLabelsAddedForVoxel;
+    neighborLabelsAddedForVoxel.reserve(6);
 
     // for all voxels in the roi of the initial node
     for (size_t z = roi.minZ; z <= roi.maxZ; ++z) {
         for (size_t y = roi.minY; y <= roi.maxY; ++y) {
             for (size_t x = roi.minX; x <= roi.maxX; ++x) {
                 size_t centerIndex = x + y * rowStride + z * sliceStride;
-                SegmentIdType itLabel = buffer[centerIndex];
+                SegmentIdType centerLabel = buffer[centerIndex];
 
-                if (itLabel == label) {
-                    addedToLabelAlready.clear();
-                    bool isSurface = false;
+                if (centerLabel == label) {
+                    neighborLabelsAddedForVoxel.clear();
 
                     for (unsigned int i = 0; i < 6; ++i) {
-                        const std::int64_t nx = static_cast<std::int64_t>(x) + offsetsCoords[i][0];
-                        const std::int64_t ny = static_cast<std::int64_t>(y) + offsetsCoords[i][1];
-                        const std::int64_t nz = static_cast<std::int64_t>(z) + offsetsCoords[i][2];
+                        const std::int64_t nx = static_cast<std::int64_t>(x) + neighborOffsets[i][0];
+                        const std::int64_t ny = static_cast<std::int64_t>(y) + neighborOffsets[i][1];
+                        const std::int64_t nz = static_cast<std::int64_t>(z) + neighborOffsets[i][2];
 
                         if (nx < 0 || static_cast<std::size_t>(nx) >= dimX ||
                             ny < 0 || static_cast<std::size_t>(ny) >= dimY ||
@@ -174,126 +170,23 @@ void InitialNode::computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType
                             static_cast<std::size_t>(nx) +
                             static_cast<std::size_t>(ny) * rowStride +
                             static_cast<std::size_t>(nz) * sliceStride;
-                        SegmentIdType newLabel = buffer[neighborIndex];
-                        if (newLabel != label && !isIgnoredId(newLabel, ignoredSegmentIds)) {
-                            isSurface = true;
-                            if (addedToLabelAlready.find(newLabel) == addedToLabelAlready.end()) {
-                                if (!onesidedEdges.count(newLabel)) {
-                                    onesidedEdges[newLabel] = std::make_shared<InitialEdge>(newLabel, label);
+                        SegmentIdType neighborLabel = buffer[neighborIndex];
+                        if (neighborLabel != label && !isIgnoredId(neighborLabel, ignoredSegmentIds)) {
+                            if (neighborLabelsAddedForVoxel.find(neighborLabel) == neighborLabelsAddedForVoxel.end()) {
+                                if (!onesidedEdges.count(neighborLabel)) {
+                                    onesidedEdges[neighborLabel] = std::make_shared<InitialEdge>(neighborLabel, label);
                                 }
                                 Voxel voxelToAdd(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
-                                onesidedEdges[newLabel]->addVoxel(voxelToAdd);
-                                addedToLabelAlready.insert(newLabel);
+                                onesidedEdges[neighborLabel]->addVoxel(voxelToAdd);
+                                neighborLabelsAddedForVoxel.insert(neighborLabel);
                             }
                         }
-                    }
-                    if (isSurface) {
-                        onesidedSurfaceVoxels.emplace_back(
-                            static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
                     }
                 }
             }
         }
     }
-//     cast to double division
-//    double factor_edges = static_cast<double>(onesidedEdges.size()) / estimateNumberEdges;
-//    double factor_surface = static_cast<double>(onesidedSurfaceVoxels.size()) / estimateNumberSurfaceVoxels;
-//    std::cout << "Estimated number of edges: " << estimateNumberEdges << " Real number of edges: " << onesidedEdges.size() << " factor: " << factor_edges << std::endl;
-//    std::cout << "Estimated number of surface voxels: " << estimateNumberSurfaceVoxels << " Real number of surface voxels: " << onesidedSurfaceVoxels.size() << " factor: " << factor_surface << std::endl;
 }
-
-//
-// given the roi of the initial edge, this computes onesided edges and onesided surface voxels
-// needs ignoredids to be set for e.g. background (input argument)
-// old function with ITK functions, faster version above
-//void InitialNode::computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType> &ignoredSegmentIds) {
-//    // clear old values
-//    onesidedEdges.clear();
-//    onesidedSurfaceVoxels.clear();
-//
-//    using NeighborhoodIteratorType = itk::ConstShapedNeighborhoodIterator<SegmentIdImageType>;
-//
-//    SegmentIdImageType::IndexType startIndex = {roi.minX, roi.minY, roi.minZ};
-//    SegmentIdImageType::SizeType size = {static_cast<unsigned long>(roi.maxX - roi.minX + 1),
-//                                         static_cast<unsigned long>(roi.maxY - roi.minY + 1),
-//                                         static_cast<unsigned long>(roi.maxZ - roi.minZ + 1)};
-//    SegmentIdImageType::RegionType region = {startIndex, size};
-//
-//    NeighborhoodIteratorType::RadiusType radius;
-//    radius.Fill(1);
-//
-//    NeighborhoodIteratorType neighborhoodIt(radius, pSegments, region);
-//
-//    NeighborhoodIteratorType::OffsetType off = {{0, 0, 0}};
-//    NeighborhoodIteratorType::OffsetType off1 = {{1, 0, 0}};
-//    NeighborhoodIteratorType::OffsetType off2 = {{-1, 0, 0}};
-//    NeighborhoodIteratorType::OffsetType off3 = {{0, 1, 0}};
-//    NeighborhoodIteratorType::OffsetType off4 = {{0, -1, 0}};
-//    NeighborhoodIteratorType::OffsetType off5 = {{0, 0, 1}};
-//    NeighborhoodIteratorType::OffsetType off6 = {{0, 0, -1}};
-//
-//    neighborhoodIt.ActivateOffset(off);
-//    neighborhoodIt.ActivateOffset(off1);
-//    neighborhoodIt.ActivateOffset(off2);
-//    neighborhoodIt.ActivateOffset(off3);
-//    neighborhoodIt.ActivateOffset(off4);
-//    neighborhoodIt.ActivateOffset(off5);
-//    neighborhoodIt.ActivateOffset(off6);
-//    //4 10 12 14 16 22
-//    //4 10 12 13 14 16 22
-//
-//    std::vector<unsigned int> offSetIndices = {4, 10, 12, 14, 16, 22};
-//    unsigned int centerOffset = 13;
-//
-//    neighborhoodIt.GoToBegin();
-//    std::vector<SegmentIdType> addedToLabelAlready;
-//    SegmentIdType itLabel;
-//    SegmentIdType newLabel;
-//    size_t x, y, z;
-//    NeighborhoodIteratorType::IndexType index;
-//    NeighborhoodIteratorType::ConstIterator innerIterator;
-//    bool IsInBounds;
-//    bool isSurface;
-//    Voxel voxelToAdd;
-//
-//    while (!neighborhoodIt.IsAtEnd()) {
-//        itLabel = neighborhoodIt.GetPixel(centerOffset);
-//        if (itLabel == label) {
-//            addedToLabelAlready.clear();
-//            isSurface = false;
-//            index = neighborhoodIt.GetIndex();
-//            x = index[0];
-//            y = index[1];
-//            z = index[2];
-//            innerIterator = neighborhoodIt.Begin();
-//            for (unsigned int i = 0; i < 6; ++i) {
-//                newLabel = neighborhoodIt.GetPixel(offSetIndices[i], IsInBounds);
-//                if (IsInBounds) {
-//                    if ((newLabel != label) && !isIgnoredId(newLabel, ignoredSegmentIds)) {
-//                        isSurface = true;
-//                        voxelToAdd = Voxel(x, y, z);
-//                        if (!onesidedEdges.count(newLabel)) {
-//                            onesidedEdges[newLabel] = std::shared_ptr<InitialEdge>(new InitialEdge(newLabel, label));
-//                            onesidedEdges[newLabel]->addVoxel(voxelToAdd);
-//                            addedToLabelAlready.push_back(newLabel);
-//                        } else {
-//                            // if this exact voxel was not added to the same edge before
-//                            if (find(addedToLabelAlready.begin(), addedToLabelAlready.end(), newLabel) ==
-//                                addedToLabelAlready.end()) {
-//                                onesidedEdges[newLabel]->addVoxel(voxelToAdd);
-//                                addedToLabelAlready.push_back(newLabel);
-//                            }
-//                        }
-//                    }
-//                }
-//            }
-//            if (isSurface) {
-//                onesidedSurfaceVoxels.emplace_back(x, y, z);
-//            }
-//        }
-//        ++neighborhoodIt;
-//    }
-//}
 
 
 // given a onesided edge, it will find the other, corrosponding onesided edge to form a twosided edge
@@ -423,7 +316,6 @@ void InitialNode::print(int indentationLevel, std::ostream &outStream) {
     outStream << indentationString << "label: " << label << "\n";
     outStream << indentationString << "currentWorkingNodeId: " << currentWorkingNodeLabel << "\n";
     outStream << indentationString << "number of voxels: " << voxels.size() << "\n";
-    outStream << indentationString << "number of surface voxels: " << onesidedSurfaceVoxels.size() << "\n";
     outStream << indentationString << "number of onesided edges: " << onesidedEdges.size() << "\n";
     outStream << indentationString << "number of twosided edges: " << twosidedEdges.size() << "\n";
     outStream << indentationString << "fx: " << roi.minX << " fy: " << roi.minY << " fz: " << roi.minZ << "\n";

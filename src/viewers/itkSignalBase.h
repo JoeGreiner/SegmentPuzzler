@@ -125,6 +125,8 @@ public:
 
     virtual void updateImage(itk::ImageBase<3>::Pointer newImage) = 0;
 
+    virtual void releaseImage() = 0;
+
     virtual void setupTreeWidget(QTreeWidget *motherTreeWidget, size_t signalIndex) = 0;
 
 

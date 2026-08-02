@@ -342,7 +342,7 @@ int main(int argc, char *argv[]) {
                                 }
                                 livePreviewCheckBox->setChecked(false);
                                 livePreviewCheckBox->setChecked(true);
-                                QTimer::singleShot(500, [ws, cutVoxelIndex]() {
+                                QTimer::singleShot(500, [ws, livePreviewCheckBox, cutVoxelIndex]() {
                                     if (ws->pAgglomertionPreviewSignal == nullptr ||
                                         !ws->pAgglomertionPreviewSignal->getIsActive()) {
                                         failTest("explicit live preview refresh did not create an active preview");
@@ -352,8 +352,27 @@ int main(int argc, char *argv[]) {
                                         failTest("explicit live preview failed to inject a known boundary voxel");
                                         return;
                                     }
-                                    std::cout << "\n=== Pipeline complete ===\n";
-                                    QApplication::quit();
+                                    auto *previewSignal = ws->pAgglomertionPreviewSignal;
+                                    livePreviewCheckBox->setChecked(false);
+                                    if (previewSignal->getIsActive() || previewSignal->pImage.IsNotNull()) {
+                                        failTest("disabling live preview did not release its image");
+                                        return;
+                                    }
+
+                                    livePreviewCheckBox->setChecked(true);
+                                    QTimer::singleShot(500, [ws, previewSignal, cutVoxelIndex]() {
+                                        if (ws->pAgglomertionPreviewSignal != previewSignal ||
+                                            !previewSignal->getIsActive() || previewSignal->pImage.IsNull()) {
+                                            failTest("live preview signal was not reused after releasing its image");
+                                            return;
+                                        }
+                                        if (previewSignal->pImage->GetBufferPointer()[cutVoxelIndex] != 0) {
+                                            failTest("recreated live preview failed to inject a known boundary voxel");
+                                            return;
+                                        }
+                                        std::cout << "\n=== Pipeline complete ===\n";
+                                        QApplication::quit();
+                                    });
                                 });
                             });
                         });

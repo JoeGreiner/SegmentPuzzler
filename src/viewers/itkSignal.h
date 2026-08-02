@@ -75,6 +75,13 @@ public:
         calculateLUT();
     }
 
+    void releaseImage() override {
+        pImage = nullptr;
+        dimX = 0;
+        dimY = 0;
+        dimZ = 0;
+    }
+
 
     void calculateImageSize() override;
 

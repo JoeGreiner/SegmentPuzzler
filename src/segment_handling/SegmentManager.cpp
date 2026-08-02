@@ -108,10 +108,10 @@ void SegmentManager::addInitialNode(InitialNode *pInitialNodeToAdd) {
 
 }
 
-void SegmentManager::addInitialNode(SegmentIdType labelOfNewNode, int reserveMemoryForVoxels) {
+void SegmentManager::addInitialNode(SegmentIdType labelOfNewNode, std::size_t voxelCapacity) {
     auto pNewInitialNode = std::shared_ptr<InitialNode>(new InitialNode(graphBase, *ppWorkingSegmentsImage, labelOfNewNode));
-    if (reserveMemoryForVoxels > 0) {
-        pNewInitialNode->voxels.reserve(reserveMemoryForVoxels);
+    if (voxelCapacity > 0) {
+        pNewInitialNode->voxels.reserve(voxelCapacity);
     }
     (*pInitialNodes)[labelOfNewNode] = pNewInitialNode;
 
@@ -359,7 +359,7 @@ void SegmentManager::recomputeVoxelListAndOneSidedEdgesIfShrinked(
             }
 
 
-            computeSurfaceAndOneSidedEdgesOnInitialNode(pInitialNode);
+            computeOneSidedEdgesOnInitialNode(pInitialNode);
             for (auto &edge : pInitialNode->onesidedEdges) {
                 // TODO: this is ugly, add a function to add the initial edge!
 
@@ -556,9 +556,9 @@ void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(
 }
 
 
-void SegmentManager::computeSurfaceAndOneSidedEdgesOnInitialNode(InitialNode *pInitialNode) {
+void SegmentManager::computeOneSidedEdgesOnInitialNode(InitialNode *pInitialNode) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges for one initial node"));
-    pInitialNode->computeOnesidedSurfaceAndEdges(*pIgnoredSegmentLabels);
+    pInitialNode->computeOneSidedEdges(*pIgnoredSegmentLabels);
 }
 
 void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInitialNode) {
@@ -592,7 +592,7 @@ void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInit
 }
 
 
-void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadCount) {
+void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(int threadCount) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges on all initial nodes"));
 
     std::vector<std::shared_ptr<InitialNode>> initialNodes;
@@ -659,7 +659,7 @@ void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadC
                     continue;
                 }
                 try {
-                    initialNodes[static_cast<std::size_t>(i)]->computeOnesidedSurfaceAndEdges(
+                    initialNodes[static_cast<std::size_t>(i)]->computeOneSidedEdges(
                         ignoredSegmentLabels);
                 } catch (...) {
                     std::lock_guard<std::mutex> guard(exceptionMutex);
@@ -678,7 +678,7 @@ void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadC
 #endif
     {
         for (const auto &initialNode : initialNodes) {
-            initialNode->computeOnesidedSurfaceAndEdges(ignoredSegmentLabels);
+            initialNode->computeOneSidedEdges(ignoredSegmentLabels);
         }
     }
     const double scanMs = static_cast<double>(scanTimer.nsecsElapsed()) / 1000000.0;

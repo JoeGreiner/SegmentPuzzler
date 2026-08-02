@@ -43,6 +43,16 @@ void logGraphDebugIf(bool enabled, const char *functionName, const QString &mess
     logGraph(LogLevel::Debug, functionName, message);
 }
 
+bool isGraphDebugLoggingEnabled(bool verbose) {
+    if (!verbose) {
+        return false;
+    }
+    const auto settings = AppLogger::settings();
+    return static_cast<int>(settings.minimumLevel) <= static_cast<int>(LogLevel::Debug) &&
+           settings.categoryEnabled.value(kSegmentationCategory, true) &&
+           (settings.consoleEnabled || settings.fileEnabled);
+}
+
 template<typename Container>
 QString joinIds(const Container &values) {
     QStringList parts;
@@ -230,6 +240,111 @@ Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn) {
 }
 
 namespace {
+
+struct GraphStorageSummary {
+    MemoryStats memory;
+    std::size_t initialNodeVoxelCount = 0;
+    std::size_t initialNodeVoxelCapacity = 0;
+    std::size_t oneSidedInitialEdgeCount = 0;
+    std::size_t oneSidedInitialEdgeVoxelCount = 0;
+    std::size_t oneSidedInitialEdgeVoxelCapacity = 0;
+    std::size_t twoSidedInitialEdgeVoxelCount = 0;
+    std::size_t twoSidedInitialEdgeVoxelCapacity = 0;
+    std::size_t workingNodeInitialNodeReferenceCount = 0;
+    std::size_t workingNodeEdgeReferenceCount = 0;
+    std::size_t workingEdgeInitialEdgeReferenceCount = 0;
+    std::size_t workingEdgeInitialEdgeReferenceCapacity = 0;
+    double trackedVectorCapacityMB = 0.0;
+};
+
+GraphStorageSummary collectGraphStorageSummary(const Graph &graph) {
+    GraphStorageSummary summary;
+    summary.memory = systemStats::queryMemory();
+
+    for (const auto &[label, initialNode] : graph.initialNodes) {
+        if (initialNode == nullptr) {
+            continue;
+        }
+        summary.initialNodeVoxelCount += initialNode->voxels.size();
+        summary.initialNodeVoxelCapacity += initialNode->voxels.capacity();
+        for (const auto &[neighborLabel, oneSidedInitialEdge] : initialNode->onesidedEdges) {
+            if (oneSidedInitialEdge == nullptr) {
+                continue;
+            }
+            ++summary.oneSidedInitialEdgeCount;
+            summary.oneSidedInitialEdgeVoxelCount += oneSidedInitialEdge->voxels.size();
+            summary.oneSidedInitialEdgeVoxelCapacity += oneSidedInitialEdge->voxels.capacity();
+        }
+    }
+
+    for (const auto &[labelPair, twoSidedInitialEdge] : graph.initialTwoSidedEdges) {
+        if (twoSidedInitialEdge == nullptr) {
+            continue;
+        }
+        summary.twoSidedInitialEdgeVoxelCount += twoSidedInitialEdge->voxels.size();
+        summary.twoSidedInitialEdgeVoxelCapacity += twoSidedInitialEdge->voxels.capacity();
+    }
+
+    for (const auto &[label, workingNode] : graph.workingNodes) {
+        if (workingNode == nullptr) {
+            continue;
+        }
+        summary.workingNodeInitialNodeReferenceCount += workingNode->subInitialNodes.size();
+        summary.workingNodeEdgeReferenceCount += workingNode->twosidedEdges.size();
+    }
+    for (const auto &[labelPair, workingEdge] : graph.workingEdges) {
+        if (workingEdge == nullptr) {
+            continue;
+        }
+        summary.workingEdgeInitialEdgeReferenceCount += workingEdge->subInitialEdges.size();
+        summary.workingEdgeInitialEdgeReferenceCapacity += workingEdge->subInitialEdges.capacity();
+    }
+
+    const long double trackedVectorCapacityBytes =
+        (static_cast<long double>(summary.initialNodeVoxelCapacity) +
+         static_cast<long double>(summary.oneSidedInitialEdgeVoxelCapacity) +
+         static_cast<long double>(summary.twoSidedInitialEdgeVoxelCapacity)) * sizeof(Voxel) +
+        static_cast<long double>(summary.workingEdgeInitialEdgeReferenceCapacity) *
+            sizeof(std::shared_ptr<InitialEdge>);
+    summary.trackedVectorCapacityMB =
+        static_cast<double>(trackedVectorCapacityBytes / (1024.0L * 1024.0L));
+    return summary;
+}
+
+void logStorageAfterGraphPhase(const Graph &graph, const QString &graphPhase) {
+    const GraphStorageSummary summary = collectGraphStorageSummary(graph);
+    logGraph(
+        LogLevel::Debug,
+        __func__,
+        QStringLiteral(
+            "Graph storage phase=%1 process_rss_gb=%2 peak_process_rss_gb=%3 available_memory_gb=%4 "
+            "initial_nodes=%5 initial_node_voxels=%6 initial_node_voxel_capacity=%7 "
+            "one_sided_initial_edges=%8 one_sided_edge_voxels=%9 one_sided_edge_voxel_capacity=%10 "
+            "two_sided_initial_edges=%11 two_sided_edge_voxels=%12 two_sided_edge_voxel_capacity=%13 "
+            "working_nodes=%14 working_edges=%15 working_node_initial_node_references=%16 "
+            "working_node_edge_references=%17 working_edge_initial_edge_references=%18 "
+            "working_edge_initial_edge_reference_capacity=%19 tracked_vector_capacity_mb=%20")
+            .arg(graphPhase)
+            .arg(summary.memory.processResidentMemoryGB, 0, 'f', 3)
+            .arg(summary.memory.peakProcessResidentMemoryGB, 0, 'f', 3)
+            .arg(summary.memory.availableSystemMemoryGB, 0, 'f', 3)
+            .arg(static_cast<qulonglong>(graph.initialNodes.size()))
+            .arg(static_cast<qulonglong>(summary.initialNodeVoxelCount))
+            .arg(static_cast<qulonglong>(summary.initialNodeVoxelCapacity))
+            .arg(static_cast<qulonglong>(summary.oneSidedInitialEdgeCount))
+            .arg(static_cast<qulonglong>(summary.oneSidedInitialEdgeVoxelCount))
+            .arg(static_cast<qulonglong>(summary.oneSidedInitialEdgeVoxelCapacity))
+            .arg(static_cast<qulonglong>(graph.initialTwoSidedEdges.size()))
+            .arg(static_cast<qulonglong>(summary.twoSidedInitialEdgeVoxelCount))
+            .arg(static_cast<qulonglong>(summary.twoSidedInitialEdgeVoxelCapacity))
+            .arg(static_cast<qulonglong>(graph.workingNodes.size()))
+            .arg(static_cast<qulonglong>(graph.workingEdges.size()))
+            .arg(static_cast<qulonglong>(summary.workingNodeInitialNodeReferenceCount))
+            .arg(static_cast<qulonglong>(summary.workingNodeEdgeReferenceCount))
+            .arg(static_cast<qulonglong>(summary.workingEdgeInitialEdgeReferenceCount))
+            .arg(static_cast<qulonglong>(summary.workingEdgeInitialEdgeReferenceCapacity))
+            .arg(summary.trackedVectorCapacityMB, 0, 'f', 3));
+}
 
 struct StrokeSegmentInfo {
     std::array<double, 2> start;
@@ -502,139 +617,138 @@ StrokeMask rasterizeStrokeMask(const Projected3DCutRequest &request,
 
 void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
                                 int graphBuildThreadCount) {
+    const bool logGraphStorage = isGraphDebugLoggingEnabled(verbose);
     initializeEdgeVolumeAndEdgeStatus();
     updateBackgroundIdFromVolume(pImage);
     pIgnoredSegmentLabels->push_back(backgroundId);
 
     nextFreeId = getNextFreeId(pImage);
     constructInitialNodes(pImage);
-    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes(graphBuildThreadCount);
+    if (logGraphStorage) {
+        logStorageAfterGraphPhase(*this, QStringLiteral("initial_nodes"));
+    }
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes(graphBuildThreadCount);
+    if (logGraphStorage) {
+        logStorageAfterGraphPhase(*this, QStringLiteral("one_sided_initial_edges"));
+    }
     segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges(graphBuildThreadCount);
     graphBase->pEdgesInitialSegmentsITKSignal->computeExtrema();
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    if (logGraphStorage) {
+        logStorageAfterGraphPhase(*this, QStringLiteral("two_sided_initial_edges"));
+    }
     segmentManager.buildWorkingGraphFromInitialGraph();
+    if (logGraphStorage) {
+        logStorageAfterGraphPhase(*this, QStringLiteral("working_graph"));
+    }
 }
 
 void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     ScopedGraphTimer totalTimer(verbose, __func__, QStringLiteral("Constructing initial nodes"));
-    std::vector<int> segmentIdHistogram(nextFreeId, 0);
+    std::vector<std::size_t> voxelCountByLabel(nextFreeId, 0);
     {   ScopedGraphTimer histogramTimer(verbose, __func__, QStringLiteral("Building segment histogram"));
         // get histogram of label ids to preallocate voxel array sizes
         itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
         it.GoToBegin();
         while (!it.IsAtEnd()) {
-            segmentIdHistogram[it.Get()]++;
+            ++voxelCountByLabel[it.Get()];
             ++it;
         }
     }
 
-    std::size_t activeLabelCount = 0;
-    int backgroundVoxelCount = 0;
-    int largestForegroundLabelVoxelCount = 0;
-    for (std::size_t labelIndex = 0; labelIndex < segmentIdHistogram.size(); ++labelIndex) {
-        const int voxelCount = segmentIdHistogram[labelIndex];
-        if (voxelCount <= 0) {
+    std::size_t initialNodeCount = 0;
+    std::size_t ignoredLabelCount = 0;
+    std::size_t ignoredVoxelCount = 0;
+    std::size_t backgroundVoxelCount = 0;
+    std::size_t largestForegroundLabelVoxelCount = 0;
+    for (std::size_t labelIndex = 0; labelIndex < voxelCountByLabel.size(); ++labelIndex) {
+        const std::size_t voxelCount = voxelCountByLabel[labelIndex];
+        if (voxelCount == 0) {
             continue;
         }
 
-        ++activeLabelCount;
         if (labelIndex == static_cast<std::size_t>(backgroundId)) {
             backgroundVoxelCount = voxelCount;
         } else {
             largestForegroundLabelVoxelCount = std::max(largestForegroundLabelVoxelCount, voxelCount);
         }
+        if (isIgnoredId(static_cast<SegmentIdType>(labelIndex))) {
+            ++ignoredLabelCount;
+            ignoredVoxelCount += voxelCount;
+        } else {
+            ++initialNodeCount;
+        }
     }
 
-    std::vector<std::shared_ptr<InitialNode>> initialNodesVec; // vector use instead of a map to save lookup time
     {
-        ScopedGraphTimer initialNodeTimer(verbose, __func__, QStringLiteral("Allocating initial nodes"));
-        const MemoryStats memoryBefore = systemStats::queryMemory();
-        QElapsedTimer phaseTimer;
-        phaseTimer.start();
-        initialNodesVec.resize(nextFreeId);
-        const double resizeDenseNodeIndexMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+        std::vector<InitialNode *> initialNodeByLabel;
+        {
+            ScopedGraphTimer initialNodeTimer(verbose, __func__, QStringLiteral("Allocating initial nodes"));
+            QElapsedTimer phaseTimer;
+            phaseTimer.start();
+            initialNodeByLabel.resize(nextFreeId, nullptr);
+            const double resizeDenseNodeIndexMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
-        phaseTimer.restart();
-        segmentManager.clearGraphAndReserveInitialNodes(activeLabelCount);
-        const double resetPreviousGraphMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+            phaseTimer.restart();
+            segmentManager.clearGraphAndReserveInitialNodes(initialNodeCount);
+            const double resetPreviousGraphMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
-        phaseTimer.restart();
-        for (unsigned int i = 0; i < segmentIdHistogram.size(); i++) {
-            if (segmentIdHistogram[i] > 0) {
-                segmentManager.addInitialNode(i, segmentIdHistogram[i]);
-                initialNodesVec[i] = initialNodes[i];
+            phaseTimer.restart();
+            for (std::size_t labelIndex = 0; labelIndex < voxelCountByLabel.size(); ++labelIndex) {
+                const std::size_t voxelCount = voxelCountByLabel[labelIndex];
+                const auto label = static_cast<SegmentIdType>(labelIndex);
+                if (voxelCount == 0 || isIgnoredId(label)) {
+                    continue;
+                }
+                segmentManager.addInitialNode(label, voxelCount);
+                initialNodeByLabel[labelIndex] = initialNodes.at(label).get();
             }
-        }
-        const double createInitialNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
-        const MemoryStats memoryAfter = systemStats::queryMemory();
+            const double createInitialNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
-        logGraphDebugIf(
-            verbose,
-            __func__,
-            QStringLiteral(
-                "Initial node allocation phases label_slots=%1 active_labels=%2 background_voxel_count=%3 "
-                "largest_foreground_label_voxel_count=%4 resize_dense_index_ms=%5 "
-                "reset_previous_graph_ms=%6 create_initial_nodes_ms=%7 process_rss_before_gb=%8 "
-                "process_rss_after_gb=%9 process_peak_rss_gb=%10 available_memory_before_gb=%11 "
-                "available_memory_after_gb=%12 swap_used_before_gb=%13 swap_used_after_gb=%14")
-                .arg(static_cast<qulonglong>(nextFreeId))
-                .arg(static_cast<qulonglong>(activeLabelCount))
-                .arg(backgroundVoxelCount)
-                .arg(largestForegroundLabelVoxelCount)
-                .arg(resizeDenseNodeIndexMs, 0, 'f', 3)
-                .arg(resetPreviousGraphMs, 0, 'f', 3)
-                .arg(createInitialNodesMs, 0, 'f', 3)
-                .arg(memoryBefore.processResidentMemoryGB, 0, 'f', 3)
-                .arg(memoryAfter.processResidentMemoryGB, 0, 'f', 3)
-                .arg(memoryAfter.peakProcessResidentMemoryGB, 0, 'f', 3)
-                .arg(memoryBefore.availableSystemMemoryGB, 0, 'f', 3)
-                .arg(memoryAfter.availableSystemMemoryGB, 0, 'f', 3)
-                .arg(memoryBefore.swapUsedGB, 0, 'f', 3)
-                .arg(memoryAfter.swapUsedGB, 0, 'f', 3));
-    }
-
-    {   ScopedGraphTimer voxelAssignmentTimer(verbose, __func__, QStringLiteral("Assigning voxels to initial nodes"));
-        const SegmentIdType* imageBuffer = pImage->GetBufferPointer();
-        const itk::ImageRegion<3>& region = pImage->GetLargestPossibleRegion();
-        const itk::Size<3>& size = region.GetSize();
-        std::vector<std::vector<Voxel>> labelVoxels(nextFreeId);
-//        reserve vector space
-        for (unsigned int i = 0; i < nextFreeId; ++i) {
-            labelVoxels[i].reserve(segmentIdHistogram[i]);
+            logGraphDebugIf(
+                verbose,
+                __func__,
+                QStringLiteral(
+                    "Initial node allocation phases label_slots=%1 initial_nodes=%2 ignored_labels=%3 "
+                    "ignored_voxel_count=%4 background_voxel_count=%5 largest_foreground_label_voxel_count=%6 "
+                    "resize_dense_index_ms=%7 reset_previous_graph_ms=%8 create_initial_nodes_ms=%9")
+                    .arg(static_cast<qulonglong>(nextFreeId))
+                    .arg(static_cast<qulonglong>(initialNodeCount))
+                    .arg(static_cast<qulonglong>(ignoredLabelCount))
+                    .arg(static_cast<qulonglong>(ignoredVoxelCount))
+                    .arg(static_cast<qulonglong>(backgroundVoxelCount))
+                    .arg(static_cast<qulonglong>(largestForegroundLabelVoxelCount))
+                    .arg(resizeDenseNodeIndexMs, 0, 'f', 3)
+                    .arg(resetPreviousGraphMs, 0, 'f', 3)
+                    .arg(createInitialNodesMs, 0, 'f', 3));
         }
 
-        for (unsigned int z = 0; z < size[2]; ++z) {
-            for (unsigned int y = 0; y < size[1]; ++y) {
-                for (unsigned int x = 0; x < size[0]; ++x) {
-                    unsigned long linearIndex = (z * size[1] * size[0]) + (y * size[0]) + x;
-                    SegmentIdType label = imageBuffer[linearIndex];
-                    labelVoxels[label].emplace_back(x, y, z);
+        {
+            ScopedGraphTimer voxelAssignmentTimer(verbose, __func__, QStringLiteral("Assigning voxels to initial nodes"));
+            const SegmentIdType *segmentLabelBuffer = pImage->GetBufferPointer();
+            const itk::Size<3> &size = pImage->GetLargestPossibleRegion().GetSize();
+
+            for (unsigned int z = 0; z < size[2]; ++z) {
+                for (unsigned int y = 0; y < size[1]; ++y) {
+                    for (unsigned int x = 0; x < size[0]; ++x) {
+                        const std::size_t voxelIndex =
+                            static_cast<std::size_t>(z) * size[1] * size[0] +
+                            static_cast<std::size_t>(y) * size[0] + x;
+                        InitialNode *initialNode = initialNodeByLabel[segmentLabelBuffer[voxelIndex]];
+                        if (initialNode != nullptr) {
+                            initialNode->voxels.emplace_back(x, y, z);
+                        }
+                    }
                 }
             }
         }
 
-        for (SegmentIdType label = 0; label < nextFreeId; ++label) {
-            if (!labelVoxels[label].empty()) {
-                initialNodesVec[label]->voxels = std::move(labelVoxels[label]);
-            }
-        }
-    }
-//    {
-//        itk::ImageRegionConstIteratorWithIndex<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
-//        it.GoToBegin();
-//        while (!it.IsAtEnd()) {
-//            initialNodesVec[it.Get()]->addVoxel(it.GetIndex());
-//            ++it;
-//        }
-//    }
-
-    {   ScopedGraphTimer finalizeNodesTimer(verbose, __func__, QStringLiteral("Finalizing initial node ROIs"));
-        for (unsigned int i = 0; i < initialNodesVec.size(); ++i) {
-            if (segmentIdHistogram[i] > 0) {
-                if (isIgnoredId(i)) {
-                    segmentManager.removeInitialNode(i);
+        {
+            ScopedGraphTimer finalizeNodesTimer(verbose, __func__, QStringLiteral("Finalizing initial node ROIs"));
+            for (InitialNode *initialNode : initialNodeByLabel) {
+                if (initialNode != nullptr) {
+                    initialNode->roi.updateBoundingRoi(initialNode->voxels);
                 }
-                initialNodesVec[i]->roi.updateBoundingRoi(initialNodesVec[i]->voxels);
             }
         }
     }
@@ -1576,7 +1690,7 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
 
     initializeEdgeVolumeAndEdgeStatus();
     constructInitialNodes(graphBase->pWorkingSegmentsImage);
-    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes(1);
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes(1);
     segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
 
     std::unordered_set<SegmentIdType> assignedInitialLabels;
@@ -2184,7 +2298,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
 
     const auto recomputeInitialEdgesStart = Clock::now();
     for (const SegmentIdType initialLabel : replacementInitialLabels) {
-        segmentManager.computeSurfaceAndOneSidedEdgesOnInitialNode(initialNodes.at(initialLabel).get());
+        segmentManager.computeOneSidedEdgesOnInitialNode(initialNodes.at(initialLabel).get());
     }
     for (const SegmentIdType initialLabel : replacementInitialLabels) {
         segmentManager.computeCorrospondingOneSidedInitialEdges(initialNodes.at(initialLabel).get());
@@ -2842,7 +2956,7 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
 
 
                 // calculate surfacevoxels and onesidededges for new node
-                segmentManager.computeSurfaceAndOneSidedEdgesOnInitialNode(newInitialNode);
+                segmentManager.computeOneSidedEdgesOnInitialNode(newInitialNode);
                 logGraphDebugIf(verbose, __func__, QStringLiteral("Computed one-sided edges for inserted initial node"));
                 segmentManager.computeCorrospondingOneSidedInitialEdges(newInitialNode);
 //            printInitialNodesToFile("initialNodes.txt");

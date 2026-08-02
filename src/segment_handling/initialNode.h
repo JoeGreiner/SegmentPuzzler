@@ -46,7 +46,7 @@ public:
     // get a vector of the ids of the connected nodes. useful to iterate over elements if normal iterators get invalided
     std::vector<SegmentIdType> getVectorOfConnectedNodeIds() override;
 
-    void computeOnesidedSurfaceAndEdges(const std::vector<SegmentIdType> &ignoredSegmentIds);
+    void computeOneSidedEdges(const std::vector<SegmentIdType> &ignoredSegmentIds);
 
     void addTwoSidedEdge(std::shared_ptr<InitialEdge> const &edgeToAdd);
 
@@ -71,9 +71,6 @@ private:
 
     // this indicates the numId of the corresponding segment in the working copy
     SegmentIdType currentWorkingNodeLabel;
-
-    std::vector<Voxel> onesidedSurfaceVoxels;
-
 
     SegmentIdImageType::Pointer pSegments;
 

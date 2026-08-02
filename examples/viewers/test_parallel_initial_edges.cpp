@@ -159,9 +159,48 @@ int testFeatureEnabledBuildMatchesSerial() {
 int testEmptyNodeProducesNoEdges() {
     auto graphBase = std::make_shared<GraphBase>();
     InitialNode node(graphBase, makeTestImage(), 41);
-    node.computeOnesidedSurfaceAndEdges({0});
+    node.computeOneSidedEdges({0});
     if (!node.onesidedEdges.empty()) {
         return failTest("An empty initial node should not produce one-sided edges.");
+    }
+    return 0;
+}
+
+int testIgnoredLabelsAreNotMaterialized() {
+    constexpr SegmentIdType additionallyIgnoredLabel = 40;
+    auto graphBase = std::make_shared<GraphBase>();
+    graphBase->pWorkingSegmentsImage = makeTestImage();
+    graphBase->ignoredSegmentLabels.push_back(additionallyIgnoredLabel);
+
+    auto graph = std::make_unique<Graph>(graphBase, false);
+    graphBase->pGraph = graph.get();
+    graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+
+    if (graph->initialNodes.count(0) != 0 || graph->initialNodes.count(additionallyIgnoredLabel) != 0) {
+        return failTest("Ignored labels were materialized as initial nodes.");
+    }
+    if (graph->workingNodes.count(0) != 0 || graph->workingNodes.count(additionallyIgnoredLabel) != 0) {
+        return failTest("Ignored labels were materialized as working nodes.");
+    }
+
+    std::size_t expectedVoxelCount = 0;
+    const auto *segmentLabelBuffer = graphBase->pWorkingSegmentsImage->GetBufferPointer();
+    const std::size_t imageVoxelCount =
+        graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels();
+    for (std::size_t voxelIndex = 0; voxelIndex < imageVoxelCount; ++voxelIndex) {
+        const SegmentIdType label = segmentLabelBuffer[voxelIndex];
+        if (label != 0 && label != additionallyIgnoredLabel) {
+            ++expectedVoxelCount;
+        }
+    }
+
+    std::size_t materializedVoxelCount = 0;
+    for (const auto &[label, initialNode] : graph->initialNodes) {
+        materializedVoxelCount += initialNode->voxels.size();
+    }
+    if (materializedVoxelCount != expectedVoxelCount) {
+        return failTest("Initial nodes do not contain exactly the non-ignored voxels.");
     }
     return 0;
 }
@@ -181,6 +220,9 @@ int main(int argc, char **argv) {
         return result;
     }
     if (int result = testEmptyNodeProducesNoEdges()) {
+        return result;
+    }
+    if (int result = testIgnoredLabelsAreNotMaterialized()) {
         return result;
     }
 

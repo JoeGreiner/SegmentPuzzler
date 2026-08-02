@@ -987,6 +987,7 @@ void WatershedControl::clearAgglomertionPreview() {
                 break;
             }
         }
+        pAgglomertionPreviewSignal->releaseImage();
     }
     restoreHiddenAgglomertionPreviewSource();
 }
