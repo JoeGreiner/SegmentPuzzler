@@ -1,15 +1,25 @@
 #include "itkWatershedHelpers.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <exception>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
-#include <queue>
+#include <numeric>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#ifdef USE_OMP
+#include <omp.h>
+#endif
 
 #include "itkBinaryThresholdImageFilter.h"
 #include <itkCastImageFilter.h>
@@ -72,11 +82,124 @@ SegmentsImageType::Pointer copySegmentsImage(SegmentsImageType::Pointer source) 
     return image;
 }
 
+struct BoundaryComponentRecord {
+    SegmentIdType id = 0;
+    SegmentIdType originalLabel = 0;
+};
+
+class BoundaryComponentDisjointSet {
+public:
+    explicit BoundaryComponentDisjointSet(std::size_t componentCount)
+        : parents(componentCount + 1) {
+        std::iota(parents.begin(), parents.end(), SegmentIdType{0});
+    }
+
+    SegmentIdType find(SegmentIdType componentId) {
+        SegmentIdType root = componentId;
+        while (parents[root] != root) {
+            root = parents[root];
+        }
+        while (parents[componentId] != componentId) {
+            const SegmentIdType parent = parents[componentId];
+            parents[componentId] = root;
+            componentId = parent;
+        }
+        return root;
+    }
+
+    void unite(SegmentIdType first, SegmentIdType second) {
+        first = find(first);
+        second = find(second);
+        if (first == second) {
+            return;
+        }
+        if (second < first) {
+            std::swap(first, second);
+        }
+        parents[second] = first;
+    }
+
+    void flatten() {
+        for (std::size_t componentId = 1; componentId < parents.size(); ++componentId) {
+            parents[componentId] = find(static_cast<SegmentIdType>(componentId));
+        }
+    }
+
+    SegmentIdType representative(SegmentIdType componentId) const {
+        return parents[componentId];
+    }
+
+private:
+    std::vector<SegmentIdType> parents;
+};
+
+std::vector<BoundaryComponentRecord> labelBoundaryComponentSlab(
+    const SegmentIdType *displayBuffer,
+    SegmentIdType *componentBuffer,
+    std::size_t dimX,
+    std::size_t dimY,
+    std::size_t zBegin,
+    std::size_t zEnd,
+    std::atomic<std::uint64_t> &nextComponentId) {
+    const std::size_t planeXY = dimX * dimY;
+    const std::size_t firstIndex = zBegin * planeXY;
+    const std::size_t endIndex = zEnd * planeXY;
+
+    std::vector<BoundaryComponentRecord> records;
+    std::vector<std::size_t> stack;
+    records.reserve(1024);
+    stack.reserve(1024);
+
+    for (std::size_t seed = firstIndex; seed < endIndex; ++seed) {
+        const SegmentIdType originalLabel = displayBuffer[seed];
+        if (originalLabel == 0 || componentBuffer[seed] != 0) {
+            continue;
+        }
+
+        const std::uint64_t componentId64 = nextComponentId.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (componentId64 > std::numeric_limits<SegmentIdType>::max()) {
+            throw std::overflow_error("Boundary component count exceeds the segment label range.");
+        }
+        const SegmentIdType componentId = static_cast<SegmentIdType>(componentId64);
+        records.push_back({componentId, originalLabel});
+
+        componentBuffer[seed] = componentId;
+        stack.clear();
+        stack.push_back(seed);
+
+        while (!stack.empty()) {
+            const std::size_t current = stack.back();
+            stack.pop_back();
+            const std::size_t z = current / planeXY;
+            const std::size_t remainder = current % planeXY;
+            const std::size_t y = remainder / dimX;
+            const std::size_t x = remainder % dimX;
+
+            const auto addNeighbor = [&](std::size_t neighbor) {
+                if (componentBuffer[neighbor] == 0 && displayBuffer[neighbor] == originalLabel) {
+                    componentBuffer[neighbor] = componentId;
+                    stack.push_back(neighbor);
+                }
+            };
+
+            if (x > 0) addNeighbor(current - 1);
+            if (x + 1 < dimX) addNeighbor(current + 1);
+            if (y > 0) addNeighbor(current - dimX);
+            if (y + 1 < dimY) addNeighbor(current + dimX);
+            if (z > zBegin) addNeighbor(current - planeXY);
+            if (z + 1 < zEnd) addNeighbor(current + planeXY);
+        }
+    }
+
+    return records;
+}
+
 void relabelInjectedBoundaryComponents(
     SegmentsImageType::Pointer labels,
     itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
     SegmentsImageType::Pointer &displayLabels,
-    BoundaryConsistentPartitionResult::SplitComponentMap &splitComponentIds) {
+    BoundaryConsistentPartitionResult::SplitComponentMap &splitComponentIds,
+    int threadCount) {
     const auto totalStarted = std::chrono::steady_clock::now();
     auto stageStarted = totalStarted;
     displayLabels = copySegmentsImage(labels);
@@ -89,17 +212,30 @@ void relabelInjectedBoundaryComponents(
         return;
     }
 
+    if (labels->GetLargestPossibleRegion().GetSize() !=
+        thresholdedBoundaries->GetLargestPossibleRegion().GetSize()) {
+        throw std::invalid_argument("Boundary relabeling requires matching label and boundary shapes.");
+    }
+
     const auto size = labels->GetLargestPossibleRegion().GetSize();
-    const std::ptrdiff_t dimX = static_cast<std::ptrdiff_t>(size[0]);
-    const std::ptrdiff_t dimY = static_cast<std::ptrdiff_t>(size[1]);
-    const std::ptrdiff_t dimZ = static_cast<std::ptrdiff_t>(size[2]);
-    const std::ptrdiff_t planeXY = dimX * dimY;
-    const std::ptrdiff_t total = dimX * dimY * dimZ;
+    const std::size_t dimX = size[0];
+    const std::size_t dimY = size[1];
+    const std::size_t dimZ = size[2];
+    const std::size_t planeXY = dimX * dimY;
+    const std::size_t total = planeXY * dimZ;
+    const int requestedThreadCount = std::max(1, threadCount);
+    int executionThreadCount = 1;
+#ifdef USE_OMP
+    executionThreadCount = std::min(requestedThreadCount, std::max(1, omp_get_max_threads()));
+#endif
 
     SegmentIdType *displayBuffer = displayLabels->GetBufferPointer();
     const unsigned char *thresholdBuffer = thresholdedBoundaries->GetBufferPointer();
     stageStarted = std::chrono::steady_clock::now();
-    for (std::ptrdiff_t index = 0; index < total; ++index) {
+#ifdef USE_OMP
+#pragma omp parallel for num_threads(executionThreadCount)
+#endif
+    for (long long index = 0; index < static_cast<long long>(total); ++index) {
         if (thresholdBuffer[index] != 0) {
             displayBuffer[index] = 0;
         }
@@ -111,84 +247,134 @@ void relabelInjectedBoundaryComponents(
     auto componentImage = cloneSegmentsImageMetadata(labels);
     componentImage->FillBuffer(0);
     SegmentIdType *componentBuffer = componentImage->GetBufferPointer();
-
-    std::vector<unsigned char> visited(static_cast<std::size_t>(total), 0);
-    std::vector<std::ptrdiff_t> queue;
-    queue.reserve(1024);
     emitWatershedLog("Boundary relabel: workspace allocation_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)));
 
-    std::vector<SegmentIdType> componentOriginalLabels(1, 0);
-    std::unordered_map<SegmentIdType, std::vector<SegmentIdType>> componentsByOriginalLabel;
-    SegmentIdType nextComponentId = 1;
+    if (total == 0) {
+        emitWatershedLog("Boundary relabel: empty image, total_ms=" +
+                         std::to_string(elapsedMilliseconds(totalStarted)));
+        return;
+    }
 
-    const std::array<std::ptrdiff_t, 6> offsetX{{1, -1, 0, 0, 0, 0}};
-    const std::array<std::ptrdiff_t, 6> offsetY{{0, 0, 1, -1, 0, 0}};
-    const std::array<std::ptrdiff_t, 6> offsetZ{{0, 0, 0, 0, 1, -1}};
+    const int slabCount = static_cast<int>(
+        std::min<std::size_t>(static_cast<std::size_t>(executionThreadCount), dimZ));
+    // Label disjoint z-slabs independently; only their shared faces need a later merge.
+    std::vector<std::vector<BoundaryComponentRecord>> recordsBySlab(static_cast<std::size_t>(slabCount));
+    std::atomic<std::uint64_t> nextComponentId{0};
+    std::exception_ptr firstException;
+    std::mutex exceptionMutex;
+    std::atomic<bool> stopRequested{false};
+    int usedThreadCount = 1;
+
+    const auto labelSlab = [&](int slabIndex) {
+        if (stopRequested.load(std::memory_order_relaxed)) {
+            return;
+        }
+        try {
+            const std::size_t zBegin = dimZ * static_cast<std::size_t>(slabIndex) /
+                                       static_cast<std::size_t>(slabCount);
+            const std::size_t zEnd = dimZ * static_cast<std::size_t>(slabIndex + 1) /
+                                     static_cast<std::size_t>(slabCount);
+            recordsBySlab[static_cast<std::size_t>(slabIndex)] = labelBoundaryComponentSlab(
+                displayBuffer, componentBuffer, dimX, dimY, zBegin, zEnd, nextComponentId);
+        } catch (...) {
+            std::lock_guard<std::mutex> guard(exceptionMutex);
+            if (!firstException) {
+                firstException = std::current_exception();
+            }
+            stopRequested.store(true, std::memory_order_relaxed);
+        }
+    };
 
     stageStarted = std::chrono::steady_clock::now();
-    for (std::ptrdiff_t seed = 0; seed < total; ++seed) {
-        if (visited[seed] != 0 || displayBuffer[seed] == 0) {
-            visited[seed] = 1;
-            continue;
-        }
-
-        const SegmentIdType originalLabel = displayBuffer[seed];
-        queue.clear();
-        queue.push_back(seed);
-        visited[seed] = 1;
-        componentBuffer[seed] = nextComponentId;
-
-        for (std::size_t queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
-            const std::ptrdiff_t current = queue[queueIndex];
-            const std::ptrdiff_t z = current / planeXY;
-            const std::ptrdiff_t remainder = current % planeXY;
-            const std::ptrdiff_t y = remainder / dimX;
-            const std::ptrdiff_t x = remainder % dimX;
-
-            for (size_t direction = 0; direction < offsetX.size(); ++direction) {
-                const std::ptrdiff_t nx = x + offsetX[direction];
-                const std::ptrdiff_t ny = y + offsetY[direction];
-                const std::ptrdiff_t nz = z + offsetZ[direction];
-                if (nx < 0 || ny < 0 || nz < 0 || nx >= dimX || ny >= dimY || nz >= dimZ) {
-                    continue;
-                }
-
-                const std::ptrdiff_t neighbor = nx + ny * dimX + nz * planeXY;
-                if (visited[neighbor] != 0 || displayBuffer[neighbor] != originalLabel) {
-                    continue;
-                }
-
-                visited[neighbor] = 1;
-                componentBuffer[neighbor] = nextComponentId;
-                queue.push_back(neighbor);
+#ifdef USE_OMP
+    if (slabCount > 1) {
+#pragma omp parallel num_threads(slabCount)
+        {
+#pragma omp single
+            usedThreadCount = omp_get_num_threads();
+#pragma omp for schedule(static)
+            for (int slabIndex = 0; slabIndex < slabCount; ++slabIndex) {
+                labelSlab(slabIndex);
             }
         }
-
-        componentOriginalLabels.push_back(originalLabel);
-        componentsByOriginalLabel[originalLabel].push_back(nextComponentId);
-        ++nextComponentId;
+    } else
+#endif
+    {
+        labelSlab(0);
     }
+
+    if (firstException) {
+        std::rethrow_exception(firstException);
+    }
+
+    const std::size_t localComponentCount = static_cast<std::size_t>(nextComponentId.load());
+    const double localLabelingMs = elapsedMilliseconds(stageStarted);
+
+    const auto mergeStarted = std::chrono::steady_clock::now();
+    BoundaryComponentDisjointSet componentSets(localComponentCount);
+    // Equal-label face neighbors are the only components that can connect across slabs.
+    for (int slabIndex = 1; slabIndex < slabCount; ++slabIndex) {
+        const std::size_t z = dimZ * static_cast<std::size_t>(slabIndex) /
+                              static_cast<std::size_t>(slabCount);
+        const std::size_t lowerOffset = (z - 1) * planeXY;
+        const std::size_t upperOffset = z * planeXY;
+        for (std::size_t offset = 0; offset < planeXY; ++offset) {
+            const SegmentIdType label = displayBuffer[lowerOffset + offset];
+            if (label != 0 && label == displayBuffer[upperOffset + offset]) {
+                componentSets.unite(
+                    componentBuffer[lowerOffset + offset],
+                    componentBuffer[upperOffset + offset]);
+            }
+        }
+    }
+    const double boundaryMergeMs = elapsedMilliseconds(mergeStarted);
+
+    std::unordered_map<SegmentIdType, std::vector<SegmentIdType>> componentsByOriginalLabel;
+    std::vector<unsigned char> rootSeen(localComponentCount + 1, 0);
+    std::size_t globalComponentCount = 0;
+    for (const auto &slabRecords : recordsBySlab) {
+        for (const BoundaryComponentRecord &record : slabRecords) {
+            const SegmentIdType root = componentSets.find(record.id);
+            if (rootSeen[root] != 0) {
+                continue;
+            }
+            rootSeen[root] = 1;
+            componentsByOriginalLabel[record.originalLabel].push_back(root);
+            ++globalComponentCount;
+        }
+    }
+    componentSets.flatten();
+
     emitWatershedLog("Boundary relabel: component search_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)) +
-                     ", components=" + std::to_string(nextComponentId - 1));
+                     ", local_ms=" + std::to_string(localLabelingMs) +
+                     ", merge_ms=" + std::to_string(boundaryMergeMs) +
+                     ", components=" + std::to_string(globalComponentCount) +
+                     ", local_components=" + std::to_string(localComponentCount) +
+                     ", slabs=" + std::to_string(slabCount) +
+                     ", requested_threads=" + std::to_string(requestedThreadCount) +
+                     ", threads=" + std::to_string(usedThreadCount));
 
     stageStarted = std::chrono::steady_clock::now();
-    SegmentIdType nextFreshLabel = getMaximumOfUIntImage(labels) + 1;
-    std::vector<SegmentIdType> componentToFinalLabel(nextComponentId, 0);
+    std::uint64_t nextFreshLabel = static_cast<std::uint64_t>(getMaximumOfUIntImage(labels)) + 1;
+    std::vector<SegmentIdType> rootToFinalLabel(localComponentCount + 1, 0);
     for (auto &entry : componentsByOriginalLabel) {
         const SegmentIdType originalLabel = entry.first;
-        auto &componentIds = entry.second;
-        if (componentIds.size() == 1) {
-            componentToFinalLabel[componentIds.front()] = originalLabel;
+        auto &componentRoots = entry.second;
+        if (componentRoots.size() == 1) {
+            rootToFinalLabel[componentRoots.front()] = originalLabel;
             continue;
         }
 
         auto &newLabels = splitComponentIds[originalLabel];
-        newLabels.reserve(componentIds.size());
-        for (SegmentIdType componentId : componentIds) {
-            const SegmentIdType newLabel = nextFreshLabel++;
-            componentToFinalLabel[componentId] = newLabel;
+        newLabels.reserve(componentRoots.size());
+        for (SegmentIdType componentRoot : componentRoots) {
+            if (nextFreshLabel > std::numeric_limits<SegmentIdType>::max()) {
+                throw std::overflow_error("Boundary split labels exceed the segment label range.");
+            }
+            const SegmentIdType newLabel = static_cast<SegmentIdType>(nextFreshLabel++);
+            rootToFinalLabel[componentRoot] = newLabel;
             newLabels.push_back(newLabel);
         }
     }
@@ -197,9 +383,14 @@ void relabelInjectedBoundaryComponents(
                      ", split_labels=" + std::to_string(splitComponentIds.size()));
 
     stageStarted = std::chrono::steady_clock::now();
-    for (std::ptrdiff_t index = 0; index < total; ++index) {
+#ifdef USE_OMP
+#pragma omp parallel for num_threads(executionThreadCount)
+#endif
+    for (long long index = 0; index < static_cast<long long>(total); ++index) {
         const SegmentIdType componentId = componentBuffer[index];
-        displayBuffer[index] = componentId == 0 ? 0 : componentToFinalLabel[componentId];
+        displayBuffer[index] = componentId == 0
+            ? 0
+            : rootToFinalLabel[componentSets.representative(componentId)];
     }
     emitWatershedLog("Boundary relabel: writeback_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)) +
@@ -562,7 +753,8 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
     }
 
     auto stageStarted = std::chrono::steady_clock::now();
-    relabelInjectedBoundaryComponents(labels, thresholdedBoundaries, result.displayLabels, result.splitComponentIds);
+    relabelInjectedBoundaryComponents(
+        labels, thresholdedBoundaries, result.displayLabels, result.splitComponentIds, threadCount);
     emitWatershedLog("Boundary-consistent partition: relabel_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)));
     if (repairCanonicalLabels) {

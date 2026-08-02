@@ -1,4 +1,6 @@
 #include "src/utils/WatershedRagAgglomeration.h"
+#include "src/utils/RegionAdjacencyGraph.h"
+#include "src/utils/RegionMerger.h"
 
 #include <algorithm>
 #include <array>
@@ -9,12 +11,9 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
-#include <numeric>
-#include <queue>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -27,7 +26,6 @@ namespace {
 
 using SegmentIdType = dataType::SegmentIdType;
 using SegmentsImageType = dataType::SegmentsImageType;
-using NeighborMap = std::unordered_map<int, int>;
 
 std::mutex &agglomerationLogMutex() {
     static std::mutex mutex;
@@ -47,95 +45,6 @@ void emitAgglomerationLog(const std::string &message) {
     }
     std::cout << message << std::endl;
 }
-
-struct EdgeStats {
-    double totalBoundarySum = 0.0;
-    double totalSupport = 0.0;
-    double openBoundarySum = 0.0;
-    double openSupport = 0.0;
-};
-
-struct EdgeAgg {
-    int a = -1;
-    int b = -1;
-    double totalBoundarySum = 0.0;
-    double totalSupport = 0.0;
-    double openBoundarySum = 0.0;
-    double openSupport = 0.0;
-    double selectedSupport = 0.0;
-    double selectedMeanScore = 0.0;
-    double rawSupport = 0.0;
-    double rawMeanScore = 0.0;
-    double score = 0.0;
-    uint32_t version = 0;
-    bool alive = true;
-};
-
-struct Cluster {
-    int parent = -1;
-    uint32_t rank = 0;
-    uint64_t voxelCount = 0;
-    bool alive = true;
-    NeighborMap neighbors;
-};
-
-struct HeapItem {
-    double score = 0.0;
-    int edgeId = -1;
-    uint32_t version = 0;
-};
-
-struct HeapCompare {
-    bool operator()(const HeapItem &lhs, const HeapItem &rhs) const {
-        if (lhs.score != rhs.score) {
-            return lhs.score < rhs.score;
-        }
-        return lhs.edgeId > rhs.edgeId;
-    }
-};
-
-struct SelectedMerge {
-    int edgeId = -1;
-    uint32_t version = 0;
-    int rootA = -1;
-    int rootB = -1;
-    int winner = -1;
-    int loser = -1;
-};
-
-struct ReductionEdge {
-    uint64_t key = 0;
-    double totalBoundarySum = 0.0;
-    double totalSupport = 0.0;
-    double openBoundarySum = 0.0;
-    double openSupport = 0.0;
-};
-
-using EdgeHeap = std::priority_queue<HeapItem, std::vector<HeapItem>, HeapCompare>;
-
-struct BoundaryScoreComponents {
-    double signedSum = 0.0;
-    double support = 0.0;
-    double meanScore = 0.0;
-};
-
-struct CleanupCandidate {
-    int smallRoot = -1;
-    int neighborRoot = -1;
-    double gateScore = -std::numeric_limits<double>::infinity();
-    uint64_t smallSize = 0;
-    uint64_t neighborSize = 0;
-
-    bool valid() const {
-        return smallRoot >= 0 && neighborRoot >= 0;
-    }
-};
-
-template <typename IsActiveVoxel>
-struct AgglomerationContext;
-
-int findRoot(std::vector<Cluster> &clusters, int node);
-int findRootConst(const std::vector<Cluster> &clusters, int node);
 
 double currentTimeSeconds() {
 #ifdef USE_OMP
@@ -157,10 +66,14 @@ void updateBoundaryRange(double value, double &boundaryMin, double &boundaryMax)
     boundaryMax = std::max(boundaryMax, value);
 }
 
-void logStepTime(double startTimeSeconds, const char *description) {
+void logElapsedMilliseconds(double elapsedMs, const char *description) {
     std::ostringstream stream;
-    stream << description << ' ' << (currentTimeSeconds() - startTimeSeconds);
+    stream << description << ' ' << elapsedMs / 1000.0;
     emitAgglomerationLog(stream.str());
+}
+
+void logStepTime(double startTimeSeconds, const char *description) {
+    logElapsedMilliseconds(elapsedMilliseconds(startTimeSeconds), description);
 }
 
 int effectiveThreadCount(const WatershedRagAgglomerationOptions &options) {
@@ -214,177 +127,9 @@ double normalizeBoundaryValue(float rawValue, BoundaryNormalizationMode mode) {
     return std::clamp(normalized, 0.0, 1.0);
 }
 
-bool sizeBiasSoftEnabled(const WatershedRagAgglomerationOptions &options) {
-    return options.sizeBiasStrategy == SizeBiasStrategy::SoftBias ||
-           options.sizeBiasStrategy == SizeBiasStrategy::SoftBiasAndCleanup;
-}
-
 bool sizeBiasCleanupEnabled(const WatershedRagAgglomerationOptions &options) {
     return options.sizeBiasStrategy == SizeBiasStrategy::Cleanup ||
            options.sizeBiasStrategy == SizeBiasStrategy::SoftBiasAndCleanup;
-}
-
-BoundaryScoreComponents computeBoundaryScoreComponents(const EdgeAgg &edge,
-                                                       BoundaryEvidenceStrategy strategy,
-                                                       double tau) {
-    BoundaryScoreComponents components;
-    switch (strategy) {
-        case BoundaryEvidenceStrategy::RawInterfaceMean: {
-            if (edge.totalSupport <= 0.0) {
-                return components;
-            }
-            const double meanBoundary = edge.totalBoundarySum / edge.totalSupport;
-            components.signedSum = edge.totalSupport * (tau - meanBoundary);
-            components.support = edge.totalSupport;
-            break;
-        }
-        case BoundaryEvidenceStrategy::OpenInterfaceMean: {
-            if (edge.openSupport <= 0.0) {
-                return components;
-            }
-            const double meanBoundary = edge.openBoundarySum / edge.openSupport;
-            components.signedSum = edge.openSupport * (tau - meanBoundary);
-            components.support = edge.openSupport;
-            break;
-        }
-        case BoundaryEvidenceStrategy::OpenFractionWeighted: {
-            if (edge.openSupport <= 0.0) {
-                return components;
-            }
-            const double meanBoundary = edge.openBoundarySum / edge.openSupport;
-            components.signedSum = edge.openSupport * (tau - meanBoundary);
-            components.support = edge.totalSupport;
-            break;
-        }
-    }
-    if (components.support > 0.0) {
-        components.meanScore = components.signedSum / components.support;
-    }
-    return components;
-}
-
-double computeLinkagePriority(const BoundaryScoreComponents &components, RagLinkage linkage) {
-    if (linkage == RagLinkage::Sum) {
-        return components.signedSum;
-    }
-    if (components.support <= 0.0) {
-        return 0.0;
-    }
-    return components.meanScore;
-}
-
-double computeSmallness(uint64_t voxelCount, uint64_t threshold) {
-    if (threshold == 0 || voxelCount >= threshold) {
-        return 0.0;
-    }
-    return std::clamp(static_cast<double>(threshold - voxelCount) /
-                          static_cast<double>(threshold),
-                      0.0,
-                      1.0);
-}
-
-double sizeBiasEvidenceSupport(const EdgeAgg &edge, const WatershedRagAgglomerationOptions &options) {
-    if (!options.sizeBiasRespectMask) {
-        return edge.rawSupport;
-    }
-    switch (options.boundaryEvidenceStrategy) {
-        case BoundaryEvidenceStrategy::RawInterfaceMean:
-            return edge.totalSupport;
-        case BoundaryEvidenceStrategy::OpenInterfaceMean:
-        case BoundaryEvidenceStrategy::OpenFractionWeighted:
-            return edge.openSupport;
-    }
-    return 0.0;
-}
-
-double sizeBiasGateScore(const EdgeAgg &edge, const WatershedRagAgglomerationOptions &options) {
-    return options.sizeBiasRespectMask ? edge.selectedMeanScore : edge.rawMeanScore;
-}
-
-double computeSizeBiasBonus(const EdgeAgg &edge,
-                            const std::vector<Cluster> &clusters,
-                            const WatershedRagAgglomerationOptions &options) {
-    const double evidenceSupport = sizeBiasEvidenceSupport(edge, options);
-    if (!sizeBiasSoftEnabled(options) || evidenceSupport <= 0.0) {
-        return 0.0;
-    }
-    const double smallnessA = computeSmallness(clusters[edge.a].voxelCount, options.sizeBiasThreshold);
-    const double smallnessB = computeSmallness(clusters[edge.b].voxelCount, options.sizeBiasThreshold);
-    const double bonus = options.sizeBiasStrength * std::max(smallnessA, smallnessB);
-    if (options.linkage == RagLinkage::Sum) {
-        return bonus * evidenceSupport;
-    }
-    return bonus;
-}
-
-void recomputeEdgeScore(EdgeAgg &edge,
-                        const std::vector<Cluster> &clusters,
-                        const WatershedRagAgglomerationOptions &options) {
-    const BoundaryScoreComponents selectedComponents =
-        computeBoundaryScoreComponents(edge, options.boundaryEvidenceStrategy, options.tau);
-    const BoundaryScoreComponents rawComponents =
-        computeBoundaryScoreComponents(edge, BoundaryEvidenceStrategy::RawInterfaceMean, options.tau);
-
-    edge.selectedSupport = selectedComponents.support;
-    edge.selectedMeanScore = selectedComponents.meanScore;
-    edge.rawSupport = rawComponents.support;
-    edge.rawMeanScore = rawComponents.meanScore;
-    edge.score = computeLinkagePriority(selectedComponents, options.linkage) +
-                 computeSizeBiasBonus(edge, clusters, options);
-}
-
-bool isClusterRootAlive(const std::vector<Cluster> &clusters, int clusterId) {
-    return clusterId >= 0 &&
-           clusterId < static_cast<int>(clusters.size()) &&
-           clusters[clusterId].alive &&
-           clusters[clusterId].parent == clusterId;
-}
-
-uint64_t makePairKey(int a, int b) {
-    const uint32_t lo = static_cast<uint32_t>(std::min(a, b));
-    const uint32_t hi = static_cast<uint32_t>(std::max(a, b));
-    return (static_cast<uint64_t>(lo) << 32u) | static_cast<uint64_t>(hi);
-}
-
-std::pair<int, int> unpackPairKey(uint64_t key) {
-    return {
-        static_cast<int>(key >> 32u),
-        static_cast<int>(key & 0xffffffffu)
-    };
-}
-
-int findRoot(std::vector<Cluster> &clusters, int node) {
-    int root = node;
-    while (clusters[root].parent != root) {
-        root = clusters[root].parent;
-    }
-    while (clusters[node].parent != node) {
-        const int parent = clusters[node].parent;
-        clusters[node].parent = root;
-        node = parent;
-    }
-    return root;
-}
-
-int findRootConst(const std::vector<Cluster> &clusters, int node) {
-    int root = node;
-    while (clusters[root].parent != root) {
-        root = clusters[root].parent;
-    }
-    return root;
-}
-
-std::pair<int, int> chooseMergeRoots(const std::vector<Cluster> &clusters, int a, int b) {
-    int winner = a;
-    int loser = b;
-    const auto winnerNeighborCount = clusters[winner].neighbors.size();
-    const auto loserNeighborCount = clusters[loser].neighbors.size();
-    if (winnerNeighborCount < loserNeighborCount ||
-        (winnerNeighborCount == loserNeighborCount && clusters[winner].rank < clusters[loser].rank) ||
-        (winnerNeighborCount == loserNeighborCount && clusters[winner].rank == clusters[loser].rank && winner > loser)) {
-        std::swap(winner, loser);
-    }
-    return {winner, loser};
 }
 
 template <typename TImage>
@@ -412,13 +157,16 @@ void printStats(const WatershedRagAgglomerationStats &stats) {
            << " policy=" << agglomerationExecutionPolicyName(stats.executionPolicyUsed)
            << " batches=" << stats.batchCount
            << " max_batch_pairs=" << stats.maxBatchPairs
-           << " compact_ms=" << stats.compactLabelsMs
+           << " region_index_ms=" << stats.regionIndexBuildMs
            << " rag_ms=" << stats.ragBuildMs
-           << " heap_ms=" << stats.heapInitMs
+           << " merge_queue_init_ms=" << stats.mergeQueueInitializationMs
            << " agglomeration_ms=" << stats.agglomerationMs
            << " batch_select_ms=" << stats.batchSelectionMs
-           << " batch_reduce_ms=" << stats.batchReduceMs
+           << " batch_region_merge_ms=" << stats.batchRegionMergeMs
+           << " batch_merge_score_update_ms=" << stats.batchMergeScoreUpdateMs
            << " batch_apply_ms=" << stats.batchApplyMs
+           << " outdated_merge_candidates=" << stats.outdatedMergeCandidateCount
+           << " updated_rag_edges=" << stats.updatedRagEdgeCount
            << " projection_ms=" << stats.projectionMs
            << " boundary_min=" << stats.boundaryMin
            << " boundary_max=" << stats.boundaryMax
@@ -434,10 +182,8 @@ struct AgglomerationContext {
     const WatershedRagAgglomerationOptions &options;
     IsActiveVoxel isActiveVoxel;
     WatershedRagAgglomerationStats stats;
-    std::vector<int> denseLabels;
-    std::vector<Cluster> clusters;
-    std::vector<EdgeAgg> edges;
-    EdgeHeap heap;
+    std::vector<rag::RegionId> regionIdByVoxel;
+    rag::RegionAdjacencyGraph graph;
     BoundaryNormalizationMode resolvedBoundaryMode = BoundaryNormalizationMode::AutoDetect;
     size_t dimX = 0;
     size_t dimY = 0;
@@ -446,214 +192,7 @@ struct AgglomerationContext {
     const SegmentIdType *labelBuffer = nullptr;
     const float *boundaryBuffer = nullptr;
     const unsigned char *thresholdMaskBuffer = nullptr;
-    std::vector<int> rootRemap;
 };
-
-template <typename IsActiveVoxel>
-std::size_t countSmallRootClusters(const AgglomerationContext<IsActiveVoxel> &ctx) {
-    std::size_t count = 0;
-    for (int clusterId = 0; clusterId < static_cast<int>(ctx.clusters.size()); ++clusterId) {
-        if (!isClusterRootAlive(ctx.clusters, clusterId)) {
-            continue;
-        }
-        if (ctx.clusters[clusterId].voxelCount < ctx.options.sizeBiasThreshold) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-template <typename IsActiveVoxel>
-void pushEdgeIfPositive(AgglomerationContext<IsActiveVoxel> &ctx, int edgeId) {
-    if (edgeId < 0 || edgeId >= static_cast<int>(ctx.edges.size())) {
-        return;
-    }
-    const EdgeAgg &edge = ctx.edges[edgeId];
-    if (edge.alive && edge.score > 0.0) {
-        ctx.heap.push({edge.score, edgeId, edge.version});
-    }
-}
-
-template <typename IsActiveVoxel>
-void mergeClustersIntoWinner(AgglomerationContext<IsActiveVoxel> &ctx,
-                             int winner,
-                             int loser,
-                             bool updateHeap) {
-    if (winner == loser || !isClusterRootAlive(ctx.clusters, winner) || !isClusterRootAlive(ctx.clusters, loser)) {
-        return;
-    }
-
-    ctx.clusters[loser].parent = winner;
-    if (ctx.clusters[winner].rank == ctx.clusters[loser].rank) {
-        ++ctx.clusters[winner].rank;
-    }
-    ctx.clusters[winner].voxelCount += ctx.clusters[loser].voxelCount;
-
-    auto mergedEdgeIt = ctx.clusters[winner].neighbors.find(loser);
-    if (mergedEdgeIt != ctx.clusters[winner].neighbors.end()) {
-        ctx.edges[mergedEdgeIt->second].alive = false;
-        ctx.clusters[winner].neighbors.erase(mergedEdgeIt);
-    }
-    ctx.clusters[loser].neighbors.erase(winner);
-
-    std::vector<std::pair<int, int>> loserNeighbors;
-    loserNeighbors.reserve(ctx.clusters[loser].neighbors.size());
-    for (const auto &entry : ctx.clusters[loser].neighbors) {
-        loserNeighbors.push_back(entry);
-    }
-
-    for (const auto &entry : loserNeighbors) {
-        const int neighborRoot = findRoot(ctx.clusters, entry.first);
-        const int edgeId = entry.second;
-        if (neighborRoot == winner) {
-            if (edgeId >= 0 && edgeId < static_cast<int>(ctx.edges.size())) {
-                ctx.edges[edgeId].alive = false;
-            }
-            continue;
-        }
-        if (edgeId < 0 || edgeId >= static_cast<int>(ctx.edges.size()) || !ctx.edges[edgeId].alive) {
-            continue;
-        }
-
-        auto existingIt = ctx.clusters[winner].neighbors.find(neighborRoot);
-        if (existingIt != ctx.clusters[winner].neighbors.end()) {
-            const int keepEdgeId = existingIt->second;
-            EdgeAgg &keepEdge = ctx.edges[keepEdgeId];
-            EdgeAgg &dropEdge = ctx.edges[edgeId];
-            keepEdge.totalBoundarySum += dropEdge.totalBoundarySum;
-            keepEdge.totalSupport += dropEdge.totalSupport;
-            keepEdge.openBoundarySum += dropEdge.openBoundarySum;
-            keepEdge.openSupport += dropEdge.openSupport;
-            keepEdge.a = std::min(winner, neighborRoot);
-            keepEdge.b = std::max(winner, neighborRoot);
-            recomputeEdgeScore(keepEdge, ctx.clusters, ctx.options);
-            ++keepEdge.version;
-            dropEdge.alive = false;
-
-            ctx.clusters[neighborRoot].neighbors.erase(loser);
-            ctx.clusters[neighborRoot].neighbors[winner] = keepEdgeId;
-            if (updateHeap) {
-                pushEdgeIfPositive(ctx, keepEdgeId);
-            }
-        } else {
-            EdgeAgg &movedEdge = ctx.edges[edgeId];
-            movedEdge.a = std::min(winner, neighborRoot);
-            movedEdge.b = std::max(winner, neighborRoot);
-            recomputeEdgeScore(movedEdge, ctx.clusters, ctx.options);
-            ++movedEdge.version;
-            ctx.clusters[winner].neighbors[neighborRoot] = edgeId;
-            ctx.clusters[neighborRoot].neighbors.erase(loser);
-            ctx.clusters[neighborRoot].neighbors[winner] = edgeId;
-            if (updateHeap) {
-                pushEdgeIfPositive(ctx, edgeId);
-            }
-        }
-    }
-
-    ctx.clusters[loser].neighbors.clear();
-    ctx.clusters[loser].alive = false;
-    ++ctx.stats.mergeCount;
-}
-
-template <typename IsActiveVoxel>
-CleanupCandidate findBestCleanupCandidateForRoot(AgglomerationContext<IsActiveVoxel> &ctx, int smallRoot) {
-    CleanupCandidate best;
-    if (!isClusterRootAlive(ctx.clusters, smallRoot)) {
-        return best;
-    }
-    if (ctx.clusters[smallRoot].voxelCount >= ctx.options.sizeBiasThreshold) {
-        return best;
-    }
-
-    for (const auto &entry : ctx.clusters[smallRoot].neighbors) {
-        const int neighborRoot = findRoot(ctx.clusters, entry.first);
-        const int edgeId = entry.second;
-        if (neighborRoot == smallRoot) {
-            continue;
-        }
-        if (edgeId < 0 || edgeId >= static_cast<int>(ctx.edges.size())) {
-            continue;
-        }
-        const EdgeAgg &edge = ctx.edges[edgeId];
-        if (!edge.alive || sizeBiasEvidenceSupport(edge, ctx.options) <= 0.0) {
-            continue;
-        }
-
-        const double gateScore = sizeBiasGateScore(edge, ctx.options);
-        if (gateScore <= -ctx.options.sizeBiasProtection) {
-            continue;
-        }
-
-        const uint64_t neighborSize = ctx.clusters[neighborRoot].voxelCount;
-        if (!best.valid() ||
-            gateScore > best.gateScore ||
-            (gateScore == best.gateScore && neighborSize > best.neighborSize) ||
-            (gateScore == best.gateScore && neighborSize == best.neighborSize && neighborRoot < best.neighborRoot)) {
-            best.smallRoot = smallRoot;
-            best.neighborRoot = neighborRoot;
-            best.gateScore = gateScore;
-            best.smallSize = ctx.clusters[smallRoot].voxelCount;
-            best.neighborSize = neighborSize;
-        }
-    }
-    return best;
-}
-
-bool shouldPreferCleanupCandidate(const CleanupCandidate &candidate, const CleanupCandidate &best) {
-    if (!best.valid()) {
-        return true;
-    }
-    if (candidate.smallSize != best.smallSize) {
-        return candidate.smallSize < best.smallSize;
-    }
-    if (candidate.gateScore != best.gateScore) {
-        return candidate.gateScore > best.gateScore;
-    }
-    if (candidate.smallRoot != best.smallRoot) {
-        return candidate.smallRoot < best.smallRoot;
-    }
-    if (candidate.neighborSize != best.neighborSize) {
-        return candidate.neighborSize > best.neighborSize;
-    }
-    return candidate.neighborRoot < best.neighborRoot;
-}
-
-template <typename IsActiveVoxel>
-std::size_t countCleanupEligibleSmallClusters(AgglomerationContext<IsActiveVoxel> &ctx) {
-    std::size_t count = 0;
-    for (int clusterId = 0; clusterId < static_cast<int>(ctx.clusters.size()); ++clusterId) {
-        if (findBestCleanupCandidateForRoot(ctx, clusterId).valid()) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-template <typename IsActiveVoxel>
-void runCleanupAgglomeration(AgglomerationContext<IsActiveVoxel> &ctx) {
-    if (!sizeBiasCleanupEnabled(ctx.options)) {
-        return;
-    }
-
-    double t = currentTimeSeconds();
-    while (true) {
-        CleanupCandidate best;
-        for (int clusterId = 0; clusterId < static_cast<int>(ctx.clusters.size()); ++clusterId) {
-            CleanupCandidate candidate = findBestCleanupCandidateForRoot(ctx, clusterId);
-            if (candidate.valid() && shouldPreferCleanupCandidate(candidate, best)) {
-                best = candidate;
-            }
-        }
-        if (!best.valid()) {
-            break;
-        }
-        mergeClustersIntoWinner(ctx, best.neighborRoot, best.smallRoot, /*updateHeap=*/false);
-        ++ctx.stats.sizeBiasCleanupMergeCount;
-    }
-
-    ctx.stats.agglomerationMs += elapsedMilliseconds(t);
-    logStepTime(t, "WatershedRagAgglomeration cleanup done:");
-}
 
 template <typename IsActiveVoxel>
 void computeBoundaryRange(AgglomerationContext<IsActiveVoxel> &ctx) {
@@ -696,9 +235,9 @@ void computeBoundaryRange(AgglomerationContext<IsActiveVoxel> &ctx) {
 }
 
 template <typename IsActiveVoxel>
-void compactLabels(AgglomerationContext<IsActiveVoxel> &ctx) {
+void buildRegionIndex(AgglomerationContext<IsActiveVoxel> &ctx) {
     double t = currentTimeSeconds();
-    ctx.denseLabels.assign(ctx.voxelCount, -1);
+    ctx.regionIdByVoxel.assign(ctx.voxelCount, rag::invalidRegionId);
 
     SegmentIdType maxLabel = 0;
     std::size_t activeNonZeroCount = 0;
@@ -722,7 +261,9 @@ void compactLabels(AgglomerationContext<IsActiveVoxel> &ctx) {
                              static_cast<uint64_t>(maxLabel) <= static_cast<uint64_t>(activeNonZeroCount) * 4ull;
 
     if (useDenseMap) {
-        std::vector<int> labelToDense(static_cast<size_t>(maxLabel) + 1, -1);
+        std::vector<rag::RegionId> labelToRegionId(
+            static_cast<size_t>(maxLabel) + 1,
+            rag::invalidRegionId);
         for (size_t index = 0; index < ctx.voxelCount; ++index) {
             if (!ctx.isActiveVoxel(index)) {
                 continue;
@@ -732,19 +273,16 @@ void compactLabels(AgglomerationContext<IsActiveVoxel> &ctx) {
             if (label == 0) {
                 continue;
             }
-            if (labelToDense[label] < 0) {
-                labelToDense[label] = static_cast<int>(ctx.clusters.size());
-                Cluster cluster;
-                cluster.parent = static_cast<int>(ctx.clusters.size());
-                ctx.clusters.push_back(std::move(cluster));
+            if (labelToRegionId[label] == rag::invalidRegionId) {
+                labelToRegionId[label] = ctx.graph.addRegion();
             }
-            const int denseId = labelToDense[label];
-            ctx.denseLabels[index] = denseId;
-            ++ctx.clusters[denseId].voxelCount;
+            const rag::RegionId regionId = labelToRegionId[label];
+            ctx.regionIdByVoxel[index] = regionId;
+            ++ctx.graph.region(regionId).voxelCount;
         }
     } else {
-        std::unordered_map<SegmentIdType, int> oldToDense;
-        oldToDense.reserve(activeNonZeroCount / 4 + 16);
+        std::unordered_map<SegmentIdType, rag::RegionId> labelToRegionId;
+        labelToRegionId.reserve(activeNonZeroCount / 4 + 16);
         for (size_t index = 0; index < ctx.voxelCount; ++index) {
             if (!ctx.isActiveVoxel(index)) {
                 continue;
@@ -754,27 +292,23 @@ void compactLabels(AgglomerationContext<IsActiveVoxel> &ctx) {
             if (label == 0) {
                 continue;
             }
-            auto insertion = oldToDense.emplace(label, static_cast<int>(ctx.clusters.size()));
+            auto insertion = labelToRegionId.emplace(label, static_cast<rag::RegionId>(ctx.graph.regionCount()));
             if (insertion.second) {
-                Cluster cluster;
-                cluster.parent = static_cast<int>(ctx.clusters.size());
-                ctx.clusters.push_back(std::move(cluster));
+                ctx.graph.addRegion();
             }
-            const int denseId = insertion.first->second;
-            ctx.denseLabels[index] = denseId;
-            ++ctx.clusters[denseId].voxelCount;
+            const rag::RegionId regionId = insertion.first->second;
+            ctx.regionIdByVoxel[index] = regionId;
+            ++ctx.graph.region(regionId).voxelCount;
         }
     }
 
-    ctx.stats.inputFragmentCount = ctx.clusters.size();
-    ctx.rootRemap.resize(ctx.clusters.size());
-    std::iota(ctx.rootRemap.begin(), ctx.rootRemap.end(), 0);
-    ctx.stats.compactLabelsMs = elapsedMilliseconds(t);
-    logStepTime(t, "WatershedRagAgglomeration compact labels done:");
+    ctx.stats.inputFragmentCount = ctx.graph.regionCount();
+    ctx.stats.regionIndexBuildMs = elapsedMilliseconds(t);
+    logStepTime(t, "WatershedRagAgglomeration build region index done:");
 }
 
 template <typename IsActiveVoxel>
-void buildRag(AgglomerationContext<IsActiveVoxel> &ctx) {
+void buildInitialRegionAdjacencyGraph(AgglomerationContext<IsActiveVoxel> &ctx) {
     double t = currentTimeSeconds();
     const int threadCount = effectiveThreadCount(ctx.options);
     const double spacingX = ctx.labels->GetSpacing()[0];
@@ -784,7 +318,7 @@ void buildRag(AgglomerationContext<IsActiveVoxel> &ctx) {
     const double faceAreaY = ctx.options.usePhysicalFaceArea ? spacingX * spacingZ : 1.0;
     const double faceAreaZ = ctx.options.usePhysicalFaceArea ? spacingX * spacingY : 1.0;
 
-    std::vector<std::unordered_map<uint64_t, EdgeStats>> threadMaps(static_cast<size_t>(threadCount));
+    std::vector<std::unordered_map<uint64_t, rag::RagEdgeStats>> threadMaps(static_cast<size_t>(threadCount));
     for (auto &threadMap : threadMaps) {
         threadMap.reserve(std::max<std::size_t>(32, ctx.stats.inputFragmentCount / std::max(1, threadCount)));
     }
@@ -805,26 +339,34 @@ void buildRag(AgglomerationContext<IsActiveVoxel> &ctx) {
                     continue;
                 }
 
-                const auto accumulateFace = [&](size_t idxA, size_t idxB, double support) {
-                    if (!ctx.isActiveVoxel(idxB)) {
+                const auto accumulateFace = [&](size_t firstVoxelIndex,
+                                                size_t secondVoxelIndex,
+                                                double contactArea) {
+                    if (!ctx.isActiveVoxel(secondVoxelIndex)) {
                         return;
                     }
-                    const int denseA = ctx.denseLabels[idxA];
-                    const int denseB = ctx.denseLabels[idxB];
-                    if (denseA < 0 || denseB < 0 || denseA == denseB) {
+                    const rag::RegionId firstRegionId = ctx.regionIdByVoxel[firstVoxelIndex];
+                    const rag::RegionId secondRegionId = ctx.regionIdByVoxel[secondVoxelIndex];
+                    if (firstRegionId == rag::invalidRegionId ||
+                        secondRegionId == rag::invalidRegionId ||
+                        firstRegionId == secondRegionId) {
                         return;
                     }
-                    const double boundaryA = normalizeBoundaryValue(ctx.boundaryBuffer[idxA], ctx.resolvedBoundaryMode);
-                    const double boundaryB = normalizeBoundaryValue(ctx.boundaryBuffer[idxB], ctx.resolvedBoundaryMode);
-                    EdgeStats &edge = ragStats[makePairKey(denseA, denseB)];
-                    const double faceBoundary = 0.5 * (boundaryA + boundaryB) * support;
-                    edge.totalBoundarySum += faceBoundary;
-                    edge.totalSupport += support;
+                    const double firstBoundary =
+                        normalizeBoundaryValue(ctx.boundaryBuffer[firstVoxelIndex], ctx.resolvedBoundaryMode);
+                    const double secondBoundary =
+                        normalizeBoundaryValue(ctx.boundaryBuffer[secondVoxelIndex], ctx.resolvedBoundaryMode);
+                    rag::RagEdgeStats &edgeStats =
+                        ragStats[rag::makeRegionPairKey(firstRegionId, secondRegionId)];
+                    const double boundaryArea = 0.5 * (firstBoundary + secondBoundary) * contactArea;
+                    edgeStats.totalBoundarySum += boundaryArea;
+                    edgeStats.totalContactArea += contactArea;
                     const bool isOpenFace = ctx.thresholdMaskBuffer == nullptr ||
-                                            (ctx.thresholdMaskBuffer[idxA] == 0 && ctx.thresholdMaskBuffer[idxB] == 0);
+                                            (ctx.thresholdMaskBuffer[firstVoxelIndex] == 0 &&
+                                             ctx.thresholdMaskBuffer[secondVoxelIndex] == 0);
                     if (isOpenFace) {
-                        edge.openBoundarySum += faceBoundary;
-                        edge.openSupport += support;
+                        edgeStats.openBoundarySum += boundaryArea;
+                        edgeStats.openContactArea += contactArea;
                     }
                 };
 
@@ -841,15 +383,11 @@ void buildRag(AgglomerationContext<IsActiveVoxel> &ctx) {
         }
     }
 
-    std::unordered_map<uint64_t, EdgeStats> ragStats;
+    std::unordered_map<uint64_t, rag::RagEdgeStats> ragStats;
     ragStats.reserve(std::max<std::size_t>(32, ctx.stats.inputFragmentCount * 4));
     for (const auto &threadMap : threadMaps) {
         for (const auto &entry : threadMap) {
-            EdgeStats &edge = ragStats[entry.first];
-            edge.totalBoundarySum += entry.second.totalBoundarySum;
-            edge.totalSupport += entry.second.totalSupport;
-            edge.openBoundarySum += entry.second.openBoundarySum;
-            edge.openSupport += entry.second.openSupport;
+            ragStats[entry.first].add(entry.second);
         }
     }
 
@@ -860,247 +398,21 @@ void buildRag(AgglomerationContext<IsActiveVoxel> &ctx) {
     }
     std::sort(keys.begin(), keys.end());
 
-    ctx.edges.reserve(keys.size());
+    ctx.graph.reserveEdges(keys.size());
     for (uint64_t key : keys) {
-        const auto endpoints = unpackPairKey(key);
-        const EdgeStats &edgeStats = ragStats.at(key);
-        EdgeAgg edge;
-        edge.a = endpoints.first;
-        edge.b = endpoints.second;
-        edge.totalBoundarySum = edgeStats.totalBoundarySum;
-        edge.totalSupport = edgeStats.totalSupport;
-        edge.openBoundarySum = edgeStats.openBoundarySum;
-        edge.openSupport = edgeStats.openSupport;
-        recomputeEdgeScore(edge, ctx.clusters, ctx.options);
-        const int edgeId = static_cast<int>(ctx.edges.size());
-        ctx.edges.push_back(edge);
-        ctx.clusters[edge.a].neighbors.emplace(edge.b, edgeId);
-        ctx.clusters[edge.b].neighbors.emplace(edge.a, edgeId);
+        const auto regionIds = rag::unpackRegionPairKey(key);
+        ctx.graph.addEdge(regionIds.first, regionIds.second, ragStats.at(key));
     }
 
-    ctx.stats.ragEdgeCount = ctx.edges.size();
+    ctx.stats.ragEdgeCount = ctx.graph.storedEdgeCount();
     ctx.stats.ragBuildMs = elapsedMilliseconds(t);
     logStepTime(t, "WatershedRagAgglomeration build rag done:");
 }
 
 template <typename IsActiveVoxel>
-void initHeap(AgglomerationContext<IsActiveVoxel> &ctx) {
-    double t = currentTimeSeconds();
-    for (int edgeId = 0; edgeId < static_cast<int>(ctx.edges.size()); ++edgeId) {
-        if (ctx.edges[edgeId].score > 0.0) {
-            ctx.heap.push({ctx.edges[edgeId].score, edgeId, ctx.edges[edgeId].version});
-        }
-    }
-    ctx.stats.heapInitMs = elapsedMilliseconds(t);
-    logStepTime(t, "WatershedRagAgglomeration init heap done:");
-}
-
-template <typename IsActiveVoxel>
-void runSerialAgglomeration(AgglomerationContext<IsActiveVoxel> &ctx) {
-    double t = currentTimeSeconds();
-    while (!ctx.heap.empty()) {
-        const HeapItem item = ctx.heap.top();
-        ctx.heap.pop();
-
-        if (item.edgeId < 0 || item.edgeId >= static_cast<int>(ctx.edges.size())) {
-            continue;
-        }
-
-        EdgeAgg &edge = ctx.edges[item.edgeId];
-        if (!edge.alive || edge.version != item.version) {
-            continue;
-        }
-
-        const int rootA = findRoot(ctx.clusters, edge.a);
-        const int rootB = findRoot(ctx.clusters, edge.b);
-        if (rootA == rootB) {
-            edge.alive = false;
-            continue;
-        }
-        if (edge.score <= 0.0) {
-            break;
-        }
-
-        const auto chosenRoots = chooseMergeRoots(ctx.clusters, rootA, rootB);
-        mergeClustersIntoWinner(ctx, chosenRoots.first, chosenRoots.second, /*updateHeap=*/true);
-    }
-
-    ctx.stats.agglomerationMs += elapsedMilliseconds(t);
-    logStepTime(t, "WatershedRagAgglomeration agglomeration done:");
-}
-
-template <typename IsActiveVoxel>
-bool selectMergeBatch(AgglomerationContext<IsActiveVoxel> &ctx, std::vector<SelectedMerge> &batch) {
-    double t = currentTimeSeconds();
-    batch.clear();
-    std::unordered_set<int> usedRoots;
-    std::vector<HeapItem> deferredItems;
-
-    while (!ctx.heap.empty()) {
-        const HeapItem item = ctx.heap.top();
-        ctx.heap.pop();
-        if (item.edgeId < 0 || item.edgeId >= static_cast<int>(ctx.edges.size())) {
-            continue;
-        }
-
-        EdgeAgg &edge = ctx.edges[item.edgeId];
-        if (!edge.alive || edge.version != item.version) {
-            continue;
-        }
-
-        const int rootA = findRoot(ctx.clusters, edge.a);
-        const int rootB = findRoot(ctx.clusters, edge.b);
-        if (rootA == rootB) {
-            edge.alive = false;
-            continue;
-        }
-        if (edge.score <= 0.0) {
-            break;
-        }
-        if (usedRoots.count(rootA) > 0 || usedRoots.count(rootB) > 0) {
-            deferredItems.push_back(item);
-            continue;
-        }
-
-        const auto chosenRoots = chooseMergeRoots(ctx.clusters, rootA, rootB);
-        batch.push_back({item.edgeId, item.version, rootA, rootB, chosenRoots.first, chosenRoots.second});
-        usedRoots.insert(rootA);
-        usedRoots.insert(rootB);
-    }
-
-    for (const HeapItem &deferredItem : deferredItems) {
-        ctx.heap.push(deferredItem);
-    }
-
-    ctx.stats.batchSelectionMs += elapsedMilliseconds(t);
-    ctx.stats.maxBatchPairs = std::max(ctx.stats.maxBatchPairs, batch.size());
-    return !batch.empty();
-}
-
-template <typename IsActiveVoxel>
-bool runParallelBatch(AgglomerationContext<IsActiveVoxel> &ctx, const std::vector<SelectedMerge> &batch) {
-#ifndef USE_OMP
-    (void)ctx;
-    (void)batch;
-    return false;
-#else
-    if (batch.size() < 2) {
-        return false;
-    }
-
-    const int threadCount = effectiveThreadCount(ctx.options);
-    std::vector<std::vector<ReductionEdge>> threadReductions(static_cast<size_t>(threadCount));
-
-    double applyStart = currentTimeSeconds();
-    for (const SelectedMerge &merge : batch) {
-        ctx.clusters[merge.loser].parent = merge.winner;
-        if (ctx.clusters[merge.winner].rank == ctx.clusters[merge.loser].rank) {
-            ++ctx.clusters[merge.winner].rank;
-        }
-        ctx.clusters[merge.winner].voxelCount += ctx.clusters[merge.loser].voxelCount;
-        ctx.clusters[merge.loser].alive = false;
-        ctx.clusters[merge.loser].neighbors.clear();
-        ++ctx.stats.mergeCount;
-    }
-
-    double reduceStart = currentTimeSeconds();
-#pragma omp parallel num_threads(threadCount)
-    {
-        std::vector<ReductionEdge> localReductions;
-        localReductions.reserve(ctx.edges.size() / static_cast<size_t>(threadCount) + 32);
-        const int threadId = omp_get_thread_num();
-
-#pragma omp for schedule(static)
-        for (long long edgeIndex = 0; edgeIndex < static_cast<long long>(ctx.edges.size()); ++edgeIndex) {
-            const EdgeAgg &edge = ctx.edges[static_cast<size_t>(edgeIndex)];
-            if (!edge.alive) {
-                continue;
-            }
-            const int rootA = findRootConst(ctx.clusters, edge.a);
-            const int rootB = findRootConst(ctx.clusters, edge.b);
-            if (rootA == rootB) {
-                continue;
-            }
-            localReductions.push_back({makePairKey(rootA, rootB),
-                                       edge.totalBoundarySum,
-                                       edge.totalSupport,
-                                       edge.openBoundarySum,
-                                       edge.openSupport});
-        }
-
-        std::sort(localReductions.begin(), localReductions.end(),
-                  [](const ReductionEdge &lhs, const ReductionEdge &rhs) {
-                      return lhs.key < rhs.key;
-                  });
-        std::vector<ReductionEdge> reduced;
-        reduced.reserve(localReductions.size());
-        for (const ReductionEdge &entry : localReductions) {
-            if (!reduced.empty() && reduced.back().key == entry.key) {
-                reduced.back().totalBoundarySum += entry.totalBoundarySum;
-                reduced.back().totalSupport += entry.totalSupport;
-                reduced.back().openBoundarySum += entry.openBoundarySum;
-                reduced.back().openSupport += entry.openSupport;
-            } else {
-                reduced.push_back(entry);
-            }
-        }
-        threadReductions[static_cast<size_t>(threadId)] = std::move(reduced);
-    }
-    ctx.stats.batchReduceMs += elapsedMilliseconds(reduceStart);
-
-    std::unordered_map<uint64_t, EdgeStats> reducedEdges;
-    reducedEdges.reserve(ctx.edges.size() / 2 + 16);
-    for (const auto &threadReduction : threadReductions) {
-        for (const ReductionEdge &entry : threadReduction) {
-            EdgeStats &stats = reducedEdges[entry.key];
-            stats.totalBoundarySum += entry.totalBoundarySum;
-            stats.totalSupport += entry.totalSupport;
-            stats.openBoundarySum += entry.openBoundarySum;
-            stats.openSupport += entry.openSupport;
-        }
-    }
-
-    for (size_t clusterIndex = 0; clusterIndex < ctx.clusters.size(); ++clusterIndex) {
-        Cluster &cluster = ctx.clusters[clusterIndex];
-        cluster.neighbors.clear();
-        cluster.alive = (cluster.parent == static_cast<int>(clusterIndex));
-    }
-
-    std::vector<uint64_t> keys;
-    keys.reserve(reducedEdges.size());
-    for (const auto &entry : reducedEdges) {
-        keys.push_back(entry.first);
-    }
-    std::sort(keys.begin(), keys.end());
-
-    ctx.edges.clear();
-    ctx.edges.reserve(keys.size());
-    ctx.heap = EdgeHeap();
-    for (uint64_t key : keys) {
-        const auto endpoints = unpackPairKey(key);
-        EdgeAgg edge;
-        edge.a = endpoints.first;
-        edge.b = endpoints.second;
-        edge.totalBoundarySum = reducedEdges[key].totalBoundarySum;
-        edge.totalSupport = reducedEdges[key].totalSupport;
-        edge.openBoundarySum = reducedEdges[key].openBoundarySum;
-        edge.openSupport = reducedEdges[key].openSupport;
-        recomputeEdgeScore(edge, ctx.clusters, ctx.options);
-        const int edgeId = static_cast<int>(ctx.edges.size());
-        ctx.edges.push_back(edge);
-        ctx.clusters[edge.a].neighbors[edge.b] = edgeId;
-        ctx.clusters[edge.b].neighbors[edge.a] = edgeId;
-        pushEdgeIfPositive(ctx, edgeId);
-    }
-
-    ++ctx.stats.batchCount;
-    ctx.stats.batchApplyMs += elapsedMilliseconds(applyStart);
-    return true;
-#endif
-}
-
-template <typename IsActiveVoxel>
-void runAutoOrParallelAgglomeration(AgglomerationContext<IsActiveVoxel> &ctx, bool previewMode) {
+void runRegionMerging(AgglomerationContext<IsActiveVoxel> &ctx,
+                      rag::RegionMerger &regionMerger,
+                      bool previewMode) {
     const bool useOmpBatching =
 #ifdef USE_OMP
         ctx.options.sizeBiasStrategy == SizeBiasStrategy::Off &&
@@ -1114,56 +426,36 @@ void runAutoOrParallelAgglomeration(AgglomerationContext<IsActiveVoxel> &ctx, bo
 
     if (ctx.options.executionPolicy == AgglomerationExecutionPolicy::Serial || !useOmpBatching) {
         ctx.stats.executionPolicyUsed = AgglomerationExecutionPolicy::Serial;
-        runSerialAgglomeration(ctx);
+        regionMerger.mergeGreedily();
         return;
     }
 
     ctx.stats.executionPolicyUsed = AgglomerationExecutionPolicy::OmpBatched;
-    double t = currentTimeSeconds();
-    std::vector<SelectedMerge> batch;
-    bool serialFallbackUsed = false;
-    while (selectMergeBatch(ctx, batch)) {
-        if (!runParallelBatch(ctx, batch)) {
-            for (const SelectedMerge &merge : batch) {
-                if (merge.edgeId >= 0 && merge.edgeId < static_cast<int>(ctx.edges.size())) {
-                    const EdgeAgg &edge = ctx.edges[merge.edgeId];
-                    if (edge.alive && edge.version == merge.version) {
-                        ctx.heap.push({edge.score, merge.edgeId, merge.version});
-                    }
-                }
-            }
-            serialFallbackUsed = true;
-            runSerialAgglomeration(ctx);
-            break;
-        }
-    }
-    ctx.stats.agglomerationMs += elapsedMilliseconds(t);
-    if (!serialFallbackUsed) {
-        logStepTime(t, "WatershedRagAgglomeration agglomeration done:");
-    }
+    regionMerger.mergeInNonOverlappingBatches();
 }
 
 template <typename IsActiveVoxel>
-void projectLabels(AgglomerationContext<IsActiveVoxel> &ctx, WatershedRagAgglomerationResult &result) {
+void writeAgglomeratedLabels(AgglomerationContext<IsActiveVoxel> &ctx,
+                             WatershedRagAgglomerationResult &result) {
     double t = currentTimeSeconds();
     result.agglomeratedLabels = allocateImageLike<SegmentsImageType>(ctx.labels);
     SegmentIdType *outputBuffer = result.agglomeratedLabels->GetBufferPointer();
 
-    std::vector<int> survivingRoots;
-    survivingRoots.reserve(ctx.clusters.size());
-    for (int clusterId = 0; clusterId < static_cast<int>(ctx.clusters.size()); ++clusterId) {
-        if (findRoot(ctx.clusters, clusterId) == clusterId && ctx.clusters[clusterId].alive) {
-            survivingRoots.push_back(clusterId);
+    std::vector<rag::RegionId> activeRegionIds;
+    activeRegionIds.reserve(ctx.graph.regionCount());
+    for (rag::RegionId regionId = 0; regionId < static_cast<rag::RegionId>(ctx.graph.regionCount()); ++regionId) {
+        if (ctx.graph.isActiveRegion(regionId)) {
+            activeRegionIds.push_back(regionId);
         }
     }
-    std::sort(survivingRoots.begin(), survivingRoots.end());
-    std::vector<SegmentIdType> rootToFinalLabel(ctx.clusters.size(), 0);
+    std::vector<SegmentIdType> outputLabelByRegionId(ctx.graph.regionCount(), 0);
     SegmentIdType nextLabel = 1;
-    for (int root : survivingRoots) {
-        rootToFinalLabel[root] = nextLabel++;
+    for (rag::RegionId regionId : activeRegionIds) {
+        outputLabelByRegionId[static_cast<std::size_t>(regionId)] = nextLabel++;
     }
 
     const int threadCount = effectiveThreadCount(ctx.options);
+    const rag::RegionAdjacencyGraph &readOnlyGraph = ctx.graph;
 #ifdef USE_OMP
 #pragma omp parallel for num_threads(threadCount)
 #endif
@@ -1172,16 +464,17 @@ void projectLabels(AgglomerationContext<IsActiveVoxel> &ctx, WatershedRagAgglome
             outputBuffer[index] = 0;
             continue;
         }
-        const int denseId = ctx.denseLabels[static_cast<size_t>(index)];
-        if (denseId < 0) {
+        const rag::RegionId initialRegionId = ctx.regionIdByVoxel[static_cast<size_t>(index)];
+        if (initialRegionId == rag::invalidRegionId) {
             outputBuffer[index] = 0;
             continue;
         }
-        const int root = findRootConst(ctx.clusters, denseId);
-        outputBuffer[index] = rootToFinalLabel[root];
+        const rag::RegionId regionIdAfterMerges =
+            readOnlyGraph.findRegionIdAfterAppliedMerges(initialRegionId);
+        outputBuffer[index] = outputLabelByRegionId[static_cast<std::size_t>(regionIdAfterMerges)];
     }
 
-    ctx.stats.outputClusterCount = survivingRoots.size();
+    ctx.stats.outputClusterCount = activeRegionIds.size();
     ctx.stats.projectionMs = elapsedMilliseconds(t);
     logStepTime(t, "WatershedRagAgglomeration projection done:");
 }
@@ -1218,28 +511,38 @@ WatershedRagAgglomerationResult runWatershedRagAgglomerationImpl(
     ctx.boundaryBuffer = boundary->GetBufferPointer();
     ctx.thresholdMaskBuffer = thresholdMask.IsNotNull() ? thresholdMask->GetBufferPointer() : nullptr;
 
-    emitAgglomerationLog("WatershedRagAgglomeration compact labels");
+    emitAgglomerationLog("WatershedRagAgglomeration build region index");
     computeBoundaryRange(ctx);
-    compactLabels(ctx);
-    ctx.stats.initialSmallClusterCount = countSmallRootClusters(ctx);
+    buildRegionIndex(ctx);
 
     emitAgglomerationLog("WatershedRagAgglomeration build rag");
-    buildRag(ctx);
+    buildInitialRegionAdjacencyGraph(ctx);
 
-    emitAgglomerationLog("WatershedRagAgglomeration init heap");
-    initHeap(ctx);
+    const int threadCount = effectiveThreadCount(ctx.options);
+    rag::RegionMerger regionMerger(ctx.graph, ctx.options, ctx.stats, threadCount);
+    ctx.stats.initialSmallClusterCount = regionMerger.countSmallRegions();
+
+    emitAgglomerationLog("WatershedRagAgglomeration initialize merge queue");
+    const double queueInitializationStart = currentTimeSeconds();
+    regionMerger.initializeMergeQueue();
+    ctx.stats.mergeQueueInitializationMs = elapsedMilliseconds(queueInitializationStart);
+    logStepTime(queueInitializationStart, "WatershedRagAgglomeration initialize merge queue done:");
 
     emitAgglomerationLog("WatershedRagAgglomeration agglomeration");
-    runAutoOrParallelAgglomeration(ctx, previewMode);
-    runCleanupAgglomeration(ctx);
-    ctx.stats.finalSmallClusterCount = countSmallRootClusters(ctx);
+    const double agglomerationStart = currentTimeSeconds();
+    runRegionMerging(ctx, regionMerger, previewMode);
+    regionMerger.mergeRemainingSmallRegions();
+    ctx.stats.agglomerationMs += elapsedMilliseconds(agglomerationStart);
+    logStepTime(agglomerationStart, "WatershedRagAgglomeration agglomeration done:");
+
+    ctx.stats.finalSmallClusterCount = regionMerger.countSmallRegions();
     ctx.stats.finalCleanupEligibleSmallClusterCount =
-        sizeBiasCleanupEnabled(ctx.options) ? countCleanupEligibleSmallClusters(ctx) : 0;
+        sizeBiasCleanupEnabled(ctx.options) ? regionMerger.countSmallRegionsEligibleForCleanup() : 0;
 
     WatershedRagAgglomerationResult result;
     result.stats = ctx.stats;
     emitAgglomerationLog("WatershedRagAgglomeration projection");
-    projectLabels(ctx, result);
+    writeAgglomeratedLabels(ctx, result);
     result.stats = ctx.stats;
     printStats(result.stats);
     return result;

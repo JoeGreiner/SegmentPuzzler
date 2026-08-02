@@ -259,6 +259,16 @@ set(SRC_VIEWERS
         src/viewers/Segment3DViewerDialog.cpp
         )
 
+set(SRC_RAG_MERGING_CORE
+        src/utils/RegionAdjacencyGraph.cpp
+        src/utils/RegionMerger.cpp
+        )
+
+set(SRC_RAG_AGGLOMERATION
+        ${SRC_RAG_MERGING_CORE}
+        src/utils/WatershedRagAgglomeration.cpp
+        )
+
 set(SRC_UTILS
         src/utils/AppLogger.cpp
         src/utils/roi.cpp
@@ -272,7 +282,7 @@ set(SRC_UTILS
         src/utils/DistanceMapSeedExtractors.cpp
         src/utils/ConnectedComponentLabelSplitter.cpp
         src/utils/DistanceMapCliIO.cpp
-        src/utils/WatershedRagAgglomeration.cpp
+        ${SRC_RAG_AGGLOMERATION}
         )
 
 set(SRC_ITKIMAGEFILTERS
@@ -408,6 +418,12 @@ if (BUILD_TESTING)
             examples/benchmarks/test_blockwise_fast_marker.cpp
             src/utils/FastMarkerWatershed3D.cpp
             src/utils/BlockwiseFastMarkerWatershed3D.cpp)
+    add_executable(test_BoundaryComponentRelabel
+            examples/benchmarks/test_boundary_component_relabel.cpp
+            ${SRC_WATERSHED_HELPER_DEPS})
+    add_executable(test_RagRegionMerger
+            examples/benchmarks/test_rag_region_merger.cpp
+            ${SRC_RAG_MERGING_CORE})
     target_link_libraries(profile_SliceViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(profile_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
@@ -421,6 +437,12 @@ if (BUILD_TESTING)
     target_include_directories(test_BlockwiseFastMarker PRIVATE ${CMAKE_SOURCE_DIR})
     set_target_properties(test_BlockwiseFastMarker PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
     target_link_libraries(test_BlockwiseFastMarker ${SEGMENT_PUZZLER_ITK_LIBRARIES})
+    target_include_directories(test_BoundaryComponentRelabel PRIVATE ${CMAKE_SOURCE_DIR})
+    set_target_properties(test_BoundaryComponentRelabel PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_BoundaryComponentRelabel ${SEGMENT_PUZZLER_ITK_LIBRARIES})
+    target_include_directories(test_RagRegionMerger PRIVATE ${CMAKE_SOURCE_DIR})
+    set_target_properties(test_RagRegionMerger PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_RagRegionMerger ${SEGMENT_PUZZLER_ITK_LIBRARIES})
     vtk_module_autoinit(TARGETS profile_SliceViewer MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS profile_Projected3DCut MODULES ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS test_Projected3DCut MODULES ${VTK_LIBRARIES})
@@ -442,6 +464,8 @@ if (BUILD_TESTING)
         target_compile_definitions(test_WatershedPipeline PRIVATE USE_OMP)
         target_compile_definitions(test_FastMarkerReference PRIVATE USE_OMP)
         target_compile_definitions(test_BlockwiseFastMarker PRIVATE USE_OMP)
+        target_compile_definitions(test_BoundaryComponentRelabel PRIVATE USE_OMP)
+        target_compile_definitions(test_RagRegionMerger PRIVATE USE_OMP)
         target_link_libraries(profile_SliceViewer OpenMP::OpenMP_CXX)
         target_link_libraries(profile_Projected3DCut OpenMP::OpenMP_CXX)
         target_link_libraries(test_Projected3DCut OpenMP::OpenMP_CXX)
@@ -453,6 +477,8 @@ if (BUILD_TESTING)
         target_link_libraries(test_WatershedPipeline OpenMP::OpenMP_CXX)
         target_link_libraries(test_FastMarkerReference OpenMP::OpenMP_CXX)
         target_link_libraries(test_BlockwiseFastMarker OpenMP::OpenMP_CXX)
+        target_link_libraries(test_BoundaryComponentRelabel OpenMP::OpenMP_CXX)
+        target_link_libraries(test_RagRegionMerger OpenMP::OpenMP_CXX)
     endif ()
 #    target_link_libraries(test_customwatershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
@@ -512,14 +538,14 @@ if (BUILD_BENCHMARKS)
     add_executable(cli_watershed_agglomertion
             examples/benchmarks/cli_watershed_agglomertion.cpp
             ${SRC_WATERSHED_HELPER_DEPS}
-            src/utils/WatershedRagAgglomeration.cpp
+            ${SRC_RAG_AGGLOMERATION}
             src/utils/DistanceMapCliIO.cpp)
     configure_benchmark_target(cli_watershed_agglomertion)
 
     add_executable(benchmark_watershed_agglomertion
             examples/benchmarks/benchmark_watershed_agglomertion.cpp
             examples/benchmarks/BenchmarkPerfettoTracing.cpp
-            src/utils/WatershedRagAgglomeration.cpp
+            ${SRC_RAG_AGGLOMERATION}
             src/utils/DistanceMapCliIO.cpp)
     configure_benchmark_target(benchmark_watershed_agglomertion)
     configure_perfetto_target(benchmark_watershed_agglomertion)

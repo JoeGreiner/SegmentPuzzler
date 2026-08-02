@@ -73,13 +73,16 @@ struct CsvRow {
     std::size_t outputClusters = 0;
     std::size_t batchCount = 0;
     std::size_t maxBatchPairs = 0;
-    double compactMs = 0.0;
+    double regionIndexMs = 0.0;
     double ragMs = 0.0;
-    double heapMs = 0.0;
+    double mergeQueueInitializationMs = 0.0;
     double agglomerationMs = 0.0;
     double batchSelectionMs = 0.0;
-    double batchReduceMs = 0.0;
+    double batchRegionMergeMs = 0.0;
+    double batchMergeScoreUpdateMs = 0.0;
     double batchApplyMs = 0.0;
+    std::size_t outdatedMergeCandidates = 0;
+    std::size_t updatedRagEdges = 0;
     double projectionMs = 0.0;
     double elapsedMs = 0.0;
     std::string policy;
@@ -386,13 +389,16 @@ CsvRow runOne(const Options &options,
     row.outputClusters = result.stats.outputClusterCount;
     row.batchCount = result.stats.batchCount;
     row.maxBatchPairs = result.stats.maxBatchPairs;
-    row.compactMs = result.stats.compactLabelsMs;
+    row.regionIndexMs = result.stats.regionIndexBuildMs;
     row.ragMs = result.stats.ragBuildMs;
-    row.heapMs = result.stats.heapInitMs;
+    row.mergeQueueInitializationMs = result.stats.mergeQueueInitializationMs;
     row.agglomerationMs = result.stats.agglomerationMs;
     row.batchSelectionMs = result.stats.batchSelectionMs;
-    row.batchReduceMs = result.stats.batchReduceMs;
+    row.batchRegionMergeMs = result.stats.batchRegionMergeMs;
+    row.batchMergeScoreUpdateMs = result.stats.batchMergeScoreUpdateMs;
     row.batchApplyMs = result.stats.batchApplyMs;
+    row.outdatedMergeCandidates = result.stats.outdatedMergeCandidateCount;
+    row.updatedRagEdges = result.stats.updatedRagEdgeCount;
     row.projectionMs = result.stats.projectionMs;
     row.elapsedMs = (end - start) * 1000.0;
     row.policy = segment_puzzler::agglomerationExecutionPolicyName(result.stats.executionPolicyUsed);
@@ -402,7 +408,9 @@ CsvRow runOne(const Options &options,
 void writeCsv(const std::string &path, const std::vector<CsvRow> &rows) {
     std::ofstream csv(path);
     csv << "repetition,threads,policy,fragments,edges,merges,output_clusters,batch_count,max_batch_pairs,"
-           "compact_ms,rag_ms,heap_ms,agglomeration_ms,batch_selection_ms,batch_reduce_ms,batch_apply_ms,projection_ms,elapsed_ms\n";
+           "region_index_ms,rag_ms,merge_queue_init_ms,agglomeration_ms,batch_selection_ms,"
+           "batch_region_merge_ms,batch_merge_score_update_ms,batch_apply_ms,outdated_merge_candidates,"
+           "updated_rag_edges,projection_ms,elapsed_ms\n";
     for (const CsvRow &row : rows) {
         csv << row.repetition << ','
             << row.threads << ','
@@ -414,13 +422,16 @@ void writeCsv(const std::string &path, const std::vector<CsvRow> &rows) {
             << row.batchCount << ','
             << row.maxBatchPairs << ','
             << std::fixed << std::setprecision(3)
-            << row.compactMs << ','
+            << row.regionIndexMs << ','
             << row.ragMs << ','
-            << row.heapMs << ','
+            << row.mergeQueueInitializationMs << ','
             << row.agglomerationMs << ','
             << row.batchSelectionMs << ','
-            << row.batchReduceMs << ','
+            << row.batchRegionMergeMs << ','
+            << row.batchMergeScoreUpdateMs << ','
             << row.batchApplyMs << ','
+            << row.outdatedMergeCandidates << ','
+            << row.updatedRagEdges << ','
             << row.projectionMs << ','
             << row.elapsedMs << '\n';
     }
