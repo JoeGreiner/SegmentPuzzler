@@ -74,8 +74,15 @@ void showWindowWithinAvailableScreen(QMainWindow *window) {
 } // namespace
 
 void MainWindowWatershedControl::closeFromExternalSignal() {
-    SP_LOG_INFO("watershed", QStringLiteral("Closing watershed window from external signal"));
-    close();
+    SP_LOG_INFO("watershed",
+                QStringLiteral("Closing watershed window from external signal; before_close %1")
+                    .arg(windowStats::describeTopLevelWindows()));
+    const bool closeAccepted = close();
+    SP_LOG_INFO("watershed",
+                QStringLiteral("Watershed close returned accepted=%1 visible_after=%2; after_close %3")
+                    .arg(closeAccepted)
+                    .arg(isVisible())
+                    .arg(windowStats::describeTopLevelWindows()));
 }
 void MainWindowWatershedControl::receiveStatusMessage(QString string) {
     statusBar()->showMessage(string);

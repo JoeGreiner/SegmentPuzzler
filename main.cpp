@@ -20,6 +20,7 @@
 
 #include <vtkSMPTools.h>
 
+#include "src/qtUtils/WindowStats.h"
 #include "src/utils/AppLogger.h"
 
 bool return_string_if_valid_option(int argc, char *argv[], int requested_index){
@@ -124,6 +125,19 @@ int main(int argc, char *argv[]) {
     }
 
     segment_puzzler::app_logging::AppLogger::initialize();
+    QObject::connect(&a, &QGuiApplication::lastWindowClosed, &a, []() {
+        SP_LOG_INFO("app",
+                    QStringLiteral("QGuiApplication::lastWindowClosed emitted; %1")
+                        .arg(windowStats::describeTopLevelWindows()));
+    });
+    QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, []() {
+        SP_LOG_INFO("app",
+                    QStringLiteral("QCoreApplication::aboutToQuit emitted; %1")
+                        .arg(windowStats::describeTopLevelWindows()));
+    });
+    SP_LOG_INFO("app",
+                QStringLiteral("Qt window lifecycle logging enabled; %1")
+                    .arg(windowStats::describeTopLevelWindows()));
     if (logLevelOverride.has_value()) {
         auto logSettings = segment_puzzler::app_logging::AppLogger::settings();
         logSettings.minimumLevel = *logLevelOverride;

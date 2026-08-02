@@ -6,6 +6,7 @@
 
 namespace windowStats {
     void setupWindowTitleStatsTimer(QWidget *window, const QString &baseTitle);
+    QString describeTopLevelWindows();
 }
 
 #endif // SEGMENTPUZZLER_WINDOWSTATS_H
