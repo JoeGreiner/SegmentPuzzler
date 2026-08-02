@@ -3,14 +3,16 @@
 #include "Graph.h"
 
 
-WorkingEdge::WorkingEdge(std::shared_ptr<InitialEdge> &initialEdgeToCopy) :
+WorkingEdge::WorkingEdge(const std::shared_ptr<InitialEdge> &initialEdgeToCopy) :
         BaseEdge(initialEdgeToCopy->getLabelSmaller(), initialEdgeToCopy->getLabelBigger()) {
     roi = initialEdgeToCopy->getRoi();
     shouldMerge = initialEdgeToCopy->getShouldMerge();
     subInitialEdges.push_back(initialEdgeToCopy);
 }
 
-WorkingEdge::WorkingEdge(std::shared_ptr<InitialEdge> &initialEdgeToCopy, SegmentIdType labelA, SegmentIdType labelB) :
+WorkingEdge::WorkingEdge(const std::shared_ptr<InitialEdge> &initialEdgeToCopy,
+                         SegmentIdType labelA,
+                         SegmentIdType labelB) :
         BaseEdge(labelA, labelB) {
 //    std::cout << "Creating edge: " << labelA << " " << labelB << " \n";
     roi = initialEdgeToCopy->getRoi();
@@ -59,4 +61,3 @@ void WorkingEdge::print(int indentationLevel, std::ostream &outStream) {
     }
     outStream << "\n";
 }
-

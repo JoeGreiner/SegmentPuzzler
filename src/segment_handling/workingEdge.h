@@ -9,11 +9,11 @@
 
 class WorkingEdge : public BaseEdge {
 public:
-    WorkingEdge(std::shared_ptr<InitialEdge> &initialEdgeToCopy);
+    WorkingEdge(const std::shared_ptr<InitialEdge> &initialEdgeToCopy);
 
     WorkingEdge(WorkingEdge &workingEdgeToCopy, SegmentIdType labelA, SegmentIdType labelB);
 
-    WorkingEdge(std::shared_ptr<InitialEdge> &initialEdgeToCopy, SegmentIdType labelA, SegmentIdType labelB);
+    WorkingEdge(const std::shared_ptr<InitialEdge> &initialEdgeToCopy, SegmentIdType labelA, SegmentIdType labelB);
 
     std::vector<std::vector<Voxel> const *> getVoxelPointerArray() override;
 

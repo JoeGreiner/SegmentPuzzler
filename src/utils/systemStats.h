@@ -11,7 +11,19 @@ struct SystemStats {
     double swapTotalGB     = 0.0;
 };
 
+struct MemoryStats {
+    double availableSystemMemoryGB = 0.0;
+    double totalSystemMemoryGB = 0.0;
+    double swapUsedGB = 0.0;
+    double swapTotalGB = 0.0;
+    double processResidentMemoryGB = 0.0;
+    double peakProcessResidentMemoryGB = 0.0;
+};
+
 namespace systemStats {
+    // Thread-safe snapshot that does not affect CPU utilization sampling.
+    MemoryStats queryMemory();
+
     // Returns current resource usage.
     // cpuTotalPercent is 0 on the very first call; subsequent calls return
     // the usage accumulated since the previous call.
@@ -20,4 +32,3 @@ namespace systemStats {
 }
 
 #endif // SEGMENTPUZZLER_SYSTEMSTATS_H
-

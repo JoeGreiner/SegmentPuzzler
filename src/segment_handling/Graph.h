@@ -141,9 +141,8 @@ public:
     // that means, on a interface between two nodes are two 1vx wide edges
     std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> initialNodes;
 
-    // not unordered map because of hashfunction for pairs
+    // Canonical label-pair lookup for two-sided initial edges.
     std::map<EdgePairIdType, std::shared_ptr<InitialEdge>> initialTwoSidedEdges;
-    std::map<EdgePairIdType, std::shared_ptr<InitialEdge>> initialOneSidedEdges;
 
     // these nodes are created by operations on the initialNodes
     // note, the edges of workingnodes are 2vx widge, i.e. the one-sided edges are merged into a 2vx edge
@@ -155,7 +154,7 @@ public:
 
     // construct a graph from
     void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
-                             int edgeScanThreadCount = 1);
+                             int graphBuildThreadCount = 1);
     void updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage);
 
     void initializeEdgeVolumeAndEdgeStatus();

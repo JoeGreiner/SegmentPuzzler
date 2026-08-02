@@ -14,6 +14,7 @@
 namespace {
 
 using SegmentIdType = dataType::SegmentIdType;
+using EdgePairIdType = dataType::EdgePairIdType;
 using ImagePointer = dataType::SegmentsImageType::Pointer;
 
 int failTest(const std::string &message) {
@@ -105,7 +106,16 @@ std::string graphFingerprint(int threadCount) {
         out << '\n';
     }
 
-    for (const auto &entry : graph->initialOneSidedEdges) {
+    std::vector<std::pair<EdgePairIdType, std::shared_ptr<InitialEdge>>> oneSidedEdges;
+    for (const auto &[sourceLabel, node] : graph->initialNodes) {
+        for (const auto &[neighborLabel, edge] : node->onesidedEdges) {
+            oneSidedEdges.push_back({{sourceLabel, neighborLabel}, edge});
+        }
+    }
+    std::sort(oneSidedEdges.begin(), oneSidedEdges.end(), [](const auto &left, const auto &right) {
+        return left.first < right.first;
+    });
+    for (const auto &entry : oneSidedEdges) {
         out << "O" << entry.first.first << ',' << entry.first.second << ':';
         appendEdge(out, *entry.second);
         out << '\n';

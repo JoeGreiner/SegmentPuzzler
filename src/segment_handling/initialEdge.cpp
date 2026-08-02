@@ -9,7 +9,6 @@ std::vector<std::vector<Voxel> const *> InitialEdge::getVoxelPointerArray() {
 InitialEdge::InitialEdge(InitialEdge const &copyEdge) : BaseEdge(copyEdge.labelSmaller, copyEdge.labelBigger) {
     roi = copyEdge.roi;
     voxels = copyEdge.voxels;
-    wasUsedToComputeTwoSidedEdge = false;
     for (auto &feature : FeatureList::edgeFeaturesList) {
         addEdgeFeature(feature);
     }
@@ -20,21 +19,12 @@ InitialEdge::InitialEdge(BaseEdge::SegmentIdType labelAIn, BaseEdge::SegmentIdTy
     for (auto &feature : FeatureList::edgeFeaturesList) {
         addEdgeFeature(feature);
     }
-    wasUsedToComputeTwoSidedEdge = false;
-}
-
-bool InitialEdge::getWasUsedToComputeTwoSidedEdge() {
-    return wasUsedToComputeTwoSidedEdge;
-}
-
-void InitialEdge::setWasUsedToComputeTwoSidedEdge(bool wasUsedToComputeTwoSidedEdgeIn) {
-    wasUsedToComputeTwoSidedEdge = wasUsedToComputeTwoSidedEdgeIn;
 }
 
 
-void InitialEdge::mergeVoxelsAndROIwithOtherEdge(InitialEdge *edgeToMerge) {
-    roi.mergeRoiWith(edgeToMerge->roi);
-    voxels.insert(voxels.end(), edgeToMerge->voxels.begin(), edgeToMerge->voxels.end());
+void InitialEdge::mergeVoxelsAndROIwithOtherEdge(const InitialEdge &edgeToMerge) {
+    roi.mergeRoiWith(edgeToMerge.roi);
+    voxels.insert(voxels.end(), edgeToMerge.voxels.begin(), edgeToMerge.voxels.end());
 }
 
 
@@ -85,4 +75,3 @@ void InitialEdge::print(int indentationLevel, std::ostream &outStream) {
 std::vector<Voxel> const *InitialEdge::getVoxelPointer() {
     return &voxels;
 }
-

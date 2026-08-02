@@ -9,8 +9,10 @@
 #include <atomic>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #ifdef USE_OMP
 #include <omp.h>
 #endif
@@ -41,6 +43,18 @@ QString joinIds(const Container &values) {
         parts << QString::number(static_cast<qulonglong>(value));
     }
     return parts.join(QStringLiteral(" "));
+}
+
+struct OneSidedInitialEdgePair {
+    dataType::EdgePairIdType labelPair;
+    InitialEdge *lowerLabelSide = nullptr;
+    InitialEdge *higherLabelSide = nullptr;
+};
+
+std::unique_ptr<InitialEdge> createTwoSidedInitialEdge(const OneSidedInitialEdgePair &edgePair) {
+    auto twoSidedInitialEdge = std::make_unique<InitialEdge>(*edgePair.lowerLabelSide);
+    twoSidedInitialEdge->mergeVoxelsAndROIwithOtherEdge(*edgePair.higherLabelSide);
+    return twoSidedInitialEdge;
 }
 
 class ScopedSegmentManagerTimer {
@@ -104,24 +118,23 @@ void SegmentManager::addInitialNode(SegmentIdType labelOfNewNode, int reserveMem
 }
 
 
-void SegmentManager::addOneSidedInitialEdge(std::shared_ptr<InitialEdge> pEdgeToAdd, EdgePairIdType pairId) {
-    (*pInitialOneSidedEdges)[pairId] = pEdgeToAdd;
-}
+void SegmentManager::addTwoSidedInitialEdge(std::unique_ptr<InitialEdge> edgeToAdd) {
+    if (edgeToAdd == nullptr) {
+        throw std::invalid_argument("Cannot add a null two-sided initial edge.");
+    }
 
-
-void SegmentManager::addTwoSidedInitialEdge(InitialEdge *pEdgeToAdd) {
     graphBase->edgeCounter++;
     size_t newEdgeId = graphBase->edgeCounter;
-    pEdgeToAdd->setIdAndRegister(newEdgeId, *pInitialEdgeIdLookUp);
-    auto sPEdgeToAdd = std::shared_ptr<InitialEdge>(pEdgeToAdd);
-    pInitialNodes->at(pEdgeToAdd->getLabelSmaller())->addTwoSidedEdge(sPEdgeToAdd);
-    pInitialNodes->at(pEdgeToAdd->getLabelBigger())->addTwoSidedEdge(sPEdgeToAdd);
-    (*pInitialTwoSidedEdges)[pEdgeToAdd->pairId] = sPEdgeToAdd;
+    edgeToAdd->setIdAndRegister(newEdgeId, *pInitialEdgeIdLookUp);
+    auto sharedEdgeToAdd = std::shared_ptr<InitialEdge>(std::move(edgeToAdd));
+    pInitialNodes->at(sharedEdgeToAdd->getLabelSmaller())->addTwoSidedEdge(sharedEdgeToAdd);
+    pInitialNodes->at(sharedEdgeToAdd->getLabelBigger())->addTwoSidedEdge(sharedEdgeToAdd);
+    (*pInitialTwoSidedEdges)[sharedEdgeToAdd->pairId] = sharedEdgeToAdd;
 
     char defaultEdgeStatus = 0;
-    pEdgeStatus->insert(std::pair<EdgeNumIdType, char>(pEdgeToAdd->numId, defaultEdgeStatus));
-    for (auto &voxel : pEdgeToAdd->voxels) {
-        graphBase->pEdgesInitialSegmentsImage->SetPixel({voxel.x, voxel.y, voxel.z}, pEdgeToAdd->numId);
+    pEdgeStatus->insert(std::pair<EdgeNumIdType, char>(sharedEdgeToAdd->numId, defaultEdgeStatus));
+    for (auto &voxel : sharedEdgeToAdd->voxels) {
+        graphBase->pEdgesInitialSegmentsImage->SetPixel({voxel.x, voxel.y, voxel.z}, sharedEdgeToAdd->numId);
     }
 }
 
@@ -210,22 +223,6 @@ void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode
 
     // delete onesided edges
     for (auto edge : pInitialNode->onesidedEdges) {
-        if (pInitialOneSidedEdges->count({edge.first, pInitialNode->getLabel()}) > 0) {
-            logSegmentManagerDebugIf(verbose,
-                                     __func__,
-                                     QStringLiteral("Removing one-sided initial edge %1 -> %2")
-                                         .arg(edge.first)
-                                         .arg(pInitialNode->getLabel()));
-            pInitialOneSidedEdges->erase({edge.first, pInitialNode->getLabel()});
-        }
-        if (pInitialOneSidedEdges->count({pInitialNode->getLabel(), edge.first}) > 0) {
-            logSegmentManagerDebugIf(verbose,
-                                     __func__,
-                                     QStringLiteral("Removing one-sided initial edge %1 -> %2")
-                                         .arg(pInitialNode->getLabel())
-                                         .arg(edge.first));
-            pInitialOneSidedEdges->erase({pInitialNode->getLabel(), edge.first});
-        }
         if ((*pInitialNodes)[edge.first]->onesidedEdges.count(pInitialNode->getLabel()) > 0) {
             logSegmentManagerDebugIf(verbose,
                                      __func__,
@@ -239,16 +236,59 @@ void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode
 }
 
 
-void SegmentManager::clearAndReserveInitialNodes(int numberOfNodesToReserveFor) {
-    pInitialNodes->clear();
-    pInitialOneSidedEdges->clear();
-    pInitialTwoSidedEdges->clear();
-    pInitialEdgeIdLookUp->clear();
-    pWorkingNodes->clear();
-    pWorkingEdges->clear();
-    if (numberOfNodesToReserveFor > 0) {
-        pInitialNodes->reserve(numberOfNodesToReserveFor);
+void SegmentManager::clearGraphAndReserveInitialNodes(std::size_t initialNodeCapacity) {
+    const std::size_t previousInitialNodeCount = pInitialNodes->size();
+    std::size_t previousOneSidedEdgeCount = 0;
+    for (const auto &initialNodeEntry : *pInitialNodes) {
+        previousOneSidedEdgeCount += initialNodeEntry.second->onesidedEdges.size();
     }
+    const std::size_t previousTwoSidedEdgeCount = pInitialTwoSidedEdges->size();
+    const std::size_t previousWorkingNodeCount = pWorkingNodes->size();
+    const std::size_t previousWorkingEdgeCount = pWorkingEdges->size();
+
+    QElapsedTimer phaseTimer;
+    phaseTimer.start();
+    pInitialNodes->clear();
+    const double clearInitialNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+    phaseTimer.restart();
+    pInitialTwoSidedEdges->clear();
+    const double clearTwoSidedEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+    phaseTimer.restart();
+    pInitialEdgeIdLookUp->clear();
+    const double clearEdgeIdLookupMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+    phaseTimer.restart();
+    pWorkingNodes->clear();
+    const double clearWorkingNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+    phaseTimer.restart();
+    pWorkingEdges->clear();
+    const double clearWorkingEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+    phaseTimer.restart();
+    if (initialNodeCapacity > 0) {
+        pInitialNodes->reserve(initialNodeCapacity);
+    }
+    const double reserveInitialNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+    logSegmentManagerDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral(
+            "Graph container reset previous_initial_nodes=%1 previous_one_sided_edges=%2 "
+            "previous_two_sided_edges=%3 previous_working_nodes=%4 previous_working_edges=%5 "
+            "clear_initial_nodes_ms=%6 clear_two_sided_edges_ms=%7 "
+            "clear_edge_lookup_ms=%8 clear_working_nodes_ms=%9 clear_working_edges_ms=%10 "
+            "requested_initial_node_capacity=%11 reserve_initial_nodes_ms=%12")
+            .arg(static_cast<qulonglong>(previousInitialNodeCount))
+            .arg(static_cast<qulonglong>(previousOneSidedEdgeCount))
+            .arg(static_cast<qulonglong>(previousTwoSidedEdgeCount))
+            .arg(static_cast<qulonglong>(previousWorkingNodeCount))
+            .arg(static_cast<qulonglong>(previousWorkingEdgeCount))
+            .arg(clearInitialNodesMs, 0, 'f', 3)
+            .arg(clearTwoSidedEdgesMs, 0, 'f', 3)
+            .arg(clearEdgeIdLookupMs, 0, 'f', 3)
+            .arg(clearWorkingNodesMs, 0, 'f', 3)
+            .arg(clearWorkingEdgesMs, 0, 'f', 3)
+            .arg(static_cast<qulonglong>(initialNodeCapacity))
+            .arg(reserveInitialNodesMs, 0, 'f', 3));
 }
 
 
@@ -327,7 +367,6 @@ void SegmentManager::recomputeVoxelListAndOneSidedEdgesIfShrinked(
                 auto pNewEdge = std::shared_ptr<InitialEdge>(
                         pInitialNode->computeCorrospondingOneSidedEdge(edge.second.get()));
                 (*pInitialNodes)[edge.first]->onesidedEdges[pInitialNode->getLabel()] = pNewEdge;
-                addOneSidedInitialEdge(pNewEdge, {edge.first, pInitialNode->getLabel()});
             }
         }
     }
@@ -520,10 +559,6 @@ void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(
 void SegmentManager::computeSurfaceAndOneSidedEdgesOnInitialNode(InitialNode *pInitialNode) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges for one initial node"));
     pInitialNode->computeOnesidedSurfaceAndEdges(*pIgnoredSegmentLabels);
-
-    for (auto &edge : pInitialNode->onesidedEdges) {
-        addOneSidedInitialEdge(edge.second, {pInitialNode->getLabel(), edge.first});
-    }
 }
 
 void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInitialNode) {
@@ -553,8 +588,6 @@ void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInit
         }
 
         (*pInitialNodes)[labelOfConnectedInitialNode]->onesidedEdges[labelOfThisInitialNode] = pNewEdge;
-
-        addOneSidedInitialEdge(pNewEdge, {labelOfConnectedInitialNode, labelOfThisInitialNode});
     }
 }
 
@@ -650,23 +683,20 @@ void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadC
     }
     const double scanMs = static_cast<double>(scanTimer.nsecsElapsed()) / 1000000.0;
 
-    QElapsedTimer registrationTimer;
-    registrationTimer.start();
+    QElapsedTimer edgeCountTimer;
+    edgeCountTimer.start();
     std::size_t oneSidedEdgeCount = 0;
-    for (auto &initialNode : *pInitialNodes) {
-        for (auto &edge : initialNode.second->onesidedEdges) {
-            addOneSidedInitialEdge(edge.second, {initialNode.first, edge.first});
-            ++oneSidedEdgeCount;
-        }
+    for (const auto &initialNode : initialNodes) {
+        oneSidedEdgeCount += initialNode->onesidedEdges.size();
     }
-    const double registrationMs = static_cast<double>(registrationTimer.nsecsElapsed()) / 1000000.0;
+    const double edgeCountMs = static_cast<double>(edgeCountTimer.nsecsElapsed()) / 1000000.0;
 
     logSegmentManagerDebugIf(
         verbose,
         __func__,
         QStringLiteral(
             "One-sided edge scan nodes=%1 requested_threads=%2 used_threads=%3 parallel=%4 "
-            "roi_voxels=%5 max_node_roi=%6 edges=%7 scan_ms=%8 registration_ms=%9")
+            "roi_voxels=%5 max_node_roi=%6 edges=%7 scan_ms=%8 edge_count_ms=%9")
             .arg(static_cast<qulonglong>(initialNodes.size()))
             .arg(requestedThreadCount)
             .arg(usedThreadCount)
@@ -675,48 +705,173 @@ void SegmentManager::computeSurfaceAndOneSidedEdgesOnAllInitialNodes(int threadC
             .arg(static_cast<double>(maxNodeRoiVoxels), 0, 'g', 12)
             .arg(static_cast<qulonglong>(oneSidedEdgeCount))
             .arg(scanMs, 0, 'f', 3)
-            .arg(registrationMs, 0, 'f', 3));
+            .arg(edgeCountMs, 0, 'f', 3));
 }
 
 
-InitialEdge *
-SegmentManager::createTwoSidedInitialEdgeByMerging(SegmentIdType initialNodeLabelA, SegmentIdType initialNodeLabelB) {
-    auto pEdgeA = (*pInitialOneSidedEdges)[{initialNodeLabelA, initialNodeLabelB}];
-    auto pEdgeB = (*pInitialOneSidedEdges)[{initialNodeLabelB, initialNodeLabelA}];
-    auto newEdge = new InitialEdge(*pEdgeA);
-    newEdge->mergeVoxelsAndROIwithOtherEdge(pEdgeB.get());
-    pEdgeA->setWasUsedToComputeTwoSidedEdge(true);
-    pEdgeB->setWasUsedToComputeTwoSidedEdge(true);
-    return newEdge;
-}
+void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threadCount, bool veryVerbose) {
+    const bool logTiming = verbose || veryVerbose;
+    ScopedSegmentManagerTimer timer(
+        logTiming,
+        __func__,
+        QStringLiteral("Building two-sided initial edges from one-sided initial edges"));
 
-
-void SegmentManager::mergeNewOneSidedEdgesIntoTwosidedEdges(bool veryVerbose) {
-    ScopedSegmentManagerTimer timer(veryVerbose, __func__, QStringLiteral("Merging new one-sided edges into two-sided edges"));
-
-    std::vector<InitialEdge *> newlyAddedInitialEdges;
-    for (auto &initialNode: *pInitialNodes) {
-        for (auto &initialEdge : initialNode.second->onesidedEdges) {
-            if (!initialEdge.second->getWasUsedToComputeTwoSidedEdge()) {
-                // if no edge exists, create a new one
-                SegmentIdType labelSmaller = initialEdge.second->getLabelSmaller();
-                SegmentIdType labelBigger = initialEdge.second->getLabelBigger();
-                logSegmentManagerDebugIf(veryVerbose,
-                                         __func__,
-                                         QStringLiteral("Merging one-sided edges %1 and %2").arg(labelSmaller).arg(labelBigger));
-                InitialEdge *newEdge = createTwoSidedInitialEdgeByMerging(labelSmaller, labelBigger);
-                addTwoSidedInitialEdge(newEdge);
-                newlyAddedInitialEdges.push_back(newEdge);
+    std::vector<OneSidedInitialEdgePair> oneSidedInitialEdgePairsToMerge;
+    QElapsedTimer phaseTimer;
+    phaseTimer.start();
+    std::size_t inspectedOneSidedEdgeCount = 0;
+    for (const auto &[sourceLabel, sourceNode] : *pInitialNodes) {
+        for (const auto &[neighborLabel, sourceSide] : sourceNode->onesidedEdges) {
+            ++inspectedOneSidedEdgeCount;
+            if (sourceLabel == neighborLabel) {
+                throw std::logic_error("A one-sided initial edge cannot connect a label to itself.");
             }
+            if (sourceLabel > neighborLabel) {
+                continue;
+            }
+
+            const EdgePairIdType canonicalLabelPair{sourceLabel, neighborLabel};
+            if (pInitialTwoSidedEdges->find(canonicalLabelPair) != pInitialTwoSidedEdges->end()) {
+                continue;
+            }
+
+            const auto neighborNode = pInitialNodes->find(neighborLabel);
+            if (neighborNode == pInitialNodes->end()) {
+                throw std::logic_error(
+                    "Cannot build a two-sided initial edge because the neighboring initial node is missing.");
+            }
+            const auto oppositeSide = neighborNode->second->onesidedEdges.find(sourceLabel);
+            if (oppositeSide == neighborNode->second->onesidedEdges.end()) {
+                throw std::logic_error(
+                    "Cannot build a two-sided initial edge because the opposite one-sided initial edge is missing.");
+            }
+            if (sourceSide == nullptr || oppositeSide->second == nullptr) {
+                throw std::logic_error("Cannot build a two-sided initial edge from a null one-sided initial edge.");
+            }
+
+            oneSidedInitialEdgePairsToMerge.push_back(
+                {canonicalLabelPair, sourceSide.get(), oppositeSide->second.get()});
         }
     }
+    const double collectEdgePairsMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
-// not save to parallelize, dataraces
-//#pragma omp parallel for schedule(dynamic) default(none) shared(newlyAddedInitialEdges)
-    for (long long i = 0; i < static_cast<long long>(newlyAddedInitialEdges.size()); ++i) {
-        newlyAddedInitialEdges[i]->calculateEdgeFeatures();
+    phaseTimer.restart();
+    std::sort(
+        oneSidedInitialEdgePairsToMerge.begin(),
+        oneSidedInitialEdgePairsToMerge.end(),
+        [](const OneSidedInitialEdgePair &left, const OneSidedInitialEdgePair &right) {
+            return left.labelPair < right.labelPair;
+        });
+    const double sortEdgePairsMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+    const int requestedThreadCount = std::max(1, threadCount);
+    const bool edgeFeaturesEnabled = !FeatureList::edgeFeaturesList.empty();
+    bool buildInParallel = false;
+#ifdef USE_OMP
+    buildInParallel = requestedThreadCount > 1 &&
+                      oneSidedInitialEdgePairsToMerge.size() > 1 &&
+                      !edgeFeaturesEnabled;
+#endif
+
+    if (requestedThreadCount > 1 && edgeFeaturesEnabled) {
+        logSegmentManager(
+            LogLevel::Warning,
+            __func__,
+            QStringLiteral("Using serial two-sided initial-edge construction because edge feature prototypes are active"));
     }
+#ifndef USE_OMP
+    if (requestedThreadCount > 1) {
+        logSegmentManagerDebugIf(
+            logTiming,
+            __func__,
+            QStringLiteral("Using serial two-sided initial-edge construction because OpenMP is disabled"));
+    }
+#endif
 
+    std::vector<std::unique_ptr<InitialEdge>> twoSidedInitialEdgesToRegister(
+        oneSidedInitialEdgePairsToMerge.size());
+    phaseTimer.restart();
+    int usedThreadCount = 1;
+#ifdef USE_OMP
+    if (buildInParallel) {
+        std::exception_ptr firstException;
+        std::mutex exceptionMutex;
+        std::atomic<bool> stopRequested{false};
+
+#pragma omp parallel num_threads(requestedThreadCount) default(none) \
+    shared(oneSidedInitialEdgePairsToMerge, twoSidedInitialEdgesToRegister, firstException, \
+           exceptionMutex, stopRequested, usedThreadCount)
+        {
+#pragma omp single
+            usedThreadCount = omp_get_num_threads();
+
+#pragma omp for schedule(guided)
+            for (long long index = 0;
+                 index < static_cast<long long>(oneSidedInitialEdgePairsToMerge.size());
+                 ++index) {
+                if (stopRequested.load(std::memory_order_relaxed)) {
+                    continue;
+                }
+                try {
+                    twoSidedInitialEdgesToRegister[static_cast<std::size_t>(index)] =
+                        createTwoSidedInitialEdge(
+                            oneSidedInitialEdgePairsToMerge[static_cast<std::size_t>(index)]);
+                } catch (...) {
+                    std::lock_guard<std::mutex> guard(exceptionMutex);
+                    if (!firstException) {
+                        firstException = std::current_exception();
+                    }
+                    stopRequested.store(true, std::memory_order_relaxed);
+                }
+            }
+        }
+
+        if (firstException) {
+            std::rethrow_exception(firstException);
+        }
+    } else
+#endif
+    {
+        for (std::size_t index = 0; index < oneSidedInitialEdgePairsToMerge.size(); ++index) {
+            twoSidedInitialEdgesToRegister[index] =
+                createTwoSidedInitialEdge(oneSidedInitialEdgePairsToMerge[index]);
+        }
+    }
+    const double createTwoSidedEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+    phaseTimer.restart();
+    if (edgeFeaturesEnabled) {
+        for (auto &twoSidedInitialEdge : twoSidedInitialEdgesToRegister) {
+            twoSidedInitialEdge->calculateEdgeFeatures();
+        }
+    }
+    const double featureCalculationMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+    phaseTimer.restart();
+    for (auto &twoSidedInitialEdge : twoSidedInitialEdgesToRegister) {
+        addTwoSidedInitialEdge(std::move(twoSidedInitialEdge));
+    }
+    const double registerTwoSidedEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+    logSegmentManagerDebugIf(
+        logTiming,
+        __func__,
+        QStringLiteral(
+            "Two-sided initial-edge build phases inspected_one_sided_edges=%1 edge_pairs_to_merge=%2 "
+            "requested_threads=%3 used_threads=%4 parallel=%5 edge_features_enabled=%6 "
+            "collect_edge_pairs_ms=%7 sort_edge_pairs_ms=%8 create_two_sided_edges_ms=%9 "
+            "feature_calculation_ms=%10 register_two_sided_edges_ms=%11")
+            .arg(static_cast<qulonglong>(inspectedOneSidedEdgeCount))
+            .arg(static_cast<qulonglong>(oneSidedInitialEdgePairsToMerge.size()))
+            .arg(requestedThreadCount)
+            .arg(usedThreadCount)
+            .arg(buildInParallel ? QStringLiteral("yes") : QStringLiteral("no"))
+            .arg(edgeFeaturesEnabled ? QStringLiteral("yes") : QStringLiteral("no"))
+            .arg(collectEdgePairsMs, 0, 'f', 3)
+            .arg(sortEdgePairsMs, 0, 'f', 3)
+            .arg(createTwoSidedEdgesMs, 0, 'f', 3)
+            .arg(featureCalculationMs, 0, 'f', 3)
+            .arg(registerTwoSidedEdgesMs, 0, 'f', 3));
 }
 
 
@@ -775,16 +930,43 @@ void SegmentManager::recalculateEdgesOnWorkingNode(WorkingNode *pWorkingNode, bo
     }
 }
 
-void SegmentManager::convertAllInitialNodesIntoWorkingNodes() {
-    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Converting all initial nodes into working nodes"));
+void SegmentManager::buildWorkingGraphFromInitialGraph() {
+    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Building working graph from initial graph"));
 
+    if (!pWorkingNodes->empty() || !pWorkingEdges->empty()) {
+        throw std::logic_error("The working graph must be empty before it is built from the initial graph.");
+    }
+
+    QElapsedTimer phaseTimer;
+    phaseTimer.start();
+    pWorkingNodes->reserve(pInitialNodes->size());
+    const double reserveWorkingNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+    phaseTimer.restart();
     for (auto &initialNode : *pInitialNodes) {
         constructWorkingNodeFromInitialNode(initialNode.second.get());
     }
+    const double createWorkingNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
-    for (auto &workingNode : *pWorkingNodes) {
-        recalculateEdgesOnWorkingNode(workingNode.second.get());
+    phaseTimer.restart();
+    for (const auto &[edgePair, initialEdge] : *pInitialTwoSidedEdges) {
+        addWorkingEdge(new WorkingEdge(initialEdge, edgePair.first, edgePair.second));
     }
+    const double createWorkingEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+    logSegmentManagerDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral(
+            "Working graph build phases initial_nodes=%1 initial_edges=%2 working_nodes=%3 working_edges=%4 "
+            "reserve_working_nodes_ms=%5 create_working_nodes_ms=%6 create_working_edges_ms=%7")
+            .arg(static_cast<qulonglong>(pInitialNodes->size()))
+            .arg(static_cast<qulonglong>(pInitialTwoSidedEdges->size()))
+            .arg(static_cast<qulonglong>(pWorkingNodes->size()))
+            .arg(static_cast<qulonglong>(pWorkingEdges->size()))
+            .arg(reserveWorkingNodesMs, 0, 'f', 3)
+            .arg(createWorkingNodesMs, 0, 'f', 3)
+            .arg(createWorkingEdgesMs, 0, 'f', 3));
 }
 
 void SegmentManager::removeWorkingNode(WorkingNode *workingNodeToRemove, bool veryVerbose) {
@@ -815,9 +997,11 @@ void SegmentManager::printInitialNodes(std::ostream &outStream) {
 void SegmentManager::printInitialOneSidedEdges(std::ostream &outStream) {
     outStream << "=== initialOneSidedEdges ===\n";
     int nodeIndentationLevel = 1;
-    for (auto &edge : *pInitialOneSidedEdges) {
-        outStream << "key: " << edge.first.first << "," << edge.first.second << "\n";
-        edge.second->print(nodeIndentationLevel, outStream);
+    for (const auto &[sourceLabel, initialNode] : *pInitialNodes) {
+        for (const auto &[neighborLabel, edge] : initialNode->onesidedEdges) {
+            outStream << "key: " << sourceLabel << "," << neighborLabel << "\n";
+            edge->print(nodeIndentationLevel, outStream);
+        }
     }
 }
 

@@ -1,11 +1,23 @@
 #include "systemStats.h"
 
+namespace {
+
+void copyMemoryStats(const MemoryStats &memory, SystemStats &system) {
+    system.memAvailGB = memory.availableSystemMemoryGB;
+    system.memTotalGB = memory.totalSystemMemoryGB;
+    system.swapUsedGB = memory.swapUsedGB;
+    system.swapTotalGB = memory.swapTotalGB;
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // macOS
 // ---------------------------------------------------------------------------
 #if defined(__APPLE__)
 
 #include <mach/mach.h>
+#include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <vector>
 
@@ -43,6 +55,52 @@ std::vector<PerCoreTicks> readCoreTicks() {
 
 namespace systemStats {
 
+MemoryStats queryMemory() {
+    constexpr double bytesToGB = 1.0 / (1024.0 * 1024.0 * 1024.0);
+    MemoryStats stats;
+
+    uint64_t totalMemoryBytes = 0;
+    size_t totalMemorySize = sizeof(totalMemoryBytes);
+    sysctlbyname("hw.memsize", &totalMemoryBytes, &totalMemorySize, nullptr, 0);
+    stats.totalSystemMemoryGB = static_cast<double>(totalMemoryBytes) * bytesToGB;
+
+    vm_size_t pageSize = 0;
+    host_page_size(mach_host_self(), &pageSize);
+    vm_statistics64_data_t vmStats{};
+    mach_msg_type_number_t infoCount = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(),
+                          HOST_VM_INFO64,
+                          reinterpret_cast<host_info64_t>(&vmStats),
+                          &infoCount) == KERN_SUCCESS) {
+        const uint64_t availableBytes =
+            static_cast<uint64_t>(vmStats.free_count + vmStats.inactive_count) *
+            static_cast<uint64_t>(pageSize);
+        stats.availableSystemMemoryGB = static_cast<double>(availableBytes) * bytesToGB;
+    }
+
+    xsw_usage swapUsage{};
+    size_t swapSize = sizeof(swapUsage);
+    if (sysctlbyname("vm.swapusage", &swapUsage, &swapSize, nullptr, 0) == 0) {
+        stats.swapTotalGB = static_cast<double>(swapUsage.xsu_total) * bytesToGB;
+        stats.swapUsedGB = static_cast<double>(swapUsage.xsu_used) * bytesToGB;
+    }
+
+    task_basic_info_data_t taskInfo{};
+    mach_msg_type_number_t taskInfoCount = TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(),
+                  TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&taskInfo),
+                  &taskInfoCount) == KERN_SUCCESS) {
+        stats.processResidentMemoryGB = static_cast<double>(taskInfo.resident_size) * bytesToGB;
+    }
+
+    struct rusage usage {};
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+        stats.peakProcessResidentMemoryGB = static_cast<double>(usage.ru_maxrss) * bytesToGB;
+    }
+    return stats;
+}
+
 SystemStats query() {
     SystemStats stats{};
 
@@ -66,30 +124,7 @@ SystemStats query() {
     }
     sPrevTicks = cur;
 
-    // RAM
-    uint64_t totalMem = 0;
-    size_t sz = sizeof(totalMem);
-    sysctlbyname("hw.memsize", &totalMem, &sz, nullptr, 0);
-    stats.memTotalGB = static_cast<double>(totalMem) / (1024.0 * 1024.0 * 1024.0);
-
-    vm_size_t pageSize = 0;
-    host_page_size(mach_host_self(), &pageSize);
-
-    vm_statistics64_data_t vmStats{};
-    mach_msg_type_number_t infoCount = HOST_VM_INFO64_COUNT;
-    host_statistics64(mach_host_self(), HOST_VM_INFO64,
-                      reinterpret_cast<host_info64_t>(&vmStats), &infoCount);
-
-    uint64_t availBytes = static_cast<uint64_t>(vmStats.free_count + vmStats.inactive_count)
-                          * static_cast<uint64_t>(pageSize);
-    stats.memAvailGB = static_cast<double>(availBytes) / (1024.0 * 1024.0 * 1024.0);
-
-    // Swap
-    xsw_usage swapUsage{};
-    size_t swapSz = sizeof(swapUsage);
-    sysctlbyname("vm.swapusage", &swapUsage, &swapSz, nullptr, 0);
-    stats.swapTotalGB = static_cast<double>(swapUsage.xsu_total) / (1024.0 * 1024.0 * 1024.0);
-    stats.swapUsedGB  = static_cast<double>(swapUsage.xsu_used)  / (1024.0 * 1024.0 * 1024.0);
+    copyMemoryStats(queryMemory(), stats);
 
     return stats;
 }
@@ -103,6 +138,7 @@ SystemStats query() {
 
 #include <unistd.h>
 #include <fstream>
+#include <limits>
 
 namespace {
 
@@ -129,6 +165,56 @@ CpuSnapshot readCpuSnapshot() {
 
 namespace systemStats {
 
+MemoryStats queryMemory() {
+    constexpr double kilobytesToGB = 1.0 / (1024.0 * 1024.0);
+    MemoryStats stats;
+
+    std::ifstream meminfo("/proc/meminfo");
+    std::string key;
+    std::string unit;
+    long long value = 0;
+    long long memoryTotalKB = 0;
+    long long memoryAvailableKB = 0;
+    long long swapTotalKB = 0;
+    long long swapFreeKB = 0;
+    while (meminfo >> key >> value >> unit) {
+        if (key == "MemTotal:") {
+            memoryTotalKB = value;
+        } else if (key == "MemAvailable:") {
+            memoryAvailableKB = value;
+        } else if (key == "SwapTotal:") {
+            swapTotalKB = value;
+        } else if (key == "SwapFree:") {
+            swapFreeKB = value;
+        }
+    }
+    stats.totalSystemMemoryGB = static_cast<double>(memoryTotalKB) * kilobytesToGB;
+    stats.availableSystemMemoryGB = static_cast<double>(memoryAvailableKB) * kilobytesToGB;
+    stats.swapTotalGB = static_cast<double>(swapTotalKB) * kilobytesToGB;
+    stats.swapUsedGB = static_cast<double>(swapTotalKB - swapFreeKB) * kilobytesToGB;
+
+    std::ifstream statm("/proc/self/statm");
+    long totalPages = 0;
+    long residentPages = 0;
+    if (statm >> totalPages >> residentPages) {
+        const double pageSizeGB = static_cast<double>(sysconf(_SC_PAGESIZE)) /
+                                  (1024.0 * 1024.0 * 1024.0);
+        stats.processResidentMemoryGB = static_cast<double>(residentPages) * pageSizeGB;
+    }
+
+    std::ifstream status("/proc/self/status");
+    while (status >> key) {
+        if (key == "VmHWM:") {
+            long peakResidentKB = 0;
+            status >> peakResidentKB;
+            stats.peakProcessResidentMemoryGB = static_cast<double>(peakResidentKB) * kilobytesToGB;
+            break;
+        }
+        status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+    return stats;
+}
+
 SystemStats query() {
     SystemStats stats{};
     long n = sysconf(_SC_NPROCESSORS_ONLN);
@@ -146,22 +232,7 @@ SystemStats query() {
     sPrev    = cur;
     sHasPrev = true;
 
-    // RAM + Swap (/proc/meminfo values are in kB)
-    constexpr double kbToGB = 1.0 / (1024.0 * 1024.0);
-    std::ifstream meminfo("/proc/meminfo");
-    std::string key, unit;
-    long long val;
-    long long memTotal = 0, memAvail = 0, swapTotal = 0, swapFree = 0;
-    while (meminfo >> key >> val >> unit) {
-        if      (key == "MemTotal:")     memTotal  = val;
-        else if (key == "MemAvailable:") memAvail  = val;
-        else if (key == "SwapTotal:")    swapTotal = val;
-        else if (key == "SwapFree:")     swapFree  = val;
-    }
-    stats.memTotalGB  = memTotal  * kbToGB;
-    stats.memAvailGB  = memAvail  * kbToGB;
-    stats.swapTotalGB = swapTotal * kbToGB;
-    stats.swapUsedGB  = (swapTotal - swapFree) * kbToGB;
+    copyMemoryStats(queryMemory(), stats);
 
     return stats;
 }
@@ -181,6 +252,20 @@ static bool sHasPrev = false;
 } // namespace
 
 namespace systemStats {
+
+MemoryStats queryMemory() {
+    constexpr double bytesToGB = 1.0 / (1024.0 * 1024.0 * 1024.0);
+    MemoryStats stats;
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof(memory);
+    if (GlobalMemoryStatusEx(&memory)) {
+        stats.totalSystemMemoryGB = static_cast<double>(memory.ullTotalPhys) * bytesToGB;
+        stats.availableSystemMemoryGB = static_cast<double>(memory.ullAvailPhys) * bytesToGB;
+        stats.swapTotalGB = static_cast<double>(memory.ullTotalPageFile) * bytesToGB;
+        stats.swapUsedGB = static_cast<double>(memory.ullTotalPageFile - memory.ullAvailPageFile) * bytesToGB;
+    }
+    return stats;
+}
 
 SystemStats query() {
     SystemStats stats{};
@@ -215,15 +300,7 @@ SystemStats query() {
         sHasPrev    = true;
     }
 
-    // RAM + Swap
-    MEMORYSTATUSEX mem{};
-    mem.dwLength = sizeof(mem);
-    GlobalMemoryStatusEx(&mem);
-    constexpr double toGB = 1.0 / (1024.0 * 1024.0 * 1024.0);
-    stats.memTotalGB  = mem.ullTotalPhys * toGB;
-    stats.memAvailGB  = mem.ullAvailPhys * toGB;
-    stats.swapTotalGB = mem.ullTotalPageFile * toGB;
-    stats.swapUsedGB  = (mem.ullTotalPageFile - mem.ullAvailPageFile) * toGB;
+    copyMemoryStats(queryMemory(), stats);
 
     return stats;
 }
@@ -236,8 +313,8 @@ SystemStats query() {
 #else
 
 namespace systemStats {
+MemoryStats queryMemory() { return {}; }
 SystemStats query() { return {}; }
 } // namespace systemStats
 
 #endif
-

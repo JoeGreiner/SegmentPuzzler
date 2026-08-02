@@ -29,19 +29,13 @@ public:
     void calculateEdgeFeatures();
 
     // merge roi and voxels with other edge
-    void mergeVoxelsAndROIwithOtherEdge(InitialEdge *edgeToMerge);
+    void mergeVoxelsAndROIwithOtherEdge(const InitialEdge &edgeToMerge);
 
     void addVoxel(Voxel &voxel);
 
     void print(int indentationLevel, std::ostream &outStream) override;
 
     size_t getNumberVoxels();
-
-    bool getWasUsedToComputeTwoSidedEdge();
-
-    void setWasUsedToComputeTwoSidedEdge(bool wasUsedToComputeTwoSidedEdgeIn);
-
-    bool wasUsedToComputeTwoSidedEdge;
 
     // vector of all voxels in the edge
     std::vector<Voxel> voxels;

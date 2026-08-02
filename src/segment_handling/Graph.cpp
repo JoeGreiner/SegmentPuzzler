@@ -20,6 +20,7 @@
 #include <chrono>
 #include <QStringList>
 #include "src/utils/AppLogger.h"
+#include "src/utils/systemStats.h"
 #include "src/utils/utils.h"
 #include "graphBase.h"
 
@@ -216,13 +217,12 @@ Graph::Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn) {
     graphBase = graphBaseIn;
 
     initialNodes = std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>>();
-    initialOneSidedEdges = std::map<EdgePairIdType, std::shared_ptr<InitialEdge>>();
     initialTwoSidedEdges = std::map<EdgePairIdType, std::shared_ptr<InitialEdge>>();
     initialEdgeIdLookup = std::unordered_map<EdgeNumIdType, EdgePairIdType>();
     workingNodes = std::unordered_map<SegmentIdType, std::shared_ptr<WorkingNode>>();
     workingEdges = std::map<EdgePairIdType, std::shared_ptr<WorkingEdge>>();
 
-    segmentManager = SegmentManager(graphBase, &initialNodes, &initialOneSidedEdges, &initialTwoSidedEdges,
+    segmentManager = SegmentManager(graphBase, &initialNodes, &initialTwoSidedEdges,
                                     &initialEdgeIdLookup, &graphBase->colorLookUpEdgesStatus, &graphBase->edgeStatus,
                                     &graphBase->pEdgesInitialSegmentsImage, &graphBase->pWorkingSegmentsImage,
                                     &workingNodes, &workingEdges,
@@ -501,18 +501,18 @@ StrokeMask rasterizeStrokeMask(const Projected3DCutRequest &request,
 
 
 void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
-                                int edgeScanThreadCount) {
+                                int graphBuildThreadCount) {
     initializeEdgeVolumeAndEdgeStatus();
     updateBackgroundIdFromVolume(pImage);
     pIgnoredSegmentLabels->push_back(backgroundId);
 
     nextFreeId = getNextFreeId(pImage);
     constructInitialNodes(pImage);
-    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes(edgeScanThreadCount);
-    segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
+    segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes(graphBuildThreadCount);
+    segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges(graphBuildThreadCount);
     graphBase->pEdgesInitialSegmentsITKSignal->computeExtrema();
     graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-    segmentManager.convertAllInitialNodesIntoWorkingNodes();
+    segmentManager.buildWorkingGraphFromInitialGraph();
 }
 
 void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) {
@@ -528,16 +528,69 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
         }
     }
 
+    std::size_t activeLabelCount = 0;
+    int backgroundVoxelCount = 0;
+    int largestForegroundLabelVoxelCount = 0;
+    for (std::size_t labelIndex = 0; labelIndex < segmentIdHistogram.size(); ++labelIndex) {
+        const int voxelCount = segmentIdHistogram[labelIndex];
+        if (voxelCount <= 0) {
+            continue;
+        }
+
+        ++activeLabelCount;
+        if (labelIndex == static_cast<std::size_t>(backgroundId)) {
+            backgroundVoxelCount = voxelCount;
+        } else {
+            largestForegroundLabelVoxelCount = std::max(largestForegroundLabelVoxelCount, voxelCount);
+        }
+    }
+
     std::vector<std::shared_ptr<InitialNode>> initialNodesVec; // vector use instead of a map to save lookup time
-    {   ScopedGraphTimer initialNodeTimer(verbose, __func__, QStringLiteral("Allocating initial nodes"));
+    {
+        ScopedGraphTimer initialNodeTimer(verbose, __func__, QStringLiteral("Allocating initial nodes"));
+        const MemoryStats memoryBefore = systemStats::queryMemory();
+        QElapsedTimer phaseTimer;
+        phaseTimer.start();
         initialNodesVec.resize(nextFreeId);
-        segmentManager.clearAndReserveInitialNodes(nextFreeId);
+        const double resizeDenseNodeIndexMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+        phaseTimer.restart();
+        segmentManager.clearGraphAndReserveInitialNodes(activeLabelCount);
+        const double resetPreviousGraphMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+
+        phaseTimer.restart();
         for (unsigned int i = 0; i < segmentIdHistogram.size(); i++) {
             if (segmentIdHistogram[i] > 0) {
                 segmentManager.addInitialNode(i, segmentIdHistogram[i]);
                 initialNodesVec[i] = initialNodes[i];
             }
         }
+        const double createInitialNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
+        const MemoryStats memoryAfter = systemStats::queryMemory();
+
+        logGraphDebugIf(
+            verbose,
+            __func__,
+            QStringLiteral(
+                "Initial node allocation phases label_slots=%1 active_labels=%2 background_voxel_count=%3 "
+                "largest_foreground_label_voxel_count=%4 resize_dense_index_ms=%5 "
+                "reset_previous_graph_ms=%6 create_initial_nodes_ms=%7 process_rss_before_gb=%8 "
+                "process_rss_after_gb=%9 process_peak_rss_gb=%10 available_memory_before_gb=%11 "
+                "available_memory_after_gb=%12 swap_used_before_gb=%13 swap_used_after_gb=%14")
+                .arg(static_cast<qulonglong>(nextFreeId))
+                .arg(static_cast<qulonglong>(activeLabelCount))
+                .arg(backgroundVoxelCount)
+                .arg(largestForegroundLabelVoxelCount)
+                .arg(resizeDenseNodeIndexMs, 0, 'f', 3)
+                .arg(resetPreviousGraphMs, 0, 'f', 3)
+                .arg(createInitialNodesMs, 0, 'f', 3)
+                .arg(memoryBefore.processResidentMemoryGB, 0, 'f', 3)
+                .arg(memoryAfter.processResidentMemoryGB, 0, 'f', 3)
+                .arg(memoryAfter.peakProcessResidentMemoryGB, 0, 'f', 3)
+                .arg(memoryBefore.availableSystemMemoryGB, 0, 'f', 3)
+                .arg(memoryAfter.availableSystemMemoryGB, 0, 'f', 3)
+                .arg(memoryBefore.swapUsedGB, 0, 'f', 3)
+                .arg(memoryAfter.swapUsedGB, 0, 'f', 3));
     }
 
     {   ScopedGraphTimer voxelAssignmentTimer(verbose, __func__, QStringLiteral("Assigning voxels to initial nodes"));
@@ -822,24 +875,6 @@ void Graph::unmergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToUnMerge) {
             std::vector<SegmentIdType> initialNodeIdsSplitA = splitPair.first;
             std::vector<SegmentIdType> initialNodeIdsSplitB = splitPair.second;
             unmergeEdge(workingNodes[currentWorkingNodeIdA].get(), initialNodeIdsSplitA, initialNodeIdsSplitB);
-//
-//            LandscapeType::Pointer pLandscapeAB = generateLandscapePathfinding(GraphBase::pWorkingSegmentsImage,
-//                                                                               currentWorkingNodeIdA,
-//                                                                               *initialOneSidedEdges[{pairId.second,
-//                                                                                                      pairId.first}]);
-//            ITKImageWriter<LandscapeType>(pLandscapeAB, "landscapeAB.nrrd");
-//            LandscapeType::Pointer pLandscapeBA = generateLandscapePathfinding(GraphBase::pWorkingSegmentsImage,
-//                                                                               currentWorkingNodeIdA,
-//                                                                               *initialOneSidedEdges[pairId]);
-//            ITKImageWriter<LandscapeType>(pLandscapeBA, "landscabeBA.nrrd");
-//
-//            DistanceType::Pointer pDistanceAB = shortestPath(*initialOneSidedEdges[pairId], pLandscapeAB);
-//            ITKImageWriter<DistanceType>(pDistanceAB, "distAB.nrrd");
-//            DistanceType::Pointer pDistanceBA = shortestPath(*initialOneSidedEdges[{pairId.second, pairId.first}],
-//                                                             pLandscapeBA);
-//            ITKImageWriter<DistanceType>(pDistanceBA, "distBA.nrrd");
-//
-//            unmergeEdge(initialTwoSidedEdges[pairId].get(), pDistanceAB, pDistanceBA);
         }
 //        graphBase->edgeStatus[numId] = -2;
 
@@ -858,6 +893,8 @@ Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
 
     SegmentIdType labelInitialNodeA = edgeToCalculateDistanceFrom->getLabelSmaller();
     SegmentIdType labelInitialNodeB = edgeToCalculateDistanceFrom->getLabelBigger();
+    InitialEdge *oneSidedEdgeFromA =
+        initialNodes.at(labelInitialNodeA)->onesidedEdges.at(labelInitialNodeB).get();
 
     using distLabelPair = std::pair<SegmentIdType, float>;
 
@@ -879,7 +916,7 @@ Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
         if (label == labelInitialNodeA) {
             // use different starting point: center of mass of initial edge + 1 unit vector in direction of center of mass of the node
             CenterOfMass comSourceNode = CenterOfMass(initialNodes[label].get());
-            comSource = CenterOfMass(initialOneSidedEdges[{labelInitialNodeA, labelInitialNodeB}].get());
+            comSource = CenterOfMass(oneSidedEdgeFromA);
             float dX = comSourceNode.x - comSource.x;
             float dY = comSourceNode.y - comSource.y;
             float dZ = comSourceNode.z - comSource.z;
@@ -927,7 +964,7 @@ Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
         CenterOfMass comSource;
         if (label == labelInitialNodeB) {
             CenterOfMass comSourceNode = CenterOfMass(initialNodes[label].get());
-            comSource = CenterOfMass(initialOneSidedEdges[{labelInitialNodeA, labelInitialNodeB}].get());
+            comSource = CenterOfMass(oneSidedEdgeFromA);
             float dX = comSourceNode.x - comSource.x;
             float dY = comSourceNode.y - comSource.y;
             float dZ = comSourceNode.z - comSource.z;
@@ -1182,22 +1219,6 @@ void Graph::unmergeEdge(InitialEdge *initialEdge, DistanceType::Pointer pDistanc
                 distanceToEdgeBigger /= initialNode.second->voxels.size();
 //                std::cout << "distSmaller: " << distanceToEdgeSmaller << "\n";
 //                std::cout << "distLarger: " << distanceToEdgeBigger << "\n";
-
-
-
-//                // distance onesided edge a->b
-//                for (auto &voxel : initialOneSidedEdges[{labelInitialNodeSmaller, labelInitialNodeBigger}]->voxels) {
-//                    distanceToEdgeSmaller += initialNode.second->roi.calculateMeanDistanceOfExtremeVoxelToPoint(voxel);
-//                }
-//                distanceToEdgeSmaller /= initialOneSidedEdges[{labelInitialNodeSmaller, labelInitialNodeBigger}]->getNumberVoxels();
-//
-//
-//                // distance onesided edge b->a
-//                for (auto &voxel : initialOneSidedEdges[{labelInitialNodeBigger, labelInitialNodeSmaller}]->voxels) {
-//                    distanceToEdgeBigger += initialNode.second->roi.calculateMeanDistanceOfExtremeVoxelToPoint(voxel);
-//                }
-//                distanceToEdgeBigger /= initialOneSidedEdges[{labelInitialNodeBigger, labelInitialNodeSmaller}]->getNumberVoxels();
-
                 // assign bucket which has the shorter distance
 //                std::cout << distanceToEdgeSmaller << " " << distanceToEdgeBigger << "\n";
                 if (distanceToEdgeSmaller > distanceToEdgeBigger) {
@@ -1556,7 +1577,7 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
     initializeEdgeVolumeAndEdgeStatus();
     constructInitialNodes(graphBase->pWorkingSegmentsImage);
     segmentManager.computeSurfaceAndOneSidedEdgesOnAllInitialNodes(1);
-    segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
+    segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
 
     std::unordered_set<SegmentIdType> assignedInitialLabels;
     assignedInitialLabels.reserve(initialNodes.size());
@@ -2168,7 +2189,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     for (const SegmentIdType initialLabel : replacementInitialLabels) {
         segmentManager.computeCorrospondingOneSidedInitialEdges(initialNodes.at(initialLabel).get());
     }
-    segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
+    segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
     if (profileOut != nullptr) {
         profileOut->recomputeInitialEdgesMs = durationMs(recomputeInitialEdgesStart, Clock::now());
     }
@@ -2836,7 +2857,7 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
                 //TODO: is there a edge case where actually one of the segments is not an initialNode but a workingnode?
                 //TODO: Maybe enforce it/check it computationally
                 segmentManager.recomputeVoxelListAndOneSidedEdgesIfShrinked(vecOfConnectedInitialNodeIds);
-                segmentManager.mergeNewOneSidedEdgesIntoTwosidedEdges();
+                segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
 
                 // generate new workingnode  and working edges based of new segment
 
@@ -3006,9 +3027,11 @@ void Graph::printInitialNodes(std::ostream &outStream) {
 void Graph::printInitialOneSidedEdges(std::ostream &outStream) {
     outStream << "=== initialOneSidedEdges ===\n";
     int nodeIndentationLevel = 1;
-    for (auto &edge : initialOneSidedEdges) {
-        outStream << "key: " << edge.first.first << "," << edge.first.second << "\n";
-        edge.second->print(nodeIndentationLevel, outStream);
+    for (const auto &[sourceLabel, initialNode] : initialNodes) {
+        for (const auto &[neighborLabel, edge] : initialNode->onesidedEdges) {
+            outStream << "key: " << sourceLabel << "," << neighborLabel << "\n";
+            edge->print(nodeIndentationLevel, outStream);
+        }
     }
 }
 

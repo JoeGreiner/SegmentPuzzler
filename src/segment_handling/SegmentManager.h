@@ -9,6 +9,7 @@
 
 #include <unordered_map>
 #include <fstream>
+#include <memory>
 
 
 // this should contain all the data for one graph
@@ -24,7 +25,6 @@ public:
     SegmentManager(
             std::shared_ptr<GraphBase> graphBaseIn,
             std::unordered_map<dataType::SegmentIdType, std::shared_ptr<InitialNode>> *pInitialNodesIn,
-            std::map<dataType::EdgePairIdType, std::shared_ptr<InitialEdge>> *pInitialOneSidedEdgesIn,
             std::map<dataType::EdgePairIdType, std::shared_ptr<InitialEdge>> *pInitialTwoSidedEdgesIn,
             std::unordered_map<dataType::EdgeNumIdType, dataType::EdgePairIdType> *pInitialEdgeIdLookUpIn,
             std::unordered_map<char, std::vector<unsigned char>> *pColorLookUpEdgesStatusIn,
@@ -40,7 +40,6 @@ public:
     ) :
             graphBase(graphBaseIn),
             pInitialNodes(pInitialNodesIn),
-            pInitialOneSidedEdges(pInitialOneSidedEdgesIn),
             pInitialTwoSidedEdges(pInitialTwoSidedEdgesIn),
             pInitialEdgeIdLookUp(pInitialEdgeIdLookUpIn),
             pColorLookUpEdgesStatus(pColorLookUpEdgesStatusIn),
@@ -55,7 +54,7 @@ public:
 
     void setPointerToIgnoredSegmentsLabels(std::vector<SegmentIdType> *pIgnoredSegmentLabelsIn);
 
-    void clearAndReserveInitialNodes(int numberOfNodesToReserveFor = 0);
+    void clearGraphAndReserveInitialNodes(std::size_t initialNodeCapacity = 0);
 
     void addInitialNode(SegmentIdType labelOfNewNode, int reserveMemoryForVoxels = 0);
 
@@ -81,17 +80,13 @@ public:
 
     void recomputeVoxelListAndOneSidedEdgesIfShrinked(std::vector<SegmentIdType> vecOfConnectedInitialNodeIds);
 
-    void addOneSidedInitialEdge(std::shared_ptr<InitialEdge> pEdgeToAdd, EdgePairIdType pairId);
-
 //    void removeOneSidedInitialEdge();
-    InitialEdge *createTwoSidedInitialEdgeByMerging(SegmentIdType initialNodeLabelA, SegmentIdType initialNodeLabelB);
-
-    void addTwoSidedInitialEdge(InitialEdge *pEdgeToAdd);
+    void addTwoSidedInitialEdge(std::unique_ptr<InitialEdge> edgeToAdd);
 
 //    void removeTwoSidedInitialEdge();
-    void mergeNewOneSidedEdgesIntoTwosidedEdges(bool veryVerbose = false);
+    void buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threadCount = 1, bool veryVerbose = false);
 
-    void convertAllInitialNodesIntoWorkingNodes();
+    void buildWorkingGraphFromInitialGraph();
 
 //
     void constructWorkingNodeFromInitialNode(InitialNode *baseInitialNode, bool useSameIdAsInitialNode = true,
@@ -128,7 +123,6 @@ public:
 private:
     // initial nodes & edges
     std::unordered_map<dataType::SegmentIdType, std::shared_ptr<InitialNode>> *pInitialNodes;
-    std::map<dataType::EdgePairIdType, std::shared_ptr<InitialEdge>> *pInitialOneSidedEdges;
     std::map<dataType::EdgePairIdType, std::shared_ptr<InitialEdge>> *pInitialTwoSidedEdges;
     std::unordered_map<dataType::EdgeNumIdType, dataType::EdgePairIdType> *pInitialEdgeIdLookUp;
     std::unordered_map<char, std::vector<unsigned char>> *pColorLookUpEdgesStatus;
