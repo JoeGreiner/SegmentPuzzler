@@ -7,6 +7,7 @@
 #include <QGridLayout>
 #include <QDateTime>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMessageBox>
@@ -250,6 +251,7 @@ QLabel *createHelpBadgeLabel(const QString &tooltipText, QWidget *parent) {
     }
 
     auto *helpLabel = new QLabel("?", parent);
+    helpLabel->setObjectName(QStringLiteral("threeDViewHelpBadge"));
     helpLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     helpLabel->setStyleSheet(
         "QLabel { color: white; background-color: #666; border-radius: 8px; "
@@ -1631,6 +1633,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
 {
     setWindowTitle(preparedScene.windowTitle);
     resize(600, 600);
+    qApp->installEventFilter(this);
 
     auto renWin = vtkSmartPointer<vtkGenericOpenGLRenderWindow>::New();
     m_renderer = vtkSmartPointer<vtkRenderer>::New();
@@ -1662,7 +1665,6 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     vtkSizePolicy.setRetainSizeWhenHidden(true);
     m_vtkWidget->setSizePolicy(vtkSizePolicy);
     m_vtkWidget->setFocusPolicy(Qt::StrongFocus);
-    m_vtkWidget->installEventFilter(this);
     m_vtkWidget->hide();
 
     auto style = vtkSmartPointer<vtkInteractorStyleTrackballCamera>::New();
@@ -1828,6 +1830,10 @@ void Segment3DViewerDialog::setNavigateToLabelHandler(NavigateToLabelHandler han
     m_navigateToLabelHandler = std::move(handler);
 }
 
+void Segment3DViewerDialog::setDeleteLabelHandler(DeleteLabelHandler handler) {
+    m_deleteLabelHandler = std::move(handler);
+}
+
 void Segment3DViewerDialog::presentInFront() {
     show();
     raiseAndRequestActivation();
@@ -1946,8 +1952,32 @@ void Segment3DViewerDialog::finishInitialRender() {
 }
 
 bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
+    if (event != nullptr) {
+        auto *watchedWidget = qobject_cast<QWidget *>(watched);
+        const bool eventBelongsToDialog =
+            watchedWidget != nullptr
+            && (watchedWidget == this || isAncestorOf(watchedWidget));
+        if (eventBelongsToDialog && event->type() == QEvent::KeyPress) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            if (keyEvent->key() == Qt::Key_D && !keyEvent->isAutoRepeat()) {
+                m_deleteModeActive = true;
+            }
+        } else if (eventBelongsToDialog && event->type() == QEvent::KeyRelease) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            if (keyEvent->key() == Qt::Key_D && !keyEvent->isAutoRepeat()) {
+                m_deleteModeActive = false;
+            }
+        } else if (event->type() == QEvent::ApplicationDeactivate) {
+            m_deleteModeActive = false;
+        }
+    }
+
     if (watched == m_vtkWidget && event != nullptr) {
         switch (event->type()) {
+            case QEvent::FocusOut:
+                m_deleteModeActive = false;
+                break;
+
             case QEvent::HoverEnter:
             case QEvent::HoverMove:
             case QEvent::HoverLeave:
@@ -1977,7 +2007,8 @@ bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
                             (m_vtkWidget->height() - mouseEvent->pos().y() - 1) * devicePixelRatio));
                         const Qt::KeyboardModifiers effectiveModifiers =
                             mouseEvent->modifiers() | QApplication::keyboardModifiers();
-                        if (tryNavigateToPickedLabel(pickX, pickY, effectiveModifiers, "qt")) {
+                        if (tryHandlePickedLabelInteraction(
+                                pickX, pickY, effectiveModifiers, "qt")) {
                             event->accept();
                             return true;
                         }
@@ -2125,21 +2156,24 @@ void Segment3DViewerDialog::applyProjectedCut() {
     finishApply(applyCut(request));
 }
 
-bool Segment3DViewerDialog::tryNavigateToPickedLabel(int pickX,
-                                                     int pickY,
-                                                     Qt::KeyboardModifiers modifiers,
-                                                     const char *sourceTag) {
+bool Segment3DViewerDialog::tryHandlePickedLabelInteraction(
+    int pickX,
+    int pickY,
+    Qt::KeyboardModifiers modifiers,
+    const char *sourceTag)
+{
     QElapsedTimer totalTimer;
     totalTimer.start();
 
     const Qt::KeyboardModifiers effectiveModifiers = modifiers | QApplication::keyboardModifiers();
     const bool hasNavigateHandler = static_cast<bool>(m_navigateToLabelHandler);
     const bool modifierActive = navigationModifierPressed(effectiveModifiers);
+    const bool deleteActive = m_deleteModeActive && static_cast<bool>(m_deleteLabelHandler);
     const char *result = "skipped";
 
-    if (!hasNavigateHandler) {
+    if (!deleteActive && !hasNavigateHandler) {
         result = "skipped_no_handler";
-    } else if (!modifierActive) {
+    } else if (!deleteActive && !modifierActive) {
         result = "skipped_no_modifier";
     } else if (m_renderer == nullptr) {
         result = "skipped_no_renderer";
@@ -2168,14 +2202,35 @@ bool Segment3DViewerDialog::tryNavigateToPickedLabel(int pickX,
         }
 
         qint64 dispatchNanoseconds = 0;
-        bool navigated = false;
+        bool interactionHandled = deleteActive;
         if (pickedLabelId != 0) {
             QElapsedTimer dispatchTimer;
             dispatchTimer.start();
-            m_navigateToLabelHandler(pickedLabelId);
+            if (deleteActive) {
+                const auto actorIt = std::find_if(
+                    m_segmentActors.begin(), m_segmentActors.end(),
+                    [pickedProp](const SegmentActorInfo &actorInfo) {
+                        return actorInfo.actor != nullptr
+                               && pickedProp == actorInfo.actor.GetPointer();
+                    });
+                if (actorIt != m_segmentActors.end()
+                    && m_deleteLabelHandler(pickedLabelId)) {
+                    m_renderer->RemoveActor(actorIt->actor);
+                    m_segmentActors.erase(actorIt);
+                    m_renderer->ResetCameraClippingRange();
+                    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+                        m_vtkWidget->renderWindow()->Render();
+                    }
+                    result = "deleted";
+                } else {
+                    result = "delete_rejected";
+                }
+            } else {
+                m_navigateToLabelHandler(pickedLabelId);
+                interactionHandled = true;
+                result = "navigated";
+            }
             dispatchNanoseconds = dispatchTimer.nsecsElapsed();
-            navigated = true;
-            result = "navigated";
         } else {
             result = "pick_miss";
         }
@@ -2196,7 +2251,7 @@ bool Segment3DViewerDialog::tryNavigateToPickedLabel(int pickX,
                 .arg(elapsedMilliseconds(totalTimer.nsecsElapsed()), 0, 'f', 3)
                 .arg(QString::fromUtf8(result)));
 
-        return navigated;
+        return interactionHandled;
     }
 
     SP_LOG_DEBUG(
@@ -2220,10 +2275,10 @@ void Segment3DViewerDialog::handleInteractorLeftButtonPress() {
 
     int eventPosition[2] = {0, 0};
     m_vtkWidget->interactor()->GetEventPosition(eventPosition);
-    tryNavigateToPickedLabel(eventPosition[0],
-                            eventPosition[1],
-                            QApplication::keyboardModifiers(),
-                            "vtk");
+    tryHandlePickedLabelInteraction(eventPosition[0],
+                                    eventPosition[1],
+                                    QApplication::keyboardModifiers(),
+                                    "vtk");
 }
 
 void Segment3DViewerDialog::showCutHelp() {

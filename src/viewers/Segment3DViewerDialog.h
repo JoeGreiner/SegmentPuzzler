@@ -32,6 +32,7 @@ class Segment3DViewerDialog : public QDialog {
 public:
     using LabelWithColor = std::pair<dataType::SegmentIdType, quint32>;
     using NavigateToLabelHandler = std::function<void(dataType::SegmentIdType)>;
+    using DeleteLabelHandler = std::function<bool(dataType::SegmentIdType)>;
 
     struct CameraOrientation {
         std::array<double, 3> lookDirection{0.0, 0.0, 1.0};
@@ -93,6 +94,7 @@ public:
                                    int launchSliceAxis = -1);
 
     void setNavigateToLabelHandler(NavigateToLabelHandler handler);
+    void setDeleteLabelHandler(DeleteLabelHandler handler);
     void presentInFront();
 
 protected:
@@ -119,10 +121,10 @@ private:
     void showCutHelp();
     void updateCutUiState();
     Projected3DCutRequest buildProjected3DCutRequest() const;
-    bool tryNavigateToPickedLabel(int pickX,
-                                  int pickY,
-                                  Qt::KeyboardModifiers modifiers,
-                                  const char *sourceTag);
+    bool tryHandlePickedLabelInteraction(int pickX,
+                                         int pickY,
+                                         Qt::KeyboardModifiers modifiers,
+                                         const char *sourceTag);
     void handleInteractorLeftButtonPress();
     void raiseAndRequestActivation();
     void applyInitialCameraOrientation(int launchSliceAxis);
@@ -144,11 +146,13 @@ private:
     vtkSmartPointer<vtkOrientationMarkerWidget> m_orientationWidget;
     CutSessionConfig m_cutSession;
     NavigateToLabelHandler m_navigateToLabelHandler;
+    DeleteLabelHandler m_deleteLabelHandler;
     int m_launchSliceAxis = -1;
     bool m_initialFrameScheduled = false;
     bool m_initialFrameRendered = false;
     bool m_cutDrawModeActive = false;
     bool m_cutApplyInFlight = false;
+    bool m_deleteModeActive = false;
 };
 
 #endif // SEGMENT3DVIEWERDIALOG_H

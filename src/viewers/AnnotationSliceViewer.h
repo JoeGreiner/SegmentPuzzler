@@ -142,7 +142,8 @@ private:
     quint32 workingSegmentColor(dataType::SegmentIdType label) const;
     void openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
                             int launchSliceAxis,
-                            dataType::SegmentIdType targetWorkingLabel);
+                            dataType::SegmentIdType targetWorkingLabel,
+                            bool enableSelectedLabelDeletion = false);
     QPoint ROISelectionOrigin;
     int openingRadius = 3;
     int closingRadius = 8;

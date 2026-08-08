@@ -515,7 +515,8 @@ void AnnotationSliceViewer::showPrepared3DView(
 
 void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
                                                int launchSliceAxis,
-                                               dataType::SegmentIdType targetWorkingLabel)
+                                               dataType::SegmentIdType targetWorkingLabel,
+                                               bool enableSelectedLabelDeletion)
 {
     const auto navigationImage =
         targetWorkingLabel != 0
@@ -599,6 +600,26 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
         [navigationImage, linkedOrthoViewer](dataType::SegmentIdType labelId) {
             navigateOrthoViewerToLabel(linkedOrthoViewer, navigationImage, labelId);
         });
+    if (enableSelectedLabelDeletion
+        && graphBase != nullptr
+        && navigationImage == graphBase->pSelectedSegmentation) {
+        dialog->setDeleteLabelHandler(
+            [this, navigationImage](dataType::SegmentIdType labelId) {
+                if (labelId == 0
+                    || graphBase == nullptr
+                    || graphBase->pGraph == nullptr
+                    || graphBase->pSelectedSegmentation != navigationImage) {
+                    return false;
+                }
+
+                graphBase->pGraph->deleteSegmentationLabel(labelId);
+
+                for (auto *viewer : linkedViewerList) {
+                    viewer->recalculateQImages();
+                }
+                return true;
+            });
+    }
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     if (targetWorkingLabel != 0) {
         connect(dialog, &QDialog::finished, this, [this](int result) {
@@ -838,7 +859,7 @@ void AnnotationSliceViewer::show3DAllLabelsView() {
         auto preparedScene =
             Segment3DViewerDialog::prepareAllLabelsScene(segImage, std::move(labelColors));
         if (!preparedScene.meshes.empty()) {
-            openPrepared3DView(std::move(preparedScene), 2, 0);
+            openPrepared3DView(std::move(preparedScene), 2, 0, true);
         }
         return;
     }
@@ -851,7 +872,7 @@ void AnnotationSliceViewer::show3DAllLabelsView() {
         },
         [this](Segment3DViewerDialog::PreparedScene preparedScene) {
             if (!preparedScene.meshes.empty()) {
-                openPrepared3DView(std::move(preparedScene), 2, 0);
+                openPrepared3DView(std::move(preparedScene), 2, 0, true);
             }
         });
 }
