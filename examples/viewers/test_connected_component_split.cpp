@@ -414,6 +414,413 @@ int testEnsureHandlesNoForegroundAndInconsistentWorkingNode() {
     return 0;
 }
 
+int testBulkSegmentationDeleteUsesOneGraphOperation() {
+    auto selectedImage = makeImage(6, 1, 1);
+    selectedImage->SetPixel({0, 0, 0}, 1);
+    selectedImage->SetPixel({1, 0, 0}, 2);
+    selectedImage->SetPixel({2, 0, 0}, 3);
+    selectedImage->SetPixel({3, 0, 0}, 2);
+    selectedImage->SetPixel({4, 0, 0}, 1);
+
+    auto graphBase = std::make_shared<GraphBase>();
+    graphBase->pSelectedSegmentation = selectedImage;
+    Graph graph(graphBase, false);
+
+    const std::unordered_set<SegmentIdType> labelsToDelete{0, 1, 2};
+    if (graph.deleteSegmentationLabels(labelsToDelete) != 4 ||
+        countLabel(selectedImage, 1) != 0 || countLabel(selectedImage, 2) != 0 ||
+        countLabel(selectedImage, 3) != 1 || countLabel(selectedImage, 0) != 5) {
+        return failTest("Bulk segmentation delete should clear every requested foreground label once.");
+    }
+
+    graph.deleteSegmentationLabel(3);
+    if (countLabel(selectedImage, 3) != 0 || countLabel(selectedImage, 0) != 6) {
+        return failTest("Single-label segmentation delete should remain compatible with the bulk path.");
+    }
+    return 0;
+}
+
+int testSelectedSegmentationLabelsBelowVoxelCountUsesExclusiveThreshold() {
+    auto workingImage = makeImage(7, 1, 1);
+    workingImage->SetPixel({1, 0, 0}, 1);
+    auto selectedImage = makeImage(7, 1, 1);
+    selectedImage->SetPixel({0, 0, 0}, 10);
+    selectedImage->SetPixel({1, 0, 0}, 20);
+    selectedImage->SetPixel({2, 0, 0}, 20);
+    selectedImage->SetPixel({3, 0, 0}, 30);
+    selectedImage->SetPixel({4, 0, 0}, 30);
+    selectedImage->SetPixel({5, 0, 0}, 30);
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->ignoredSegmentLabels.push_back(20);
+
+    if (fixture.graph->selectedSegmentationLabelsBelowVoxelCount(3) !=
+        std::vector<SegmentIdType>{10}) {
+        return failTest(
+            "Small-label scan should exclude ignored labels and labels exactly at the threshold.");
+    }
+    if (fixture.graph->selectedSegmentationLabelsBelowVoxelCount(4) !=
+        std::vector<SegmentIdType>{10, 30}) {
+        return failTest("Small-label scan should return sorted labels strictly below the threshold.");
+    }
+    return 0;
+}
+
+int testNeighborMergeChoosesSmallestExactNeighbor() {
+    auto workingImage = makeImage(8, 1, 1);
+    workingImage->SetPixel({1, 0, 0}, 1);
+    workingImage->SetPixel({2, 0, 0}, 1);
+    workingImage->SetPixel({3, 0, 0}, 2);
+    workingImage->SetPixel({4, 0, 0}, 2);
+    workingImage->SetPixel({5, 0, 0}, 2);
+    workingImage->SetPixel({6, 0, 0}, 3);
+
+    auto selectedImage = makeImage(8, 1, 1);
+    selectedImage->SetPixel({1, 0, 0}, 10);
+    selectedImage->SetPixel({2, 0, 0}, 10);
+    selectedImage->SetPixel({3, 0, 0}, 20);
+    selectedImage->SetPixel({4, 0, 0}, 20);
+    selectedImage->SetPixel({5, 0, 0}, 20);
+    selectedImage->SetPixel({6, 0, 0}, 30);
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+
+    const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+        {20}, Graph::SegmentationNeighborMergeOptions{});
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    if (result.status != Status::Merged || result.requiredInsertionCount != 0 ||
+        result.mergeableSelectedLabelCount != 1 || result.consumedLabelCount != 2 ||
+        result.mergedGroupCount != 1 || !result.dataChanged ||
+        result.newLabelByConsumedLabel != std::map<SegmentIdType, SegmentIdType>{{20, 31}, {30, 31}} ||
+        result.voxelCountByConsumedLabel != std::map<SegmentIdType, std::size_t>{{20, 3}, {30, 1}}) {
+        return failTest("Exact neighbor merge should merge the selected label with one result group.");
+    }
+    if (countLabel(selectedImage, 10) != 2 || countLabel(selectedImage, 20) != 0 ||
+        countLabel(selectedImage, 30) != 0 || countLabel(selectedImage, 31) != 4) {
+        return failTest("Neighbor merge did not choose the one-voxel neighbor over the two-voxel neighbor.");
+    }
+    const SegmentIdType mergedWorkingLabel = workingImage->GetPixel({3, 0, 0});
+    if (mergedWorkingLabel == 0 || workingImage->GetPixel({6, 0, 0}) != mergedWorkingLabel) {
+        return failTest("Exact neighbor merge did not merge the expected WorkingNodes.");
+    }
+    return 0;
+}
+
+int testNeighborMergeChoosesLargestExactNeighbor() {
+    auto workingImage = makeImage(8, 1, 1);
+    workingImage->SetPixel({1, 0, 0}, 1);
+    workingImage->SetPixel({2, 0, 0}, 1);
+    workingImage->SetPixel({3, 0, 0}, 2);
+    workingImage->SetPixel({4, 0, 0}, 2);
+    workingImage->SetPixel({5, 0, 0}, 2);
+    workingImage->SetPixel({6, 0, 0}, 3);
+
+    auto selectedImage = makeImage(8, 1, 1);
+    selectedImage->SetPixel({1, 0, 0}, 10);
+    selectedImage->SetPixel({2, 0, 0}, 10);
+    selectedImage->SetPixel({3, 0, 0}, 20);
+    selectedImage->SetPixel({4, 0, 0}, 20);
+    selectedImage->SetPixel({5, 0, 0}, 20);
+    selectedImage->SetPixel({6, 0, 0}, 30);
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+
+    Graph::SegmentationNeighborMergeOptions options;
+    options.neighborSelection = Graph::SegmentationNeighborSelection::Largest;
+    const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors({20}, options);
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    if (result.status != Status::Merged || result.requiredInsertionCount != 0 ||
+        result.mergeableSelectedLabelCount != 1 || result.consumedLabelCount != 2 ||
+        result.mergedGroupCount != 1 || !result.dataChanged ||
+        result.newLabelByConsumedLabel != std::map<SegmentIdType, SegmentIdType>{{10, 31}, {20, 31}} ||
+        result.voxelCountByConsumedLabel != std::map<SegmentIdType, std::size_t>{{10, 2}, {20, 3}}) {
+        return failTest("Largest-neighbor merge should choose the two-voxel neighbor.");
+    }
+    if (countLabel(selectedImage, 10) != 0 || countLabel(selectedImage, 20) != 0 ||
+        countLabel(selectedImage, 30) != 1 || countLabel(selectedImage, 31) != 5) {
+        return failTest("Largest-neighbor merge changed the wrong selected-segmentation labels.");
+    }
+    return 0;
+}
+
+int testNeighborMergeRequiresConfirmationBeforeInsertion() {
+    auto workingImage = makeImage(6, 1, 1);
+    workingImage->SetPixel({1, 0, 0}, 1);
+    workingImage->SetPixel({2, 0, 0}, 1);
+    workingImage->SetPixel({3, 0, 0}, 2);
+    workingImage->SetPixel({4, 0, 0}, 2);
+
+    auto selectedImage = makeImage(6, 1, 1);
+    selectedImage->SetPixel({2, 0, 0}, 10);
+    selectedImage->SetPixel({3, 0, 0}, 20);
+    selectedImage->SetPixel({4, 0, 0}, 20);
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+    const auto workingBefore = copyImageBuffer(workingImage);
+    const auto selectedBefore = copyImageBuffer(selectedImage);
+    const auto nextFreeIdBefore = fixture.graph->nextFreeId;
+    const auto workingNodeCountBefore = fixture.graph->workingNodes.size();
+
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+        {10}, Graph::SegmentationNeighborMergeOptions{});
+    if (result.status != Status::NeedsInsertionConfirmation || result.requiredInsertionCount != 1 ||
+        result.dataChanged) {
+        return failTest("A selected subset of a WorkingNode should require insertion confirmation.");
+    }
+    if (copyImageBuffer(workingImage) != workingBefore || copyImageBuffer(selectedImage) != selectedBefore ||
+        fixture.graph->nextFreeId != nextFreeIdBefore ||
+        fixture.graph->workingNodes.size() != workingNodeCountBefore) {
+        return failTest("Insertion preflight must not mutate either segmentation or the WorkingGraph.");
+    }
+
+    Graph::SegmentationNeighborMergeOptions insertionOptions;
+    insertionOptions.allowInsertion = true;
+    result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors({10}, insertionOptions);
+    if (result.status != Status::Merged || result.requiredInsertionCount != 1 ||
+        result.mergedGroupCount != 1) {
+        return failTest("Confirmed insertion should complete the neighbor merge.");
+    }
+    if (countLabel(selectedImage, 10) != 0 || countLabel(selectedImage, 20) != 0 ||
+        countLabel(selectedImage, 21) != 3 || selectedImage->GetPixel({1, 0, 0}) != 0) {
+        return failTest("Confirmed insertion merge produced unexpected selected-segmentation voxels.");
+    }
+    return 0;
+}
+
+int testNeighborMergeRepairsWorkingNodeSplitByInsertion() {
+    auto workingImage = makeImage(8, 5, 3);
+    workingImage->SetPixel({2, 2, 1}, 1);
+    workingImage->SetPixel({3, 2, 1}, 2);
+    workingImage->SetPixel({4, 2, 1}, 3);
+    workingImage->SetPixel({5, 2, 1}, 3);
+
+    auto fixture = buildGraphFixture(workingImage);
+    const auto edge = fixture.graph->initialTwoSidedEdges.find({1, 2});
+    if (edge == fixture.graph->initialTwoSidedEdges.end()) {
+        return failTest("Expected an initial edge for the exact merged WorkingNode fixture.");
+    }
+    fixture.graph->mergeEdge(edge->second.get());
+
+    auto selectedImage = makeImage(8, 5, 3);
+    selectedImage->SetPixel({2, 2, 1}, 10);
+    selectedImage->SetPixel({3, 2, 1}, 10);
+    selectedImage->SetPixel({4, 2, 1}, 20);
+    selectedImage->SetPixel({5, 2, 1}, 30);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+
+    Graph::SegmentationNeighborMergeOptions options;
+    options.allowInsertion = true;
+    const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors({10}, options);
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    if (result.status != Status::Merged || result.requiredInsertionCount != 1 ||
+        result.mergedGroupCount != 1 || countLabel(selectedImage, 31) != 3 ||
+        countLabel(selectedImage, 10) != 0 || countLabel(selectedImage, 20) != 0 ||
+        countLabel(selectedImage, 30) != 1) {
+        return failTest(
+            "Neighbor merge should restore an exact WorkingNode split by a nearby insertion.");
+    }
+
+    const SegmentIdType mergedWorkingLabel = workingImage->GetPixel({2, 2, 1});
+    if (mergedWorkingLabel == 0 || workingImage->GetPixel({3, 2, 1}) != mergedWorkingLabel ||
+        workingImage->GetPixel({4, 2, 1}) != mergedWorkingLabel ||
+        workingImage->GetPixel({5, 2, 1}) == mergedWorkingLabel) {
+        return failTest("Repaired neighbor merge produced unexpected Working Segments.");
+    }
+    return 0;
+}
+
+int testNeighborMergeCountPreflightRejectsDifferentVoxelSet() {
+    auto workingImage = makeImage(6, 1, 1);
+    workingImage->SetPixel({1, 0, 0}, 1);
+    workingImage->SetPixel({2, 0, 0}, 1);
+    workingImage->SetPixel({3, 0, 0}, 2);
+    workingImage->SetPixel({4, 0, 0}, 2);
+
+    auto selectedImage = makeImage(6, 1, 1);
+    selectedImage->SetPixel({2, 0, 0}, 10);
+    selectedImage->SetPixel({3, 0, 0}, 10);
+    selectedImage->SetPixel({4, 0, 0}, 20);
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+    const auto workingBefore = copyImageBuffer(workingImage);
+    const auto selectedBefore = copyImageBuffer(selectedImage);
+
+    const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+        {10}, Graph::SegmentationNeighborMergeOptions{});
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    if (result.status != Status::NeedsInsertionConfirmation ||
+        result.requiredInsertionCount != 2 || result.dataChanged ||
+        copyImageBuffer(workingImage) != workingBefore ||
+        copyImageBuffer(selectedImage) != selectedBefore) {
+        return failTest(
+            "Count-based merge preflight must reject an equal-sized WorkingNode with different voxels.");
+    }
+    return 0;
+}
+
+int testNeighborMergeCombinesSelectedChainsOnce() {
+    auto workingImage = makeImage(8, 1, 1);
+    auto selectedImage = makeImage(8, 1, 1);
+    for (int x = 1; x <= 3; ++x) {
+        workingImage->SetPixel({x, 0, 0}, 1);
+        selectedImage->SetPixel({x, 0, 0}, 10);
+    }
+    for (int x = 4; x <= 5; ++x) {
+        workingImage->SetPixel({x, 0, 0}, 2);
+        selectedImage->SetPixel({x, 0, 0}, 20);
+    }
+    workingImage->SetPixel({6, 0, 0}, 3);
+    selectedImage->SetPixel({6, 0, 0}, 30);
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+
+    const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+        {10, 20}, Graph::SegmentationNeighborMergeOptions{});
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    if (result.status != Status::Merged || result.mergeableSelectedLabelCount != 2 ||
+        result.consumedLabelCount != 3 || result.mergedGroupCount != 1) {
+        return failTest("A selected merge chain should produce one deduplicated result group.");
+    }
+    if (countLabel(selectedImage, 10) != 0 || countLabel(selectedImage, 20) != 0 ||
+        countLabel(selectedImage, 30) != 0 || countLabel(selectedImage, 31) != 6) {
+        return failTest("Selected merge chain was not transferred as one fresh segmentation label.");
+    }
+    return 0;
+}
+
+int testNeighborMergeDeduplicatesMutualSelection() {
+    auto workingImage = makeImage(6, 1, 1);
+    auto selectedImage = makeImage(6, 1, 1);
+    for (int x = 1; x <= 2; ++x) {
+        workingImage->SetPixel({x, 0, 0}, 1);
+        selectedImage->SetPixel({x, 0, 0}, 10);
+    }
+    for (int x = 3; x <= 4; ++x) {
+        workingImage->SetPixel({x, 0, 0}, 2);
+        selectedImage->SetPixel({x, 0, 0}, 20);
+    }
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+
+    const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+        {10, 20}, Graph::SegmentationNeighborMergeOptions{});
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    if (result.status != Status::Merged || result.mergeableSelectedLabelCount != 2 ||
+        result.consumedLabelCount != 2 || result.mergedGroupCount != 1 ||
+        countLabel(selectedImage, 21) != 4) {
+        return failTest("Mutually selected neighbors should merge once without swapping labels.");
+    }
+    return 0;
+}
+
+int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    {
+        auto workingImage = makeImage(5, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        workingImage->SetPixel({3, 0, 0}, 2);
+        auto selectedImage = makeImage(5, 1, 1);
+        selectedImage->SetPixel({1, 0, 0}, 10);
+        selectedImage->SetPixel({3, 0, 0}, 20);
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+        const auto selectedBefore = copyImageBuffer(selectedImage);
+
+        const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+            {10}, Graph::SegmentationNeighborMergeOptions{});
+        if (result.status != Status::NothingToMerge || result.skippedNoNeighborCount != 1 ||
+            copyImageBuffer(selectedImage) != selectedBefore) {
+            return failTest("An isolated selected label should be skipped without mutation.");
+        }
+    }
+    {
+        auto workingImage = makeImage(4, 1, 1);
+        workingImage->SetPixel({0, 0, 0}, 1);
+        workingImage->SetPixel({1, 0, 0}, 2);
+        workingImage->SetPixel({2, 0, 0}, 1);
+        auto selectedImage = makeImage(4, 1, 1);
+        selectedImage->SetPixel({0, 0, 0}, 10);
+        selectedImage->SetPixel({1, 0, 0}, 20);
+        selectedImage->SetPixel({2, 0, 0}, 10);
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+        const auto workingBefore = copyImageBuffer(workingImage);
+        const auto selectedBefore = copyImageBuffer(selectedImage);
+
+        auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+            {10}, Graph::SegmentationNeighborMergeOptions{});
+        if (result.status != Status::NeedsConnectedComponentConfirmation ||
+            result.disconnectedLabelCount != 1 || result.disconnectedRegionCount != 2 ||
+            copyImageBuffer(workingImage) != workingBefore || copyImageBuffer(selectedImage) != selectedBefore ||
+            fixture.graph->nextFreeId != 3 || fixture.graph->workingNodes.size() != 2) {
+            return failTest("A disconnected involved label should request confirmation without mutation.");
+        }
+
+        Graph::SegmentationNeighborMergeOptions connectedComponentOptions;
+        connectedComponentOptions.allowInsertion = true;
+        connectedComponentOptions.allowConnectedComponentSplit = true;
+        result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+            {10}, connectedComponentOptions);
+        if (result.status != Status::Merged || !result.dataChanged ||
+            result.disconnectedLabelCount != 1 || result.disconnectedRegionCount != 2 ||
+            result.mergedGroupCount != 1 || countLabel(selectedImage, 22) != 3 ||
+            countLabel(selectedImage, 10) != 0 || countLabel(selectedImage, 20) != 0 ||
+            countLabel(selectedImage, 21) != 0) {
+            return failTest("Confirmed Connected Components should reinsert and merge every connected region.");
+        }
+    }
+    {
+        auto workingImage = makeImage(5, 1, 1);
+        workingImage->SetPixel({0, 0, 0}, 1);
+        workingImage->SetPixel({1, 0, 0}, 2);
+        workingImage->SetPixel({3, 0, 0}, 2);
+        auto selectedImage = makeImage(5, 1, 1);
+        selectedImage->SetPixel({0, 0, 0}, 10);
+        selectedImage->SetPixel({1, 0, 0}, 20);
+        selectedImage->SetPixel({3, 0, 0}, 20);
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+
+        auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+            {10}, Graph::SegmentationNeighborMergeOptions{});
+        if (result.status != Status::NeedsConnectedComponentConfirmation ||
+            result.disconnectedLabelCount != 1 || result.disconnectedRegionCount != 2) {
+            return failTest("A disconnected chosen neighbor should also request confirmation.");
+        }
+
+        Graph::SegmentationNeighborMergeOptions connectedComponentOptions;
+        connectedComponentOptions.allowInsertion = true;
+        connectedComponentOptions.allowConnectedComponentSplit = true;
+        result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+            {10}, connectedComponentOptions);
+        if (result.status != Status::Merged || result.disconnectedLabelCount != 1 ||
+            result.disconnectedRegionCount != 2 || countLabel(selectedImage, 21) != 1 ||
+            countLabel(selectedImage, 22) != 2 || countLabel(selectedImage, 10) != 0 ||
+            countLabel(selectedImage, 20) != 0) {
+            return failTest("A disconnected chosen neighbor should split before its adjacent region is merged.");
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -438,6 +845,36 @@ int main(int argc, char **argv) {
         return result;
     }
     if (int result = testEnsureHandlesNoForegroundAndInconsistentWorkingNode()) {
+        return result;
+    }
+    if (int result = testBulkSegmentationDeleteUsesOneGraphOperation()) {
+        return result;
+    }
+    if (int result = testSelectedSegmentationLabelsBelowVoxelCountUsesExclusiveThreshold()) {
+        return result;
+    }
+    if (int result = testNeighborMergeChoosesSmallestExactNeighbor()) {
+        return result;
+    }
+    if (int result = testNeighborMergeChoosesLargestExactNeighbor()) {
+        return result;
+    }
+    if (int result = testNeighborMergeRequiresConfirmationBeforeInsertion()) {
+        return result;
+    }
+    if (int result = testNeighborMergeRepairsWorkingNodeSplitByInsertion()) {
+        return result;
+    }
+    if (int result = testNeighborMergeCountPreflightRejectsDifferentVoxelSet()) {
+        return result;
+    }
+    if (int result = testNeighborMergeCombinesSelectedChainsOnce()) {
+        return result;
+    }
+    if (int result = testNeighborMergeDeduplicatesMutualSelection()) {
+        return result;
+    }
+    if (int result = testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels()) {
         return result;
     }
 

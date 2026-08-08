@@ -37,6 +37,7 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardItemModel>
+#include <QStringList>
 #include <QTableView>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -428,12 +429,20 @@ SegmentTableDialog::SegmentTableDialog(std::shared_ptr<GraphBase> graphBaseIn,
     mainLayout->addWidget(stack);
 
     watcher = new QFutureWatcher<ComputeResult>(this);
-    connect(watcher, &QFutureWatcher<ComputeResult>::finished,
-            this,    &SegmentTableDialog::onComputeFinished);
-
     view3DWatcher = new QFutureWatcher<Segment3DViewerDialog::PreparedScene>(this);
+
+    connect(watcher, &QFutureWatcher<ComputeResult>::started,
+            this, &SegmentTableDialog::updateSegmentationReadBusy);
+    connect(watcher, &QFutureWatcher<ComputeResult>::finished,
+            this, &SegmentTableDialog::updateSegmentationReadBusy);
+    connect(view3DWatcher, &QFutureWatcher<Segment3DViewerDialog::PreparedScene>::started,
+            this, &SegmentTableDialog::updateSegmentationReadBusy);
     connect(view3DWatcher, &QFutureWatcher<Segment3DViewerDialog::PreparedScene>::finished,
-            this,          &SegmentTableDialog::onView3DPreparationFinished);
+            this, &SegmentTableDialog::updateSegmentationReadBusy);
+    connect(watcher, &QFutureWatcher<ComputeResult>::finished,
+            this, &SegmentTableDialog::onComputeFinished);
+    connect(view3DWatcher, &QFutureWatcher<Segment3DViewerDialog::PreparedScene>::finished,
+            this, &SegmentTableDialog::onView3DPreparationFinished);
 }
 
 // ---- page builders ----------------------------------------------------------
@@ -625,6 +634,9 @@ QWidget *SegmentTableDialog::createResultsPage() {
     recomputeButton->setEnabled(false);
     deleteSelectedButton = new QPushButton("Delete Selected");
     deleteSelectedButton->setEnabled(false);
+    mergeWithNeighborButton = new QPushButton("Merge with Neighbor");
+    mergeWithNeighborButton->setObjectName(QStringLiteral("mergeWithNeighborButton"));
+    mergeWithNeighborButton->setEnabled(false);
     view3DButton = new QPushButton("View 3D");
     view3DButton->setEnabled(false);
     exportCsvButton = new QPushButton("Export CSV");
@@ -636,6 +648,7 @@ QWidget *SegmentTableDialog::createResultsPage() {
     toolbar->addStretch();
     toolbar->addWidget(recomputeButton);
     toolbar->addWidget(deleteSelectedButton);
+    toolbar->addWidget(mergeWithNeighborButton);
     toolbar->addWidget(view3DButton);
     toolbar->addWidget(exportCsvButton);
     outer->addLayout(toolbar);
@@ -686,6 +699,8 @@ QWidget *SegmentTableDialog::createResultsPage() {
     connect(backButton,          &QPushButton::clicked, this, &SegmentTableDialog::onBackClicked);
     connect(recomputeButton,     &QPushButton::clicked, this, &SegmentTableDialog::onComputeClicked);
     connect(deleteSelectedButton,&QPushButton::clicked, this, &SegmentTableDialog::onDeleteSelectedClicked);
+    connect(mergeWithNeighborButton, &QPushButton::clicked,
+            this, &SegmentTableDialog::onMergeWithNeighborClicked);
     connect(view3DButton,        &QPushButton::clicked, this, &SegmentTableDialog::onView3DSelectedClicked);
     connect(exportCsvButton,     &QPushButton::clicked, this, &SegmentTableDialog::onExportCsvClicked);
     connect(searchEdit, &QLineEdit::textChanged,
@@ -818,6 +833,9 @@ void SegmentTableDialog::setQuickComputeMode() {
 }
 
 void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segImg) {
+    if (externalSegmentationTaskBusy) {
+        return;
+    }
     if (segImg == nullptr) {
         segImg = graphBase->pSelectedSegmentation;
     }
@@ -878,6 +896,8 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
     stack->setCurrentIndex(1);
     backButton->setEnabled(false);
     recomputeButton->setEnabled(false);
+    deleteSelectedButton->setEnabled(false);
+    mergeWithNeighborButton->setEnabled(false);
     view3DButton->setEnabled(false);
     exportCsvButton->setEnabled(false);
     statusLabel->setText("Computing features…");
@@ -885,6 +905,7 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
     watcher->setFuture(QtConcurrent::run([segImg, flags]() {
         return SegmentTableDialog::computeFeatures(segImg, flags);
     }));
+    updateSegmentationReadBusy();
 }
 
 void SegmentTableDialog::onComputeClicked() {
@@ -985,6 +1006,48 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
     updateResultsActionState();
 }
 
+void SegmentTableDialog::onMergeWithNeighborClicked() {
+    if (tableView == nullptr || tableView->selectionModel() == nullptr ||
+        tableLabelIdsAreStale || externalSegmentationTaskBusy || watcher->isRunning() ||
+        (view3DWatcher != nullptr && view3DWatcher->isRunning())) {
+        return;
+    }
+
+    if (!segmentationSelectionMatchesCurrent(
+            graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal) ||
+        graphBase->pGraph == nullptr) {
+        SP_LOG_WARNING(
+            "segmentation",
+            QStringLiteral("Segment table refusing neighbor merge because the selected segmentation wiring does not match the current table segmentation"));
+        QMessageBox::warning(this, "Merge Disabled",
+                             "The selected segmentation state does not match the table image.\n"
+                             "Please reopen Inspect Segments from the current selection.");
+        return;
+    }
+
+    std::vector<dataType::SegmentIdType> selectedLabels;
+    const QModelIndexList selectedRows = tableView->selectionModel()->selectedRows();
+    selectedLabels.reserve(static_cast<std::size_t>(selectedRows.size()));
+    for (const QModelIndex &proxyIndex : selectedRows) {
+        const QModelIndex sourceIndex = sortModel->mapToSource(proxyIndex);
+        const auto *labelItem = model->item(sourceIndex.row(), SegmentTableDialog::COL_LABEL);
+        if (labelItem == nullptr) {
+            continue;
+        }
+        selectedLabels.push_back(static_cast<dataType::SegmentIdType>(
+            labelItem->data(Qt::UserRole).toULongLong()));
+    }
+    if (selectedLabels.empty()) {
+        return;
+    }
+
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("operation=merge_with_neighbor phase=ui_request selected_count=%1")
+            .arg(selectedLabels.size()));
+    emit neighborMergeRequested(std::move(selectedLabels));
+}
+
 void SegmentTableDialog::setAllChecked(bool checked) {
     for (QCheckBox *cb : {cbVolume, cbIsIsolated, cbPhysicalSize, cbPixelsOnBorder, cbPerimeterOnBorder,
                           cbCentroid, cbBBox, cbElongation, cbFlatness, cbRoundness,
@@ -995,20 +1058,82 @@ void SegmentTableDialog::setAllChecked(bool checked) {
 }
 
 void SegmentTableDialog::updateResultsActionState() {
-    const bool busy = (watcher != nullptr && watcher->isRunning())
+    const bool busy = externalSegmentationTaskBusy
+                      || (watcher != nullptr && watcher->isRunning())
                       || (view3DWatcher != nullptr && view3DWatcher->isRunning());
     const bool hasSelection = tableView != nullptr
                               && tableView->selectionModel() != nullptr
                               && !tableView->selectionModel()->selectedRows().isEmpty();
     const bool selectionMatches = segmentationSelectionMatchesCurrent(
         graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal);
+    const bool labelIdsAreCurrent = !tableLabelIdsAreStale;
+
+    if (computeButton != nullptr) {
+        computeButton->setEnabled(!busy);
+    }
+    if (recomputeButton != nullptr) {
+        recomputeButton->setEnabled(!busy && currentTableSegmentation != nullptr);
+    }
 
     if (deleteSelectedButton != nullptr) {
-        deleteSelectedButton->setEnabled(hasSelection && !busy && selectionMatches && graphBase != nullptr && graphBase->pGraph != nullptr);
+        deleteSelectedButton->setEnabled(
+            hasSelection && !busy && labelIdsAreCurrent && selectionMatches &&
+            graphBase != nullptr && graphBase->pGraph != nullptr);
+    }
+    if (mergeWithNeighborButton != nullptr) {
+        mergeWithNeighborButton->setEnabled(
+            hasSelection && !busy && labelIdsAreCurrent && selectionMatches && graphBase != nullptr &&
+            graphBase->pGraph != nullptr && graphBase->pWorkingSegmentsImage != nullptr);
     }
     if (view3DButton != nullptr) {
-        view3DButton->setEnabled(hasSelection && !busy && selectionMatches);
+        view3DButton->setEnabled(hasSelection && !busy && labelIdsAreCurrent && selectionMatches);
     }
+    if (exportCsvButton != nullptr) {
+        exportCsvButton->setEnabled(
+            !busy && labelIdsAreCurrent && model != nullptr && model->rowCount() > 0);
+    }
+}
+
+void SegmentTableDialog::updateSegmentationReadBusy() {
+    const bool busy = (watcher != nullptr && watcher->isRunning())
+                      || (view3DWatcher != nullptr && view3DWatcher->isRunning());
+    if (segmentationReadBusy != busy) {
+        segmentationReadBusy = busy;
+        emit segmentationReadBusyChanged(busy);
+    }
+    updateResultsActionState();
+}
+
+void SegmentTableDialog::setExternalSegmentationTaskBusy(bool busy) {
+    if (externalSegmentationTaskBusy == busy) {
+        return;
+    }
+    externalSegmentationTaskBusy = busy;
+    updateResultsActionState();
+}
+
+void SegmentTableDialog::applyExternalNeighborMergeResult(
+    quintptr segmentationIdentity,
+    quintptr segmentationSignalIdentity,
+    const Graph::SegmentationNeighborMergeResult &result) {
+    if (reinterpret_cast<quintptr>(currentTableSegmentation.GetPointer()) != segmentationIdentity
+        || reinterpret_cast<quintptr>(currentTableSegmentationSignal) != segmentationSignalIdentity) {
+        return;
+    }
+
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    if (result.status == Status::Merged && !tableLabelIdsAreStale) {
+        applyMergedLabelChanges(
+            result.newLabelByConsumedLabel, result.voxelCountByConsumedLabel);
+        tableLabelIdsAreStale = false;
+    } else if (result.dataChanged) {
+        tableLabelIdsAreStale = true;
+    } else {
+        return;
+    }
+
+    statusLabel->setText(QStringLiteral("Table is out of date."));
+    updateResultsActionState();
 }
 
 std::vector<std::pair<dataType::SegmentIdType, quint32>> SegmentTableDialog::collectSelectedLabelsFor3D() const {
@@ -1075,12 +1200,11 @@ void SegmentTableDialog::onView3DSelectedClicked() {
     view3DProgressDialog->setValue(0);
     view3DProgressDialog->show();
 
-    updateResultsActionState();
-
     const auto segImage = currentTableSegmentation;
     view3DWatcher->setFuture(QtConcurrent::run([segImage, labels = std::move(labels)]() mutable {
         return Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
     }));
+    updateSegmentationReadBusy();
 }
 
 // ---- compute (worker thread) ------------------------------------------------
@@ -1227,6 +1351,86 @@ void SegmentTableDialog::onView3DPreparationFinished() {
 }
 
 // ---- table population -------------------------------------------------------
+
+void SegmentTableDialog::applyMergedLabelChanges(
+    const std::map<dataType::SegmentIdType, dataType::SegmentIdType> &newLabelByConsumedLabel,
+    const std::map<dataType::SegmentIdType, std::size_t> &voxelCountByConsumedLabel) {
+    QElapsedTimer timer;
+    timer.start();
+    using SegmentId = dataType::SegmentIdType;
+    struct LabelRow {
+        SegmentId oldLabel = 0;
+        int row = -1;
+        std::size_t voxelCount = 0;
+    };
+
+    std::map<SegmentId, std::vector<LabelRow>> rowsByNewLabel;
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const auto *labelItem = model->item(row, SegmentTableDialog::COL_LABEL);
+        if (labelItem == nullptr) {
+            continue;
+        }
+        const SegmentId oldLabel = static_cast<SegmentId>(
+            labelItem->data(Qt::UserRole).toULongLong());
+        const auto replacement = newLabelByConsumedLabel.find(oldLabel);
+        if (replacement != newLabelByConsumedLabel.end()) {
+            const auto voxelCount = voxelCountByConsumedLabel.find(oldLabel);
+            rowsByNewLabel[replacement->second].push_back(
+                {oldLabel, row, voxelCount == voxelCountByConsumedLabel.end() ? 0 : voxelCount->second});
+        }
+    }
+
+    std::vector<int> rowsToRemove;
+    std::size_t updatedLabelCount = 0;
+    // Keep the existing feature values of one representative row per result.
+    // Detaching the proxy applies sorting and filtering only once after all ID
+    // changes and row removals are complete.
+    sortModel->setSourceModel(nullptr);
+    for (const auto &[newLabel, labelRows] : rowsByNewLabel) {
+        const auto retained = std::max_element(
+            labelRows.begin(), labelRows.end(),
+            [](const LabelRow &first, const LabelRow &second) {
+                if (first.voxelCount != second.voxelCount) {
+                    return first.voxelCount < second.voxelCount;
+                }
+                return first.oldLabel < second.oldLabel;
+            });
+        if (retained == labelRows.end()) {
+            continue;
+        }
+
+        auto *retainedItem = model->item(retained->row, SegmentTableDialog::COL_LABEL);
+        retainedItem->setText(QString::number(newLabel));
+        retainedItem->setData(QVariant(static_cast<qlonglong>(newLabel)), Qt::UserRole);
+        ++updatedLabelCount;
+
+        QStringList oldLabels;
+        for (const LabelRow &labelRow : labelRows) {
+            oldLabels << QStringLiteral("%1(%2)").arg(labelRow.oldLabel).arg(labelRow.voxelCount);
+            if (labelRow.row != retained->row) {
+                rowsToRemove.push_back(labelRow.row);
+            }
+        }
+        SP_LOG_DEBUG(
+            "segmentation",
+            QStringLiteral("operation=merge_with_neighbor phase=table_label_update old_voxels=[%1] retained=%2 new=%3")
+                .arg(oldLabels.join(QStringLiteral(" ")))
+                .arg(retained->oldLabel)
+                .arg(newLabel));
+    }
+
+    const RowRemovalStats removalStats =
+        removeModelRowsInDescendingBlocks(model, std::move(rowsToRemove));
+    sortModel->setSourceModel(model);
+    SP_LOG_DEBUG(
+        "segmentation",
+        QStringLiteral("operation=merge_with_neighbor phase=table_quick_update "
+                       "updated_labels=%1 removed_rows=%2 row_blocks=%3 elapsed_ms=%4")
+            .arg(updatedLabelCount)
+            .arg(removalStats.rows)
+            .arg(removalStats.blocks)
+            .arg(static_cast<double>(timer.nsecsElapsed()) / 1000000.0, 0, 'f', 3));
+}
 
 void SegmentTableDialog::populateTable(const ComputeResult &result) {
     currentResultFlags = result.flags;

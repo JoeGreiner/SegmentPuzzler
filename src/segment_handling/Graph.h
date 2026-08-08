@@ -137,10 +137,17 @@ public:
         QString message;
     };
 
+    enum class SegmentationNeighborSelection {
+        Smallest,
+        Largest
+    };
+
     struct SegmentationNeighborMergeOptions {
         bool allowInsertion = false;
         // Requires allowInsertion.
         bool allowConnectedComponentSplit = false;
+        SegmentationNeighborSelection neighborSelection =
+            SegmentationNeighborSelection::Smallest;
     };
 
     Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
@@ -154,16 +161,15 @@ public:
     // Reuse the clicked WorkingNode when its voxels exactly match the clicked
     // selected-segmentation component; otherwise insert that component via H's path.
     WorkingSegmentResolution ensureSelectedSegmentationComponentInWorkingGraph(int x, int y, int z);
-    // Merge each selected-segmentation label with its smallest face-neighbor.
+    // Merge each selected-segmentation label with the face-neighbor selected by
+    // the size strategy in options.
     // allowConnectedComponentSplit requires allowInsertion; an invalid option
     // combination returns Failed without mutation. Otherwise, when insertion is
     // not allowed, returns NeedsInsertionConfirmation before mutating either graph
     // whenever an involved label is not already an exact WorkingNode. A disconnected
     // involved label also requires explicit permission before it is split into
     // 6-connected components.
-    SegmentationNeighborMergeResult mergeSelectedSegmentationLabelsWithSmallestNeighbors(
-        const std::vector<SegmentIdType> &selectedLabels);
-    SegmentationNeighborMergeResult mergeSelectedSegmentationLabelsWithSmallestNeighbors(
+    SegmentationNeighborMergeResult mergeSelectedSegmentationLabelsWithNeighbors(
         const std::vector<SegmentIdType> &selectedLabels,
         const SegmentationNeighborMergeOptions &options);
     // Returns the fresh WorkingNode label when insertion succeeds.

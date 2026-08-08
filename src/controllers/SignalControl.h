@@ -4,8 +4,10 @@
 
 #include <QString>
 #include <QColor>
+#include <cstddef>
 #include <type_traits>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 #include <itkImage.h>
@@ -20,6 +22,7 @@
 #include <itkImageIOBase.h>
 #include "src/viewers/SliceViewer.h"
 #include "src/file_definitions/dataTypes.h"
+#include "src/segment_handling/Graph.h"
 #include "src/segment_handling/graphBase.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/ConnectedComponentLabelSplitter.h"
@@ -131,8 +134,13 @@ public:
 
 signals:
     void preferredSidebarWidthChanged();
+    void selectedSegmentationNeighborMergeFinished(
+        quintptr segmentationIdentity,
+        quintptr segmentationSignalIdentity,
+        const Graph::SegmentationNeighborMergeResult &result);
 
 public slots:
+    void setSegmentTableReadBusy(bool busy);
     void handleDroppedFile(QString fileName);
 
     void toggleROISelection();
@@ -185,6 +193,10 @@ public slots:
 
     void runConnectedComponentSplit();
 
+    void mergeSmallSegmentsWithNeighbors();
+    void mergeSelectedSegmentsWithNeighbors(
+        std::vector<dataType::SegmentIdType> labels);
+
     void runWatershed();
 
     void receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer);
@@ -227,11 +239,13 @@ private:
 
     bool verbose;
     bool guiBusy = false;
+    bool segmentTableReadBusy = false;
 
     QSplitter *sectionSplitter = nullptr;
     QPushButton *togglePaintBrushButton = nullptr;
     QPushButton *setPaintIdButton = nullptr;
     QPushButton *connectedComponentSplitButton = nullptr;
+    QPushButton *mergeSmallSegmentsButton = nullptr;
     QPushButton *toggleROISelectionButton = nullptr;
     QPushButton *runWatershedButton = nullptr;
     QPushButton *exportSegmentationButton = nullptr;
@@ -261,6 +275,7 @@ private:
     QAction *dilateSegmentationAction = nullptr;
     QAction *erodeSegmentationAction = nullptr;
     QAction *connectedComponentSplitAction = nullptr;
+    QAction *mergeSmallSegmentsAction = nullptr;
     QAction *connectedComponentSplitTargetInitialAction = nullptr;
     QAction *connectedComponentSplitTargetSegmentationAction = nullptr;
     QAction *connectedComponentSplitConnectivityFullAction = nullptr;
@@ -277,7 +292,39 @@ private:
     bool preferredSidebarWidthChangePending = false;
     int lastEmittedPreferredSidebarWidth = -1;
 
+    struct NeighborMergeAttempt {
+        std::vector<Graph::SegmentationNeighborMergeResult> completedIterations;
+        std::vector<dataType::SegmentIdType> labels;
+        Graph::SegmentationNeighborMergeResult result;
+        std::size_t initialMatchingLabelCount = 0;
+        bool scannedInitialLabels = false;
+    };
+
+    struct NeighborMergeLoopProgress {
+        bool initialized = false;
+        std::size_t initialMatchingLabelCount = 0;
+        std::size_t iterationCount = 0;
+        std::size_t mergedSourceCount = 0;
+        std::size_t mergedGroupCount = 0;
+    };
     void askForBackgroundStrategy();
+    void runNeighborMerge(
+        std::vector<dataType::SegmentIdType> labels,
+        std::optional<std::size_t> exclusiveVoxelThreshold,
+        Graph::SegmentationNeighborMergeOptions options,
+        std::shared_ptr<NeighborMergeLoopProgress> loopProgress = nullptr);
+    static NeighborMergeAttempt computeNeighborMergeAttempt(
+        Graph *graph,
+        std::vector<dataType::SegmentIdType> labels,
+        std::optional<std::size_t> exclusiveVoxelThreshold,
+        const Graph::SegmentationNeighborMergeOptions &options);
+    void handleNeighborMergeAttempt(
+        NeighborMergeAttempt attempt,
+        std::optional<std::size_t> exclusiveVoxelThreshold,
+        Graph::SegmentationNeighborMergeOptions options,
+        std::shared_ptr<NeighborMergeLoopProgress> loopProgress,
+        quintptr segmentationIdentity,
+        quintptr segmentationSignalIdentity);
     void loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice);
 
     void setupSignalTreeWidget();

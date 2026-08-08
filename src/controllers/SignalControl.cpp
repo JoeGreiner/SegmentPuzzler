@@ -1,5 +1,6 @@
 #include "SignalControl.h"
 #include "src/segment_handling/graphBase.h"
+#include "src/segment_handling/Graph.h"
 #include "src/viewers/fileIO.h"
 #include "MainWindowWatershedControl.h"
 #include "src/viewers/OrthoViewer.h"
@@ -11,20 +12,25 @@
 #include <QFileDialog>
 #include <QColorDialog>
 #include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileInfo>
 #include <QFont>
+#include <QFormLayout>
 #include <QActionGroup>
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QAbstractItemView>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPointer>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QWidgetAction>
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <QSettings>
@@ -59,6 +65,29 @@ constexpr int kLayersVisibleRows = 4;
 constexpr int kOtherSectionVisibleRows = 2;
 constexpr int kApproximateTreeRowPadding = 8;
 
+QString neighborSelectionName(Graph::SegmentationNeighborSelection selection) {
+    return selection == Graph::SegmentationNeighborSelection::Largest
+               ? QStringLiteral("largest")
+               : QStringLiteral("smallest");
+}
+
+Graph::SegmentationNeighborSelection loadNeighborSelection(QSettings &settings) {
+    using Selection = Graph::SegmentationNeighborSelection;
+    const int storedValue = settings.value(
+        QStringLiteral("Segmentation/neighborMergeSelection"),
+        static_cast<int>(Selection::Smallest)).toInt();
+    return storedValue == static_cast<int>(Selection::Largest)
+               ? Selection::Largest
+               : Selection::Smallest;
+}
+
+void saveNeighborSelection(
+    QSettings &settings,
+    Graph::SegmentationNeighborSelection selection) {
+    settings.setValue(
+        QStringLiteral("Segmentation/neighborMergeSelection"),
+        static_cast<int>(selection));
+}
 class FirstPageTIFFImageIO final : public itk::TIFFImageIO {
 public:
     ITK_DISALLOW_COPY_AND_MOVE(FirstPageTIFFImageIO);
@@ -701,6 +730,9 @@ void SignalControl::refreshUiState() {
     connectedComponentSplitConnectivitySixAction->setEnabled(enabled);
     connectedComponentSplitAction->setEnabled(
         enabled && connectedComponentSplitTargetAvailable(selectedConnectedComponentSplitTarget()));
+    mergeSmallSegmentsAction->setEnabled(
+        enabled && !segmentTableReadBusy && hasWorkingSegments() && hasSelectedSegmentation()
+        && graphBase != nullptr && graphBase->pGraph != nullptr);
     transferWithVolumeAction->setEnabled(enabled && hasSelectedSegmentation());
     transferWithRefinementAction->setEnabled(enabled && hasSelectedSegmentation() && hasSelectedRefinement());
     transferAllAction->setEnabled(enabled && hasSelectedSegmentation());
@@ -1198,6 +1230,14 @@ void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
 
 void SignalControl::setGuiBusy(bool busy) {
     guiBusy = busy;
+    refreshUiState();
+}
+
+void SignalControl::setSegmentTableReadBusy(bool busy) {
+    if (segmentTableReadBusy == busy) {
+        return;
+    }
+    segmentTableReadBusy = busy;
     refreshUiState();
 }
 
@@ -1961,6 +2001,7 @@ void SignalControl::populateSegmentationMenu(QMenu *menu) {
     connectedComponentMenu->addSeparator();
     connectedComponentMenu->addAction(connectedComponentSplitConnectivityFullAction);
     connectedComponentMenu->addAction(connectedComponentSplitConnectivitySixAction);
+    editMenu->addAction(mergeSmallSegmentsAction);
 
     QMenu *transferMenu = menu->addMenu(tr("Transfer"));
     transferMenu->addAction(transferAllAction);
@@ -1995,6 +2036,10 @@ void SignalControl::createMenuActions() {
     createAction(erodeSegmentationAction, tr("Erode Label One Step"), &SignalControl::activateErodeTool);
     createAction(connectedComponentSplitAction, tr("Run Connected Component Split"), &SignalControl::runConnectedComponentSplit);
     connectedComponentSplitAction->setShortcut(Qt::Key_F7);
+    createAction(mergeSmallSegmentsAction,
+                 tr("Merge Small Segments with Neighbors..."),
+                 &SignalControl::mergeSmallSegmentsWithNeighbors);
+    mergeSmallSegmentsAction->setObjectName(QStringLiteral("mergeSmallSegmentsAction"));
     createAction(transferWithVolumeAction, tr("Transfer Supervoxels by Volume"), &SignalControl::transferSegmentsWithVolume);
     createAction(transferAllAction, tr("Transfer All Supervoxels"), &SignalControl::transferAllSegments);
     createAction(transferWithRefinementAction, tr("Transfer Supervoxels by Refinement Overlap"), &SignalControl::transferSupervoxelsByRefinementOverlap);
@@ -2305,12 +2350,15 @@ void SignalControl::setupSegmentationTreeWidget() {
     togglePaintBrushButton = new QPushButton();
     setPaintIdButton = new QPushButton();
     connectedComponentSplitButton = new QPushButton();
+    mergeSmallSegmentsButton = new QPushButton();
     togglePaintBrushButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     setPaintIdButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     connectedComponentSplitButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    mergeSmallSegmentsButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     segmentationButtonRow->addWidget(togglePaintBrushButton);
     segmentationButtonRow->addWidget(setPaintIdButton);
     segmentationButtonRow->addWidget(connectedComponentSplitButton);
+    segmentationButtonRow->addWidget(mergeSmallSegmentsButton);
     segmentationButtonRow->addStretch();
 
     segmentationWidgetLayout->addLayout(segmentationButtonRow);
@@ -2321,6 +2369,8 @@ void SignalControl::setupSegmentationTreeWidget() {
     bindButtonToAction(togglePaintBrushButton, togglePaintModeAction);
     bindButtonToAction(setPaintIdButton, setPaintIdAction);
     bindButtonToAction(connectedComponentSplitButton, connectedComponentSplitAction, tr("CC Split"));
+    bindButtonToAction(mergeSmallSegmentsButton, mergeSmallSegmentsAction, tr("Merge Small"));
+    mergeSmallSegmentsButton->setObjectName(QStringLiteral("mergeSmallSegmentsButton"));
 
     connect(segmentationTreeWidget, &QTreeWidget::itemDoubleClicked, this, &SignalControl::treeDoubleClicked);
     connect(segmentationTreeWidget, &QTreeWidget::itemClicked, this, &SignalControl::segmentationClicked);
@@ -2521,6 +2571,346 @@ void SignalControl::activateDilateTool() {
 
 void SignalControl::activateErodeTool() {
     setAnnotationToolMode(SliceViewer::ToolMode::Erode);
+}
+
+void SignalControl::mergeSmallSegmentsWithNeighbors() {
+    if (!hasWorkingSegments() || !hasSelectedSegmentation()
+        || graphBase == nullptr || graphBase->pGraph == nullptr) {
+        showInfoMessage(tr("Selected Segmentation and Working Segments must both be available."));
+        return;
+    }
+
+    QSettings settings;
+    constexpr int defaultThreshold = 1000;
+    const int previousThreshold = std::max(
+        1,
+        settings.value(QStringLiteral("Segmentation/mergeSmallVoxelThreshold"),
+                       defaultThreshold).toInt());
+    const auto previousSelection = loadNeighborSelection(settings);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Merge Small Segments"));
+    auto *form = new QFormLayout(&dialog);
+    auto *thresholdSpinBox = new QSpinBox(&dialog);
+    thresholdSpinBox->setRange(1, std::numeric_limits<int>::max());
+    thresholdSpinBox->setValue(previousThreshold);
+    auto *neighborSelectionComboBox = new QComboBox(&dialog);
+    neighborSelectionComboBox->addItem(
+        tr("Smallest neighbor"),
+        static_cast<int>(Graph::SegmentationNeighborSelection::Smallest));
+    neighborSelectionComboBox->addItem(
+        tr("Largest neighbor"),
+        static_cast<int>(Graph::SegmentationNeighborSelection::Largest));
+    neighborSelectionComboBox->setCurrentIndex(
+        previousSelection == Graph::SegmentationNeighborSelection::Largest ? 1 : 0);
+    form->addRow(tr("Fewer voxels than:"), thresholdSpinBox);
+    form->addRow(tr("Merge with:"), neighborSelectionComboBox);
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const int threshold = thresholdSpinBox->value();
+    const auto neighborSelection = static_cast<Graph::SegmentationNeighborSelection>(
+        neighborSelectionComboBox->currentData().toInt());
+    settings.setValue(QStringLiteral("Segmentation/mergeSmallVoxelThreshold"), threshold);
+    saveNeighborSelection(settings, neighborSelection);
+
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("operation=merge_small_segments phase=ui_request threshold=%1 "
+                       "neighbor_selection=%2 iterative=1")
+            .arg(threshold)
+            .arg(neighborSelectionName(neighborSelection)));
+    Graph::SegmentationNeighborMergeOptions options;
+    options.neighborSelection = neighborSelection;
+    runNeighborMerge({}, static_cast<std::size_t>(threshold), options);
+}
+
+void SignalControl::mergeSelectedSegmentsWithNeighbors(
+    std::vector<dataType::SegmentIdType> labels)
+{
+    if (labels.empty()) {
+        return;
+    }
+
+    QSettings settings;
+    const auto previousSelection = loadNeighborSelection(settings);
+    const QStringList choices{tr("Smallest neighbor"), tr("Largest neighbor")};
+    bool accepted = false;
+    const QString selectedChoice = QInputDialog::getItem(
+        this,
+        tr("Merge with Neighbor"),
+        tr("Merge with:"),
+        choices,
+        previousSelection == Graph::SegmentationNeighborSelection::Largest ? 1 : 0,
+        false,
+        &accepted);
+    if (!accepted) {
+        return;
+    }
+
+    const auto neighborSelection = selectedChoice == choices.at(1)
+                                       ? Graph::SegmentationNeighborSelection::Largest
+                                       : Graph::SegmentationNeighborSelection::Smallest;
+    saveNeighborSelection(settings, neighborSelection);
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("operation=merge_with_neighbor phase=strategy_selected selected_count=%1 "
+                       "neighbor_selection=%2")
+            .arg(labels.size())
+            .arg(neighborSelectionName(neighborSelection)));
+
+    Graph::SegmentationNeighborMergeOptions options;
+    options.neighborSelection = neighborSelection;
+    runNeighborMerge(std::move(labels), std::nullopt, options);
+}
+
+SignalControl::NeighborMergeAttempt
+SignalControl::computeNeighborMergeAttempt(Graph *graph, std::vector<dataType::SegmentIdType> labels,
+                                           std::optional<std::size_t> exclusiveVoxelThreshold,
+                                           const Graph::SegmentationNeighborMergeOptions &options) {
+    NeighborMergeAttempt attempt;
+    attempt.labels = std::move(labels);
+    if (!exclusiveVoxelThreshold.has_value()) {
+        attempt.result = graph->mergeSelectedSegmentationLabelsWithNeighbors(attempt.labels, options);
+        return attempt;
+    }
+
+    if (attempt.labels.empty()) {
+        attempt.labels = graph->selectedSegmentationLabelsBelowVoxelCount(*exclusiveVoxelThreshold);
+        attempt.initialMatchingLabelCount = attempt.labels.size();
+        attempt.scannedInitialLabels = true;
+    }
+    while (!attempt.labels.empty()) {
+        auto result = graph->mergeSelectedSegmentationLabelsWithNeighbors(attempt.labels, options);
+        if (result.status != Graph::SegmentationNeighborMergeResult::Status::Merged) {
+            attempt.result = std::move(result);
+            return attempt;
+        }
+        if (result.consumedLabelCount <= result.mergedGroupCount) {
+            result.status = Graph::SegmentationNeighborMergeResult::Status::Failed;
+            result.message = QStringLiteral("A merge iteration did not reduce the number of segments.");
+            attempt.result = std::move(result);
+            return attempt;
+        }
+        attempt.completedIterations.push_back(std::move(result));
+        attempt.labels = graph->selectedSegmentationLabelsBelowVoxelCount(*exclusiveVoxelThreshold);
+    }
+    attempt.result.status = Graph::SegmentationNeighborMergeResult::Status::NothingToMerge;
+    attempt.result.message = QStringLiteral("No segments remain below the voxel threshold.");
+    return attempt;
+}
+
+void SignalControl::runNeighborMerge(std::vector<dataType::SegmentIdType> labels,
+                                     std::optional<std::size_t> exclusiveVoxelThreshold,
+                                     Graph::SegmentationNeighborMergeOptions options,
+                                     std::shared_ptr<NeighborMergeLoopProgress> loopProgress) {
+    if (segmentTableReadBusy || taskRunner == nullptr || taskRunner->isBusy() || graphBase == nullptr ||
+        graphBase->pGraph == nullptr || graphBase->pSelectedSegmentation == nullptr ||
+        graphBase->pWorkingSegmentsImage == nullptr) {
+        return;
+    }
+
+    Graph *const graph = graphBase->pGraph;
+    const quintptr segmentationIdentity = reinterpret_cast<quintptr>(graphBase->pSelectedSegmentation.GetPointer());
+    const quintptr segmentationSignalIdentity = reinterpret_cast<quintptr>(graphBase->pSelectedSegmentationSignal);
+
+    const bool thresholdWorkflow = exclusiveVoxelThreshold.has_value();
+    if (thresholdWorkflow && loopProgress == nullptr) {
+        loopProgress = std::make_shared<NeighborMergeLoopProgress>();
+    }
+    const QString progressText = thresholdWorkflow
+                                     ? tr("Merging segments below %1 voxels...").arg(*exclusiveVoxelThreshold)
+                                     : tr("Merging selected segments with neighbors...");
+
+    taskRunner->runWithLabel(
+        progressText,
+        [graph, labels = std::move(labels), exclusiveVoxelThreshold, options]() mutable {
+            return computeNeighborMergeAttempt(graph, std::move(labels), exclusiveVoxelThreshold, options);
+        },
+        [this, exclusiveVoxelThreshold, options, loopProgress, segmentationIdentity,
+         segmentationSignalIdentity](auto attempt) mutable {
+            // Run prompts after TaskRunner has closed its modal progress dialog
+            // and returned to idle, so a confirmed retry can start cleanly.
+            QTimer::singleShot(0, this,
+                               [this, attempt = std::move(attempt), exclusiveVoxelThreshold, options, loopProgress,
+                                segmentationIdentity, segmentationSignalIdentity]() mutable {
+                                   handleNeighborMergeAttempt(std::move(attempt), exclusiveVoxelThreshold, options,
+                                                              loopProgress, segmentationIdentity,
+                                                              segmentationSignalIdentity);
+                               });
+        });
+}
+
+void SignalControl::handleNeighborMergeAttempt(NeighborMergeAttempt attempt,
+                                               std::optional<std::size_t> exclusiveVoxelThreshold,
+                                               Graph::SegmentationNeighborMergeOptions options,
+                                               std::shared_ptr<NeighborMergeLoopProgress> loopProgress,
+                                               quintptr segmentationIdentity, quintptr segmentationSignalIdentity) {
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    const bool thresholdWorkflow = exclusiveVoxelThreshold.has_value();
+    const QString operationName =
+        thresholdWorkflow ? QStringLiteral("merge_small_segments") : QStringLiteral("merge_with_neighbor");
+
+    auto labels = std::move(attempt.labels);
+    auto result = std::move(attempt.result);
+    auto completedIterations = std::move(attempt.completedIterations);
+    const auto refreshChangedSegmentation = [this]() {
+        if (graphBase->pSelectedSegmentationSignal != nullptr) {
+            graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
+        }
+        refreshViewers();
+    };
+
+    bool completedDataChanged = false;
+    if (thresholdWorkflow && loopProgress != nullptr) {
+        if (attempt.scannedInitialLabels && !loopProgress->initialized) {
+            loopProgress->initialized = true;
+            loopProgress->initialMatchingLabelCount = attempt.initialMatchingLabelCount;
+        }
+        for (const auto &iterationResult : completedIterations) {
+            ++loopProgress->iterationCount;
+            loopProgress->mergedSourceCount += iterationResult.mergeableSelectedLabelCount;
+            loopProgress->mergedGroupCount += iterationResult.mergedGroupCount;
+            completedDataChanged = completedDataChanged || iterationResult.dataChanged;
+        }
+    }
+    if (completedDataChanged) {
+        refreshChangedSegmentation();
+        for (const auto &iterationResult : completedIterations) {
+            emit selectedSegmentationNeighborMergeFinished(segmentationIdentity, segmentationSignalIdentity,
+                                                           iterationResult);
+        }
+    }
+
+    if (result.status == Status::NeedsConnectedComponentConfirmation && !options.allowConnectedComponentSplit) {
+        const auto answer = QMessageBox::question(this, tr("Disconnected Segments"),
+                                                  tr("At least one involved segment is disconnected (%1 regions were "
+                                                     "found).\n\n"
+                                                     "Run Connected Components (6-connected), reinsert the resulting "
+                                                     "segments "
+                                                     "into Working Segments, and continue merging?")
+                                                      .arg(result.disconnectedRegionCount),
+                                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        SP_LOG_INFO("segmentation",
+                    QStringLiteral("operation=%1 phase=component_prompt regions=%2 answer=%3")
+                        .arg(operationName)
+                        .arg(result.disconnectedRegionCount)
+                        .arg(answer == QMessageBox::Yes ? QStringLiteral("yes") : QStringLiteral("no")));
+        if (answer == QMessageBox::Yes) {
+            auto retryOptions = options;
+            retryOptions.allowInsertion = true;
+            retryOptions.allowConnectedComponentSplit = true;
+            runNeighborMerge(std::move(labels), exclusiveVoxelThreshold, retryOptions, loopProgress);
+        }
+        return;
+    }
+
+    if (result.status == Status::NeedsInsertionConfirmation && !options.allowInsertion) {
+        const auto answer = QMessageBox::question(this, tr("Insert into Working Segments?"),
+                                                  tr("%1 of %2 involved segments do not exactly match an existing "
+                                                     "Working Segment.\n\n"
+                                                     "Insert them into Working Segments before merging?")
+                                                      .arg(result.requiredInsertionCount)
+                                                      .arg(result.consumedLabelCount),
+                                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        SP_LOG_INFO("segmentation",
+                    QStringLiteral("operation=%1 phase=insertion_prompt insertions=%2 answer=%3")
+                        .arg(operationName)
+                        .arg(result.requiredInsertionCount)
+                        .arg(answer == QMessageBox::Yes ? QStringLiteral("yes") : QStringLiteral("no")));
+        if (answer == QMessageBox::Yes) {
+            auto retryOptions = options;
+            retryOptions.allowInsertion = true;
+            runNeighborMerge(std::move(labels), exclusiveVoxelThreshold, retryOptions, loopProgress);
+        }
+        return;
+    }
+
+    if (result.status == Status::Merged) {
+        refreshChangedSegmentation();
+        emit selectedSegmentationNeighborMergeFinished(segmentationIdentity, segmentationSignalIdentity, result);
+        SP_LOG_INFO("segmentation",
+                    QStringLiteral("operation=%1 status=merged threshold=%2 "
+                                   "neighbor_selection=%3 requested=%4 mergeable=%5 "
+                                   "skipped=%6 groups=%7 consumed=%8")
+                        .arg(operationName)
+                        .arg(exclusiveVoxelThreshold.has_value() ? QString::number(*exclusiveVoxelThreshold)
+                                                                 : QStringLiteral("none"))
+                        .arg(neighborSelectionName(options.neighborSelection))
+                        .arg(labels.size())
+                        .arg(result.mergeableSelectedLabelCount)
+                        .arg(result.skippedNoNeighborCount)
+                        .arg(result.mergedGroupCount)
+                        .arg(result.consumedLabelCount));
+        return;
+    }
+
+    if (result.status == Status::NothingToMerge) {
+        QString message;
+        if (thresholdWorkflow) {
+            const std::size_t iterations = loopProgress != nullptr ? loopProgress->iterationCount : 0;
+            if (labels.empty()) {
+                message = iterations == 0 ? tr("No segments have fewer than %1 voxels.").arg(*exclusiveVoxelThreshold)
+                                          : tr("Iterative merging finished after %1 round(s).\n"
+                                               "No segments remain below %2 voxels.")
+                                                .arg(iterations)
+                                                .arg(*exclusiveVoxelThreshold);
+            } else {
+                message = tr("Iterative merging stopped after %1 round(s).\n"
+                             "%2 segment(s) remain below %3 voxels, but none has "
+                             "an eligible face-neighbor.")
+                              .arg(iterations)
+                              .arg(labels.size())
+                              .arg(*exclusiveVoxelThreshold);
+            }
+            SP_LOG_INFO("segmentation",
+                        QStringLiteral("operation=%1 status=%2 threshold=%3 "
+                                       "neighbor_selection=%4 iterations=%5 initial=%6 "
+                                       "remaining=%7 merged_sources=%8 groups=%9")
+                            .arg(operationName)
+                            .arg(labels.empty() ? QStringLiteral("complete") : QStringLiteral("fixed_point"))
+                            .arg(*exclusiveVoxelThreshold)
+                            .arg(neighborSelectionName(options.neighborSelection))
+                            .arg(iterations)
+                            .arg(loopProgress != nullptr ? loopProgress->initialMatchingLabelCount : 0)
+                            .arg(labels.size())
+                            .arg(loopProgress != nullptr ? loopProgress->mergedSourceCount : 0)
+                            .arg(loopProgress != nullptr ? loopProgress->mergedGroupCount : 0));
+        } else {
+            message =
+                result.message.isEmpty() ? tr("No selected segment has an eligible face-neighbor.") : result.message;
+        }
+        QMessageBox::information(this, thresholdWorkflow ? tr("Merge Small Segments") : tr("Merge with Neighbor"),
+                                 message);
+        return;
+    }
+
+    if (result.dataChanged) {
+        refreshChangedSegmentation();
+        emit selectedSegmentationNeighborMergeFinished(segmentationIdentity, segmentationSignalIdentity, result);
+    }
+    SP_LOG_WARNING("segmentation",
+                   QStringLiteral("operation=%1 status=failed threshold=%2 "
+                                  "neighbor_selection=%3 iterations=%4 requested=%5 "
+                                  "data_changed=%6 message=\"%7\"")
+                       .arg(operationName)
+                       .arg(exclusiveVoxelThreshold.has_value() ? QString::number(*exclusiveVoxelThreshold)
+                                                                : QStringLiteral("none"))
+                       .arg(neighborSelectionName(options.neighborSelection))
+                       .arg(loopProgress != nullptr ? loopProgress->iterationCount : 0)
+                       .arg(labels.size())
+                       .arg(result.dataChanged)
+                       .arg(result.message));
+    QMessageBox::warning(this, thresholdWorkflow ? tr("Merge Small Segments Failed") : tr("Merge with Neighbor Failed"),
+                         result.message.isEmpty()
+                             ? (thresholdWorkflow ? tr("The small segments could not be merged.")
+                                                  : tr("The selected segments could not be merged."))
+                             : result.message);
 }
 
 void SignalControl::runConnectedComponentSplit() {

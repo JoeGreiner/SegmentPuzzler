@@ -3,9 +3,13 @@
 
 #include <QDialog>
 #include <QFutureWatcher>
+#include <QPointer>
 #include <QString>
+#include <cstddef>
+#include <map>
 #include <memory>
 #include <vector>
+#include "src/segment_handling/Graph.h"
 #include "src/segment_handling/graphBase.h"
 #include "src/file_definitions/dataTypes.h"
 #include "src/viewers/Segment3DViewerDialog.h"
@@ -126,12 +130,22 @@ public:
 
 signals:
     void computeFinishedDebug();
+    void segmentationReadBusyChanged(bool busy);
+    void neighborMergeRequested(std::vector<dataType::SegmentIdType> labels);
+
+public slots:
+    void applyExternalNeighborMergeResult(
+        quintptr segmentationIdentity,
+        quintptr segmentationSignalIdentity,
+        const Graph::SegmentationNeighborMergeResult &result);
+    void setExternalSegmentationTaskBusy(bool busy);
 
 private slots:
     void onComputeClicked();
     void onComputeFinished();
     void onBackClicked();
     void onDeleteSelectedClicked();
+    void onMergeWithNeighborClicked();
     void onSelectionChanged(const QModelIndex &current, const QModelIndex &previous);
     void onExportCsvClicked();
     void onView3DSelectedClicked();
@@ -144,6 +158,9 @@ private:
     QWidget *createResultsPage();
     FeatureFlags collectFlags() const;
     void populateTable(const ComputeResult &result);
+    void applyMergedLabelChanges(
+        const std::map<dataType::SegmentIdType, dataType::SegmentIdType> &newLabelByConsumedLabel,
+        const std::map<dataType::SegmentIdType, std::size_t> &voxelCountByConsumedLabel);
     void applyColumnColoring();
     void navigateTo(int x, int y, int z);
     void setAllChecked(bool checked);
@@ -153,6 +170,7 @@ private:
     void resetSettingsToDefaults();
     void updateCalibrationControls();
     void updateResultsActionState();
+    void updateSegmentationReadBusy();
     void updateColumnHeaders(const FeatureFlags &flags, bool is2D);
     void updateColumnVisibility(const FeatureFlags &flags, bool is2D);
     QString suggestedCsvExportPath(const QString &storedDefaultSavePath) const;
@@ -188,6 +206,7 @@ private:
     QPushButton *backButton = nullptr;
     QPushButton *recomputeButton = nullptr;
     QPushButton *deleteSelectedButton = nullptr;
+    QPushButton *mergeWithNeighborButton = nullptr;
     QPushButton *view3DButton = nullptr;
     QPushButton *exportCsvButton = nullptr;
     QLabel *statusLabel = nullptr;

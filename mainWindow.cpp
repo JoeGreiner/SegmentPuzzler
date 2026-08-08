@@ -1079,6 +1079,18 @@ void MainWindow::showSegmentTable() {
     if (!segmentTableDialog) {
         segmentTableDialog = new SegmentTableDialog(graphBase, myOrthowindow, this);
         segmentTableDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(segmentTableDialog, &SegmentTableDialog::segmentationReadBusyChanged,
+                mySignalControl, &SignalControl::setSegmentTableReadBusy);
+        connect(taskRunner.get(), &TaskRunner::busyChanged,
+                segmentTableDialog, &SegmentTableDialog::setExternalSegmentationTaskBusy);
+        connect(mySignalControl, &SignalControl::selectedSegmentationNeighborMergeFinished,
+                segmentTableDialog, &SegmentTableDialog::applyExternalNeighborMergeResult);
+        connect(segmentTableDialog, &SegmentTableDialog::neighborMergeRequested,
+                mySignalControl, &SignalControl::mergeSelectedSegmentsWithNeighbors);
+        connect(segmentTableDialog, &QObject::destroyed, mySignalControl, [this]() {
+            mySignalControl->setSegmentTableReadBusy(false);
+        });
+        segmentTableDialog->setExternalSegmentationTaskBusy(taskRunner->isBusy());
     }
     segmentTableDialog->show();
     segmentTableDialog->raise();

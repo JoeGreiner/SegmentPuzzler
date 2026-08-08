@@ -271,7 +271,8 @@ NeighborMergePlan buildNeighborMergePlan(
     const Graph::SegmentsImageType::Pointer &selectedSegmentation,
     Graph::SegmentIdType backgroundId,
     const std::unordered_set<Graph::SegmentIdType> &ignoredLabels,
-    const std::vector<Graph::SegmentIdType> &requestedLabels) {
+    const std::vector<Graph::SegmentIdType> &requestedLabels,
+    Graph::SegmentationNeighborSelection neighborSelection) {
     NeighborMergePlan plan;
     plan.selectedLabels.insert(requestedLabels.begin(), requestedLabels.end());
     plan.actualMaximumLabel = backgroundId;
@@ -365,28 +366,32 @@ NeighborMergePlan buildNeighborMergePlan(
 
         const auto &neighbors = neighborsByLabel.at(selectedLabel);
         bool foundNeighbor = false;
-        Graph::SegmentIdType smallestNeighbor = backgroundId;
-        std::size_t smallestNeighborVoxelCount = std::numeric_limits<std::size_t>::max();
+        Graph::SegmentIdType selectedNeighbor = backgroundId;
+        std::size_t selectedNeighborVoxelCount = 0;
         for (const Graph::SegmentIdType neighborLabel : neighbors) {
             const auto neighborStats = plan.statsByLabel.find(neighborLabel);
             if (neighborStats == plan.statsByLabel.end() || neighborStats->second.voxelCount == 0) {
                 continue;
             }
-            if (!foundNeighbor || neighborStats->second.voxelCount < smallestNeighborVoxelCount ||
-                (neighborStats->second.voxelCount == smallestNeighborVoxelCount &&
-                 neighborLabel < smallestNeighbor)) {
+            const bool preferredBySize =
+                neighborSelection == Graph::SegmentationNeighborSelection::Smallest
+                    ? neighborStats->second.voxelCount < selectedNeighborVoxelCount
+                    : neighborStats->second.voxelCount > selectedNeighborVoxelCount;
+            if (!foundNeighbor || preferredBySize ||
+                (neighborStats->second.voxelCount == selectedNeighborVoxelCount &&
+                 neighborLabel < selectedNeighbor)) {
                 foundNeighbor = true;
-                smallestNeighbor = neighborLabel;
-                smallestNeighborVoxelCount = neighborStats->second.voxelCount;
+                selectedNeighbor = neighborLabel;
+                selectedNeighborVoxelCount = neighborStats->second.voxelCount;
             }
         }
         if (!foundNeighbor) {
             ++plan.skippedNoNeighborCount;
             continue;
         }
-        plan.labelPairs.push_back({selectedLabel, smallestNeighbor});
+        plan.labelPairs.push_back({selectedLabel, selectedNeighbor});
         plan.consumedLabels.insert(selectedLabel);
-        plan.consumedLabels.insert(smallestNeighbor);
+        plan.consumedLabels.insert(selectedNeighbor);
     }
     return plan;
 }
@@ -423,6 +428,12 @@ const char *neighborMergeStatusName(Graph::SegmentationNeighborMergeResult::Stat
         case Status::Failed: return "failed";
     }
     return "unknown";
+}
+
+const char *neighborSelectionName(Graph::SegmentationNeighborSelection selection) {
+    return selection == Graph::SegmentationNeighborSelection::Largest
+               ? "largest"
+               : "smallest";
 }
 
 } // namespace
@@ -2890,14 +2901,7 @@ std::vector<Graph::SegmentIdType> Graph::selectedSegmentationLabelsBelowVoxelCou
 }
 
 Graph::SegmentationNeighborMergeResult
-Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
-        const std::vector<SegmentIdType> &requestedLabels) {
-    return mergeSelectedSegmentationLabelsWithSmallestNeighbors(
-        requestedLabels, SegmentationNeighborMergeOptions{});
-}
-
-Graph::SegmentationNeighborMergeResult
-Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
+Graph::mergeSelectedSegmentationLabelsWithNeighbors(
         const std::vector<SegmentIdType> &requestedLabels,
         const SegmentationNeighborMergeOptions &options) {
     using MergeResult = SegmentationNeighborMergeResult;
@@ -2905,7 +2909,7 @@ Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
 
     const char *operationName = __func__;
     ScopedGraphTimer timer(
-        verbose, operationName, QStringLiteral("Merging selected segmentation labels with smallest neighbors"));
+        verbose, operationName, QStringLiteral("Merging selected segmentation labels with size-selected neighbors"));
     MergeResult result;
     const auto finish = [this, operationName, &requestedLabels, &options, &result](
                             MergeStatus status, QString message) {
@@ -2918,12 +2922,13 @@ Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
         logGraph(
             level,
             operationName,
-            QStringLiteral("operation=merge_with_neighbor status=%1 requested=[%2] allow_insertion=%3 "
-                           "allow_component_split=%4 selected=%5 mergeable=%6 skipped=%7 insertions=%8 "
-                           "disconnected_labels=%9 disconnected_regions=%10 consumed=%11 groups=%12 "
-                           "data_changed=%13 message=\"%14\"")
+            QStringLiteral("operation=merge_with_neighbor status=%1 requested=[%2] neighbor_selection=%3 "
+                           "allow_insertion=%4 allow_component_split=%5 selected=%6 mergeable=%7 "
+                           "skipped=%8 insertions=%9 disconnected_labels=%10 disconnected_regions=%11 "
+                           "consumed=%12 groups=%13 data_changed=%14 message=\"%15\"")
                 .arg(QString::fromLatin1(neighborMergeStatusName(status)))
                 .arg(joinIds(requestedLabels))
+                .arg(QString::fromLatin1(neighborSelectionName(options.neighborSelection)))
                 .arg(options.allowInsertion)
                 .arg(options.allowConnectedComponentSplit)
                 .arg(result.selectedLabelCount)
@@ -2942,9 +2947,10 @@ Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
     logGraph(
         LogLevel::Info,
         operationName,
-        QStringLiteral("operation=merge_with_neighbor phase=begin requested=[%1] allow_insertion=%2 "
-                       "allow_component_split=%3")
+        QStringLiteral("operation=merge_with_neighbor phase=begin requested=[%1] neighbor_selection=%2 "
+                       "allow_insertion=%3 allow_component_split=%4")
             .arg(joinIds(requestedLabels))
+            .arg(QString::fromLatin1(neighborSelectionName(options.neighborSelection)))
             .arg(options.allowInsertion)
             .arg(options.allowConnectedComponentSplit));
 
@@ -2994,7 +3000,11 @@ Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
         QElapsedTimer planScanTimer;
         planScanTimer.start();
         plan = buildNeighborMergePlan(
-            graphBase->pSelectedSegmentation, backgroundId, ignoredLabels, activeRequestedLabels);
+            graphBase->pSelectedSegmentation,
+            backgroundId,
+            ignoredLabels,
+            activeRequestedLabels,
+            options.neighborSelection);
         const double planScanMs = static_cast<double>(planScanTimer.nsecsElapsed()) / 1000000.0;
         if (!plan.valid()) {
             return finish(MergeStatus::Failed, plan.error);
