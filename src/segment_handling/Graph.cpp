@@ -236,6 +236,195 @@ ComponentMatch selectedComponentMatchesWorkingNode(
     return ComponentMatch::Exact;
 }
 
+struct NeighborMergeLabelStats {
+    std::size_t voxelCount = 0;
+    Graph::SegmentsImageType::IndexType seed{};
+    Graph::SegmentsImageType::IndexType minimum{};
+    Graph::SegmentsImageType::IndexType maximum{};
+    bool hasSeed = false;
+
+    Graph::SegmentsImageType::RegionType boundingRegion() const {
+        Graph::SegmentsImageType::SizeType size;
+        for (unsigned int dimension = 0; dimension < Graph::Dimension; ++dimension) {
+            size[dimension] = static_cast<Graph::SegmentsImageType::SizeType::SizeValueType>(
+                maximum[dimension] - minimum[dimension] + 1);
+        }
+        return {minimum, size};
+    }
+};
+
+struct NeighborMergePlan {
+    std::set<Graph::SegmentIdType> selectedLabels;
+    std::unordered_map<Graph::SegmentIdType, NeighborMergeLabelStats> statsByLabel;
+    std::vector<std::pair<Graph::SegmentIdType, Graph::SegmentIdType>> labelPairs;
+    std::set<Graph::SegmentIdType> consumedLabels;
+    std::size_t skippedNoNeighborCount = 0;
+    Graph::SegmentIdType actualMaximumLabel = 0;
+    QString error;
+
+    bool valid() const {
+        return error.isEmpty();
+    }
+};
+
+NeighborMergePlan buildNeighborMergePlan(
+    const Graph::SegmentsImageType::Pointer &selectedSegmentation,
+    Graph::SegmentIdType backgroundId,
+    const std::unordered_set<Graph::SegmentIdType> &ignoredLabels,
+    const std::vector<Graph::SegmentIdType> &requestedLabels) {
+    NeighborMergePlan plan;
+    plan.selectedLabels.insert(requestedLabels.begin(), requestedLabels.end());
+    plan.actualMaximumLabel = backgroundId;
+    for (const Graph::SegmentIdType label : plan.selectedLabels) {
+        if (ignoredLabels.count(label) > 0) {
+            plan.error = QStringLiteral("Ignored label %1 cannot be merged with a neighbor.")
+                             .arg(label);
+            return plan;
+        }
+    }
+
+    const auto region = selectedSegmentation->GetLargestPossibleRegion();
+    const auto size = region.GetSize();
+    const auto start = region.GetIndex();
+    const std::size_t dimX = size[0];
+    const std::size_t dimY = size[1];
+    const std::size_t dimZ = size[2];
+    if (dimX == 0 || dimY == 0 || dimZ == 0 ||
+        dimX > std::numeric_limits<std::size_t>::max() / dimY) {
+        plan.error = QStringLiteral("The segmentation image has invalid dimensions.");
+        return plan;
+    }
+    const std::size_t sliceStride = dimX * dimY;
+    if (sliceStride > std::numeric_limits<std::size_t>::max() / dimZ) {
+        plan.error = QStringLiteral("The segmentation image is too large to index safely.");
+        return plan;
+    }
+    const auto *selectedBuffer = selectedSegmentation->GetBufferPointer();
+    if (selectedBuffer == nullptr) {
+        plan.error = QStringLiteral("The selected segmentation has no voxel buffer.");
+        return plan;
+    }
+
+    std::unordered_map<Graph::SegmentIdType, std::unordered_set<Graph::SegmentIdType>> neighborsByLabel;
+    neighborsByLabel.reserve(plan.selectedLabels.size());
+    for (const Graph::SegmentIdType label : plan.selectedLabels) {
+        neighborsByLabel.emplace(label, std::unordered_set<Graph::SegmentIdType>{});
+    }
+    const auto recordAdjacency = [&](Graph::SegmentIdType firstLabel, Graph::SegmentIdType secondLabel) {
+        if (firstLabel == secondLabel || ignoredLabels.count(firstLabel) > 0
+            || ignoredLabels.count(secondLabel) > 0) {
+            return;
+        }
+        if (plan.selectedLabels.count(firstLabel) > 0) {
+            neighborsByLabel[firstLabel].insert(secondLabel);
+        }
+        if (plan.selectedLabels.count(secondLabel) > 0) {
+            neighborsByLabel[secondLabel].insert(firstLabel);
+        }
+    };
+
+    for (std::size_t z = 0; z < dimZ; ++z) {
+        for (std::size_t y = 0; y < dimY; ++y) {
+            for (std::size_t x = 0; x < dimX; ++x) {
+                const std::size_t index = x + y * dimX + z * sliceStride;
+                const Graph::SegmentIdType label = selectedBuffer[index];
+                auto &stats = plan.statsByLabel[label];
+                ++stats.voxelCount;
+                const Graph::SegmentsImageType::IndexType voxelIndex{{
+                    start[0] + static_cast<Graph::SegmentsImageType::IndexType::IndexValueType>(x),
+                    start[1] + static_cast<Graph::SegmentsImageType::IndexType::IndexValueType>(y),
+                    start[2] + static_cast<Graph::SegmentsImageType::IndexType::IndexValueType>(z)}};
+                if (!stats.hasSeed) {
+                    stats.seed = voxelIndex;
+                    stats.minimum = voxelIndex;
+                    stats.maximum = voxelIndex;
+                    stats.hasSeed = true;
+                } else {
+                    for (unsigned int dimension = 0; dimension < Graph::Dimension; ++dimension) {
+                        stats.minimum[dimension] = std::min(stats.minimum[dimension], voxelIndex[dimension]);
+                        stats.maximum[dimension] = std::max(stats.maximum[dimension], voxelIndex[dimension]);
+                    }
+                }
+                plan.actualMaximumLabel = std::max(plan.actualMaximumLabel, label);
+
+                if (x + 1 < dimX) recordAdjacency(label, selectedBuffer[index + 1]);
+                if (y + 1 < dimY) recordAdjacency(label, selectedBuffer[index + dimX]);
+                if (z + 1 < dimZ) recordAdjacency(label, selectedBuffer[index + sliceStride]);
+            }
+        }
+    }
+
+    plan.labelPairs.reserve(plan.selectedLabels.size());
+    for (const Graph::SegmentIdType selectedLabel : plan.selectedLabels) {
+        const auto selectedStats = plan.statsByLabel.find(selectedLabel);
+        if (selectedStats == plan.statsByLabel.end() || selectedStats->second.voxelCount == 0) {
+            plan.error = QStringLiteral("Selected label %1 is no longer present in the segmentation.")
+                             .arg(selectedLabel);
+            return plan;
+        }
+
+        const auto &neighbors = neighborsByLabel.at(selectedLabel);
+        bool foundNeighbor = false;
+        Graph::SegmentIdType smallestNeighbor = backgroundId;
+        std::size_t smallestNeighborVoxelCount = std::numeric_limits<std::size_t>::max();
+        for (const Graph::SegmentIdType neighborLabel : neighbors) {
+            const auto neighborStats = plan.statsByLabel.find(neighborLabel);
+            if (neighborStats == plan.statsByLabel.end() || neighborStats->second.voxelCount == 0) {
+                continue;
+            }
+            if (!foundNeighbor || neighborStats->second.voxelCount < smallestNeighborVoxelCount ||
+                (neighborStats->second.voxelCount == smallestNeighborVoxelCount &&
+                 neighborLabel < smallestNeighbor)) {
+                foundNeighbor = true;
+                smallestNeighbor = neighborLabel;
+                smallestNeighborVoxelCount = neighborStats->second.voxelCount;
+            }
+        }
+        if (!foundNeighbor) {
+            ++plan.skippedNoNeighborCount;
+            continue;
+        }
+        plan.labelPairs.push_back({selectedLabel, smallestNeighbor});
+        plan.consumedLabels.insert(selectedLabel);
+        plan.consumedLabels.insert(smallestNeighbor);
+    }
+    return plan;
+}
+
+QString neighborMergePlanSummary(const NeighborMergePlan &plan) {
+    QStringList pairs;
+    for (const auto &[sourceLabel, targetLabel] : plan.labelPairs) {
+        pairs << QStringLiteral("%1(%2)->%3(%4)")
+                     .arg(sourceLabel)
+                     .arg(plan.statsByLabel.at(sourceLabel).voxelCount)
+                     .arg(targetLabel)
+                     .arg(plan.statsByLabel.at(targetLabel).voxelCount);
+    }
+    return pairs.join(QStringLiteral(", "));
+}
+
+QString connectedComponentMappingSummary(
+    const std::unordered_map<Graph::SegmentIdType, std::vector<Graph::SegmentIdType>> &mapping) {
+    QStringList entries;
+    for (const auto &[originalLabel, finalLabels] : mapping) {
+        entries << QStringLiteral("%1=[%2]").arg(originalLabel).arg(joinIds(finalLabels));
+    }
+    entries.sort();
+    return entries.join(QStringLiteral(", "));
+}
+
+const char *neighborMergeStatusName(Graph::SegmentationNeighborMergeResult::Status status) {
+    using Status = Graph::SegmentationNeighborMergeResult::Status;
+    switch (status) {
+        case Status::Merged: return "merged";
+        case Status::NeedsInsertionConfirmation: return "needs_insertion_confirmation";
+        case Status::NeedsConnectedComponentConfirmation: return "needs_connected_component_confirmation";
+        case Status::NothingToMerge: return "nothing_to_merge";
+        case Status::Failed: return "failed";
+    }
+    return "unknown";
+}
+
 } // namespace
 
 Graph::~Graph() = default;
@@ -885,19 +1074,20 @@ bool Graph::isIgnoredId(Graph::SegmentIdType idToCheck) {
 }
 
 
-void Graph::mergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToMerge) {
+std::set<Graph::SegmentIdType>
+Graph::mergeEdges(const std::set<EdgeNumIdType> &edgeIdsToMerge) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Merging selected edges"));
-    logGraphDebugIf(verbose, __func__, QStringLiteral("Edge ids=%1").arg(joinIds(vecOfEdgeIdsToMerge)));
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Edge ids=%1").arg(joinIds(edgeIdsToMerge)));
 
     EdgePairIdType pairId;
     bool updateSegmentImage = false;     // optimization: only update the resulting segments at the end, do not update incrementally
-    for (auto &numId : vecOfEdgeIdsToMerge) {
+    for (const auto numId : edgeIdsToMerge) {
         pairId = initialEdgeIdLookup[numId];
         mergeEdge(initialTwoSidedEdges.at(pairId).get(), updateSegmentImage);
     }
 
     std::set<SegmentIdType> newWorkingNodeIds;
-    for (auto &numId : vecOfEdgeIdsToMerge) {
+    for (const auto numId : edgeIdsToMerge) {
         pairId = initialEdgeIdLookup[numId];
         SegmentIdType initialNodeLabel = initialTwoSidedEdges[pairId]->getLabelSmaller();
         SegmentIdType workingNodeLabel = initialNodes[initialNodeLabel]->getCurrentWorkingNodeLabel();
@@ -907,6 +1097,7 @@ void Graph::mergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToMerge) {
     for (auto &label : newWorkingNodeIds) {
         insertWorkingNodeInSegmentImage(*workingNodes[label]);
     }
+    return newWorkingNodeIds;
 }
 
 void Graph::mergeEdge(InitialEdge *edge, bool updateSegmentImage) {
@@ -919,10 +1110,14 @@ void Graph::mergeEdge(InitialEdge *edge, bool updateSegmentImage) {
     if (idWorkingNodeA != idWorkingNodeB) {
         SegmentIdType idOfNewNode = nextFreeId;
         nextFreeId++;
-        if (verbose) {
-//            std::cout << "Merging W.Nodes: (" << idWorkingNodeA << "," << idWorkingNodeB << ") -> "
-//                      << idOfNewNode << "\n";
-        }
+        logGraphDebugIf(
+            verbose,
+            __func__,
+            QStringLiteral("Working nodes %1,%2 -> %3 via initial edge %4")
+                .arg(idWorkingNodeA)
+                .arg(idWorkingNodeB)
+                .arg(idOfNewNode)
+                .arg(edge->numId));
 
         // remove old nodes and edges
         WorkingNode nodeA = *workingNodes[idWorkingNodeA];
@@ -2641,6 +2836,749 @@ std::size_t Graph::deleteSegmentationLabels(
     return deletedVoxelCount;
 }
 
+std::vector<Graph::SegmentIdType> Graph::selectedSegmentationLabelsBelowVoxelCount(
+        std::size_t exclusiveVoxelThreshold) const {
+    std::vector<SegmentIdType> labels;
+    if (exclusiveVoxelThreshold == 0 || graphBase == nullptr ||
+        graphBase->pSelectedSegmentation == nullptr) {
+        return labels;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    std::unordered_set<SegmentIdType> ignoredLabels{backgroundId};
+    if (pIgnoredSegmentLabels != nullptr) {
+        ignoredLabels.insert(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
+    }
+
+    std::unordered_map<SegmentIdType, std::size_t> voxelCountByLabel;
+    const auto voxelCount = graphBase->pSelectedSegmentation
+                                ->GetLargestPossibleRegion().GetNumberOfPixels();
+    const auto *buffer = graphBase->pSelectedSegmentation->GetBufferPointer();
+    if (buffer == nullptr) {
+        return labels;
+    }
+
+    for (std::size_t index = 0; index < voxelCount; ++index) {
+        const SegmentIdType label = buffer[index];
+        if (ignoredLabels.count(label) > 0) {
+            continue;
+        }
+        auto &count = voxelCountByLabel[label];
+        if (count < exclusiveVoxelThreshold) {
+            ++count;
+        }
+    }
+
+    labels.reserve(voxelCountByLabel.size());
+    for (const auto &[label, count] : voxelCountByLabel) {
+        if (count < exclusiveVoxelThreshold) {
+            labels.push_back(label);
+        }
+    }
+    std::sort(labels.begin(), labels.end());
+
+    logGraphDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral("operation=merge_small_segments phase=threshold_scan threshold=%1 "
+                       "matching_labels=%2 elapsed_ms=%3")
+            .arg(exclusiveVoxelThreshold)
+            .arg(labels.size())
+            .arg(static_cast<double>(timer.nsecsElapsed()) / 1000000.0, 0, 'f', 3));
+    return labels;
+}
+
+Graph::SegmentationNeighborMergeResult
+Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
+        const std::vector<SegmentIdType> &requestedLabels) {
+    return mergeSelectedSegmentationLabelsWithSmallestNeighbors(
+        requestedLabels, SegmentationNeighborMergeOptions{});
+}
+
+Graph::SegmentationNeighborMergeResult
+Graph::mergeSelectedSegmentationLabelsWithSmallestNeighbors(
+        const std::vector<SegmentIdType> &requestedLabels,
+        const SegmentationNeighborMergeOptions &options) {
+    using MergeResult = SegmentationNeighborMergeResult;
+    using MergeStatus = MergeResult::Status;
+
+    const char *operationName = __func__;
+    ScopedGraphTimer timer(
+        verbose, operationName, QStringLiteral("Merging selected segmentation labels with smallest neighbors"));
+    MergeResult result;
+    const auto finish = [this, operationName, &requestedLabels, &options, &result](
+                            MergeStatus status, QString message) {
+        result.status = status;
+        result.message = std::move(message);
+        LogLevel level = LogLevel::Info;
+        if (status == MergeStatus::Failed) {
+            level = result.dataChanged ? LogLevel::Error : LogLevel::Warning;
+        }
+        logGraph(
+            level,
+            operationName,
+            QStringLiteral("operation=merge_with_neighbor status=%1 requested=[%2] allow_insertion=%3 "
+                           "allow_component_split=%4 selected=%5 mergeable=%6 skipped=%7 insertions=%8 "
+                           "disconnected_labels=%9 disconnected_regions=%10 consumed=%11 groups=%12 "
+                           "data_changed=%13 message=\"%14\"")
+                .arg(QString::fromLatin1(neighborMergeStatusName(status)))
+                .arg(joinIds(requestedLabels))
+                .arg(options.allowInsertion)
+                .arg(options.allowConnectedComponentSplit)
+                .arg(result.selectedLabelCount)
+                .arg(result.mergeableSelectedLabelCount)
+                .arg(result.skippedNoNeighborCount)
+                .arg(result.requiredInsertionCount)
+                .arg(result.disconnectedLabelCount)
+                .arg(result.disconnectedRegionCount)
+                .arg(result.consumedLabelCount)
+                .arg(result.mergedGroupCount)
+                .arg(result.dataChanged)
+                .arg(result.message));
+        return result;
+    };
+
+    logGraph(
+        LogLevel::Info,
+        operationName,
+        QStringLiteral("operation=merge_with_neighbor phase=begin requested=[%1] allow_insertion=%2 "
+                       "allow_component_split=%3")
+            .arg(joinIds(requestedLabels))
+            .arg(options.allowInsertion)
+            .arg(options.allowConnectedComponentSplit));
+
+    if (graphBase == nullptr || graphBase->pSelectedSegmentation == nullptr ||
+        graphBase->pWorkingSegmentsImage == nullptr || pIgnoredSegmentLabels == nullptr) {
+        return finish(MergeStatus::Failed,
+                      QStringLiteral("Selected Segmentation and Working Segments must both be available."));
+    }
+    if (options.allowConnectedComponentSplit && !options.allowInsertion) {
+        return finish(
+            MergeStatus::Failed,
+            QStringLiteral("Connected-component splitting requires insertion permission."));
+    }
+
+    const auto selectedRegion = graphBase->pSelectedSegmentation->GetLargestPossibleRegion();
+    const auto workingRegion = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion();
+    if (!regionsMatch(selectedRegion, workingRegion)) {
+        return finish(MergeStatus::Failed,
+                      QStringLiteral("Selected Segmentation and Working Segments use incompatible image regions."));
+    }
+
+    std::set<SegmentIdType> initialSelectedLabels(requestedLabels.begin(), requestedLabels.end());
+    result.selectedLabelCount = initialSelectedLabels.size();
+    if (initialSelectedLabels.empty()) {
+        return finish(MergeStatus::NothingToMerge, QStringLiteral("No segments are selected."));
+    }
+    if (initialSelectedLabels.count(backgroundId) > 0) {
+        return finish(MergeStatus::Failed,
+                      QStringLiteral("The background label cannot be merged with a neighbor."));
+    }
+
+    using segment_puzzler::connected_components::ConnectedComponentSplitOptions;
+    using segment_puzzler::connected_components::ConnectedComponentSplitStats;
+    using segment_puzzler::connected_components::ConnectivityStencil;
+    using segment_puzzler::connected_components::countConnectedComponentsByLabelInRegions;
+    using segment_puzzler::connected_components::splitDisconnectedLabelComponentsInPlace;
+
+    std::vector<SegmentIdType> activeRequestedLabels(requestedLabels);
+    std::unordered_set<SegmentIdType> ignoredLabels(
+        pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
+    ignoredLabels.insert(backgroundId);
+    std::size_t totalDisconnectedLabelCount = 0;
+    std::size_t totalDisconnectedRegionCount = 0;
+    NeighborMergePlan plan;
+
+    while (true) {
+        QElapsedTimer planScanTimer;
+        planScanTimer.start();
+        plan = buildNeighborMergePlan(
+            graphBase->pSelectedSegmentation, backgroundId, ignoredLabels, activeRequestedLabels);
+        const double planScanMs = static_cast<double>(planScanTimer.nsecsElapsed()) / 1000000.0;
+        if (!plan.valid()) {
+            return finish(MergeStatus::Failed, plan.error);
+        }
+
+        result.selectedLabelCount = plan.selectedLabels.size();
+        result.mergeableSelectedLabelCount = plan.labelPairs.size();
+        result.skippedNoNeighborCount = plan.skippedNoNeighborCount;
+        result.consumedLabelCount = plan.consumedLabels.size();
+        logGraphDebugIf(
+            verbose,
+            operationName,
+            QStringLiteral("operation=merge_with_neighbor phase=plan pairs=[%1] skipped=%2 consumed=[%3] "
+                           "selected=%4 scan_ms=%5")
+                .arg(neighborMergePlanSummary(plan))
+                .arg(plan.skippedNoNeighborCount)
+                .arg(joinIds(plan.consumedLabels))
+                .arg(plan.selectedLabels.size())
+                .arg(planScanMs, 0, 'f', 3));
+
+        if (plan.labelPairs.empty()) {
+            return finish(MergeStatus::NothingToMerge,
+                          QStringLiteral("No selected segment has an eligible face-neighbor."));
+        }
+
+        std::unordered_map<SegmentIdType, SegmentsImageType::RegionType> connectivityRegions;
+        connectivityRegions.reserve(plan.consumedLabels.size());
+        std::uintmax_t connectivityRoiVoxels = 0;
+        for (const SegmentIdType label : plan.consumedLabels) {
+            const auto region = plan.statsByLabel.at(label).boundingRegion();
+            connectivityRegions.emplace(label, region);
+            connectivityRoiVoxels += static_cast<std::uintmax_t>(region.GetNumberOfPixels());
+        }
+        QElapsedTimer connectivityTimer;
+        connectivityTimer.start();
+        const auto componentCounts = countConnectedComponentsByLabelInRegions(
+            graphBase->pSelectedSegmentation,
+            connectivityRegions,
+            ConnectivityStencil::SixConnected);
+        const double connectivityMs =
+            static_cast<double>(connectivityTimer.nsecsElapsed()) / 1000000.0;
+
+        std::set<SegmentIdType> disconnectedLabels;
+        std::size_t disconnectedRegionCount = 0;
+        QStringList componentSummary;
+        for (const SegmentIdType label : plan.consumedLabels) {
+            const auto count = componentCounts.find(label);
+            if (count == componentCounts.end() || count->second == 0) {
+                return finish(MergeStatus::Failed,
+                              QStringLiteral("Could not validate the connectivity of label %1.").arg(label));
+            }
+            componentSummary << QStringLiteral("%1=%2").arg(label).arg(count->second);
+            if (count->second > 1) {
+                disconnectedLabels.insert(label);
+                disconnectedRegionCount += count->second;
+            }
+        }
+        logGraphDebugIf(
+            verbose,
+            operationName,
+            QStringLiteral("operation=merge_with_neighbor phase=connectivity components=[%1] "
+                           "roi_voxels=%2 elapsed_ms=%3")
+                .arg(componentSummary.join(QStringLiteral(", ")))
+                .arg(connectivityRoiVoxels)
+                .arg(connectivityMs, 0, 'f', 3));
+
+        if (disconnectedLabels.empty()) {
+            break;
+        }
+
+        if (!options.allowConnectedComponentSplit) {
+            result.disconnectedLabelCount = disconnectedLabels.size();
+            result.disconnectedRegionCount = disconnectedRegionCount;
+            return finish(
+                MergeStatus::NeedsConnectedComponentConfirmation,
+                QStringLiteral("At least one involved segment is disconnected (%1 regions were found).")
+                    .arg(disconnectedRegionCount));
+        }
+
+        totalDisconnectedLabelCount += disconnectedLabels.size();
+        totalDisconnectedRegionCount += disconnectedRegionCount;
+        result.disconnectedLabelCount = totalDisconnectedLabelCount;
+        result.disconnectedRegionCount = totalDisconnectedRegionCount;
+
+        const SegmentIdType effectiveMaximum =
+            std::max(graphBase->selectedSegmentationMaxSegmentId, plan.actualMaximumLabel);
+        const std::size_t newLabelCount = disconnectedRegionCount - disconnectedLabels.size();
+        if (newLabelCount >
+            std::numeric_limits<SegmentIdType>::max() - static_cast<std::uintmax_t>(effectiveMaximum)) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("No free Selected Segmentation labels remain for connected components."));
+        }
+
+        ConnectedComponentSplitOptions splitOptions;
+        splitOptions.connectivity = ConnectivityStencil::SixConnected;
+        splitOptions.nextFreeLabel = static_cast<SegmentIdType>(effectiveMaximum + 1);
+        splitOptions.ignoredLabels.insert(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
+        for (const auto &[label, stats] : plan.statsByLabel) {
+            (void)stats;
+            if (disconnectedLabels.count(label) == 0) {
+                splitOptions.ignoredLabels.insert(label);
+            }
+        }
+
+        result.dataChanged = true;
+        ConnectedComponentSplitStats splitStats;
+        try {
+            splitStats = splitDisconnectedLabelComponentsInPlace(
+                graphBase->pSelectedSegmentation, splitOptions);
+        } catch (const std::exception &exception) {
+            return finish(
+                MergeStatus::Failed,
+                QStringLiteral("Connected Components failed: %1")
+                    .arg(QString::fromUtf8(exception.what())));
+        } catch (...) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("Connected Components failed with an unknown error."));
+        }
+        if (splitStats.labelsSplit != disconnectedLabels.size() ||
+            splitStats.componentsCreated != newLabelCount) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("Connected Components did not produce the expected regions."));
+        }
+
+        graphBase->selectedSegmentationMaxSegmentId =
+            std::max(graphBase->selectedSegmentationMaxSegmentId, splitStats.maxLabel);
+        graphBase->pSelectedSegmentation->Modified();
+        logGraphDebugIf(
+            verbose,
+            operationName,
+            QStringLiteral("operation=merge_with_neighbor phase=component_split mapping={%1} relabeled_voxels=%2")
+                .arg(connectedComponentMappingSummary(splitStats.finalLabelsByOriginalLabel))
+                .arg(splitStats.voxelsRelabeled));
+
+        std::vector<SegmentIdType> expandedRequestedLabels;
+        for (const SegmentIdType requestedLabel : plan.selectedLabels) {
+            const auto splitLabels = splitStats.finalLabelsByOriginalLabel.find(requestedLabel);
+            if (splitLabels == splitStats.finalLabelsByOriginalLabel.end()) {
+                expandedRequestedLabels.push_back(requestedLabel);
+                continue;
+            }
+            expandedRequestedLabels.insert(
+                expandedRequestedLabels.end(), splitLabels->second.begin(), splitLabels->second.end());
+        }
+        activeRequestedLabels = std::move(expandedRequestedLabels);
+    }
+
+    result.disconnectedLabelCount = totalDisconnectedLabelCount;
+    result.disconnectedRegionCount = totalDisconnectedRegionCount;
+    const auto &statsByLabel = plan.statsByLabel;
+    const auto &plannedLabelPairs = plan.labelPairs;
+    const auto &consumedLabels = plan.consumedLabels;
+    const SegmentIdType actualMaximumLabel = plan.actualMaximumLabel;
+    if (graphBase->pSelectedSegmentation->GetBufferPointer() == nullptr
+        || graphBase->pWorkingSegmentsImage->GetBufferPointer() == nullptr) {
+        return finish(MergeStatus::Failed, QStringLiteral("A segmentation image has no voxel buffer."));
+    }
+
+    QElapsedTimer preflightTimer;
+    preflightTimer.start();
+    std::vector<SegmentIdType> labelsNeedingInsertion;
+    std::unordered_map<SegmentIdType, SegmentIdType> exactWorkingLabelBySelectedLabel;
+    exactWorkingLabelBySelectedLabel.reserve(consumedLabels.size());
+    std::size_t preflightVoxelCount = 0;
+    for (const SegmentIdType label : consumedLabels) {
+        const std::size_t selectedLabelVoxelCount = statsByLabel.at(label).voxelCount;
+        preflightVoxelCount += selectedLabelVoxelCount;
+        const auto &seed = statsByLabel.at(label).seed;
+        const SegmentIdType workingLabel = graphBase->pWorkingSegmentsImage->GetPixel(seed);
+        if (workingLabel == backgroundId) {
+            labelsNeedingInsertion.push_back(label);
+            continue;
+        }
+        const auto workingNode = workingNodes.find(workingLabel);
+        if (workingNode == workingNodes.end() || workingNode->second == nullptr) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("Working label %1 is missing from the WorkingGraph.")
+                              .arg(workingLabel));
+        }
+        const ComponentMatch match = selectedComponentMatchesWorkingNode(
+            graphBase->pSelectedSegmentation,
+            label,
+            seed,
+            *workingNode->second,
+            selectedLabelVoxelCount);
+        if (match == ComponentMatch::Invalid) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("Working node %1 contains invalid voxel metadata.")
+                              .arg(workingLabel));
+        }
+        if (match != ComponentMatch::Exact) {
+            labelsNeedingInsertion.push_back(label);
+        } else {
+            exactWorkingLabelBySelectedLabel.emplace(label, workingLabel);
+        }
+    }
+    const double preflightMs =
+        static_cast<double>(preflightTimer.nsecsElapsed()) / 1000000.0;
+
+    result.requiredInsertionCount = labelsNeedingInsertion.size();
+    logGraphDebugIf(
+        verbose,
+        operationName,
+        QStringLiteral("operation=merge_with_neighbor phase=insertion_preflight reused=%1 "
+                       "insertions=%2 validation=count_based validated_voxels=%3 "
+                       "elapsed_ms=%4 labels=[%5]")
+            .arg(exactWorkingLabelBySelectedLabel.size())
+            .arg(labelsNeedingInsertion.size())
+            .arg(preflightVoxelCount)
+            .arg(preflightMs, 0, 'f', 3)
+            .arg(joinIds(labelsNeedingInsertion)));
+    if (!labelsNeedingInsertion.empty() && !options.allowInsertion) {
+        return finish(
+            MergeStatus::NeedsInsertionConfirmation,
+            QStringLiteral("%1 involved segment(s) must be inserted into Working Segments before merging.")
+                .arg(labelsNeedingInsertion.size()));
+    }
+
+    // Reuse the exact preflight resolutions. Only labels that actually need
+    // insertion go through the generic, potentially mutating resolver.
+    QElapsedTimer resolutionTimer;
+    resolutionTimer.start();
+    std::unordered_map<SegmentIdType, SegmentIdType> workingLabelBySelectedLabel =
+        exactWorkingLabelBySelectedLabel;
+    const auto seedFitsWorkingCoordinates = [](const SegmentsImageType::IndexType &seed) {
+        return seed[0] >= std::numeric_limits<int>::min() && seed[0] <= std::numeric_limits<int>::max() &&
+               seed[1] >= std::numeric_limits<int>::min() && seed[1] <= std::numeric_limits<int>::max() &&
+               seed[2] >= std::numeric_limits<int>::min() && seed[2] <= std::numeric_limits<int>::max();
+    };
+    std::size_t insertedLabelCount = 0;
+    for (const SegmentIdType label : labelsNeedingInsertion) {
+        const auto &seed = statsByLabel.at(label).seed;
+        if (!seedFitsWorkingCoordinates(seed)) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("Label %1 lies outside the coordinate range supported by Working Segments.")
+                              .arg(label));
+        }
+        // Conservatively report a changed graph even if an insertion fails midway.
+        result.dataChanged = true;
+        const auto resolution = ensureSelectedSegmentationComponentInWorkingGraph(
+            static_cast<int>(seed[0]), static_cast<int>(seed[1]), static_cast<int>(seed[2]));
+        if (resolution.status != WorkingSegmentResolution::Status::ReusedExisting &&
+            resolution.status != WorkingSegmentResolution::Status::Inserted) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("Could not resolve selected label %1 in Working Segments.")
+                              .arg(label));
+        }
+        result.dataChanged = result.dataChanged ||
+                             resolution.status == WorkingSegmentResolution::Status::Inserted;
+        insertedLabelCount +=
+            resolution.status == WorkingSegmentResolution::Status::Inserted ? 1U : 0U;
+        workingLabelBySelectedLabel[label] = resolution.workingLabel;
+    }
+    const double resolutionMs =
+        static_cast<double>(resolutionTimer.nsecsElapsed()) / 1000000.0;
+
+    QElapsedTimer postInsertionValidationTimer;
+    postInsertionValidationTimer.start();
+    std::vector<SegmentIdType> repairedLabels;
+    if (insertedLabelCount > 0) {
+        // Refinement can split exact neighboring WorkingNodes back into their
+        // InitialNodes. Resolve only those stale mappings after all planned
+        // insertions have finished.
+        for (const SegmentIdType label : consumedLabels) {
+            const auto &seed = statsByLabel.at(label).seed;
+            const SegmentIdType workingLabel = graphBase->pWorkingSegmentsImage->GetPixel(seed);
+            const auto workingNode = workingNodes.find(workingLabel);
+            ComponentMatch match = ComponentMatch::Different;
+            if (workingLabel != backgroundId) {
+                if (workingNode == workingNodes.end() || workingNode->second == nullptr) {
+                    return finish(MergeStatus::Failed,
+                                  QStringLiteral("Working label %1 is missing from the WorkingGraph.")
+                                      .arg(workingLabel));
+                }
+                match = selectedComponentMatchesWorkingNode(
+                    graphBase->pSelectedSegmentation,
+                    label,
+                    seed,
+                    *workingNode->second,
+                    statsByLabel.at(label).voxelCount);
+                if (match == ComponentMatch::Invalid) {
+                    return finish(MergeStatus::Failed,
+                                  QStringLiteral("Working node %1 contains invalid voxel metadata.")
+                                      .arg(workingLabel));
+                }
+            }
+            if (match == ComponentMatch::Exact) {
+                workingLabelBySelectedLabel[label] = workingLabel;
+                continue;
+            }
+
+            if (!seedFitsWorkingCoordinates(seed)) {
+                return finish(
+                    MergeStatus::Failed,
+                    QStringLiteral("Label %1 lies outside the coordinate range supported by Working Segments.")
+                        .arg(label));
+            }
+            const SegmentIdType previousWorkingLabel = workingLabelBySelectedLabel.at(label);
+            result.dataChanged = true;
+            const auto resolution = ensureSelectedSegmentationComponentInWorkingGraph(
+                static_cast<int>(seed[0]), static_cast<int>(seed[1]), static_cast<int>(seed[2]));
+            if (resolution.status != WorkingSegmentResolution::Status::ReusedExisting &&
+                resolution.status != WorkingSegmentResolution::Status::Inserted) {
+                return finish(MergeStatus::Failed,
+                              QStringLiteral("Could not restore selected label %1 after insertion.")
+                                  .arg(label));
+            }
+            insertedLabelCount +=
+                resolution.status == WorkingSegmentResolution::Status::Inserted ? 1U : 0U;
+            repairedLabels.push_back(label);
+            workingLabelBySelectedLabel[label] = resolution.workingLabel;
+            logGraphDebugIf(
+                verbose,
+                operationName,
+                QStringLiteral("operation=merge_with_neighbor phase=post_insertion_repair "
+                               "selected=%1 previous_working=%2 current_working=%3 resolved_working=%4 action=%5")
+                    .arg(label)
+                    .arg(previousWorkingLabel)
+                    .arg(workingLabel)
+                    .arg(resolution.workingLabel)
+                    .arg(resolution.status == WorkingSegmentResolution::Status::Inserted
+                             ? QStringLiteral("inserted")
+                             : QStringLiteral("reused")));
+        }
+
+    }
+
+    // Resolve every mapping once more after all insertions. From this point on,
+    // each consumed label must map to one distinct, exact WorkingNode.
+    std::set<SegmentIdType> resolvedWorkingLabels;
+    for (const SegmentIdType label : consumedLabels) {
+        const auto &seed = statsByLabel.at(label).seed;
+        const SegmentIdType workingLabel = graphBase->pWorkingSegmentsImage->GetPixel(seed);
+        const auto workingNode = workingNodes.find(workingLabel);
+        if (workingLabel == backgroundId || workingNode == workingNodes.end()
+            || workingNode->second == nullptr
+            || selectedComponentMatchesWorkingNode(
+                   graphBase->pSelectedSegmentation,
+                   label,
+                   seed,
+                   *workingNode->second,
+                   statsByLabel.at(label).voxelCount) != ComponentMatch::Exact) {
+            return finish(
+                MergeStatus::Failed,
+                QStringLiteral("Selected label %1 does not exactly match a WorkingNode after resolution.")
+                    .arg(label));
+        }
+        if (!resolvedWorkingLabels.insert(workingLabel).second) {
+            return finish(
+                MergeStatus::Failed,
+                QStringLiteral("Multiple selected labels resolve to WorkingNode %1.")
+                    .arg(workingLabel));
+        }
+        workingLabelBySelectedLabel[label] = workingLabel;
+    }
+    const double postInsertionValidationMs =
+        static_cast<double>(postInsertionValidationTimer.nsecsElapsed()) / 1000000.0;
+    logGraphDebugIf(
+        verbose,
+        operationName,
+        QStringLiteral("operation=merge_with_neighbor phase=working_resolution reused=%1 "
+                       "resolved=%2 inserted=%3 repaired=%4 resolution_ms=%5 post_validation_ms=%6 "
+                       "repaired_labels=[%7]")
+            .arg(exactWorkingLabelBySelectedLabel.size())
+            .arg(labelsNeedingInsertion.size())
+            .arg(insertedLabelCount)
+            .arg(repairedLabels.size())
+            .arg(resolutionMs, 0, 'f', 3)
+            .arg(postInsertionValidationMs, 0, 'f', 3)
+            .arg(joinIds(repairedLabels)));
+
+    // Translate selected-segmentation adjacency into registered graph edges.
+    std::vector<std::pair<SegmentIdType, SegmentIdType>> plannedWorkingPairs;
+    plannedWorkingPairs.reserve(plannedLabelPairs.size());
+    std::set<EdgeNumIdType> edgeIdsToMerge;
+    std::set<SegmentIdType> involvedWorkingLabels;
+    for (const auto &[sourceLabel, targetLabel] : plannedLabelPairs) {
+        const SegmentIdType sourceWorkingLabel = workingLabelBySelectedLabel.at(sourceLabel);
+        const SegmentIdType targetWorkingLabel = workingLabelBySelectedLabel.at(targetLabel);
+        if (sourceWorkingLabel == targetWorkingLabel) {
+            continue;
+        }
+
+        const auto sourceWorkingNode = workingNodes.find(sourceWorkingLabel);
+        if (sourceWorkingNode == workingNodes.end() || sourceWorkingNode->second == nullptr) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("Working node %1 is missing before merge.").arg(sourceWorkingLabel));
+        }
+        const auto workingEdge = sourceWorkingNode->second->twosidedEdges.find(targetWorkingLabel);
+        if (workingEdge == sourceWorkingNode->second->twosidedEdges.end() ||
+            workingEdge->second == nullptr || workingEdge->second->subInitialEdges.empty()) {
+            return finish(
+                MergeStatus::Failed,
+                QStringLiteral("No WorkingEdge exists between selected labels %1 and %2.")
+                    .arg(sourceLabel)
+                    .arg(targetLabel));
+        }
+
+        bool foundRegisteredEdge = false;
+        EdgeNumIdType registeredInitialEdgeId = 0;
+        for (const auto &initialEdge : workingEdge->second->subInitialEdges) {
+            if (initialEdge == nullptr) {
+                continue;
+            }
+            const auto lookup = initialEdgeIdLookup.find(initialEdge->numId);
+            if (lookup == initialEdgeIdLookup.end()) {
+                continue;
+            }
+            const auto registeredEdge = initialTwoSidedEdges.find(lookup->second);
+            if (registeredEdge == initialTwoSidedEdges.end() || registeredEdge->second == nullptr) {
+                continue;
+            }
+            edgeIdsToMerge.insert(initialEdge->numId);
+            registeredInitialEdgeId = initialEdge->numId;
+            foundRegisteredEdge = true;
+            break;
+        }
+        if (!foundRegisteredEdge) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("The WorkingEdge between labels %1 and %2 has no registered InitialEdge.")
+                              .arg(sourceLabel)
+                              .arg(targetLabel));
+        }
+
+        plannedWorkingPairs.emplace_back(sourceWorkingLabel, targetWorkingLabel);
+        involvedWorkingLabels.insert(sourceWorkingLabel);
+        involvedWorkingLabels.insert(targetWorkingLabel);
+        logGraphDebugIf(
+            verbose,
+            operationName,
+            QStringLiteral("operation=merge_with_neighbor phase=edge_resolution selected_pair=%1,%2 "
+                           "working_pair=%3,%4 initial_edge=%5")
+                .arg(sourceLabel)
+                .arg(targetLabel)
+                .arg(sourceWorkingLabel)
+                .arg(targetWorkingLabel)
+                .arg(registeredInitialEdgeId));
+    }
+
+    if (plannedWorkingPairs.empty() || edgeIdsToMerge.empty()) {
+        return finish(MergeStatus::Failed,
+                      QStringLiteral("The selected labels resolved to no distinct WorkingNodes to merge."));
+    }
+
+    // Count connected merge groups before consuming graph or segmentation labels.
+    std::unordered_map<SegmentIdType, SegmentIdType> parentByWorkingLabel;
+    parentByWorkingLabel.reserve(involvedWorkingLabels.size());
+    for (const SegmentIdType label : involvedWorkingLabels) {
+        parentByWorkingLabel[label] = label;
+    }
+    const auto findRoot = [&parentByWorkingLabel](SegmentIdType label) {
+        SegmentIdType root = label;
+        while (parentByWorkingLabel.at(root) != root) {
+            root = parentByWorkingLabel.at(root);
+        }
+        while (parentByWorkingLabel.at(label) != label) {
+            const SegmentIdType next = parentByWorkingLabel.at(label);
+            parentByWorkingLabel[label] = root;
+            label = next;
+        }
+        return root;
+    };
+    for (const auto &[firstLabel, secondLabel] : plannedWorkingPairs) {
+        const SegmentIdType firstRoot = findRoot(firstLabel);
+        const SegmentIdType secondRoot = findRoot(secondLabel);
+        if (firstRoot != secondRoot) {
+            parentByWorkingLabel[std::max(firstRoot, secondRoot)] = std::min(firstRoot, secondRoot);
+        }
+    }
+    std::set<SegmentIdType> plannedRoots;
+    for (const SegmentIdType label : involvedWorkingLabels) {
+        plannedRoots.insert(findRoot(label));
+    }
+    const std::size_t effectiveWorkingMergeCount = involvedWorkingLabels.size() - plannedRoots.size();
+    const std::uintmax_t maximumLabel = std::numeric_limits<SegmentIdType>::max();
+    if (effectiveWorkingMergeCount >
+        maximumLabel - static_cast<std::uintmax_t>(nextFreeId)) {
+        return finish(MergeStatus::Failed,
+                      QStringLiteral("No free Working Segment labels remain for this merge."));
+    }
+
+    const SegmentIdType effectiveSelectedMaximum =
+        std::max(graphBase->selectedSegmentationMaxSegmentId, actualMaximumLabel);
+    if (plannedRoots.size() >
+        maximumLabel - static_cast<std::uintmax_t>(effectiveSelectedMaximum)) {
+        return finish(MergeStatus::Failed,
+                      QStringLiteral("No free Selected Segmentation labels remain for the merge results."));
+    }
+
+    std::size_t expectedVoxelCount = 0;
+    for (const SegmentIdType label : consumedLabels) {
+        const std::size_t labelVoxelCount = statsByLabel.at(label).voxelCount;
+        if (labelVoxelCount > std::numeric_limits<std::size_t>::max() - expectedVoxelCount) {
+            return finish(MergeStatus::Failed,
+                          QStringLiteral("The consumed segmentation labels contain too many voxels."));
+        }
+        expectedVoxelCount += labelVoxelCount;
+    }
+    logGraphDebugIf(
+        verbose,
+        operationName,
+        QStringLiteral("operation=merge_with_neighbor phase=apply_preflight consumed_voxels=%1 "
+                       "working_nodes=%2 merge_groups=%3")
+            .arg(expectedVoxelCount)
+            .arg(resolvedWorkingLabels.size())
+            .arg(plannedRoots.size()));
+
+    result.dataChanged = true;
+    logGraphDebugIf(
+        verbose,
+        operationName,
+        QStringLiteral("operation=merge_with_neighbor phase=merge_edges working_pairs=[%1] initial_edges=[%2]")
+            .arg([&plannedWorkingPairs]() {
+                QStringList pairs;
+                for (const auto &[first, second] : plannedWorkingPairs) {
+                    pairs << QStringLiteral("%1,%2").arg(first).arg(second);
+                }
+                return pairs.join(QStringLiteral("; "));
+            }())
+            .arg(joinIds(edgeIdsToMerge)));
+    const std::set<SegmentIdType> finalWorkingLabels = mergeEdges(edgeIdsToMerge);
+    if (graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
+        graphBase->pEdgesInitialSegmentsITKSignal->updateLUTEdge(edgeIdsToMerge);
+    }
+
+    if (finalWorkingLabels.size() != plannedRoots.size()) {
+        throw std::logic_error(
+            "WorkingGraph merge groups differ from the validated neighbor-merge plan.");
+    }
+
+    std::unordered_map<SegmentIdType, SegmentIdType> finalWorkingLabelByConsumedLabel;
+    finalWorkingLabelByConsumedLabel.reserve(consumedLabels.size());
+    for (const SegmentIdType label : consumedLabels) {
+        const SegmentIdType finalWorkingLabel =
+            graphBase->pWorkingSegmentsImage->GetPixel(statsByLabel.at(label).seed);
+        if (finalWorkingLabels.count(finalWorkingLabel) == 0
+            || workingNodes.count(finalWorkingLabel) == 0) {
+            throw std::logic_error(
+                "A validated neighbor-merge result is missing from Working Segments.");
+        }
+        finalWorkingLabelByConsumedLabel[label] = finalWorkingLabel;
+    }
+
+    std::vector<SegmentIdType> transferWorkingLabels(
+        finalWorkingLabels.begin(), finalWorkingLabels.end());
+    graphBase->selectedSegmentationMaxSegmentId = effectiveSelectedMaximum;
+    const auto assignedLabels = transferWorkingNodesToSegmentation(transferWorkingLabels);
+    if (assignedLabels.size() != transferWorkingLabels.size()) {
+        throw std::logic_error(
+            "Validated neighbor-merge results could not be transferred to the Selected Segmentation.");
+    }
+
+    std::map<SegmentIdType, SegmentIdType> assignedLabelByWorkingLabel;
+    for (std::size_t index = 0; index < transferWorkingLabels.size(); ++index) {
+        assignedLabelByWorkingLabel.emplace(transferWorkingLabels[index], assignedLabels[index]);
+    }
+    for (const auto &[consumedLabel, finalWorkingLabel] : finalWorkingLabelByConsumedLabel) {
+        result.newLabelByConsumedLabel.emplace(
+            consumedLabel, assignedLabelByWorkingLabel.at(finalWorkingLabel));
+        result.voxelCountByConsumedLabel.emplace(
+            consumedLabel, statsByLabel.at(consumedLabel).voxelCount);
+    }
+
+    graphBase->pSelectedSegmentation->Modified();
+    result.mergedGroupCount = transferWorkingLabels.size();
+    logGraphDebugIf(
+        verbose,
+        operationName,
+        QStringLiteral("operation=merge_with_neighbor phase=transfer working=[%1] segmentation=[%2]")
+            .arg(joinIds(transferWorkingLabels))
+            .arg(joinIds(assignedLabels)));
+    logGraphDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral("Merged selected labels=%1 consumed labels=[%2] result working labels=[%3]")
+            .arg(result.mergeableSelectedLabelCount)
+            .arg(joinIds(consumedLabels))
+            .arg(joinIds(transferWorkingLabels)));
+    return finish(MergeStatus::Merged,
+                  QStringLiteral("Merged %1 selected segment(s) into %2 result segment(s).")
+                      .arg(result.mergeableSelectedLabelCount)
+                      .arg(result.mergedGroupCount));
+}
+
 
 Graph::WorkingSegmentResolution Graph::ensureSelectedSegmentationComponentInWorkingGraph(int x, int y, int z) {
     WorkingSegmentResolution resolution;
@@ -2698,6 +3636,12 @@ Graph::WorkingSegmentResolution Graph::ensureSelectedSegmentationComponentInWork
         if (componentMatch == ComponentMatch::Exact) {
             resolution.status = WorkingSegmentResolution::Status::ReusedExisting;
             resolution.workingLabel = workingLabel;
+            logGraphDebugIf(
+                verbose,
+                __func__,
+                QStringLiteral("Selected label %1 reuses exact working label %2")
+                    .arg(selectedLabel)
+                    .arg(workingLabel));
             return resolution;
         }
     }
@@ -2708,6 +3652,12 @@ Graph::WorkingSegmentResolution Graph::ensureSelectedSegmentationComponentInWork
     }
     resolution.status = WorkingSegmentResolution::Status::Inserted;
     resolution.workingLabel = *insertedLabel;
+    logGraphDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral("Selected label %1 inserted as working label %2")
+            .arg(selectedLabel)
+            .arg(*insertedLabel));
     return resolution;
 }
 
@@ -3182,6 +4132,12 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
     if (graphBase->pSelectedSegmentationSignal != nullptr) {
         graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
     }
+    logGraphDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral("Transferred working labels=[%1] to segmentation labels=[%2]")
+            .arg(joinIds(workingLabelsToTransfer))
+            .arg(joinIds(assignedSegmentationLabels)));
     return assignedSegmentationLabels;
 }
 

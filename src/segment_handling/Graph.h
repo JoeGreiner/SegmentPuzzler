@@ -113,6 +113,36 @@ public:
         SegmentIdType workingLabel = 0;
     };
 
+    struct SegmentationNeighborMergeResult {
+        enum class Status {
+            Merged,
+            NeedsInsertionConfirmation,
+            NeedsConnectedComponentConfirmation,
+            NothingToMerge,
+            Failed
+        };
+
+        Status status = Status::Failed;
+        std::size_t selectedLabelCount = 0;
+        std::size_t mergeableSelectedLabelCount = 0;
+        std::size_t skippedNoNeighborCount = 0;
+        std::size_t requiredInsertionCount = 0;
+        std::size_t disconnectedLabelCount = 0;
+        std::size_t disconnectedRegionCount = 0;
+        std::size_t consumedLabelCount = 0;
+        std::size_t mergedGroupCount = 0;
+        std::map<SegmentIdType, SegmentIdType> newLabelByConsumedLabel;
+        std::map<SegmentIdType, std::size_t> voxelCountByConsumedLabel;
+        bool dataChanged = false;
+        QString message;
+    };
+
+    struct SegmentationNeighborMergeOptions {
+        bool allowInsertion = false;
+        // Requires allowInsertion.
+        bool allowConnectedComponentSplit = false;
+    };
+
     Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
     ~Graph();  // defined in Graph.cpp (needed for unique_ptr<itkSignal<...>> with forward decl)
 
@@ -124,6 +154,18 @@ public:
     // Reuse the clicked WorkingNode when its voxels exactly match the clicked
     // selected-segmentation component; otherwise insert that component via H's path.
     WorkingSegmentResolution ensureSelectedSegmentationComponentInWorkingGraph(int x, int y, int z);
+    // Merge each selected-segmentation label with its smallest face-neighbor.
+    // allowConnectedComponentSplit requires allowInsertion; an invalid option
+    // combination returns Failed without mutation. Otherwise, when insertion is
+    // not allowed, returns NeedsInsertionConfirmation before mutating either graph
+    // whenever an involved label is not already an exact WorkingNode. A disconnected
+    // involved label also requires explicit permission before it is split into
+    // 6-connected components.
+    SegmentationNeighborMergeResult mergeSelectedSegmentationLabelsWithSmallestNeighbors(
+        const std::vector<SegmentIdType> &selectedLabels);
+    SegmentationNeighborMergeResult mergeSelectedSegmentationLabelsWithSmallestNeighbors(
+        const std::vector<SegmentIdType> &selectedLabels,
+        const SegmentationNeighborMergeOptions &options);
     // Returns the fresh WorkingNode label when insertion succeeds.
     std::optional<SegmentIdType> transferSegmentationSegmentToInitialSegment(int x, int y, int z);
     void setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn);
@@ -283,7 +325,7 @@ public:
     // merge to nodes by specifying a edge that merges two nodes
     void mergeEdge(InitialEdge *edge, bool updateSegmentImage = true);
 
-    void mergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToMerge);
+    std::set<SegmentIdType> mergeEdges(const std::set<EdgeNumIdType> &edgeIdsToMerge);
 
     void splitIntoConnectedComponentsOfWorkingNode(WorkingNode &workingNodeToAnalyze);
 
