@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -17,6 +18,8 @@ using SegmentIdType = dataType::SegmentIdType;
 using ImagePointer = dataType::SegmentsImageType::Pointer;
 using segment_puzzler::connected_components::ConnectedComponentSplitOptions;
 using segment_puzzler::connected_components::ConnectivityStencil;
+using segment_puzzler::connected_components::countConnectedComponentsByLabel;
+using segment_puzzler::connected_components::countConnectedComponentsByLabelInRegions;
 using segment_puzzler::connected_components::splitDisconnectedLabelComponentsInPlace;
 
 int failTest(const std::string &message) {
@@ -72,6 +75,50 @@ int testUtilityConnectivityModes() {
     auto sixImage = makeImage(2, 2, 1);
     sixImage->SetPixel({0, 0, 0}, 1);
     sixImage->SetPixel({1, 1, 0}, 1);
+
+    const std::unordered_set<SegmentIdType> labelsToCount{1};
+    if (countConnectedComponentsByLabel(sixImage, labelsToCount, ConnectivityStencil::SixConnected).at(1) != 2 ||
+        countConnectedComponentsByLabel(sixImage, labelsToCount, ConnectivityStencil::Full).at(1) != 1) {
+        return failTest("Connected-component counting should use the requested connectivity stencil.");
+    }
+    const std::unordered_map<SegmentIdType, dataType::SegmentsImageType::RegionType> regionsByLabel{
+        {1, sixImage->GetLargestPossibleRegion()}};
+    if (countConnectedComponentsByLabelInRegions(
+            sixImage, regionsByLabel, ConnectivityStencil::SixConnected).at(1) != 2 ||
+        countConnectedComponentsByLabelInRegions(
+            sixImage, regionsByLabel, ConnectivityStencil::Full).at(1) != 1) {
+        return failTest("ROI connected-component counting should preserve connectivity semantics.");
+    }
+
+    auto offsetImage = dataType::SegmentsImageType::New();
+    dataType::SegmentsImageType::IndexType offsetStart{{5, -2, 3}};
+    dataType::SegmentsImageType::SizeType offsetSize{{2, 2, 1}};
+    dataType::SegmentsImageType::RegionType offsetRegion(offsetStart, offsetSize);
+    offsetImage->SetRegions(offsetRegion);
+    offsetImage->Allocate();
+    offsetImage->FillBuffer(0);
+    offsetImage->SetPixel({5, -2, 3}, 7);
+    offsetImage->SetPixel({6, -1, 3}, 7);
+    const std::unordered_map<SegmentIdType, dataType::SegmentsImageType::RegionType> offsetRegions{
+        {7, offsetRegion}};
+    if (countConnectedComponentsByLabelInRegions(
+            offsetImage, offsetRegions, ConnectivityStencil::SixConnected).at(7) != 2) {
+        return failTest("ROI connectivity should support non-zero image indices.");
+    }
+
+    auto multiRegionImage = makeImage(4, 2, 1);
+    multiRegionImage->SetPixel({0, 0, 0}, 1);
+    multiRegionImage->SetPixel({0, 1, 0}, 1);
+    multiRegionImage->SetPixel({2, 0, 0}, 2);
+    multiRegionImage->SetPixel({3, 1, 0}, 2);
+    const std::unordered_map<SegmentIdType, dataType::SegmentsImageType::RegionType> multiRegions{
+        {1, multiRegionImage->GetLargestPossibleRegion()},
+        {2, multiRegionImage->GetLargestPossibleRegion()}};
+    const auto multiCounts = countConnectedComponentsByLabelInRegions(
+        multiRegionImage, multiRegions, ConnectivityStencil::SixConnected);
+    if (multiCounts.at(1) != 1 || multiCounts.at(2) != 2) {
+        return failTest("ROI connectivity should count multiple labels independently.");
+    }
 
     ConnectedComponentSplitOptions sixOptions;
     sixOptions.connectivity = ConnectivityStencil::SixConnected;

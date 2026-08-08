@@ -5,12 +5,15 @@
 #include <cstddef>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
@@ -355,6 +358,46 @@ void navigateOrthoViewerToIndex(OrthoViewer *orthoViewer,
     if (orthoViewer->xz->isSliceIndexValid(index[1])) orthoViewer->xz->setSliceIndex(index[1]);
     if (orthoViewer->zy->isSliceIndexValid(index[0])) orthoViewer->zy->setSliceIndex(index[0]);
     orthoViewer->centerViewportsToXYZImageSpace(index[0], index[1], index[2]);
+}
+
+struct RowRemovalStats {
+    std::size_t rows = 0;
+    std::size_t blocks = 0;
+};
+
+RowRemovalStats removeModelRowsInDescendingBlocks(
+    QStandardItemModel *model,
+    std::vector<int> rows) {
+    RowRemovalStats stats;
+    if (model == nullptr || rows.empty()) {
+        return stats;
+    }
+
+    std::sort(rows.begin(), rows.end(), std::greater<int>());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+
+    int blockHigh = rows.front();
+    int blockLow = blockHigh;
+    const auto removeBlock = [&]() {
+        const int count = blockHigh - blockLow + 1;
+        if (model->removeRows(blockLow, count)) {
+            stats.rows += static_cast<std::size_t>(count);
+            ++stats.blocks;
+        }
+    };
+
+    for (std::size_t index = 1; index < rows.size(); ++index) {
+        const int row = rows[index];
+        if (row == blockLow - 1) {
+            blockLow = row;
+            continue;
+        }
+        removeBlock();
+        blockHigh = row;
+        blockLow = row;
+    }
+    removeBlock();
+    return stats;
 }
 
 } // namespace
@@ -857,7 +900,13 @@ void SegmentTableDialog::onBackClicked() {
 
 void SegmentTableDialog::onDeleteSelectedClicked() {
     const QModelIndexList selected = tableView->selectionModel()->selectedRows();
-    if (selected.isEmpty() || watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) { return; }
+    if (selected.isEmpty() || tableLabelIdsAreStale || externalSegmentationTaskBusy ||
+        watcher->isRunning() ||
+        (view3DWatcher != nullptr && view3DWatcher->isRunning()) ||
+        graphBase == nullptr || graphBase->pGraph == nullptr ||
+        graphBase->pSelectedSegmentation == nullptr) {
+        return;
+    }
 
     if (!segmentationSelectionMatchesCurrent(graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal)) {
         SP_LOG_WARNING("segmentation",
@@ -868,35 +917,71 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
         return;
     }
 
-    // Collect label IDs and source row indices from the selection.
-    QList<int> sourceRows;
+    QElapsedTimer totalTimer;
+    totalTimer.start();
+
+    // Resolve the complete selection before changing either the image or model.
+    std::vector<int> sourceRows;
     sourceRows.reserve(selected.size());
+    std::unordered_set<dataType::SegmentIdType> labelsToDelete;
+    labelsToDelete.reserve(static_cast<std::size_t>(selected.size()));
     for (const QModelIndex &proxyIdx : selected) {
         const QModelIndex src = sortModel->mapToSource(proxyIdx);
-        sourceRows << src.row();
+        sourceRows.push_back(src.row());
 
-        if (graphBase->pSelectedSegmentation != nullptr && graphBase->pGraph != nullptr) {
-            const auto *labelItem = model->item(src.row(), SegmentTableDialog::COL_LABEL);
-            if (labelItem) {
-                const auto label = static_cast<dataType::SegmentIdType>(
-                    labelItem->data(Qt::UserRole).toLongLong());
-                graphBase->pGraph->deleteSegmentationLabel(label);
-            }
+        const auto *labelItem = model->item(src.row(), SegmentTableDialog::COL_LABEL);
+        if (labelItem != nullptr) {
+            labelsToDelete.insert(static_cast<dataType::SegmentIdType>(
+                labelItem->data(Qt::UserRole).toLongLong()));
         }
     }
 
-    if (orthoViewer != nullptr && graphBase->pSelectedSegmentation != nullptr) {
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("operation=delete_selected_segments phase=begin selected_rows=%1 labels=%2")
+            .arg(sourceRows.size())
+            .arg(labelsToDelete.size()));
+    QElapsedTimer imageTimer;
+    imageTimer.start();
+    const std::size_t deletedVoxelCount =
+        graphBase->pGraph->deleteSegmentationLabels(labelsToDelete);
+    const double imageMs =
+        static_cast<double>(imageTimer.nsecsElapsed()) / 1000000.0;
+
+    QElapsedTimer viewerTimer;
+    viewerTimer.start();
+    if (orthoViewer != nullptr) {
         orthoViewer->refreshViewers();
     }
+    const double viewerMs =
+        static_cast<double>(viewerTimer.nsecsElapsed()) / 1000000.0;
 
-    // Remove the rows from the table (descending order so indices stay valid).
-    std::sort(sourceRows.begin(), sourceRows.end(), std::greater<int>());
-    for (int row : sourceRows) {
-        model->removeRow(row);
-    }
+    QElapsedTimer tableTimer;
+    tableTimer.start();
+    // Detach the proxy to avoid re-filtering and re-sorting after every source
+    // row change. Contiguous selections then require a single model operation.
+    sortModel->setSourceModel(nullptr);
+    const RowRemovalStats removalStats =
+        removeModelRowsInDescendingBlocks(model, std::move(sourceRows));
+    sortModel->setSourceModel(model);
+    const double tableMs =
+        static_cast<double>(tableTimer.nsecsElapsed()) / 1000000.0;
 
     statusLabel->setText(QString("%1 labels").arg(model->rowCount()));
     exportCsvButton->setEnabled(model->rowCount() > 0);
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("operation=delete_selected_segments status=deleted labels=%1 "
+                       "deleted_voxels=%2 removed_rows=%3 row_blocks=%4 "
+                       "image_ms=%5 viewer_ms=%6 table_ms=%7 total_ms=%8")
+            .arg(labelsToDelete.size())
+            .arg(deletedVoxelCount)
+            .arg(removalStats.rows)
+            .arg(removalStats.blocks)
+            .arg(imageMs, 0, 'f', 3)
+            .arg(viewerMs, 0, 'f', 3)
+            .arg(tableMs, 0, 'f', 3)
+            .arg(static_cast<double>(totalTimer.nsecsElapsed()) / 1000000.0, 0, 'f', 3));
     updateResultsActionState();
 }
 
@@ -1064,14 +1149,21 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
 
 void SegmentTableDialog::onComputeFinished() {
     const ComputeResult result = watcher->future().result();
+
+    QElapsedTimer tableTimer;
+    tableTimer.start();
     populateTable(result);
+    const double tablePopulateSeconds = tableTimer.elapsed() / 1000.0;
+    tableLabelIdsAreStale = false;
+
     backButton->setEnabled(true);
     computeButton->setEnabled(true);
     recomputeButton->setEnabled(true);
     exportCsvButton->setEnabled(!result.rows.empty());
-    QString status = QString("%1 labels | Computed in %2 s")
+    QString status = QString("%1 labels | Features: %2 s | Table: %3 s")
                          .arg(result.rows.size())
-                         .arg(result.elapsedSeconds, 0, 'f', 2);
+                         .arg(result.elapsedSeconds, 0, 'f', 2)
+                         .arg(tablePopulateSeconds, 0, 'f', 2);
     if (result.is2D && result.flags.overridePixelSize) {
         status += QStringLiteral(" | Calibration: %1 %2/px")
                       .arg(result.flags.pixelSize, 0, 'g', 10)
@@ -1082,13 +1174,15 @@ void SegmentTableDialog::onComputeFinished() {
         "segmentation",
         QStringLiteral("Segment table computeFinished currentTableSegmentation=%1 "
                        "currentTableSegmentationSignal=%2 selectedSegmentation=%3 "
-                       "selectedSegmentationSignal=%4 rows=%5 elapsedSeconds=%6")
+                       "selectedSegmentationSignal=%4 rows=%5 featureComputeSeconds=%6 "
+                       "tablePopulateSeconds=%7")
             .arg(reinterpret_cast<quintptr>(currentTableSegmentation.GetPointer()), 0, 16)
             .arg(reinterpret_cast<quintptr>(currentTableSegmentationSignal), 0, 16)
             .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentation.GetPointer()), 0, 16)
             .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentationSignal), 0, 16)
             .arg(result.rows.size())
-            .arg(result.elapsedSeconds, 0, 'f', 3));
+            .arg(result.elapsedSeconds, 0, 'f', 3)
+            .arg(tablePopulateSeconds, 0, 'f', 3));
     updateResultsActionState();
     emit computeFinishedDebug();
 }
@@ -1137,6 +1231,9 @@ void SegmentTableDialog::onView3DPreparationFinished() {
 void SegmentTableDialog::populateTable(const ComputeResult &result) {
     currentResultFlags = result.flags;
     currentResultIs2D = result.is2D;
+
+    // Avoid re-sorting and resizing the proxy after every cell change during a bulk refresh.
+    sortModel->setSourceModel(nullptr);
     updateColumnHeaders(result.flags, result.is2D);
     model->removeRows(0, model->rowCount());
     model->setRowCount(static_cast<int>(result.rows.size()));
@@ -1184,6 +1281,7 @@ void SegmentTableDialog::populateTable(const ComputeResult &result) {
     }
 
     applyColumnColoring();
+    sortModel->setSourceModel(model);
     updateColumnVisibility(result.flags, result.is2D);
     tableView->resizeColumnsToContents();
 }

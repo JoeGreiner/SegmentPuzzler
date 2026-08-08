@@ -165,6 +165,9 @@ private:
     itkSignalBase *currentTableSegmentationSignal = nullptr;
     FeatureFlags currentResultFlags;
     bool currentResultIs2D = false;
+    bool tableLabelIdsAreStale = false;
+    bool segmentationReadBusy = false;
+    bool externalSegmentationTaskBusy = false;
     QStackedWidget *stack = nullptr;
 
     // ---- Setup page ----

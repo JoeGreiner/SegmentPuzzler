@@ -54,13 +54,13 @@ InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageT
     FunctionType::Pointer function = FunctionType::New();
     function->SetInputImage(pSegmentsIn);
     function->ThresholdBetween(labelInSegmentsImage, labelInSegmentsImage);
-    IteratorType itFlood = IteratorType(graphBase->pWorkingSegmentsImage, function, {x, y, z});
+    IteratorType itFlood = IteratorType(pSegmentsIn, function, {x, y, z});
+    itFlood.GoToBegin();
 
     // add voxel via flood filling
     while (!itFlood.IsAtEnd()) {
         const auto &index = itFlood.GetIndex();
-        Voxel tmpVoxel = Voxel(index[0], index[1], index[2]);
-        addVoxel(tmpVoxel);
+        addVoxel(Voxel(index[0], index[1], index[2]));
         ++itFlood;
     }
 }

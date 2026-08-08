@@ -119,7 +119,8 @@ ComponentMatch selectedComponentMatchesWorkingNode(
         const Graph::SegmentsImageType::Pointer &selectedSegmentation,
         Graph::SegmentIdType selectedLabel,
         const Graph::SegmentsImageType::IndexType &seed,
-        const WorkingNode &workingNode) {
+        const WorkingNode &workingNode,
+        std::optional<std::size_t> knownSelectedLabelVoxelCount = std::nullopt) {
     std::size_t workingVoxelCount = 0;
     for (const auto &initialNodeEntry : workingNode.subInitialNodes) {
         const auto &initialNode = initialNodeEntry.second;
@@ -153,6 +154,28 @@ ComponentMatch selectedComponentMatchesWorkingNode(
         const auto localZ = static_cast<std::size_t>(index[2] - start[2]);
         return localX + localY * dimX + localZ * sliceStride;
     };
+
+    if (knownSelectedLabelVoxelCount.has_value()) {
+        if (workingVoxelCount != *knownSelectedLabelVoxelCount) {
+            return ComponentMatch::Different;
+        }
+        // The plan already counted the selected label globally. If the
+        // WorkingNode has the same cardinality and every metadata voxel belongs
+        // to that label, both voxel sets are identical. This avoids rebuilding
+        // the component in a large hash set for every involved label.
+        for (const auto &initialNodeEntry : workingNode.subInitialNodes) {
+            for (const Voxel &voxel : initialNodeEntry.second->voxels) {
+                const Graph::SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
+                if (!region.IsInside(index)) {
+                    return ComponentMatch::Invalid;
+                }
+                if (selectedBuffer[linearIndex(index)] != selectedLabel) {
+                    return ComponentMatch::Different;
+                }
+            }
+        }
+        return ComponentMatch::Exact;
+    }
 
     std::unordered_set<std::size_t> componentVoxels;
     std::vector<std::size_t> openVoxels;
@@ -2569,15 +2592,53 @@ void Graph::exportDebugInformation(){
 
 
 void Graph::deleteSegmentationLabel(SegmentIdType label) {
-    if (graphBase->pSelectedSegmentation == nullptr) { return; }
+    deleteSegmentationLabels({label});
+}
+
+std::size_t Graph::deleteSegmentationLabels(
+        const std::unordered_set<SegmentIdType> &labels) {
+    if (graphBase == nullptr || graphBase->pSelectedSegmentation == nullptr || labels.empty()) {
+        return 0;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    std::size_t deletedVoxelCount = 0;
     itk::ImageRegionIterator<SegmentsImageType> it(
         graphBase->pSelectedSegmentation,
         graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
-        if (it.Get() == label) {
-            it.Set(backgroundId);
+
+    if (labels.size() == 1) {
+        const SegmentIdType label = *labels.begin();
+        if (label != backgroundId) {
+            for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+                if (it.Get() == label) {
+                    it.Set(backgroundId);
+                    ++deletedVoxelCount;
+                }
+            }
+        }
+    } else {
+        for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+            const SegmentIdType label = it.Get();
+            if (label != backgroundId && labels.count(label) > 0) {
+                it.Set(backgroundId);
+                ++deletedVoxelCount;
+            }
         }
     }
+
+    if (deletedVoxelCount > 0) {
+        graphBase->pSelectedSegmentation->Modified();
+    }
+    logGraphDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral("operation=delete_segmentation_labels labels=%1 deleted_voxels=%2 elapsed_ms=%3")
+            .arg(labels.size())
+            .arg(deletedVoxelCount)
+            .arg(static_cast<double>(timer.nsecsElapsed()) / 1000000.0, 0, 'f', 3));
+    return deletedVoxelCount;
 }
 
 

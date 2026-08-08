@@ -39,6 +39,16 @@ const char *connectivityStencilName(ConnectivityStencil connectivity);
 
 dataType::SegmentIdType maxLabelInImage(const dataType::SegmentsImageType::Pointer &image);
 
+std::unordered_map<dataType::SegmentIdType, std::size_t> countConnectedComponentsByLabel(
+    const dataType::SegmentsImageType::Pointer &image,
+    const std::unordered_set<dataType::SegmentIdType> &labels,
+    ConnectivityStencil connectivity);
+
+std::unordered_map<dataType::SegmentIdType, std::size_t> countConnectedComponentsByLabelInRegions(
+    const dataType::SegmentsImageType::Pointer &image,
+    const std::unordered_map<dataType::SegmentIdType, dataType::SegmentsImageType::RegionType> &regionsByLabel,
+    ConnectivityStencil connectivity);
+
 ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
     const dataType::SegmentsImageType::Pointer &image,
     const ConnectedComponentSplitOptions &options);

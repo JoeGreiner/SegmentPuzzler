@@ -1,9 +1,12 @@
 #ifndef graph_h
 #define graph_h
 
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <unordered_set>
 #include <QElapsedTimer>
+#include <QString>
 #include "src/utils/voxel.h"
 #include "Projected3DCut.h"
 
@@ -184,6 +187,15 @@ public:
 
     // Delete all pixels with the given label from pSelectedSegmentation (sets them to backgroundId).
     void deleteSegmentationLabel(SegmentIdType label);
+
+    // Delete all requested labels in one pass over pSelectedSegmentation.
+    // Returns the number of voxels changed to backgroundId.
+    std::size_t deleteSegmentationLabels(const std::unordered_set<SegmentIdType> &labels);
+
+    // Returns present, non-ignored selected-segmentation labels whose voxel
+    // count is strictly smaller than exclusiveVoxelThreshold.
+    std::vector<SegmentIdType> selectedSegmentationLabelsBelowVoxelCount(
+        std::size_t exclusiveVoxelThreshold) const;
 
     void transferSegmentsWithVolumeCriterion(double volumeThreshold=50000);
 
