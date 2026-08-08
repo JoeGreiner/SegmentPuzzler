@@ -5,7 +5,9 @@
 #include <QString>
 #include <array>
 #include <functional>
+#include <map>
 #include <optional>
+#include <set>
 #include <vector>
 #include <utility>
 #include <vtkActor.h>
@@ -19,9 +21,14 @@
 class vtkOrientationMarkerWidget;
 class QVTKOpenGLNativeWidget;
 class QEvent;
+class QCheckBox;
+class QDoubleSpinBox;
+class QHBoxLayout;
+class QLabel;
 class QPushButton;
 class QShowEvent;
 class QSlider;
+class QTimer;
 class QWidget;
 class TaskRunner;
 class CutStrokeOverlay;
@@ -33,6 +40,8 @@ public:
     using LabelWithColor = std::pair<dataType::SegmentIdType, quint32>;
     using NavigateToLabelHandler = std::function<void(dataType::SegmentIdType)>;
     using DeleteLabelHandler = std::function<bool(dataType::SegmentIdType)>;
+    using RequestLabelHandler = std::function<void(dataType::SegmentIdType, const Roi &)>;
+    using LabelActivatedHandler = std::function<void(dataType::SegmentIdType)>;
 
     struct CameraOrientation {
         std::array<double, 3> lookDirection{0.0, 0.0, 1.0};
@@ -50,6 +59,8 @@ public:
         QString windowTitle;
         dataType::SegmentIdType targetLabelId = 0;
         std::vector<PreparedMesh> meshes;
+        std::vector<dataType::SegmentIdType> navigationLabels;
+        std::map<dataType::SegmentIdType, Roi> navigationBounds;
         std::array<double, 3> sceneCenterWorld{0.0, 0.0, 0.0};
         double sceneExtent = 1.0;
     };
@@ -61,6 +72,9 @@ public:
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<LabelWithColor> labels,
         Roi requestedBounds);
+    static PreparedScene prepareSingleLabelSlideshowScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        LabelWithColor label);
     static PreparedScene prepareAllLabelsScene(
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<quint32> labelColors);
@@ -85,6 +99,13 @@ public:
         QString progressText = QStringLiteral("Applying 3D cut...");
     };
 
+    struct SingleLabelSessionConfig {
+        std::vector<dataType::SegmentIdType> labels;
+        RequestLabelHandler requestLabel;
+        DeleteLabelHandler deleteLabel;
+        LabelActivatedHandler labelActivated;
+    };
+
     explicit Segment3DViewerDialog(PreparedScene preparedScene,
                                    CutSessionConfig cutSession,
                                    QWidget *parent = nullptr,
@@ -95,6 +116,9 @@ public:
 
     void setNavigateToLabelHandler(NavigateToLabelHandler handler);
     void setDeleteLabelHandler(DeleteLabelHandler handler);
+    void setSingleLabelSession(SingleLabelSessionConfig session);
+    bool acceptPreparedScene(PreparedScene preparedScene);
+    bool rejectPreparedScene(dataType::SegmentIdType labelId);
     void presentInFront();
 
 protected:
@@ -115,6 +139,21 @@ private:
     };
 
     void stepExplodeSlider(int direction);
+    QHBoxLayout *ensureControlsRow();
+    void addOrbitControls(QHBoxLayout *controlsRow);
+    void requestAdjacentLabel(int direction);
+    void activateOrRequestLabel(dataType::SegmentIdType labelId);
+    bool applyPreparedScene(const PreparedScene &preparedScene);
+    void cachePreparedScene(PreparedScene preparedScene);
+    void prefetchAdjacentLabel();
+    void prunePreparedSceneCache();
+    void setSingleLabelNavigationBusy(bool busy,
+                                      dataType::SegmentIdType pendingLabelId = 0);
+    void setOrbitEnabled(bool enabled);
+    void advanceOrbit();
+    bool deleteCurrentLabel();
+    bool removeLabelActor(dataType::SegmentIdType labelId);
+    void updateSingleLabelNavigationUiState();
     void beginCutDrawing();
     void clearCutStroke();
     void applyProjectedCut();
@@ -137,6 +176,13 @@ private:
     dataType::SegmentIdType m_targetLabelId = 0;
 
     QSlider *m_explodeSlider = nullptr;
+    QHBoxLayout *m_controlsRow = nullptr;
+    QPushButton *m_previousLabelButton = nullptr;
+    QPushButton *m_nextLabelButton = nullptr;
+    QLabel *m_navigationLabel = nullptr;
+    QCheckBox *m_orbitCheckBox = nullptr;
+    QDoubleSpinBox *m_orbitSpeedSpinBox = nullptr;
+    QTimer *m_orbitTimer = nullptr;
     QPushButton *m_drawCutButton = nullptr;
     QPushButton *m_clearCutButton = nullptr;
     QPushButton *m_applyCutButton = nullptr;
@@ -147,11 +193,20 @@ private:
     CutSessionConfig m_cutSession;
     NavigateToLabelHandler m_navigateToLabelHandler;
     DeleteLabelHandler m_deleteLabelHandler;
+    RequestLabelHandler m_requestLabelHandler;
+    LabelActivatedHandler m_labelActivatedHandler;
+    std::vector<dataType::SegmentIdType> m_navigationLabels;
+    std::map<dataType::SegmentIdType, Roi> m_navigationBounds;
+    std::map<dataType::SegmentIdType, PreparedScene> m_preparedSceneCache;
+    std::set<dataType::SegmentIdType> m_unavailableSceneLabels;
+    dataType::SegmentIdType m_pendingSceneLabel = 0;
+    dataType::SegmentIdType m_activateWhenReadyLabel = 0;
     int m_launchSliceAxis = -1;
     bool m_initialFrameScheduled = false;
     bool m_initialFrameRendered = false;
     bool m_cutDrawModeActive = false;
     bool m_cutApplyInFlight = false;
+    bool m_singleLabelNavigationBusy = false;
     bool m_deleteModeActive = false;
 };
 

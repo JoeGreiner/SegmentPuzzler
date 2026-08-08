@@ -731,7 +731,7 @@ void SignalControl::refreshUiState() {
     connectedComponentSplitAction->setEnabled(
         enabled && connectedComponentSplitTargetAvailable(selectedConnectedComponentSplitTarget()));
     mergeSmallSegmentsAction->setEnabled(
-        enabled && !segmentTableReadBusy && hasWorkingSegments() && hasSelectedSegmentation()
+        enabled && hasWorkingSegments() && hasSelectedSegmentation()
         && graphBase != nullptr && graphBase->pGraph != nullptr);
     transferWithVolumeAction->setEnabled(enabled && hasSelectedSegmentation());
     transferWithRefinementAction->setEnabled(enabled && hasSelectedSegmentation() && hasSelectedRefinement());
@@ -1233,12 +1233,48 @@ void SignalControl::setGuiBusy(bool busy) {
     refreshUiState();
 }
 
-void SignalControl::setSegmentTableReadBusy(bool busy) {
-    if (segmentTableReadBusy == busy) {
-        return;
+std::size_t SignalControl::deleteSelectedSegmentationLabels(
+    dataType::SegmentsImageType::Pointer expectedSegmentation,
+    const std::unordered_set<dataType::SegmentIdType> &labels)
+{
+    if (labels.empty() || expectedSegmentation == nullptr
+        || taskRunner == nullptr || taskRunner->isBusy()
+        || graphBase == nullptr || graphBase->pGraph == nullptr
+        || graphBase->pSelectedSegmentation != expectedSegmentation) {
+        SP_LOG_WARNING(
+            "segmentation",
+            QStringLiteral("operation=delete_segmentation_labels status=rejected labels=%1 "
+                           "task_busy=%2 selection_matches=%3")
+                .arg(labels.size())
+                .arg(taskRunner != nullptr && taskRunner->isBusy())
+                .arg(graphBase != nullptr
+                     && graphBase->pSelectedSegmentation == expectedSegmentation));
+        return 0;
     }
-    segmentTableReadBusy = busy;
-    refreshUiState();
+
+    QElapsedTimer timer;
+    timer.start();
+    const std::size_t deletedVoxelCount =
+        graphBase->pGraph->deleteSegmentationLabels(labels);
+    if (deletedVoxelCount == 0) {
+        return 0;
+    }
+
+    std::vector<dataType::SegmentIdType> deletedLabels(labels.begin(), labels.end());
+    std::sort(deletedLabels.begin(), deletedLabels.end());
+    refreshViewers();
+    emit selectedSegmentationLabelsDeleted(
+        reinterpret_cast<quintptr>(expectedSegmentation.GetPointer()),
+        reinterpret_cast<quintptr>(graphBase->pSelectedSegmentationSignal),
+        deletedLabels);
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("operation=delete_segmentation_labels status=deleted labels=%1 "
+                       "deleted_voxels=%2 elapsed_ms=%3")
+            .arg(deletedLabels.size())
+            .arg(deletedVoxelCount)
+            .arg(static_cast<double>(timer.nsecsElapsed()) / 1000000.0, 0, 'f', 3));
+    return deletedVoxelCount;
 }
 
 void SignalControl::refreshViewers() {
@@ -2113,6 +2149,19 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
 
     connect(taskRunner, &TaskRunner::busyChanged, this, &SignalControl::setGuiBusy);
     setGuiBusy(taskRunner->isBusy());
+
+    const QPointer<SignalControl> guardedThis(this);
+    const auto deleteSelectedLabel =
+        [guardedThis](dataType::SegmentsImageType::Pointer segmentation,
+                      dataType::SegmentIdType label) {
+            return guardedThis != nullptr
+                   && guardedThis->deleteSelectedSegmentationLabels(segmentation, {label}) > 0;
+        };
+    for (auto *viewer : {orthoViewer->xy, orthoViewer->xz, orthoViewer->zy}) {
+        if (viewer != nullptr) {
+            viewer->setDeleteSelectedSegmentationLabelHandler(deleteSelectedLabel);
+        }
+    }
 }
 
 void SignalControl::setupSignalTreeWidget() {
@@ -2709,7 +2758,7 @@ void SignalControl::runNeighborMerge(std::vector<dataType::SegmentIdType> labels
                                      std::optional<std::size_t> exclusiveVoxelThreshold,
                                      Graph::SegmentationNeighborMergeOptions options,
                                      std::shared_ptr<NeighborMergeLoopProgress> loopProgress) {
-    if (segmentTableReadBusy || taskRunner == nullptr || taskRunner->isBusy() || graphBase == nullptr ||
+    if (taskRunner == nullptr || taskRunner->isBusy() || graphBase == nullptr ||
         graphBase->pGraph == nullptr || graphBase->pSelectedSegmentation == nullptr ||
         graphBase->pWorkingSegmentsImage == nullptr) {
         return;

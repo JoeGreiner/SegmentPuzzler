@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 #include <itkImage.h>
 #include <itkDataObject.h>
@@ -128,6 +129,9 @@ public:
                                  const QString &name = QStringLiteral("Supervoxels"));
 
     bool hasWorkingSegments() const;
+    std::size_t deleteSelectedSegmentationLabels(
+        dataType::SegmentsImageType::Pointer expectedSegmentation,
+        const std::unordered_set<dataType::SegmentIdType> &labels);
     void populateDataMenu(QMenu *menu, QAction *loadSampleDataAction);
     void populateSegmentationMenu(QMenu *menu);
     int preferredSidebarWidthHint() const;
@@ -138,9 +142,12 @@ signals:
         quintptr segmentationIdentity,
         quintptr segmentationSignalIdentity,
         const Graph::SegmentationNeighborMergeResult &result);
+    void selectedSegmentationLabelsDeleted(
+        quintptr segmentationIdentity,
+        quintptr segmentationSignalIdentity,
+        std::vector<dataType::SegmentIdType> labels);
 
 public slots:
-    void setSegmentTableReadBusy(bool busy);
     void handleDroppedFile(QString fileName);
 
     void toggleROISelection();
@@ -239,7 +246,6 @@ private:
 
     bool verbose;
     bool guiBusy = false;
-    bool segmentTableReadBusy = false;
 
     QSplitter *sectionSplitter = nullptr;
     QPushButton *togglePaintBrushButton = nullptr;

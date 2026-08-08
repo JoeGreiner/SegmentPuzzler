@@ -2,12 +2,13 @@
 #define SEGMENTPUZZLER_SEGMENTTABLEDIALOG_H
 
 #include <QDialog>
-#include <QFutureWatcher>
 #include <QPointer>
 #include <QString>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 #include "src/segment_handling/Graph.h"
 #include "src/segment_handling/graphBase.h"
@@ -20,7 +21,6 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
-class QProgressDialog;
 class QPushButton;
 class QSortFilterProxyModel;
 class QSpinBox;
@@ -29,17 +29,22 @@ class QStandardItemModel;
 class QTableView;
 class OrthoViewer;
 class QModelIndex;
+class TaskRunner;
 
 class SegmentTableDialog : public QDialog {
     Q_OBJECT
 public:
+    using DeleteSegmentationLabelsHandler = std::function<std::size_t(
+        dataType::SegmentsImageType::Pointer,
+        const std::unordered_set<dataType::SegmentIdType> &)>;
+
     explicit SegmentTableDialog(std::shared_ptr<GraphBase> graphBase,
                                 OrthoViewer *orthoViewer,
                                 QWidget *parent = nullptr);
-    ~SegmentTableDialog() override;
 
     void setQuickComputeMode();
     void startCompute(dataType::SegmentsImageType::Pointer segImg = nullptr);
+    void setDeleteSegmentationLabelsHandler(DeleteSegmentationLabelsHandler handler);
 
     // ---- What to compute (mirrors the setup-page checkboxes) ----
     struct FeatureFlags {
@@ -130,7 +135,6 @@ public:
 
 signals:
     void computeFinishedDebug();
-    void segmentationReadBusyChanged(bool busy);
     void neighborMergeRequested(std::vector<dataType::SegmentIdType> labels);
 
 public slots:
@@ -138,18 +142,19 @@ public slots:
         quintptr segmentationIdentity,
         quintptr segmentationSignalIdentity,
         const Graph::SegmentationNeighborMergeResult &result);
-    void setExternalSegmentationTaskBusy(bool busy);
+    void applyExternalDeletedLabels(
+        quintptr segmentationIdentity,
+        quintptr segmentationSignalIdentity,
+        std::vector<dataType::SegmentIdType> labels);
 
 private slots:
     void onComputeClicked();
-    void onComputeFinished();
     void onBackClicked();
     void onDeleteSelectedClicked();
     void onMergeWithNeighborClicked();
     void onSelectionChanged(const QModelIndex &current, const QModelIndex &previous);
     void onExportCsvClicked();
     void onView3DSelectedClicked();
-    void onView3DPreparationFinished();
 
 private:
     // ---- Column definitions (fixed set; visibility is dynamic) ----
@@ -170,11 +175,20 @@ private:
     void resetSettingsToDefaults();
     void updateCalibrationControls();
     void updateResultsActionState();
-    void updateSegmentationReadBusy();
+    TaskRunner *taskRunner() const;
+    bool isBusy() const;
+    void onComputeFinished(ComputeResult result);
+    void onView3DPreparationFinished(Segment3DViewerDialog::PreparedScene preparedScene);
     void updateColumnHeaders(const FeatureFlags &flags, bool is2D);
     void updateColumnVisibility(const FeatureFlags &flags, bool is2D);
     QString suggestedCsvExportPath(const QString &storedDefaultSavePath) const;
     std::vector<std::pair<dataType::SegmentIdType, quint32>> collectSelectedLabelsFor3D() const;
+    std::vector<dataType::SegmentIdType> collect3DNavigationLabels() const;
+    void requestSingleLabel3D(Segment3DViewerDialog *dialog,
+                              dataType::SegmentIdType labelId,
+                              const Roi &bounds);
+    bool deleteLabelFrom3DViewer(dataType::SegmentIdType labelId);
+    void selectTableLabel(dataType::SegmentIdType labelId);
 
     // ---- Shared state ----
     std::shared_ptr<GraphBase> graphBase;
@@ -184,8 +198,7 @@ private:
     FeatureFlags currentResultFlags;
     bool currentResultIs2D = false;
     bool tableLabelIdsAreStale = false;
-    bool segmentationReadBusy = false;
-    bool externalSegmentationTaskBusy = false;
+    DeleteSegmentationLabelsHandler deleteSegmentationLabelsHandler;
     QStackedWidget *stack = nullptr;
 
     // ---- Setup page ----
@@ -215,9 +228,9 @@ private:
     QStandardItemModel *model = nullptr;
     QSortFilterProxyModel *sortModel = nullptr;
 
-    QFutureWatcher<ComputeResult> *watcher = nullptr;
-    QFutureWatcher<Segment3DViewerDialog::PreparedScene> *view3DWatcher = nullptr;
-    QProgressDialog *view3DProgressDialog = nullptr;
+    QPointer<Segment3DViewerDialog> view3DUpdateDialog;
+    dataType::SegmentIdType pendingView3DLabel = 0;
+    bool view3DNavigationInFlight = false;
 };
 
 #endif // SEGMENTPUZZLER_SEGMENTTABLEDIALOG_H

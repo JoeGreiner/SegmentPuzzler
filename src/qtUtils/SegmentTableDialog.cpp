@@ -28,7 +28,6 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
-#include <QProgressDialog>
 #include <QSaveFile>
 #include <QScrollArea>
 #include <QSettings>
@@ -41,7 +40,6 @@
 #include <QTableView>
 #include <QTextStream>
 #include <QVBoxLayout>
-#include <QtConcurrent/QtConcurrent>
 
 #include <itkChangeInformationImageFilter.h>
 #include <itkContinuousIndex.h>
@@ -49,6 +47,7 @@
 #include <itkLabelImageToShapeLabelMapFilter.h>
 
 #include "src/segment_handling/Graph.h"
+#include "src/qtUtils/TaskRunner.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/ExportPathUtils.h"
 #include "src/viewers/Segment3DViewerDialog.h"
@@ -428,21 +427,12 @@ SegmentTableDialog::SegmentTableDialog(std::shared_ptr<GraphBase> graphBaseIn,
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->addWidget(stack);
 
-    watcher = new QFutureWatcher<ComputeResult>(this);
-    view3DWatcher = new QFutureWatcher<Segment3DViewerDialog::PreparedScene>(this);
-
-    connect(watcher, &QFutureWatcher<ComputeResult>::started,
-            this, &SegmentTableDialog::updateSegmentationReadBusy);
-    connect(watcher, &QFutureWatcher<ComputeResult>::finished,
-            this, &SegmentTableDialog::updateSegmentationReadBusy);
-    connect(view3DWatcher, &QFutureWatcher<Segment3DViewerDialog::PreparedScene>::started,
-            this, &SegmentTableDialog::updateSegmentationReadBusy);
-    connect(view3DWatcher, &QFutureWatcher<Segment3DViewerDialog::PreparedScene>::finished,
-            this, &SegmentTableDialog::updateSegmentationReadBusy);
-    connect(watcher, &QFutureWatcher<ComputeResult>::finished,
-            this, &SegmentTableDialog::onComputeFinished);
-    connect(view3DWatcher, &QFutureWatcher<Segment3DViewerDialog::PreparedScene>::finished,
-            this, &SegmentTableDialog::onView3DPreparationFinished);
+    auto *runner = taskRunner();
+    Q_ASSERT(runner != nullptr);
+    if (runner != nullptr) {
+        connect(runner, &TaskRunner::busyChanged, this,
+                [this](bool) { updateResultsActionState(); });
+    }
 }
 
 // ---- page builders ----------------------------------------------------------
@@ -715,13 +705,11 @@ QWidget *SegmentTableDialog::createResultsPage() {
     return page;
 }
 
-SegmentTableDialog::~SegmentTableDialog() {
-    if (watcher != nullptr && watcher->isRunning()) {
-        watcher->waitForFinished();
-    }
-    if (view3DWatcher != nullptr && view3DWatcher->isRunning()) {
-        view3DWatcher->waitForFinished();
-    }
+void SegmentTableDialog::setDeleteSegmentationLabelsHandler(
+    DeleteSegmentationLabelsHandler handler)
+{
+    deleteSegmentationLabelsHandler = std::move(handler);
+    updateResultsActionState();
 }
 
 // ---- setup page actions -----------------------------------------------------
@@ -833,7 +821,8 @@ void SegmentTableDialog::setQuickComputeMode() {
 }
 
 void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segImg) {
-    if (externalSegmentationTaskBusy) {
+    auto *runner = taskRunner();
+    if (runner == nullptr || runner->isBusy()) {
         return;
     }
     if (segImg == nullptr) {
@@ -856,13 +845,10 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
         return;
     }
 
-    if (watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) {
-        return;
-    }
-
     const FeatureFlags flags = collectFlags();
     currentTableSegmentation = segImg;
     currentTableSegmentationSignal = graphBase->pSelectedSegmentationSignal;
+    tableLabelIdsAreStale = true;
     SP_LOG_DEBUG(
         "segmentation",
         QStringLiteral("Segment table featureFlags volume=%1 isIsolated=%2 centroid=%3 elongation=%4 "
@@ -902,10 +888,29 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
     exportCsvButton->setEnabled(false);
     statusLabel->setText("Computing features…");
 
-    watcher->setFuture(QtConcurrent::run([segImg, flags]() {
-        return SegmentTableDialog::computeFeatures(segImg, flags);
-    }));
-    updateSegmentationReadBusy();
+    const QPointer<SegmentTableDialog> guardedThis(this);
+    const auto committed = std::make_shared<bool>(false);
+    runner->runInBackground(
+        QStringLiteral("Computing segment features..."),
+        [segImg, flags]() {
+            return SegmentTableDialog::computeFeatures(segImg, flags);
+        },
+        [guardedThis, committed](ComputeResult result) {
+            if (guardedThis == nullptr) {
+                return;
+            }
+            guardedThis->onComputeFinished(std::move(result));
+            *committed = true;
+        },
+        [guardedThis, committed]() {
+            if (guardedThis == nullptr || *committed) {
+                return;
+            }
+            guardedThis->backButton->setEnabled(true);
+            guardedThis->statusLabel->setText(
+                QStringLiteral("Feature computation failed; please recompute."));
+            guardedThis->updateResultsActionState();
+        });
 }
 
 void SegmentTableDialog::onComputeClicked() {
@@ -914,17 +919,15 @@ void SegmentTableDialog::onComputeClicked() {
 }
 
 void SegmentTableDialog::onBackClicked() {
-    if (watcher->isRunning() || (view3DWatcher != nullptr && view3DWatcher->isRunning())) { return; }
+    if (isBusy()) { return; }
     computeButton->setEnabled(true);
     stack->setCurrentIndex(0);
 }
 
 void SegmentTableDialog::onDeleteSelectedClicked() {
     const QModelIndexList selected = tableView->selectionModel()->selectedRows();
-    if (selected.isEmpty() || tableLabelIdsAreStale || externalSegmentationTaskBusy ||
-        watcher->isRunning() ||
-        (view3DWatcher != nullptr && view3DWatcher->isRunning()) ||
-        graphBase == nullptr || graphBase->pGraph == nullptr ||
+    if (selected.isEmpty() || tableLabelIdsAreStale || isBusy() ||
+        !deleteSegmentationLabelsHandler || graphBase == nullptr ||
         graphBase->pSelectedSegmentation == nullptr) {
         return;
     }
@@ -938,18 +941,10 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
         return;
     }
 
-    QElapsedTimer totalTimer;
-    totalTimer.start();
-
-    // Resolve the complete selection before changing either the image or model.
-    std::vector<int> sourceRows;
-    sourceRows.reserve(selected.size());
     std::unordered_set<dataType::SegmentIdType> labelsToDelete;
     labelsToDelete.reserve(static_cast<std::size_t>(selected.size()));
     for (const QModelIndex &proxyIdx : selected) {
         const QModelIndex src = sortModel->mapToSource(proxyIdx);
-        sourceRows.push_back(src.row());
-
         const auto *labelItem = model->item(src.row(), SegmentTableDialog::COL_LABEL);
         if (labelItem != nullptr) {
             labelsToDelete.insert(static_cast<dataType::SegmentIdType>(
@@ -960,56 +955,14 @@ void SegmentTableDialog::onDeleteSelectedClicked() {
     SP_LOG_INFO(
         "segmentation",
         QStringLiteral("operation=delete_selected_segments phase=begin selected_rows=%1 labels=%2")
-            .arg(sourceRows.size())
+            .arg(selected.size())
             .arg(labelsToDelete.size()));
-    QElapsedTimer imageTimer;
-    imageTimer.start();
-    const std::size_t deletedVoxelCount =
-        graphBase->pGraph->deleteSegmentationLabels(labelsToDelete);
-    const double imageMs =
-        static_cast<double>(imageTimer.nsecsElapsed()) / 1000000.0;
-
-    QElapsedTimer viewerTimer;
-    viewerTimer.start();
-    if (orthoViewer != nullptr) {
-        orthoViewer->refreshViewers();
-    }
-    const double viewerMs =
-        static_cast<double>(viewerTimer.nsecsElapsed()) / 1000000.0;
-
-    QElapsedTimer tableTimer;
-    tableTimer.start();
-    // Detach the proxy to avoid re-filtering and re-sorting after every source
-    // row change. Contiguous selections then require a single model operation.
-    sortModel->setSourceModel(nullptr);
-    const RowRemovalStats removalStats =
-        removeModelRowsInDescendingBlocks(model, std::move(sourceRows));
-    sortModel->setSourceModel(model);
-    const double tableMs =
-        static_cast<double>(tableTimer.nsecsElapsed()) / 1000000.0;
-
-    statusLabel->setText(QString("%1 labels").arg(model->rowCount()));
-    exportCsvButton->setEnabled(model->rowCount() > 0);
-    SP_LOG_INFO(
-        "segmentation",
-        QStringLiteral("operation=delete_selected_segments status=deleted labels=%1 "
-                       "deleted_voxels=%2 removed_rows=%3 row_blocks=%4 "
-                       "image_ms=%5 viewer_ms=%6 table_ms=%7 total_ms=%8")
-            .arg(labelsToDelete.size())
-            .arg(deletedVoxelCount)
-            .arg(removalStats.rows)
-            .arg(removalStats.blocks)
-            .arg(imageMs, 0, 'f', 3)
-            .arg(viewerMs, 0, 'f', 3)
-            .arg(tableMs, 0, 'f', 3)
-            .arg(static_cast<double>(totalTimer.nsecsElapsed()) / 1000000.0, 0, 'f', 3));
-    updateResultsActionState();
+    deleteSegmentationLabelsHandler(currentTableSegmentation, labelsToDelete);
 }
 
 void SegmentTableDialog::onMergeWithNeighborClicked() {
     if (tableView == nullptr || tableView->selectionModel() == nullptr ||
-        tableLabelIdsAreStale || externalSegmentationTaskBusy || watcher->isRunning() ||
-        (view3DWatcher != nullptr && view3DWatcher->isRunning())) {
+        tableLabelIdsAreStale || isBusy()) {
         return;
     }
 
@@ -1058,9 +1011,7 @@ void SegmentTableDialog::setAllChecked(bool checked) {
 }
 
 void SegmentTableDialog::updateResultsActionState() {
-    const bool busy = externalSegmentationTaskBusy
-                      || (watcher != nullptr && watcher->isRunning())
-                      || (view3DWatcher != nullptr && view3DWatcher->isRunning());
+    const bool busy = isBusy();
     const bool hasSelection = tableView != nullptr
                               && tableView->selectionModel() != nullptr
                               && !tableView->selectionModel()->selectedRows().isEmpty();
@@ -1078,7 +1029,7 @@ void SegmentTableDialog::updateResultsActionState() {
     if (deleteSelectedButton != nullptr) {
         deleteSelectedButton->setEnabled(
             hasSelection && !busy && labelIdsAreCurrent && selectionMatches &&
-            graphBase != nullptr && graphBase->pGraph != nullptr);
+            static_cast<bool>(deleteSegmentationLabelsHandler));
     }
     if (mergeWithNeighborButton != nullptr) {
         mergeWithNeighborButton->setEnabled(
@@ -1094,22 +1045,13 @@ void SegmentTableDialog::updateResultsActionState() {
     }
 }
 
-void SegmentTableDialog::updateSegmentationReadBusy() {
-    const bool busy = (watcher != nullptr && watcher->isRunning())
-                      || (view3DWatcher != nullptr && view3DWatcher->isRunning());
-    if (segmentationReadBusy != busy) {
-        segmentationReadBusy = busy;
-        emit segmentationReadBusyChanged(busy);
-    }
-    updateResultsActionState();
+TaskRunner *SegmentTableDialog::taskRunner() const {
+    return orthoViewer != nullptr ? orthoViewer->getTaskRunner() : nullptr;
 }
 
-void SegmentTableDialog::setExternalSegmentationTaskBusy(bool busy) {
-    if (externalSegmentationTaskBusy == busy) {
-        return;
-    }
-    externalSegmentationTaskBusy = busy;
-    updateResultsActionState();
+bool SegmentTableDialog::isBusy() const {
+    const auto *runner = taskRunner();
+    return runner == nullptr || runner->isBusy();
 }
 
 void SegmentTableDialog::applyExternalNeighborMergeResult(
@@ -1133,6 +1075,52 @@ void SegmentTableDialog::applyExternalNeighborMergeResult(
     }
 
     statusLabel->setText(QStringLiteral("Table is out of date."));
+    updateResultsActionState();
+}
+
+void SegmentTableDialog::applyExternalDeletedLabels(
+    quintptr segmentationIdentity,
+    quintptr segmentationSignalIdentity,
+    std::vector<dataType::SegmentIdType> labels)
+{
+    if (reinterpret_cast<quintptr>(currentTableSegmentation.GetPointer()) != segmentationIdentity
+        || reinterpret_cast<quintptr>(currentTableSegmentationSignal) != segmentationSignalIdentity
+        || model == nullptr || sortModel == nullptr || labels.empty()) {
+        return;
+    }
+
+    const std::unordered_set<dataType::SegmentIdType> deletedLabels(
+        labels.begin(), labels.end());
+    std::vector<int> rowsToRemove;
+    rowsToRemove.reserve(labels.size());
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const auto *labelItem = model->item(row, SegmentTableDialog::COL_LABEL);
+        if (labelItem != nullptr
+            && deletedLabels.count(static_cast<dataType::SegmentIdType>(
+                   labelItem->data(Qt::UserRole).toULongLong())) > 0) {
+            rowsToRemove.push_back(row);
+        }
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    sortModel->setSourceModel(nullptr);
+    const RowRemovalStats removalStats =
+        removeModelRowsInDescendingBlocks(model, std::move(rowsToRemove));
+    sortModel->setSourceModel(model);
+
+    statusLabel->setText(
+        tableLabelIdsAreStale
+            ? QStringLiteral("Table is out of date.")
+            : QStringLiteral("%1 labels").arg(model->rowCount()));
+    SP_LOG_DEBUG(
+        "segmentation",
+        QStringLiteral("operation=delete_segmentation_labels phase=table_quick_update "
+                       "requested_labels=%1 removed_rows=%2 row_blocks=%3 elapsed_ms=%4")
+            .arg(labels.size())
+            .arg(removalStats.rows)
+            .arg(removalStats.blocks)
+            .arg(static_cast<double>(timer.nsecsElapsed()) / 1000000.0, 0, 'f', 3));
     updateResultsActionState();
 }
 
@@ -1167,11 +1155,139 @@ std::vector<std::pair<dataType::SegmentIdType, quint32>> SegmentTableDialog::col
     return labels;
 }
 
-void SegmentTableDialog::onView3DSelectedClicked() {
-    if (currentTableSegmentation == nullptr || view3DWatcher == nullptr || watcher == nullptr) {
+std::vector<dataType::SegmentIdType> SegmentTableDialog::collect3DNavigationLabels() const {
+    std::vector<dataType::SegmentIdType> labels;
+    if (model == nullptr) {
+        return labels;
+    }
+
+    labels.reserve(static_cast<std::size_t>(model->rowCount()));
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const auto *labelItem = model->item(row, SegmentTableDialog::COL_LABEL);
+        if (labelItem == nullptr) {
+            continue;
+        }
+        const auto label = static_cast<dataType::SegmentIdType>(
+            labelItem->data(Qt::UserRole).toULongLong());
+        if (label != 0) {
+            labels.push_back(label);
+        }
+    }
+
+    std::sort(labels.begin(), labels.end());
+    labels.erase(std::unique(labels.begin(), labels.end()), labels.end());
+    return labels;
+}
+
+void SegmentTableDialog::requestSingleLabel3D(
+    Segment3DViewerDialog *dialog,
+    dataType::SegmentIdType labelId,
+    const Roi &bounds)
+{
+    auto *runner = taskRunner();
+    if (runner == nullptr || runner->isBusy() || dialog == nullptr
+        || currentTableSegmentation == nullptr) {
+        if (dialog != nullptr) {
+            dialog->rejectPreparedScene(labelId);
+        }
         return;
     }
-    if (watcher->isRunning() || view3DWatcher->isRunning()) {
+
+    const auto currentLabels = collect3DNavigationLabels();
+    if (!std::binary_search(currentLabels.begin(), currentLabels.end(), labelId)) {
+        dialog->rejectPreparedScene(labelId);
+        return;
+    }
+
+    quint32 color = 0xFFAAAAAA;
+    const auto colorIndex = static_cast<std::size_t>(labelId);
+    if (currentTableSegmentationSignal != nullptr
+        && colorIndex < currentTableSegmentationSignal->LUT.size()) {
+        color = currentTableSegmentationSignal->LUT[colorIndex];
+    }
+
+    view3DUpdateDialog = dialog;
+    pendingView3DLabel = labelId;
+    view3DNavigationInFlight = true;
+
+    SP_LOG_DEBUG("viewer.three_d",
+                 QStringLiteral("[3DView] requested adjacent segment targetLabel=%1")
+                     .arg(labelId));
+
+    const auto segImage = currentTableSegmentation;
+    std::vector<Segment3DViewerDialog::LabelWithColor> labels{{labelId, color}};
+    const QPointer<SegmentTableDialog> guardedThis(this);
+    const QPointer<Segment3DViewerDialog> guardedDialog(dialog);
+    const auto committed = std::make_shared<bool>(false);
+    runner->runInBackground(
+        QStringLiteral("Preparing 3D segment %1...").arg(labelId),
+        [segImage, labels = std::move(labels), bounds]() mutable {
+            return Segment3DViewerDialog::prepareScene(
+                segImage, std::move(labels), bounds);
+        },
+        [guardedThis, committed](Segment3DViewerDialog::PreparedScene preparedScene) {
+            if (guardedThis == nullptr) {
+                return;
+            }
+            guardedThis->onView3DPreparationFinished(std::move(preparedScene));
+            *committed = true;
+        },
+        [guardedThis, guardedDialog, labelId, committed]() {
+            if (*committed) {
+                return;
+            }
+            if (guardedDialog != nullptr) {
+                guardedDialog->rejectPreparedScene(labelId);
+            }
+            if (guardedThis != nullptr) {
+                guardedThis->view3DNavigationInFlight = false;
+                guardedThis->view3DUpdateDialog.clear();
+                guardedThis->pendingView3DLabel = 0;
+                guardedThis->updateResultsActionState();
+            }
+        });
+}
+
+bool SegmentTableDialog::deleteLabelFrom3DViewer(dataType::SegmentIdType labelId) {
+    if (labelId == 0 || isBusy() || tableLabelIdsAreStale
+        || !deleteSegmentationLabelsHandler || graphBase == nullptr
+        || !segmentationSelectionMatchesCurrent(
+            graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal)) {
+        return false;
+    }
+
+    return deleteSegmentationLabelsHandler(currentTableSegmentation, {labelId}) > 0;
+}
+
+void SegmentTableDialog::selectTableLabel(dataType::SegmentIdType labelId) {
+    if (model == nullptr || sortModel == nullptr || tableView == nullptr
+        || tableView->selectionModel() == nullptr) {
+        return;
+    }
+
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const auto *labelItem = model->item(row, SegmentTableDialog::COL_LABEL);
+        if (labelItem == nullptr
+            || static_cast<dataType::SegmentIdType>(
+                   labelItem->data(Qt::UserRole).toULongLong()) != labelId) {
+            continue;
+        }
+
+        const QModelIndex proxyIndex = sortModel->mapFromSource(
+            model->index(row, SegmentTableDialog::COL_LABEL));
+        if (proxyIndex.isValid()) {
+            tableView->selectionModel()->setCurrentIndex(
+                proxyIndex,
+                QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+            tableView->scrollTo(proxyIndex, QAbstractItemView::PositionAtCenter);
+        }
+        return;
+    }
+}
+
+void SegmentTableDialog::onView3DSelectedClicked() {
+    auto *runner = taskRunner();
+    if (runner == nullptr || runner->isBusy() || currentTableSegmentation == nullptr) {
         return;
     }
 
@@ -1180,31 +1296,29 @@ void SegmentTableDialog::onView3DSelectedClicked() {
         return;
     }
 
-    if (view3DProgressDialog != nullptr) {
-        view3DProgressDialog->close();
-        view3DProgressDialog->deleteLater();
-        view3DProgressDialog = nullptr;
-    }
+    view3DUpdateDialog.clear();
+    pendingView3DLabel = 0;
+    view3DNavigationInFlight = false;
 
-    view3DProgressDialog = new QProgressDialog(this);
-    view3DProgressDialog->setWindowTitle(QStringLiteral("Please Wait"));
-    view3DProgressDialog->setLabelText(labels.size() == 1
-                                           ? QStringLiteral("Preparing 3D view for selected segment...")
-                                           : QStringLiteral("Preparing 3D view for selected segments..."));
-    view3DProgressDialog->setWindowModality(Qt::WindowModal);
-    view3DProgressDialog->setCancelButton(nullptr);
-    view3DProgressDialog->setRange(0, 0);
-    view3DProgressDialog->setMinimumDuration(0);
-    view3DProgressDialog->setAutoClose(false);
-    view3DProgressDialog->setAutoReset(false);
-    view3DProgressDialog->setValue(0);
-    view3DProgressDialog->show();
-
+    const QString progressText = labels.size() == 1
+                                     ? QStringLiteral("Preparing 3D view for selected segment...")
+                                     : QStringLiteral("Preparing 3D view for selected segments...");
     const auto segImage = currentTableSegmentation;
-    view3DWatcher->setFuture(QtConcurrent::run([segImage, labels = std::move(labels)]() mutable {
-        return Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
-    }));
-    updateSegmentationReadBusy();
+    const QPointer<SegmentTableDialog> guardedThis(this);
+    runner->runWithLabel(
+        progressText,
+        [segImage, labels = std::move(labels)]() mutable {
+            if (labels.size() == 1) {
+                return Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
+                    segImage, labels.front());
+            }
+            return Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
+        },
+        [guardedThis](Segment3DViewerDialog::PreparedScene preparedScene) {
+            if (guardedThis != nullptr) {
+                guardedThis->onView3DPreparationFinished(std::move(preparedScene));
+            }
+        });
 }
 
 // ---- compute (worker thread) ------------------------------------------------
@@ -1271,9 +1385,7 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
 
 // ---- result arrival ---------------------------------------------------------
 
-void SegmentTableDialog::onComputeFinished() {
-    const ComputeResult result = watcher->future().result();
-
+void SegmentTableDialog::onComputeFinished(ComputeResult result) {
     QElapsedTimer tableTimer;
     tableTimer.start();
     populateTable(result);
@@ -1311,17 +1423,46 @@ void SegmentTableDialog::onComputeFinished() {
     emit computeFinishedDebug();
 }
 
-void SegmentTableDialog::onView3DPreparationFinished() {
-    if (view3DProgressDialog != nullptr) {
-        view3DProgressDialog->close();
-        view3DProgressDialog->deleteLater();
-        view3DProgressDialog = nullptr;
-    }
+void SegmentTableDialog::onView3DPreparationFinished(
+    Segment3DViewerDialog::PreparedScene preparedScene)
+{
+    const bool navigationRequest = view3DNavigationInFlight;
+    const QPointer<Segment3DViewerDialog> updateDialog = view3DUpdateDialog;
+    const auto requestedLabel = pendingView3DLabel;
+    QWidget *const messageParent = updateDialog != nullptr
+                                       ? static_cast<QWidget *>(updateDialog.data())
+                                       : static_cast<QWidget *>(this);
+    view3DNavigationInFlight = false;
+    view3DUpdateDialog.clear();
+    pendingView3DLabel = 0;
 
     try {
-        auto preparedScene = view3DWatcher->future().result();
+        if (navigationRequest) {
+            if (updateDialog == nullptr) {
+                updateResultsActionState();
+                return;
+            }
+
+            if (preparedScene.meshes.empty()
+                || !updateDialog->acceptPreparedScene(std::move(preparedScene))) {
+                if (!updateDialog->rejectPreparedScene(requestedLabel)) {
+                    updateResultsActionState();
+                    return;
+                }
+                QMessageBox::information(
+                    updateDialog,
+                    QStringLiteral("3D View"),
+                    QStringLiteral("No 3D surface could be generated for segment %1.")
+                        .arg(requestedLabel));
+            }
+            updateResultsActionState();
+            return;
+        }
+
         const auto segImage = currentTableSegmentation;
         if (!preparedScene.meshes.empty()) {
+            const bool singleLabelScene = preparedScene.targetLabelId != 0
+                                          && preparedScene.meshes.size() == 1;
             auto *dialog = new Segment3DViewerDialog(std::move(preparedScene), this);
             dialog->setNavigateToLabelHandler(
                 [segImage, orthoViewer = orthoViewer](dataType::SegmentIdType labelId) {
@@ -1336,15 +1477,41 @@ void SegmentTableDialog::onView3DPreparationFinished() {
 
                     navigateOrthoViewerToIndex(orthoViewer, index);
                 });
+            if (singleLabelScene) {
+                const QPointer<Segment3DViewerDialog> guardedDialog(dialog);
+                Segment3DViewerDialog::SingleLabelSessionConfig session;
+                session.labels = collect3DNavigationLabels();
+                session.requestLabel =
+                    [this, guardedDialog](dataType::SegmentIdType labelId,
+                                          const Roi &bounds) {
+                        if (guardedDialog != nullptr) {
+                            requestSingleLabel3D(guardedDialog.data(), labelId, bounds);
+                        }
+                    };
+                session.labelActivated = [this](dataType::SegmentIdType labelId) {
+                    selectTableLabel(labelId);
+                };
+                session.deleteLabel = [this](dataType::SegmentIdType labelId) {
+                    return deleteLabelFrom3DViewer(labelId);
+                };
+                dialog->setSingleLabelSession(std::move(session));
+            }
             dialog->setAttribute(Qt::WA_DeleteOnClose);
             dialog->presentInFront();
         } else {
             QMessageBox::information(this, "3D View", "No 3D surface could be generated for the selected labels.");
         }
     } catch (const std::exception &e) {
-        QMessageBox::critical(this, "3D View Error", QString::fromStdString(e.what()));
+        if (updateDialog != nullptr) {
+            updateDialog->rejectPreparedScene(requestedLabel);
+        }
+        QMessageBox::critical(messageParent, "3D View Error", QString::fromStdString(e.what()));
     } catch (...) {
-        QMessageBox::critical(this, "3D View Error", "Unknown error while preparing 3D view.");
+        if (updateDialog != nullptr) {
+            updateDialog->rejectPreparedScene(requestedLabel);
+        }
+        QMessageBox::critical(messageParent, "3D View Error",
+                              "Unknown error while preparing 3D view.");
     }
 
     updateResultsActionState();

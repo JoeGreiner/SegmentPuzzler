@@ -1079,18 +1079,17 @@ void MainWindow::showSegmentTable() {
     if (!segmentTableDialog) {
         segmentTableDialog = new SegmentTableDialog(graphBase, myOrthowindow, this);
         segmentTableDialog->setAttribute(Qt::WA_DeleteOnClose);
-        connect(segmentTableDialog, &SegmentTableDialog::segmentationReadBusyChanged,
-                mySignalControl, &SignalControl::setSegmentTableReadBusy);
-        connect(taskRunner.get(), &TaskRunner::busyChanged,
-                segmentTableDialog, &SegmentTableDialog::setExternalSegmentationTaskBusy);
         connect(mySignalControl, &SignalControl::selectedSegmentationNeighborMergeFinished,
                 segmentTableDialog, &SegmentTableDialog::applyExternalNeighborMergeResult);
+        connect(mySignalControl, &SignalControl::selectedSegmentationLabelsDeleted,
+                segmentTableDialog, &SegmentTableDialog::applyExternalDeletedLabels);
         connect(segmentTableDialog, &SegmentTableDialog::neighborMergeRequested,
                 mySignalControl, &SignalControl::mergeSelectedSegmentsWithNeighbors);
-        connect(segmentTableDialog, &QObject::destroyed, mySignalControl, [this]() {
-            mySignalControl->setSegmentTableReadBusy(false);
-        });
-        segmentTableDialog->setExternalSegmentationTaskBusy(taskRunner->isBusy());
+        segmentTableDialog->setDeleteSegmentationLabelsHandler(
+            [this](dataType::SegmentsImageType::Pointer segmentation,
+                   const std::unordered_set<dataType::SegmentIdType> &labels) {
+                return mySignalControl->deleteSelectedSegmentationLabels(segmentation, labels);
+            });
     }
     segmentTableDialog->show();
     segmentTableDialog->raise();

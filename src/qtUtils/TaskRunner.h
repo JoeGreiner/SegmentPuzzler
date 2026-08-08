@@ -64,8 +64,9 @@ struct TaskOutcome<void> {
 // busyChanged(false). It is called whether the task succeeded or failed,
 // so it is safe for chaining sequential tasks.
 //
-// Both run() and runWithLabel() show a window-modal indeterminate progress
-// dialog for the owning window while the task is running.
+// run() and runWithLabel() show a window-modal indeterminate progress dialog.
+// runInBackground() provides the same serialization and error handling without
+// a progress dialog, for speculative work such as viewer prefetching.
 //
 // Thread safety: compute lambdas run off the GUI thread. They must not
 // touch QWidgets. Accessing GraphBase members from compute is currently
@@ -88,6 +89,12 @@ public:
                       Commit commit,
                       std::function<void()> afterIdle = {});
 
+    template<typename Compute, typename Commit>
+    void runInBackground(QString labelText,
+                         Compute compute,
+                         Commit commit,
+                         std::function<void()> afterIdle = {});
+
     bool isBusy() const;
 
 signals:
@@ -98,7 +105,8 @@ private:
     void runImpl(QString labelText,
                  Compute compute,
                  Commit commit,
-                 std::function<void()> afterIdle);
+                 std::function<void()> afterIdle,
+                 bool showProgress = true);
 
     QProgressDialog *createProgressDialog(const QString &labelText);
     void setBusy(bool busy);
@@ -132,10 +140,24 @@ void TaskRunner::runWithLabel(QString labelText,
 }
 
 template<typename Compute, typename Commit>
+void TaskRunner::runInBackground(QString labelText,
+                                 Compute compute,
+                                 Commit commit,
+                                 std::function<void()> afterIdle)
+{
+    runImpl(std::move(labelText),
+            std::move(compute),
+            std::move(commit),
+            std::move(afterIdle),
+            false);
+}
+
+template<typename Compute, typename Commit>
 void TaskRunner::runImpl(QString labelText,
                          Compute compute,
                          Commit commit,
-                         std::function<void()> afterIdle)
+                         std::function<void()> afterIdle,
+                         bool showProgress)
 {
     using Result = std::invoke_result_t<Compute>;
     using StoredResult = std::decay_t<Result>;
@@ -158,7 +180,8 @@ void TaskRunner::runImpl(QString labelText,
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     SP_LOG_INFO("tasks", QStringLiteral("Task started: %1").arg(taskLabel));
 
-    QPointer<QProgressDialog> progressDialog = createProgressDialog(labelText);
+    QPointer<QProgressDialog> progressDialog =
+        showProgress ? createProgressDialog(labelText) : nullptr;
 
     auto *watcher = new QFutureWatcher<Outcome>(this);
     connect(watcher, &QFutureWatcher<Outcome>::finished, this,

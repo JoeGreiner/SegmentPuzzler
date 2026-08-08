@@ -164,6 +164,12 @@ void clearMatchingLinkedToolMode(std::vector<SliceViewer *> &linkedViewerList, S
 
 }
 
+void AnnotationSliceViewer::setDeleteSelectedSegmentationLabelHandler(
+    DeleteSelectedSegmentationLabelHandler handler)
+{
+    deleteSelectedSegmentationLabelHandler = std::move(handler);
+}
+
 
 AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn,
                                              TaskRunner *taskRunnerIn,
@@ -498,18 +504,72 @@ void AnnotationSliceViewer::showPrepared3DView(
     }
 
     if (taskRunner == nullptr) {
-        auto preparedScene = Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
-        openPrepared3DView(std::move(preparedScene), launchSliceAxis, 0);
+        auto preparedScene = Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
+            segImage, labels.front());
+        openPrepared3DView(std::move(preparedScene), launchSliceAxis, 0, true);
         return;
     }
 
     taskRunner->runWithLabel(
         progressText,
-        [segImage, labels]() mutable {
-            return Segment3DViewerDialog::prepareScene(segImage, std::move(labels));
+        [segImage, label = labels.front()]() {
+            return Segment3DViewerDialog::prepareSingleLabelSlideshowScene(segImage, label);
         },
         [this, launchSliceAxis](Segment3DViewerDialog::PreparedScene preparedScene) {
-            openPrepared3DView(std::move(preparedScene), launchSliceAxis, 0);
+            openPrepared3DView(std::move(preparedScene), launchSliceAxis, 0, true);
+        });
+}
+
+void AnnotationSliceViewer::requestSingleLabel3D(
+    Segment3DViewerDialog *dialog,
+    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentIdType labelId,
+    const Roi &bounds)
+{
+    if (dialog == nullptr || segImage == nullptr || labelId == 0
+        || active3DViewSegmentsImage() != segImage
+        || taskRunner == nullptr || taskRunner->isBusy()) {
+        if (dialog != nullptr) {
+            dialog->rejectPreparedScene(labelId);
+        }
+        return;
+    }
+
+    quint32 color = 0xFFAAAAAA;
+    if (const auto *signal = active3DViewSignal(); signal != nullptr
+        && labelId < static_cast<dataType::SegmentIdType>(signal->LUT.size())) {
+        color = signal->LUT[labelId];
+    }
+
+    const QPointer<Segment3DViewerDialog> guardedDialog(dialog);
+    const auto committed = std::make_shared<bool>(false);
+    taskRunner->runInBackground(
+        QStringLiteral("Preparing 3D segment %1...").arg(labelId),
+        [segImage, labelId, color, bounds]() {
+            return Segment3DViewerDialog::prepareScene(
+                segImage, {{labelId, color}}, bounds);
+        },
+        [guardedDialog, labelId, committed](Segment3DViewerDialog::PreparedScene preparedScene) {
+            *committed = true;
+            if (guardedDialog == nullptr) {
+                return;
+            }
+            if (preparedScene.meshes.empty()
+                || !guardedDialog->acceptPreparedScene(std::move(preparedScene))) {
+                if (!guardedDialog->rejectPreparedScene(labelId)) {
+                    return;
+                }
+                QMessageBox::information(
+                    guardedDialog,
+                    QStringLiteral("3D View"),
+                    QStringLiteral("No 3D surface could be generated for segment %1.")
+                        .arg(labelId));
+            }
+        },
+        [guardedDialog, labelId, committed]() {
+            if (!*committed && guardedDialog != nullptr) {
+                guardedDialog->rejectPreparedScene(labelId);
+            }
         });
 }
 
@@ -518,6 +578,9 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
                                                dataType::SegmentIdType targetWorkingLabel,
                                                bool enableSelectedLabelDeletion)
 {
+    const bool singleLabelScene = preparedScene.targetLabelId != 0
+                                  && preparedScene.meshes.size() == 1;
+    auto navigationLabels = std::move(preparedScene.navigationLabels);
     const auto navigationImage =
         targetWorkingLabel != 0
             ? (graphBase != nullptr ? graphBase->pWorkingSegmentsImage : nullptr)
@@ -600,25 +663,34 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
         [navigationImage, linkedOrthoViewer](dataType::SegmentIdType labelId) {
             navigateOrthoViewerToLabel(linkedOrthoViewer, navigationImage, labelId);
         });
+    Segment3DViewerDialog::DeleteLabelHandler deleteLabel;
     if (enableSelectedLabelDeletion
         && graphBase != nullptr
-        && navigationImage == graphBase->pSelectedSegmentation) {
-        dialog->setDeleteLabelHandler(
-            [this, navigationImage](dataType::SegmentIdType labelId) {
-                if (labelId == 0
-                    || graphBase == nullptr
-                    || graphBase->pGraph == nullptr
-                    || graphBase->pSelectedSegmentation != navigationImage) {
-                    return false;
+        && navigationImage == graphBase->pSelectedSegmentation
+        && deleteSelectedSegmentationLabelHandler) {
+        deleteLabel = [this, navigationImage](dataType::SegmentIdType labelId) {
+            if (labelId == 0 || !deleteSelectedSegmentationLabelHandler) {
+                return false;
+            }
+            return deleteSelectedSegmentationLabelHandler(navigationImage, labelId);
+        };
+    }
+    if (singleLabelScene && !navigationLabels.empty()) {
+        const QPointer<Segment3DViewerDialog> guardedDialog(dialog);
+        Segment3DViewerDialog::SingleLabelSessionConfig session;
+        session.labels = std::move(navigationLabels);
+        session.requestLabel =
+            [this, guardedDialog, navigationImage](dataType::SegmentIdType labelId,
+                                                   const Roi &bounds) {
+                if (guardedDialog != nullptr) {
+                    requestSingleLabel3D(
+                        guardedDialog.data(), navigationImage, labelId, bounds);
                 }
-
-                graphBase->pGraph->deleteSegmentationLabel(labelId);
-
-                for (auto *viewer : linkedViewerList) {
-                    viewer->recalculateQImages();
-                }
-                return true;
-            });
+            };
+        session.deleteLabel = std::move(deleteLabel);
+        dialog->setSingleLabelSession(std::move(session));
+    } else {
+        dialog->setDeleteLabelHandler(std::move(deleteLabel));
     }
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     if (targetWorkingLabel != 0) {
@@ -1555,7 +1627,8 @@ void AnnotationSliceViewer::transferWorkingNodeToSegmentation(int posX, int posY
 
 void AnnotationSliceViewer::deleteConnectedLabelFromSegmentation(int posX, int posY) {
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
-    if (graphBase->pSelectedSegmentation != nullptr && graphBase->pGraph != nullptr) {
+    if (graphBase->pSelectedSegmentation != nullptr
+        && deleteSelectedSegmentationLabelHandler) {
         int x, y, z;
         getXYZfromPixmapPos(posX, posY, x, y, z);
         const dataType::SegmentIdType labelAtPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
@@ -1565,7 +1638,8 @@ void AnnotationSliceViewer::deleteConnectedLabelFromSegmentation(int posX, int p
                         .arg(x)
                         .arg(y)
                         .arg(z));
-        graphBase->pGraph->deleteSegmentationLabel(labelAtPosition);
+        deleteSelectedSegmentationLabelHandler(
+            graphBase->pSelectedSegmentation, labelAtPosition);
     }
     SP_LOG_DEBUG("segmentation",
                  QStringLiteral("Finished deleting connected segmentation label in %1 ms")
@@ -1650,6 +1724,13 @@ void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void AnnotationSliceViewer::mouseReleaseEvent(QMouseEvent *event) {
+    if (scribbling && taskRunner != nullptr && taskRunner->isBusy()) {
+        scribbling = false;
+        annotationImage.fill(QColor(0, 0, 0, 0));
+        update();
+        return;
+    }
+
     if ((event->button() == Qt::LeftButton) && scribbling) {
         drawLineTo(event->pos());
         scribbling = false;

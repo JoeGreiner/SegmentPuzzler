@@ -7,10 +7,16 @@
 #include "src/segment_handling/Projected3DCut.h"
 #include "src/viewers/Segment3DViewerDialog.h"
 
+#include <functional>
+
 class AnnotationSliceViewer : public SliceViewer {
 Q_OBJECT
 
 public:
+    using DeleteSelectedSegmentationLabelHandler =
+        std::function<bool(dataType::SegmentsImageType::Pointer,
+                           dataType::SegmentIdType)>;
+
     explicit AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn,
                                    QWidget *parent = 0, bool verbose = false);
 
@@ -25,6 +31,8 @@ public:
     bool isPaintModeActive() const { return paintModeIsActive; }
     bool isPaintBoundaryModeActive() const { return paintBoundaryModeIsActive; }
     bool isROISelectionModeActive() const { return ROISelectionModeIsActive; }
+    void setDeleteSelectedSegmentationLabelHandler(
+        DeleteSelectedSegmentationLabelHandler handler);
 
     itk::Image<unsigned char, 3>::Pointer pThresholdedBoundaries;
     itkSignalBase * pThresholdedBoundariesSignal;
@@ -118,6 +126,7 @@ private:
     bool scribbling, rightClicked;
 
     bool ROISelectionModeIsActive;
+    DeleteSelectedSegmentationLabelHandler deleteSelectedSegmentationLabelHandler;
 
 
     // last recognizerd point when cursor is drawing in paintmode
@@ -133,6 +142,10 @@ private:
     void showPrepared3DView(std::vector<std::pair<dataType::SegmentIdType, quint32>> labels,
                             const QString &progressText,
                             int launchSliceAxis);
+    void requestSingleLabel3D(Segment3DViewerDialog *dialog,
+                              dataType::SegmentsImageType::Pointer segImage,
+                              dataType::SegmentIdType labelId,
+                              const Roi &bounds);
     void show3DSegmentView(int posX, int posY);
     bool show3DSegmentCutView(int posX, int posY);
     bool prepare3DWorkingSegmentCutView(dataType::SegmentIdType workingLabel, int launchSliceAxis);

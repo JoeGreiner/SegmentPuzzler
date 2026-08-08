@@ -2,6 +2,8 @@
 
 #include <QAbstractSlider>
 #include <QApplication>
+#include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QGridLayout>
@@ -18,6 +20,8 @@
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSlider>
+#include <QStyle>
+#include <QStyleOptionSpinBox>
 #include <QStringList>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -214,6 +218,28 @@ private:
     std::vector<QPointF> m_points;
 };
 
+class ContentWidthDoubleSpinBox final : public QDoubleSpinBox {
+public:
+    explicit ContentWidthDoubleSpinBox(QWidget *parent = nullptr)
+        : QDoubleSpinBox(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        connect(this, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this]() { updateGeometry(); });
+    }
+
+    QSize sizeHint() const override {
+        QStyleOptionSpinBox option;
+        initStyleOption(&option);
+        const QSize textSize = fontMetrics().size(Qt::TextSingleLine, text());
+        return style()->sizeFromContents(QStyle::CT_SpinBox, &option, textSize, this);
+    }
+
+    QSize minimumSizeHint() const override {
+        return sizeHint();
+    }
+};
+
 namespace {
 
 class SharedPointsPolyData final : public vtkPolyData {
@@ -371,6 +397,7 @@ struct BoundsScanResult {
 struct AllLabelsScanResult {
     BoundsScanResult bounds;
     std::vector<dataType::SegmentIdType> labels;
+    std::unordered_map<dataType::SegmentIdType, BoundsScanResult> boundsByLabel;
 };
 
 void includeInBounds(BoundsScanResult &bounds, int x, int y, int z) {
@@ -390,7 +417,7 @@ AllLabelsScanResult scanAllLabelsAndBounds(
 {
     struct LocalResult {
         BoundsScanResult bounds;
-        std::unordered_set<dataType::SegmentIdType> labels;
+        std::unordered_map<dataType::SegmentIdType, BoundsScanResult> boundsByLabel;
     };
 
     const BoundsScanResult emptyBounds{dimX, -1, dimY, -1, dimZ, -1};
@@ -431,8 +458,12 @@ AllLabelsScanResult scanAllLabelsAndBounds(
                     if (labelId == 0) {
                         continue;
                     }
-                    local.labels.insert(labelId);
                     includeInBounds(local.bounds, x, y, z);
+                    const auto [labelBounds, inserted] = local.boundsByLabel.try_emplace(
+                        labelId, BoundsScanResult{x, x, y, y, z, z});
+                    if (!inserted) {
+                        includeInBounds(labelBounds->second, x, y, z);
+                    }
                 }
             }
         }
@@ -440,16 +471,31 @@ AllLabelsScanResult scanAllLabelsAndBounds(
 
     AllLabelsScanResult result;
     result.bounds = emptyBounds;
-    std::unordered_set<dataType::SegmentIdType> labels;
     for (const auto &local : localResults) {
         if (local.bounds.maxX >= 0) {
             includeInBounds(result.bounds, local.bounds.minX, local.bounds.minY, local.bounds.minZ);
             includeInBounds(result.bounds, local.bounds.maxX, local.bounds.maxY, local.bounds.maxZ);
         }
-        labels.insert(local.labels.begin(), local.labels.end());
+        for (const auto &[labelId, localBounds] : local.boundsByLabel) {
+            const auto [labelBounds, inserted] = result.boundsByLabel.try_emplace(
+                labelId, localBounds);
+            if (!inserted) {
+                includeInBounds(labelBounds->second,
+                                localBounds.minX,
+                                localBounds.minY,
+                                localBounds.minZ);
+                includeInBounds(labelBounds->second,
+                                localBounds.maxX,
+                                localBounds.maxY,
+                                localBounds.maxZ);
+            }
+        }
     }
 
-    result.labels.assign(labels.begin(), labels.end());
+    result.labels.reserve(result.boundsByLabel.size());
+    for (const auto &[labelId, bounds] : result.boundsByLabel) {
+        result.labels.push_back(labelId);
+    }
     std::sort(result.labels.begin(), result.labels.end());
     return result;
 }
@@ -467,6 +513,17 @@ BoundsScanResult clampBoundsToImage(const Roi &roi,
     result.minZ = std::clamp(roi.minZ, 0, std::max(0, dimZ - 1));
     result.maxZ = std::clamp(roi.maxZ, 0, std::max(0, dimZ - 1));
     return result;
+}
+
+Roi roiFromBounds(const BoundsScanResult &bounds) {
+    Roi roi;
+    roi.minX = bounds.minX;
+    roi.maxX = bounds.maxX;
+    roi.minY = bounds.minY;
+    roi.maxY = bounds.maxY;
+    roi.minZ = bounds.minZ;
+    roi.maxZ = bounds.maxZ;
+    return roi;
 }
 
 BoundsScanResult scanBoundsForRequestedLabels(
@@ -1318,6 +1375,41 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     return prepareScene(segImage, std::move(labels), requestedBounds, false);
 }
 
+Segment3DViewerDialog::PreparedScene
+Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
+    dataType::SegmentsImageType::Pointer segImage,
+    LabelWithColor label)
+{
+    if (segImage == nullptr || label.first == 0) {
+        return {};
+    }
+
+    const auto &size = segImage->GetLargestPossibleRegion().GetSize();
+    const std::vector<LabelWithColor> requestedLabels{label};
+    const auto scanStartedAt = QDateTime::currentMSecsSinceEpoch();
+    auto scan = scanAllLabelsAndBounds(
+        segImage->GetBufferPointer(),
+        static_cast<int>(size[0]),
+        static_cast<int>(size[1]),
+        static_cast<int>(size[2]));
+    SP_LOG_3D_TIMER(
+        scanStartedAt,
+        QStringLiteral("[3DView] [segmentpuzzler] slideshow label and bbox scan"));
+
+    const auto requestedBounds = scan.boundsByLabel.find(label.first);
+    if (requestedBounds == scan.boundsByLabel.end()) {
+        return {};
+    }
+
+    const Roi bounds = roiFromBounds(requestedBounds->second);
+    auto preparedScene = prepareScene(segImage, requestedLabels, bounds, false);
+    preparedScene.navigationLabels = std::move(scan.labels);
+    for (const auto &[labelId, labelBounds] : scan.boundsByLabel) {
+        preparedScene.navigationBounds.emplace(labelId, roiFromBounds(labelBounds));
+    }
+    return preparedScene;
+}
+
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScene(
     dataType::SegmentsImageType::Pointer segImage,
     std::vector<quint32> labelColors)
@@ -1629,11 +1721,19 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     : QDialog(parent)
     , m_targetLabelId(preparedScene.targetLabelId)
     , m_cutSession(std::move(cutSession))
+    , m_navigationBounds(std::move(preparedScene.navigationBounds))
     , m_launchSliceAxis(launchSliceAxis)
 {
     setWindowTitle(preparedScene.windowTitle);
     resize(600, 600);
     qApp->installEventFilter(this);
+
+    if (preparedScene.targetLabelId != 0 && preparedScene.meshes.size() == 1) {
+        PreparedScene cachedScene = preparedScene;
+        cachedScene.navigationLabels.clear();
+        cachedScene.navigationBounds.clear();
+        m_preparedSceneCache.emplace(preparedScene.targetLabelId, std::move(cachedScene));
+    }
 
     auto renWin = vtkSmartPointer<vtkGenericOpenGLRenderWindow>::New();
     m_renderer = vtkSmartPointer<vtkRenderer>::New();
@@ -1697,12 +1797,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     layout->addWidget(vtkContainer, 1);
 
     if (showExplodeControls || showCutControls) {
-
-        m_controlsWidget = new QWidget(this);
-        m_controlsWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-        auto *controlsRow = new QHBoxLayout(m_controlsWidget);
-        controlsRow->setContentsMargins(10, 6, 10, 10);
-        controlsRow->setSpacing(8);
+        m_controlsRow = ensureControlsRow();
 
         if (showExplodeControls) {
             m_explodeSlider = new QSlider(Qt::Horizontal, m_controlsWidget);
@@ -1738,13 +1833,15 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
                     m_vtkWidget->renderWindow()->Render();
                 }
             });
-            controlsRow->addWidget(new QLabel(QStringLiteral("Explode:"), m_controlsWidget));
-            controlsRow->addWidget(m_explodeSlider, 1);
+            m_controlsRow->addWidget(new QLabel(QStringLiteral("Explode:"), m_controlsWidget));
+            m_controlsRow->addWidget(m_explodeSlider, 1);
+            m_controlsRow->addSpacing(8);
+            addOrbitControls(m_controlsRow);
         }
 
         if (showCutControls) {
             if (showExplodeControls) {
-                controlsRow->addSpacing(8);
+                m_controlsRow->addSpacing(8);
             }
             m_drawCutButton = new QPushButton(QStringLiteral("Draw Cut"), m_controlsWidget);
             m_clearCutButton = new QPushButton(QStringLiteral("Clear"), m_controlsWidget);
@@ -1752,21 +1849,19 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
             connect(m_drawCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::beginCutDrawing);
             connect(m_clearCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::clearCutStroke);
             connect(m_applyCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::applyProjectedCut);
-            controlsRow->addWidget(m_drawCutButton);
-            controlsRow->addWidget(m_clearCutButton);
-            controlsRow->addWidget(m_applyCutButton);
+            m_controlsRow->addWidget(m_drawCutButton);
+            m_controlsRow->addWidget(m_clearCutButton);
+            m_controlsRow->addWidget(m_applyCutButton);
         }
 
         if (!showExplodeControls) {
-            controlsRow->addStretch(1);
+            m_controlsRow->addStretch(1);
         }
 
         if (QLabel *helpLabel = createHelpBadgeLabel(
                 threeDViewHelpText(showExplodeControls, showCutControls), m_controlsWidget)) {
-            controlsRow->addWidget(helpLabel);
+            m_controlsRow->addWidget(helpLabel);
         }
-
-        layout->addWidget(m_controlsWidget, 0);
     }
 
     if (m_vtkWidget != nullptr && m_vtkWidget->interactor() != nullptr) {
@@ -1832,6 +1927,493 @@ void Segment3DViewerDialog::setNavigateToLabelHandler(NavigateToLabelHandler han
 
 void Segment3DViewerDialog::setDeleteLabelHandler(DeleteLabelHandler handler) {
     m_deleteLabelHandler = std::move(handler);
+}
+
+QHBoxLayout *Segment3DViewerDialog::ensureControlsRow() {
+    if (m_controlsRow != nullptr) {
+        return m_controlsRow;
+    }
+
+    auto *mainLayout = qobject_cast<QVBoxLayout *>(layout());
+    if (mainLayout == nullptr) {
+        return nullptr;
+    }
+
+    m_controlsWidget = new QWidget(this);
+    m_controlsWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_controlsRow = new QHBoxLayout(m_controlsWidget);
+    m_controlsRow->setContentsMargins(10, 6, 10, 10);
+    m_controlsRow->setSpacing(8);
+    mainLayout->addWidget(m_controlsWidget, 0);
+    return m_controlsRow;
+}
+
+void Segment3DViewerDialog::addOrbitControls(QHBoxLayout *controlsRow) {
+    if (controlsRow == nullptr || m_orbitCheckBox != nullptr) {
+        return;
+    }
+
+    m_orbitCheckBox = new QCheckBox(QStringLiteral("Orbit"), m_controlsWidget);
+    m_orbitCheckBox->setObjectName(QStringLiteral("orbitCheckBox"));
+    m_orbitCheckBox->setToolTip(QStringLiteral("Rotate the current 3D view"));
+    m_orbitSpeedSpinBox = new ContentWidthDoubleSpinBox(m_controlsWidget);
+    m_orbitSpeedSpinBox->setObjectName(QStringLiteral("orbitSpeedSpinBox"));
+    m_orbitSpeedSpinBox->setRange(0.1, 360.0);
+    m_orbitSpeedSpinBox->setSingleStep(5.0);
+    m_orbitSpeedSpinBox->setDecimals(1);
+    m_orbitSpeedSpinBox->setSuffix(QStringLiteral(" °/s"));
+    m_orbitSpeedSpinBox->setValue(40.0);
+    m_orbitSpeedSpinBox->setToolTip(QStringLiteral("Orbit speed in degrees per second"));
+
+    controlsRow->addWidget(m_orbitCheckBox);
+    controlsRow->addWidget(m_orbitSpeedSpinBox);
+    connect(m_orbitCheckBox, &QCheckBox::toggled,
+            this, &Segment3DViewerDialog::setOrbitEnabled);
+}
+
+void Segment3DViewerDialog::setSingleLabelSession(SingleLabelSessionConfig session)
+{
+    if (m_targetLabelId == 0 || m_segmentActors.size() != 1) {
+        return;
+    }
+
+    session.labels.erase(
+        std::remove(session.labels.begin(), session.labels.end(), 0),
+        session.labels.end());
+    std::sort(session.labels.begin(), session.labels.end());
+    session.labels.erase(
+        std::unique(session.labels.begin(), session.labels.end()),
+        session.labels.end());
+    m_navigationLabels = std::move(session.labels);
+    m_requestLabelHandler = std::move(session.requestLabel);
+    m_labelActivatedHandler = std::move(session.labelActivated);
+    setDeleteLabelHandler(std::move(session.deleteLabel));
+
+    QHBoxLayout *controlsRow = ensureControlsRow();
+    if (controlsRow == nullptr) {
+        return;
+    }
+
+    if (m_previousLabelButton == nullptr) {
+        m_previousLabelButton = new QPushButton(QStringLiteral("Previous"), m_controlsWidget);
+        m_previousLabelButton->setObjectName(QStringLiteral("previousLabelButton"));
+        m_previousLabelButton->setToolTip(QStringLiteral("Show the previous segment ID (Left Arrow)"));
+        m_navigationLabel = new QLabel(m_controlsWidget);
+        m_navigationLabel->setObjectName(QStringLiteral("singleLabelNavigationLabel"));
+        m_navigationLabel->setAlignment(Qt::AlignCenter);
+        m_nextLabelButton = new QPushButton(QStringLiteral("Next"), m_controlsWidget);
+        m_nextLabelButton->setObjectName(QStringLiteral("nextLabelButton"));
+        m_nextLabelButton->setToolTip(QStringLiteral("Show the next segment ID (Right Arrow)"));
+
+        controlsRow->addWidget(m_previousLabelButton);
+        controlsRow->addStretch(1);
+        controlsRow->addWidget(m_navigationLabel);
+        controlsRow->addSpacing(8);
+        addOrbitControls(controlsRow);
+        controlsRow->addStretch(1);
+        controlsRow->addWidget(m_nextLabelButton);
+
+        connect(m_previousLabelButton, &QPushButton::clicked,
+                this, [this]() { requestAdjacentLabel(-1); });
+        connect(m_nextLabelButton, &QPushButton::clicked,
+                this, [this]() { requestAdjacentLabel(1); });
+
+        auto *previousShortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
+        previousShortcut->setContext(Qt::WindowShortcut);
+        connect(previousShortcut, &QShortcut::activated,
+                this, [this]() { requestAdjacentLabel(-1); });
+
+        auto *nextShortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
+        nextShortcut->setContext(Qt::WindowShortcut);
+        connect(nextShortcut, &QShortcut::activated,
+                this, [this]() { requestAdjacentLabel(1); });
+    }
+
+    m_singleLabelNavigationBusy = false;
+    updateSingleLabelNavigationUiState();
+    QTimer::singleShot(0, this, [this]() { prefetchAdjacentLabel(); });
+}
+
+void Segment3DViewerDialog::setOrbitEnabled(bool enabled) {
+    if (!enabled) {
+        if (m_orbitTimer != nullptr) {
+            m_orbitTimer->stop();
+        }
+        return;
+    }
+
+    if (m_orbitTimer == nullptr) {
+        m_orbitTimer = new QTimer(this);
+        m_orbitTimer->setInterval(50);
+        m_orbitTimer->setTimerType(Qt::PreciseTimer);
+        connect(m_orbitTimer, &QTimer::timeout,
+                this, &Segment3DViewerDialog::advanceOrbit);
+    }
+    m_orbitTimer->start();
+}
+
+void Segment3DViewerDialog::advanceOrbit() {
+    if (!isVisible() || isMinimized() || !isActiveWindow() || m_renderer == nullptr
+        || m_vtkWidget == nullptr || m_vtkWidget->renderWindow() == nullptr
+        || m_orbitSpeedSpinBox == nullptr || m_orbitTimer == nullptr) {
+        return;
+    }
+
+    vtkCamera *camera = m_renderer->GetActiveCamera();
+    if (camera == nullptr) {
+        return;
+    }
+    const double degreesPerTick =
+        m_orbitSpeedSpinBox->value() * m_orbitTimer->interval() / 1000.0;
+    camera->Azimuth(degreesPerTick);
+    camera->OrthogonalizeViewUp();
+    m_renderer->ResetCameraClippingRange();
+    m_vtkWidget->renderWindow()->Render();
+}
+
+void Segment3DViewerDialog::requestAdjacentLabel(int direction) {
+    if (m_singleLabelNavigationBusy || !m_requestLabelHandler || direction == 0) {
+        return;
+    }
+
+    const auto current = std::lower_bound(
+        m_navigationLabels.begin(), m_navigationLabels.end(), m_targetLabelId);
+    if (current == m_navigationLabels.end() || *current != m_targetLabelId) {
+        return;
+    }
+
+    auto requested = current;
+    if (direction < 0) {
+        if (current == m_navigationLabels.begin()) {
+            return;
+        }
+        --requested;
+    } else {
+        ++requested;
+        if (requested == m_navigationLabels.end()) {
+            return;
+        }
+    }
+
+    activateOrRequestLabel(*requested);
+}
+
+void Segment3DViewerDialog::activateOrRequestLabel(dataType::SegmentIdType labelId) {
+    const auto cached = m_preparedSceneCache.find(labelId);
+    if (cached != m_preparedSceneCache.end()) {
+        if (applyPreparedScene(cached->second)) {
+            SP_LOG_DEBUG(
+                "viewer.three_d",
+                QStringLiteral("[3DView] activated cached segment label=%1").arg(labelId));
+            if (m_labelActivatedHandler) {
+                m_labelActivatedHandler(labelId);
+            }
+            prunePreparedSceneCache();
+            QTimer::singleShot(0, this, [this]() { prefetchAdjacentLabel(); });
+        }
+        return;
+    }
+
+    m_activateWhenReadyLabel = labelId;
+    m_unavailableSceneLabels.erase(labelId);
+    setSingleLabelNavigationBusy(true, labelId);
+    if (m_pendingSceneLabel != 0) {
+        return;
+    }
+
+    const auto bounds = m_navigationBounds.find(labelId);
+    m_pendingSceneLabel = labelId;
+    m_requestLabelHandler(
+        labelId,
+        bounds == m_navigationBounds.end() ? Roi{} : bounds->second);
+}
+
+void Segment3DViewerDialog::prefetchAdjacentLabel() {
+    if (m_pendingSceneLabel != 0 || m_singleLabelNavigationBusy || !m_requestLabelHandler) {
+        return;
+    }
+
+    const auto current = std::lower_bound(
+        m_navigationLabels.begin(), m_navigationLabels.end(), m_targetLabelId);
+    if (current == m_navigationLabels.end() || *current != m_targetLabelId) {
+        return;
+    }
+
+    std::array<dataType::SegmentIdType, 2> candidates{0, 0};
+    if (std::next(current) != m_navigationLabels.end()) {
+        candidates[0] = *std::next(current);
+    }
+    if (current != m_navigationLabels.begin()) {
+        candidates[1] = *std::prev(current);
+    }
+
+    for (const auto labelId : candidates) {
+        if (labelId == 0
+            || m_preparedSceneCache.find(labelId) != m_preparedSceneCache.end()
+            || m_unavailableSceneLabels.find(labelId) != m_unavailableSceneLabels.end()) {
+            continue;
+        }
+        const auto bounds = m_navigationBounds.find(labelId);
+        m_pendingSceneLabel = labelId;
+        SP_LOG_DEBUG(
+            "viewer.three_d",
+            QStringLiteral("[3DView] prefetching adjacent segment label=%1").arg(labelId));
+        m_requestLabelHandler(
+            labelId,
+            bounds == m_navigationBounds.end() ? Roi{} : bounds->second);
+        return;
+    }
+}
+
+void Segment3DViewerDialog::prunePreparedSceneCache() {
+    const auto current = std::lower_bound(
+        m_navigationLabels.begin(), m_navigationLabels.end(), m_targetLabelId);
+    if (current == m_navigationLabels.end() || *current != m_targetLabelId) {
+        return;
+    }
+
+    std::set<dataType::SegmentIdType> retained{m_targetLabelId, m_pendingSceneLabel};
+    if (current != m_navigationLabels.begin()) {
+        retained.insert(*std::prev(current));
+    }
+    if (std::next(current) != m_navigationLabels.end()) {
+        retained.insert(*std::next(current));
+    }
+    for (auto cached = m_preparedSceneCache.begin(); cached != m_preparedSceneCache.end();) {
+        if (retained.find(cached->first) == retained.end()) {
+            cached = m_preparedSceneCache.erase(cached);
+        } else {
+            ++cached;
+        }
+    }
+}
+
+bool Segment3DViewerDialog::removeLabelActor(dataType::SegmentIdType labelId) {
+    const auto actorIt = std::find_if(
+        m_segmentActors.begin(), m_segmentActors.end(),
+        [labelId](const SegmentActorInfo &actorInfo) {
+            return actorInfo.labelId == labelId;
+        });
+    if (actorIt == m_segmentActors.end() || m_renderer == nullptr) {
+        return false;
+    }
+
+    m_renderer->RemoveActor(actorIt->actor);
+    m_segmentActors.erase(actorIt);
+    m_renderer->ResetCameraClippingRange();
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+    return true;
+}
+
+bool Segment3DViewerDialog::deleteCurrentLabel() {
+    if (m_targetLabelId == 0 || m_segmentActors.size() != 1
+        || !m_requestLabelHandler || !m_deleteLabelHandler) {
+        return false;
+    }
+    // Consume D while a cached neighbor is being prepared. Falling through to
+    // the legacy hold-D-and-click mode would mutate the image during that read.
+    if (m_singleLabelNavigationBusy || m_pendingSceneLabel != 0) {
+        return true;
+    }
+
+    const auto current = std::lower_bound(
+        m_navigationLabels.begin(), m_navigationLabels.end(), m_targetLabelId);
+    if (current == m_navigationLabels.end() || *current != m_targetLabelId) {
+        return false;
+    }
+
+    const auto deletedLabel = m_targetLabelId;
+    if (!m_deleteLabelHandler(deletedLabel)) {
+        SP_LOG_WARNING(
+            "viewer.three_d",
+            QStringLiteral("[3DView] delete current label rejected label=%1")
+                .arg(deletedLabel));
+        return true;
+    }
+
+    removeLabelActor(deletedLabel);
+    m_navigationBounds.erase(deletedLabel);
+    m_preparedSceneCache.erase(deletedLabel);
+    m_unavailableSceneLabels.erase(deletedLabel);
+    auto next = m_navigationLabels.erase(current);
+    if (m_navigationLabels.empty()) {
+        close();
+        return true;
+    }
+    if (next == m_navigationLabels.end()) {
+        next = std::prev(m_navigationLabels.end());
+    }
+
+    const auto nextLabel = *next;
+    SP_LOG_INFO(
+        "viewer.three_d",
+        QStringLiteral("[3DView] deleted current label=%1 nextLabel=%2 remaining=%3")
+            .arg(deletedLabel)
+            .arg(nextLabel)
+            .arg(m_navigationLabels.size()));
+    activateOrRequestLabel(nextLabel);
+    return true;
+}
+
+void Segment3DViewerDialog::setSingleLabelNavigationBusy(
+    bool busy,
+    dataType::SegmentIdType pendingLabelId)
+{
+    m_singleLabelNavigationBusy = busy;
+    if (busy && m_navigationLabel != nullptr) {
+        m_navigationLabel->setText(
+            pendingLabelId == 0
+                ? QStringLiteral("Loading segment...")
+                : QStringLiteral("Loading segment %1...").arg(pendingLabelId));
+    }
+    updateSingleLabelNavigationUiState();
+}
+
+void Segment3DViewerDialog::updateSingleLabelNavigationUiState() {
+    if (m_previousLabelButton == nullptr || m_nextLabelButton == nullptr) {
+        return;
+    }
+
+    const auto current = std::lower_bound(
+        m_navigationLabels.begin(), m_navigationLabels.end(), m_targetLabelId);
+    const bool foundCurrent = current != m_navigationLabels.end() && *current == m_targetLabelId;
+    const bool canNavigate = foundCurrent && static_cast<bool>(m_requestLabelHandler)
+                             && !m_singleLabelNavigationBusy;
+    m_previousLabelButton->setEnabled(canNavigate && current != m_navigationLabels.begin());
+    m_nextLabelButton->setEnabled(canNavigate
+                                  && current != m_navigationLabels.end()
+                                  && std::next(current) != m_navigationLabels.end());
+
+    if (!m_singleLabelNavigationBusy && m_navigationLabel != nullptr) {
+        if (foundCurrent) {
+            const auto position = std::distance(m_navigationLabels.begin(), current) + 1;
+            m_navigationLabel->setText(
+                QStringLiteral("Segment %1 (%2 of %3)")
+                    .arg(m_targetLabelId)
+                    .arg(position)
+                    .arg(m_navigationLabels.size()));
+        } else {
+            m_navigationLabel->setText(QStringLiteral("Segment %1").arg(m_targetLabelId));
+        }
+    }
+}
+
+void Segment3DViewerDialog::cachePreparedScene(PreparedScene preparedScene) {
+    if (preparedScene.targetLabelId == 0 || preparedScene.meshes.size() != 1) {
+        return;
+    }
+    const auto labelId = preparedScene.targetLabelId;
+    preparedScene.navigationLabels.clear();
+    preparedScene.navigationBounds.clear();
+    m_preparedSceneCache.insert_or_assign(labelId, std::move(preparedScene));
+}
+
+bool Segment3DViewerDialog::applyPreparedScene(const PreparedScene &preparedScene) {
+    std::vector<SegmentActorInfo> newActors;
+    newActors.reserve(preparedScene.meshes.size());
+    for (const auto &mesh : preparedScene.meshes) {
+        if (mesh.polyData == nullptr
+            || mesh.polyData->GetNumberOfPoints() == 0
+            || mesh.polyData->GetNumberOfCells() == 0) {
+            continue;
+        }
+        newActors.push_back({createMeshActor(mesh), mesh.labelId, mesh.centerWorld});
+    }
+
+    if (preparedScene.targetLabelId == 0 || newActors.size() != 1 || m_renderer == nullptr) {
+        return false;
+    }
+
+    for (const auto &actorInfo : m_segmentActors) {
+        m_renderer->RemoveActor(actorInfo.actor);
+    }
+    for (const auto &actorInfo : newActors) {
+        m_renderer->AddActor(actorInfo.actor);
+    }
+
+    m_segmentActors = std::move(newActors);
+    m_targetLabelId = preparedScene.targetLabelId;
+    m_sceneCenterWorld = preparedScene.sceneCenterWorld;
+    m_sceneExtent = preparedScene.sceneExtent;
+    setWindowTitle(preparedScene.windowTitle);
+
+    m_renderer->ResetCamera();
+    m_renderer->ResetCameraClippingRange();
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+
+    m_singleLabelNavigationBusy = false;
+    updateSingleLabelNavigationUiState();
+    SP_LOG_DEBUG("viewer.three_d",
+                 QStringLiteral("[3DView] switched single-label scene targetLabel=%1")
+                     .arg(m_targetLabelId));
+    return true;
+}
+
+bool Segment3DViewerDialog::acceptPreparedScene(PreparedScene preparedScene) {
+    const auto preparedLabel = preparedScene.targetLabelId;
+    if (preparedLabel == 0 || preparedScene.meshes.size() != 1) {
+        return false;
+    }
+
+    cachePreparedScene(std::move(preparedScene));
+    m_pendingSceneLabel = 0;
+
+    const bool activatePreparedLabel = m_activateWhenReadyLabel == preparedLabel;
+    if (activatePreparedLabel) {
+        m_activateWhenReadyLabel = 0;
+        const auto cached = m_preparedSceneCache.find(preparedLabel);
+        if (cached == m_preparedSceneCache.end() || !applyPreparedScene(cached->second)) {
+            setSingleLabelNavigationBusy(false);
+            return false;
+        }
+        if (m_labelActivatedHandler) {
+            m_labelActivatedHandler(preparedLabel);
+        }
+    }
+
+    m_singleLabelNavigationBusy = m_activateWhenReadyLabel != 0;
+    updateSingleLabelNavigationUiState();
+    prunePreparedSceneCache();
+
+    QTimer::singleShot(0, this, [this]() {
+        if (m_activateWhenReadyLabel != 0) {
+            const auto requestedLabel = m_activateWhenReadyLabel;
+            m_activateWhenReadyLabel = 0;
+            activateOrRequestLabel(requestedLabel);
+        } else {
+            prefetchAdjacentLabel();
+        }
+    });
+    return true;
+}
+
+bool Segment3DViewerDialog::rejectPreparedScene(dataType::SegmentIdType labelId) {
+    if (labelId == 0 || labelId != m_pendingSceneLabel) {
+        return false;
+    }
+
+    const bool wasRequestedForActivation = m_activateWhenReadyLabel == labelId;
+    m_pendingSceneLabel = 0;
+    m_unavailableSceneLabels.insert(labelId);
+    if (wasRequestedForActivation) {
+        m_activateWhenReadyLabel = 0;
+    }
+    m_singleLabelNavigationBusy = m_activateWhenReadyLabel != 0;
+    updateSingleLabelNavigationUiState();
+    QTimer::singleShot(0, this, [this]() {
+        if (m_activateWhenReadyLabel != 0) {
+            const auto requestedLabel = m_activateWhenReadyLabel;
+            m_activateWhenReadyLabel = 0;
+            activateOrRequestLabel(requestedLabel);
+        } else {
+            prefetchAdjacentLabel();
+        }
+    });
+    return wasRequestedForActivation;
 }
 
 void Segment3DViewerDialog::presentInFront() {
@@ -1960,6 +2542,10 @@ bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
         if (eventBelongsToDialog && event->type() == QEvent::KeyPress) {
             auto *keyEvent = static_cast<QKeyEvent *>(event);
             if (keyEvent->key() == Qt::Key_D && !keyEvent->isAutoRepeat()) {
+                if (deleteCurrentLabel()) {
+                    event->accept();
+                    return true;
+                }
                 m_deleteModeActive = true;
             }
         } else if (eventBelongsToDialog && event->type() == QEvent::KeyRelease) {
@@ -2207,20 +2793,8 @@ bool Segment3DViewerDialog::tryHandlePickedLabelInteraction(
             QElapsedTimer dispatchTimer;
             dispatchTimer.start();
             if (deleteActive) {
-                const auto actorIt = std::find_if(
-                    m_segmentActors.begin(), m_segmentActors.end(),
-                    [pickedProp](const SegmentActorInfo &actorInfo) {
-                        return actorInfo.actor != nullptr
-                               && pickedProp == actorInfo.actor.GetPointer();
-                    });
-                if (actorIt != m_segmentActors.end()
-                    && m_deleteLabelHandler(pickedLabelId)) {
-                    m_renderer->RemoveActor(actorIt->actor);
-                    m_segmentActors.erase(actorIt);
-                    m_renderer->ResetCameraClippingRange();
-                    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
-                        m_vtkWidget->renderWindow()->Render();
-                    }
+                if (m_deleteLabelHandler(pickedLabelId)
+                    && removeLabelActor(pickedLabelId)) {
                     result = "deleted";
                 } else {
                     result = "delete_rejected";
