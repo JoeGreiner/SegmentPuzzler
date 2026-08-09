@@ -33,6 +33,7 @@
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/LoggingSettingsDialog.h"
+#include "src/qtUtils/ImageNormalizationSettingsDialog.h"
 #include "src/utils/AppLogger.h"
 
 MainWindow::~MainWindow() = default;
@@ -409,6 +410,14 @@ MainWindow::MainWindow() {
         update3DWorkingSegmentCutActionState();
     });
     settingsMenu->addSeparator();
+    QAction *imageNormalizationSettingsAction =
+        new QAction(tr("Image Normalization..."), this);
+    settingsMenu->addAction(imageNormalizationSettingsAction);
+    connect(imageNormalizationSettingsAction, &QAction::triggered, this, [this]() {
+        ImageNormalizationSettingsDialog dialog(this);
+        dialog.exec();
+    });
+
     QAction *loggingSettingsAction = new QAction(tr("Logging..."), this);
     settingsMenu->addAction(loggingSettingsAction);
     connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);

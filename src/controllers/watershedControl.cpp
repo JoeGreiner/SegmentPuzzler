@@ -38,6 +38,7 @@
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/qtUtils/BoundaryConversionDialog.h"
+#include "src/qtUtils/ImageNormalizationSettingsDialog.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/SignalNameUtils.h"
 #include <algorithm>
@@ -297,12 +298,6 @@ QString blendModeChipText(itkSignalBase *signal) {
     return signal->getBlendMode() == itkSignalBase::BlendMode::Additive
                ? QStringLiteral("Add")
                : QStringLiteral("Over");
-}
-
-void configureImageDisplay(itkSignalBase *signal) {
-    signal->setBlendMode(itkSignalBase::BlendMode::Additive);
-    signal->setAlpha(255);
-    signal->setLUTContinuous();
 }
 
 int alphaToPercent(unsigned int alpha) {
@@ -818,7 +813,11 @@ void WatershedControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     connect(autoButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
         double autoLower = static_cast<double>(popupMinimum);
         double autoUpper = static_cast<double>(popupMaximum);
-        if (!signal->computeNextAutoContrastRange(autoLower, autoUpper)) {
+        if (!segment_puzzler::image_normalization::computeRange(
+                signal,
+                segment_puzzler::image_normalization::loadSettings(),
+                autoLower,
+                autoUpper)) {
             autoLower = static_cast<double>(popupMinimum);
             autoUpper = static_cast<double>(popupMaximum);
         }
@@ -828,7 +827,6 @@ void WatershedControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     });
     connect(resetButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
         applyNorm(popupMinimum, popupMaximum);
-        signal->resetAutoContrastState();
     });
 
     action->setDefaultWidget(container);
@@ -1503,7 +1501,7 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
     if (categorical) {
         raw->setLUTCategorical();
     } else {
-        configureImageDisplay(raw);
+        segment_puzzler::image_normalization::configureContinuousDisplay(raw);
     }
     if (transparentZero) raw->setLUTValueToTransparent(0);
     attachLayerWidgetToLastItem(signalTreeWidget);
@@ -1551,7 +1549,8 @@ void WatershedControl::addImage(QString fileName) {
         size_t signalIndexGlobal;
         bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false);
         if (loadSuccessFull) {
-            configureImageDisplay(allSignalList[signalIndexGlobal]);
+            segment_puzzler::image_normalization::configureLoadedImageDisplay(
+                allSignalList[signalIndexGlobal]);
             allSignalList[signalIndexGlobal]->setName(
                 signal_name_utils::makeUniqueSignalName(allSignalList, QFileInfo(fileName).baseName()));
             allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);

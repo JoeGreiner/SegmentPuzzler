@@ -7,6 +7,7 @@
 #include "src/qtUtils/SignalLayerWidget.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
+#include "src/qtUtils/ImageNormalizationSettingsDialog.h"
 #include <itkImage.h>
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
@@ -477,12 +478,6 @@ QString blendModeChipText(itkSignalBase *signal) {
     return signal->getBlendMode() == itkSignalBase::BlendMode::Additive
                ? QStringLiteral("Add")
                : QStringLiteral("Over");
-}
-
-void configureImageDisplay(itkSignalBase *signal) {
-    signal->setBlendMode(itkSignalBase::BlendMode::Additive);
-    signal->setAlpha(255);
-    signal->setLUTContinuous();
 }
 
 int alphaToPercent(unsigned int alpha) {
@@ -1100,7 +1095,11 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     connect(autoButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
         double autoLower = static_cast<double>(popupMinimum);
         double autoUpper = static_cast<double>(popupMaximum);
-        if (!signal->computeNextAutoContrastRange(autoLower, autoUpper)) {
+        if (!segment_puzzler::image_normalization::computeRange(
+                signal,
+                segment_puzzler::image_normalization::loadSettings(),
+                autoLower,
+                autoUpper)) {
             autoLower = static_cast<double>(popupMinimum);
             autoUpper = static_cast<double>(popupMaximum);
         }
@@ -1110,7 +1109,6 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     });
     connect(resetButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
         applyNorm(popupMinimum, popupMaximum);
-        signal->resetAutoContrastState();
     });
 
     action->setDefaultWidget(container);
@@ -1630,7 +1628,7 @@ void SignalControl::registerImageSignal(
     std::optional<QColor> color) {
     const bool centerFirstStandaloneLayer = !hasWorkingSegments() && allSignalList.size() == 1;
     itkSignalBase *signal = allSignalList[signalIndexGlobal];
-    configureImageDisplay(signal);
+    segment_puzzler::image_normalization::configureLoadedImageDisplay(signal);
     if (!color) {
         const auto &colors = defaultAdditiveImageColors();
         color = colors[nextDefaultImageColorIndex % colors.size()];
@@ -1663,7 +1661,8 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
 }
 
 void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QString &name) {
-    configureImageDisplay(allSignalList[signalIndexGlobal]);
+    segment_puzzler::image_normalization::configureLoadedImageDisplay(
+        allSignalList[signalIndexGlobal]);
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
     attachLayerWidgetToLastItem(probabilityTreeWidget);

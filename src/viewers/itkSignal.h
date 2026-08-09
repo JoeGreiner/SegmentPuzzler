@@ -106,9 +106,12 @@ public:
 
     void setNorm(double lower, double upper) override;
 
-    bool computeNextAutoContrastRange(double &lower, double &upper) override;
-
-    void resetAutoContrastState() override;
+    bool computeQuantileContrastRange(
+        double lowerQuantile,
+        double upperQuantile,
+        bool ignoreZero,
+        double &lower,
+        double &upper) const override;
 
     void setMainColor(int r, int g, int b) override;
 
@@ -210,9 +213,6 @@ public:
     // true once the LUT has been built as categorical at least once;
     // false forces a full rebuild when first switching from continuous to categorical
     bool categoricalLUTInitialized = false;
-
-    int autoContrastThreshold = 0;
-
 
     std::unordered_map<unsigned int, char> *labelToStatus = nullptr;
     std::unordered_map<char, std::vector<unsigned char>> *statusToColor = nullptr;
@@ -521,9 +521,8 @@ double itkSignal<dType>::normalizeContinuousValue(double value) const {
         return 0.0;
     }
     if (normUpper == normLower) {
-        // A zero-width range is inclusive, except that [0, 0] keeps zero transparent.
-        const bool visible =
-            value > normLower || (value == normLower && normLower != 0.0);
+        // A zero-width range is inclusive, while raw zero stays transparent.
+        const bool visible = value != 0.0 && value >= normLower;
         return visible ? 255.0 : 0.0;
     }
     return std::clamp((value - normLower) * 255.0 / (normUpper - normLower), 0.0, 255.0);
@@ -587,20 +586,25 @@ void itkSignal<dType>::setNorm(double lower, double upper) {
 }
 
 template<typename dType>
-void itkSignal<dType>::resetAutoContrastState() {
-    autoContrastThreshold = 0;
-}
-
-template<typename dType>
-bool itkSignal<dType>::computeNextAutoContrastRange(double &lower, double &upper) {
-    constexpr int histogramBinCount = 256;
+bool itkSignal<dType>::computeQuantileContrastRange(
+    double lowerQuantile,
+    double upperQuantile,
+    bool ignoreZero,
+    double &lower,
+    double &upper) const {
+    constexpr std::size_t histogramBinCount = 4096;
     const double imageMinimum = static_cast<double>(minimumValue);
     const double imageMaximum = static_cast<double>(maximumValue);
 
     lower = imageMinimum;
     upper = imageMaximum;
 
-    if (pImage.IsNull()) {
+    if (pImage.IsNull()
+        || !std::isfinite(lowerQuantile)
+        || !std::isfinite(upperQuantile)
+        || lowerQuantile < 0.0
+        || upperQuantile > 1.0
+        || lowerQuantile >= upperQuantile) {
         return false;
     }
 
@@ -608,76 +612,65 @@ bool itkSignal<dType>::computeNextAutoContrastRange(double &lower, double &upper
         return true;
     }
 
-    std::array<long long, histogramBinCount> histogram{};
+    std::array<std::size_t, histogramBinCount> histogram{};
     itk::ImageRegionConstIteratorWithIndex<SignalImageType> iterator(pImage, pImage->GetLargestPossibleRegion());
     const double scale = static_cast<double>(histogramBinCount) / (imageMaximum - imageMinimum);
-    long long pixelCount = 0;
+    std::size_t pixelCount = 0;
+    double includedMinimum = imageMaximum;
+    double includedMaximum = imageMinimum;
 
     for (iterator.GoToBegin(); !iterator.IsAtEnd(); ++iterator) {
         const double value = static_cast<double>(iterator.Get());
-        if (!std::isfinite(value)) {
+        if (!std::isfinite(value) || (ignoreZero && value == 0.0)) {
             continue;
         }
 
-        int histogramIndex = 0;
+        includedMinimum = std::min(includedMinimum, value);
+        includedMaximum = std::max(includedMaximum, value);
+
+        std::size_t histogramIndex = 0;
         if (value >= imageMaximum) {
             histogramIndex = histogramBinCount - 1;
         } else if (value > imageMinimum) {
-            histogramIndex = static_cast<int>((value - imageMinimum) * scale);
-            histogramIndex = std::clamp(histogramIndex, 0, histogramBinCount - 1);
+            histogramIndex = static_cast<std::size_t>((value - imageMinimum) * scale);
+            histogramIndex = std::min(histogramIndex, histogramBinCount - 1);
         }
 
         histogram[histogramIndex] += 1;
         pixelCount += 1;
     }
 
-    if (pixelCount <= 0) {
+    if (pixelCount == 0) {
+        return true;
+    }
+    if (includedMinimum == includedMaximum) {
+        lower = includedMinimum;
+        upper = includedMaximum;
         return true;
     }
 
-    const long long limit = pixelCount / 10;
-    if (autoContrastThreshold < 10) {
-        autoContrastThreshold = 5000;
-    } else {
-        autoContrastThreshold /= 2;
-    }
-
-    const long long threshold = pixelCount / autoContrastThreshold;
-
-    int lowerIndex = 0;
-    while (lowerIndex < histogramBinCount - 1) {
-        long long count = histogram[lowerIndex];
-        if (count > limit) {
-            count = 0;
+    const auto quantileBin = [&histogram, pixelCount](double quantile) {
+        const auto targetRank = static_cast<std::size_t>(
+            std::floor(quantile * static_cast<double>(pixelCount - 1)));
+        std::size_t cumulativeCount = 0;
+        for (std::size_t bin = 0; bin < histogram.size(); ++bin) {
+            cumulativeCount += histogram[bin];
+            if (cumulativeCount > targetRank) {
+                return bin;
+            }
         }
-        if (count > threshold) {
-            break;
-        }
-        ++lowerIndex;
-    }
+        return histogram.size() - 1;
+    };
 
-    int upperIndex = histogramBinCount - 1;
-    while (upperIndex > 0) {
-        long long count = histogram[upperIndex];
-        if (count > limit) {
-            count = 0;
-        }
-        if (count > threshold) {
-            break;
-        }
-        --upperIndex;
-    }
-
-    if (upperIndex < lowerIndex) {
-        autoContrastThreshold = 0;
-        return true;
-    }
-
+    const std::size_t lowerBin = quantileBin(lowerQuantile);
+    const std::size_t upperBin = quantileBin(upperQuantile);
     const double binSize = (imageMaximum - imageMinimum) / static_cast<double>(histogramBinCount);
-    lower = imageMinimum + static_cast<double>(lowerIndex) * binSize;
-    upper = imageMinimum + static_cast<double>(upperIndex) * binSize;
+    lower = imageMinimum + static_cast<double>(lowerBin) * binSize;
+    upper = std::min(
+        imageMaximum,
+        imageMinimum + static_cast<double>(upperBin + 1) * binSize);
 
-    if (lower == upper) {
+    if (!std::isfinite(lower) || !std::isfinite(upper) || lower >= upper) {
         lower = imageMinimum;
         upper = imageMaximum;
     }

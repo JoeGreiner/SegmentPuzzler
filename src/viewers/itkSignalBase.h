@@ -144,8 +144,12 @@ public:
 
     virtual void setNorm(double lower, double upper) = 0;
 
-    virtual bool computeNextAutoContrastRange(double &lower, double &upper) = 0;
-    virtual void resetAutoContrastState() = 0;
+    virtual bool computeQuantileContrastRange(
+        double lowerQuantile,
+        double upperQuantile,
+        bool ignoreZero,
+        double &lower,
+        double &upper) const = 0;
 
     virtual void setMainColor(int r, int g, int b) = 0;
 
