@@ -374,7 +374,7 @@ void configureSelectionLabel(QLabel *label) {
     label->setWordWrap(true);
     label->setTextFormat(Qt::PlainText);
     label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
 }
 
 SignalLayerWidget *layerWidgetForItem(QTreeWidget *tree, QTreeWidgetItem *item) {
@@ -794,6 +794,7 @@ void SignalControl::updateSelectionLabel(QTreeWidget *tree, QLabel *label) {
 
     if (tree->topLevelItemCount() == 0) {
         label->setText("Selected: none");
+        label->setToolTip(QString());
         return;
     }
 
@@ -806,8 +807,10 @@ void SignalControl::updateSelectionLabel(QTreeWidget *tree, QLabel *label) {
 
     if (itkSignalBase *signal = signalForItem(currentItem)) {
         label->setText(QString("Selected: %1").arg(signal->name));
+        label->setToolTip(signal->name);
     } else {
         label->setText("Selected: none");
+        label->setToolTip(QString());
     }
 }
 
@@ -2147,7 +2150,7 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
     verbose = verboseIn;
     allSignalList.reserve(10);
     segmentsGraph = nullptr;
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);

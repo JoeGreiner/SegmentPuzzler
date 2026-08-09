@@ -33,7 +33,6 @@ constexpr int kTextRowSlack = 2;
 const QMargins kRowMargins(4, 3, 8, 3);
 const QSize kVisibilityButtonSize(20, 20);
 const QSize kColorButtonSize(28, 24);
-constexpr auto kAbbreviationMarker = "(...)";
 constexpr auto kMinimumTitleSample = "MMMM";
 
 int textWidth(const QFontMetrics &metrics, const QString &text) {
@@ -285,46 +284,6 @@ QFont sharedLayerRowTextFont() {
     }
     font.setWeight(QFont::Normal);
     return font;
-}
-
-QString abbreviateLayerNameWithMarker(const QString &fullName, const QFontMetrics &metrics, int availableWidth) {
-    if (fullName.isEmpty() || availableWidth <= 0) {
-        return QString::fromLatin1(kAbbreviationMarker);
-    }
-
-    if (textWidth(metrics, fullName) <= availableWidth) {
-        return fullName;
-    }
-
-    const QString marker = QString::fromLatin1(kAbbreviationMarker);
-    if (textWidth(metrics, marker) >= availableWidth) {
-        return marker;
-    }
-
-    int low = 1;
-    int high = fullName.size();
-    int best = 1;
-    while (low <= high) {
-        const int mid = (low + high) / 2;
-        QString candidate = fullName.left(mid).trimmed();
-        if (candidate.isEmpty()) {
-            candidate = fullName.left(mid);
-        }
-        candidate += marker;
-
-        if (textWidth(metrics, candidate) <= availableWidth) {
-            best = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-
-    QString abbreviated = fullName.left(best).trimmed();
-    if (abbreviated.isEmpty()) {
-        abbreviated = fullName.left(1);
-    }
-    return abbreviated + marker;
 }
 
 QTreeWidget *hostTreeWidgetFor(const QWidget *widget) {
@@ -587,7 +546,7 @@ SignalLayerWidget::SignalLayerWidget(QWidget *parent) : QFrame(parent) {
     textLayout->setSpacing(2);
 
     nameLabel = new QLabel(textZone);
-    nameLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    nameLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     nameLabel->setMinimumWidth(0);
     nameLabel->setWordWrap(false);
     nameLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -834,9 +793,10 @@ void SignalLayerWidget::updateDisplayedLayerName() {
         availableWidth = width() - kRowMargins.left() - leftZoneWidth() - kOuterSpacing - kRowMargins.right();
     }
 
-    const QString displayed = fullLayerName.isEmpty()
-                                  ? QString()
-                                  : abbreviateLayerNameWithMarker(fullLayerName, metrics, availableWidth);
+    const QString displayed = metrics.elidedText(
+        fullLayerName,
+        Qt::ElideMiddle,
+        std::max(0, availableWidth));
     if (nameLabel->text() != displayed) {
         nameLabel->setText(displayed);
     }
