@@ -88,6 +88,18 @@ void saveNeighborSelection(
         QStringLiteral("Segmentation/neighborMergeSelection"),
         static_cast<int>(selection));
 }
+
+const std::array<QColor, 5> &defaultAdditiveImageColors() {
+    static const std::array<QColor, 5> colors = {
+        QColor(QStringLiteral("#00ff66")),
+        QColor(QStringLiteral("#ff4dff")),
+        QColor(QStringLiteral("#00dfff")),
+        QColor(QStringLiteral("#ff9f1c")),
+        QColor(QStringLiteral("#7a8cff"))
+    };
+    return colors;
+}
+
 class FirstPageTIFFImageIO final : public itk::TIFFImageIO {
 public:
     ITK_DISALLOW_COPY_AND_MOVE(FirstPageTIFFImageIO);
@@ -1612,13 +1624,23 @@ bool SignalControl::insertLoadedImage(const LoadedImageLayer &loadedLayer,
     }
 }
 
-void SignalControl::registerImageSignal(size_t signalIndexGlobal, const QString &name) {
+void SignalControl::registerImageSignal(
+    size_t signalIndexGlobal,
+    const QString &name,
+    std::optional<QColor> color) {
     const bool centerFirstStandaloneLayer = !hasWorkingSegments() && allSignalList.size() == 1;
-    configureImageDisplay(allSignalList[signalIndexGlobal]);
-    allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
-    allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+    itkSignalBase *signal = allSignalList[signalIndexGlobal];
+    configureImageDisplay(signal);
+    if (!color) {
+        const auto &colors = defaultAdditiveImageColors();
+        color = colors[nextDefaultImageColorIndex % colors.size()];
+        ++nextDefaultImageColorIndex;
+    }
+    signal->setMainColor(*color);
+    signal->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
+    signal->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
     attachLayerWidgetToLastItem(signalTreeWidget);
-    orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
+    orthoViewer->addSignal(signal);
     if (centerFirstStandaloneLayer) {
         orthoViewer->setViewToMiddleOfStack();
     }
@@ -1740,10 +1762,10 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
                     break;
                 }
 
-                if (layer.color) {
-                    allSignalList[signalIndexGlobal]->setMainColor(*layer.color);
-                }
-                registerImageSignal(signalIndexGlobal, baseName + layer.suffix);
+                registerImageSignal(
+                    signalIndexGlobal,
+                    baseName + layer.suffix,
+                    layer.color);
                 if (!firstSignalIndex) {
                     firstSignalIndex = signalIndexGlobal;
                 }
@@ -2148,6 +2170,11 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
     sectionSplitter->setStretchFactor(3, kOtherSectionVisibleRows);
 
     connect(taskRunner, &TaskRunner::busyChanged, this, &SignalControl::setGuiBusy);
+    connect(taskRunner, &TaskRunner::busyChanged, this, [this](bool busy) {
+        if (!busy) {
+            scheduleDroppedFileProcessing();
+        }
+    });
     setGuiBusy(taskRunner->isBusy());
 
     const QPointer<SignalControl> guardedThis(this);
@@ -2262,12 +2289,62 @@ void SignalControl::setupRefinementTreeWidget() {
     });
 }
 
-void SignalControl::handleDroppedFile(QString fileName) {
-    SP_LOG_INFO("io", QStringLiteral("Handling dropped file %1").arg(fileName));
-    QImageSelectionRadioButtons chooser(this);
-    if (chooser.exec() == QDialog::Accepted) {
-        loadDroppedFileAs(fileName, chooser.selectedChoice());
+void SignalControl::handleDroppedFiles(QStringList fileNames) {
+    fileNames.removeAll(QString());
+    if (fileNames.isEmpty()) {
+        return;
     }
+    SP_LOG_INFO("io", QStringLiteral("Handling %1 dropped file(s)").arg(fileNames.size()));
+    droppedFileBatches.push_back({std::move(fileNames), std::nullopt});
+    scheduleDroppedFileProcessing();
+}
+
+void SignalControl::scheduleDroppedFileProcessing() {
+    if (processingDroppedFile || droppedFileProcessingScheduled
+        || droppedFileBatches.empty() || taskRunner->isBusy()) {
+        return;
+    }
+
+    droppedFileProcessingScheduled = true;
+    QTimer::singleShot(0, this, [this]() {
+        droppedFileProcessingScheduled = false;
+        processNextDroppedFile();
+    });
+}
+
+void SignalControl::processNextDroppedFile() {
+    if (processingDroppedFile || droppedFileBatches.empty() || taskRunner->isBusy()) {
+        scheduleDroppedFileProcessing();
+        return;
+    }
+
+    processingDroppedFile = true;
+    DroppedFileBatch &batch = droppedFileBatches.front();
+    ImageLoadChoice loadChoice = ImageLoadChoice::Image;
+    if (batch.applyToRemaining) {
+        loadChoice = *batch.applyToRemaining;
+    } else {
+        QImageSelectionRadioButtons chooser(this, batch.files.size() > 1);
+        if (chooser.exec() != QDialog::Accepted) {
+            droppedFileBatches.pop_front();
+            processingDroppedFile = false;
+            scheduleDroppedFileProcessing();
+            return;
+        }
+        loadChoice = chooser.selectedChoice();
+        if (imageLoadChoiceSupportsApplyToAll(loadChoice) && chooser.applyToAll()) {
+            batch.applyToRemaining = loadChoice;
+        }
+    }
+
+    const QString fileName = batch.files.takeFirst();
+    if (batch.files.isEmpty()) {
+        droppedFileBatches.pop_front();
+    }
+    SP_LOG_INFO("io", QStringLiteral("Handling dropped file %1").arg(fileName));
+    loadDroppedFileAs(fileName, loadChoice);
+    processingDroppedFile = false;
+    scheduleDroppedFileProcessing();
 }
 
 void SignalControl::loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice) {

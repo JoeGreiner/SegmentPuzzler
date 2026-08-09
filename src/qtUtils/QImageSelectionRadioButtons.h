@@ -5,6 +5,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QRadioButton>
+#include <QCheckBox>
 #include <QPushButton>
 #include <QVBoxLayout>
 
@@ -16,13 +17,21 @@ enum class ImageLoadChoice {
     Segmentation
 };
 
+bool imageLoadChoiceSupportsApplyToAll(ImageLoadChoice choice);
+
 class QImageSelectionRadioButtons : public QDialog {
 Q_OBJECT
 public:
-    explicit QImageSelectionRadioButtons(QWidget *parent = nullptr);
+    explicit QImageSelectionRadioButtons(
+        QWidget *parent = nullptr,
+        bool allowApplyToAll = false);
     ImageLoadChoice selectedChoice() const;
+    bool applyToAll() const;
 
 private:
+    void updateApplyToAllVisibility();
+
+    const bool allowApplyToAll;
     QPushButton *evaluateButton;
     QGridLayout *grid;
     QGroupBox *groupBox;
@@ -31,6 +40,7 @@ private:
     QRadioButton *radioBoundary;
     QRadioButton *radioRefinement;
     QRadioButton *radioSegmentation;
+    QCheckBox *applyToAllCheckBox;
     QVBoxLayout *vbox;
 };
 

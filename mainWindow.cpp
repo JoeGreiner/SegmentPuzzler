@@ -609,11 +609,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
         // Local-file drops are intentionally consumed at the main-window level.
         // Child widgets inside this window should use this shared path instead
         // of implementing their own file-drop behavior.
-        for (const QString &fileName : fileNames) {
-            QTimer::singleShot(0, mySignalControl, [this, fileName]() {
-                mySignalControl->handleDroppedFile(fileName);
-            });
-        }
+        auto *signalControl = mySignalControl;
+        QTimer::singleShot(0, signalControl, [signalControl, fileNames]() {
+            signalControl->handleDroppedFiles(fileNames);
+        });
         dropEvent->acceptProposedAction();
         return true;
     }

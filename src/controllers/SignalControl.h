@@ -3,8 +3,10 @@
 
 
 #include <QString>
+#include <QStringList>
 #include <QColor>
 #include <cstddef>
+#include <deque>
 #include <type_traits>
 #include <functional>
 #include <memory>
@@ -148,7 +150,7 @@ signals:
         std::vector<dataType::SegmentIdType> labels);
 
 public slots:
-    void handleDroppedFile(QString fileName);
+    void handleDroppedFiles(QStringList fileNames);
 
     void toggleROISelection();
 
@@ -246,6 +248,7 @@ private:
 
     bool verbose;
     bool guiBusy = false;
+    std::size_t nextDefaultImageColorIndex = 0;
 
     QSplitter *sectionSplitter = nullptr;
     QPushButton *togglePaintBrushButton = nullptr;
@@ -313,6 +316,15 @@ private:
         std::size_t mergedSourceCount = 0;
         std::size_t mergedGroupCount = 0;
     };
+
+    struct DroppedFileBatch {
+        QStringList files;
+        std::optional<ImageLoadChoice> applyToRemaining;
+    };
+    std::deque<DroppedFileBatch> droppedFileBatches;
+    bool processingDroppedFile = false;
+    bool droppedFileProcessingScheduled = false;
+
     void askForBackgroundStrategy();
     void runNeighborMerge(
         std::vector<dataType::SegmentIdType> labels,
@@ -331,6 +343,8 @@ private:
         std::shared_ptr<NeighborMergeLoopProgress> loopProgress,
         quintptr segmentationIdentity,
         quintptr segmentationSignalIdentity);
+    void scheduleDroppedFileProcessing();
+    void processNextDroppedFile();
     void loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice);
 
     void setupSignalTreeWidget();
@@ -415,7 +429,10 @@ private:
                                      bool createWorkingSegments,
                                      LoadCallback then);
 
-    void registerImageSignal(size_t signalIndexGlobal, const QString &name);
+    void registerImageSignal(
+        size_t signalIndexGlobal,
+        const QString &name,
+        std::optional<QColor> color = std::nullopt);
     void registerSegmentationSignal(size_t signalIndexGlobal, const QString &name);
     void registerBoundarySignal(size_t signalIndexGlobal, const QString &name);
     void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
