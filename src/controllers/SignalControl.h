@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <itkImage.h>
@@ -39,6 +40,7 @@ class TaskRunner;
 class QActionGroup;
 class QMenu;
 class QLabel;
+class QToolButton;
 class QVBoxLayout;
 class SignalLayerWidget;
 
@@ -317,6 +319,13 @@ private:
         std::size_t mergedGroupCount = 0;
     };
 
+    struct LayerGroupVisibility {
+        QToolButton *button = nullptr;
+        bool visible = true;
+        std::unordered_map<itkSignalBase *, bool> savedLayerVisibility;
+    };
+    std::unordered_map<QTreeWidget *, LayerGroupVisibility> layerGroupVisibility;
+
     struct DroppedFileBatch {
         QStringList files;
         std::optional<ImageLoadChoice> applyToRemaining;
@@ -354,7 +363,11 @@ private:
     void setupSegmentationTreeWidget();
 
     void setupProbabilityTreeWidget();
-    QVBoxLayout *createSectionLayout(const QString &title);
+    QVBoxLayout *createSectionLayout(const QString &title, QToolButton *&visibilityButton);
+    void registerLayerGroup(QTreeWidget *tree, QToolButton *visibilityButton);
+    void setLayerGroupVisible(QTreeWidget *tree, bool visible);
+    bool layerVisibilityForUi(QTreeWidget *tree, itkSignalBase *signal) const;
+    void rememberNewLayerWhileGroupHidden(QTreeWidget *tree, itkSignalBase *signal);
     void createMenuActions();
     void updateModeActionTexts();
     void setROISelectionActive(bool active);
@@ -400,6 +413,7 @@ private:
     bool getDimensionMatchWithSegmentImage();
     void setGuiBusy(bool busy);
     void refreshViewers();
+    void refreshAfterVisibilityChange();
     QString resolvedDisplayName(const QString &fileName,
                                 const QString &displayedName,
                                 const std::vector<QString> &suffixes = {}) const;

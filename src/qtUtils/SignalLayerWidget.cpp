@@ -366,6 +366,13 @@ void SignalLayerWidget::configureHostTree(QTreeWidget *treeWidget) {
     }
 }
 
+QIcon SignalLayerWidget::visibilityIcon(const QWidget *context, bool visible) {
+    const QColor base = stableLayerCardBaseColor(context);
+    const QColor whiteText = QColor("#f8fafc");
+    const QColor iconColor = visible ? whiteText : blendColor(whiteText, base, 0.55);
+    return makeEyeIcon(iconColor, visible);
+}
+
 void SignalLayerWidget::requestHostTreeLayoutSync(QTreeWidget *treeWidget) {
     if (treeWidget == nullptr) {
         return;
@@ -930,10 +937,7 @@ void SignalLayerWidget::updateStyle() {
 }
 
 void SignalLayerWidget::updateVisibilityIcon() {
-    const QColor base = stableLayerCardBaseColor(this);
-    const QColor whiteText = QColor("#f8fafc");
-    const QColor iconColor = layerVisible ? whiteText : blendColor(whiteText, base, 0.55);
-    visibilityButton->setIcon(makeEyeIcon(iconColor, layerVisible));
+    visibilityButton->setIcon(visibilityIcon(this, layerVisible));
 }
 
 bool SignalLayerWidget::hasSemanticContrastChip() const {

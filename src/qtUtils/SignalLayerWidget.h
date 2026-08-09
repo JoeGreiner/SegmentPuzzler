@@ -3,6 +3,7 @@
 
 #include <QColor>
 #include <QFrame>
+#include <QIcon>
 #include <QString>
 #include <QtGlobal>
 
@@ -38,6 +39,7 @@ public:
     static void configureHostTree(QTreeWidget *treeWidget);
     static void requestHostTreeLayoutSync(QTreeWidget *treeWidget);
     static void syncHostTreeLayout(QTreeWidget *treeWidget);
+    static QIcon visibilityIcon(const QWidget *context, bool visible);
 
     void applyPresentation(const Presentation &presentation);
     QSize minimumSizeHint() const override;

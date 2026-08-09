@@ -32,6 +32,7 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStringList>
+#include <QToolButton>
 #include <QWidgetAction>
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <QSettings>
@@ -706,6 +707,12 @@ void SignalControl::refreshUiState() {
     probabilityTreeWidget->setEnabled(enabled);
     segmentationTreeWidget->setEnabled(enabled);
     refinementTreeWidget->setEnabled(enabled);
+    for (auto &entry : layerGroupVisibility) {
+        LayerGroupVisibility &group = entry.second;
+        if (group.button != nullptr) {
+            group.button->setEnabled(enabled);
+        }
+    }
 
     updateLayerSelectionState(signalTreeWidget);
     updateLayerSelectionState(probabilityTreeWidget);
@@ -830,6 +837,7 @@ void SignalControl::attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *
     }
 
     auto *layerWidget = new SignalLayerWidget(tree);
+    rememberNewLayerWhileGroupHidden(tree, signalForItem(item));
     item->setFirstColumnSpanned(true);
     tree->setItemWidget(item, 0, layerWidget);
     SignalLayerWidget::requestHostTreeLayoutSync(tree);
@@ -934,7 +942,7 @@ void SignalControl::refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item)
 
     itkSignalBase *signal = allSignalList[signalIndex];
     const QString name = signal->name;
-    const bool active = signal->getIsActive();
+    const bool active = layerVisibilityForUi(tree, signal);
 
     item->setText(0, QString());
     item->setText(1, QString());
@@ -1292,6 +1300,13 @@ std::size_t SignalControl::deleteSelectedSegmentationLabels(
 
 void SignalControl::refreshViewers() {
     orthoViewer->refreshViewers();
+}
+
+void SignalControl::refreshAfterVisibilityChange() {
+    for (auto *viewer : orthoViewer->viewerList) {
+        viewer->setSliceIndex(viewer->getSliceIndex());
+        viewer->recalculateQImages();
+    }
 }
 
 QString SignalControl::resolvedDisplayName(const QString &fileName,
@@ -2126,16 +2141,133 @@ void SignalControl::createMenuActions() {
     updateModeActionTexts();
 }
 
-QVBoxLayout *SignalControl::createSectionLayout(const QString &title) {
+QVBoxLayout *SignalControl::createSectionLayout(
+    const QString &title,
+    QToolButton *&visibilityButton) {
     auto *sectionWidget = new QWidget(sectionSplitter);
     sectionWidget->setMinimumHeight(0);
     sectionWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *sectionLayout = new QVBoxLayout(sectionWidget);
     sectionLayout->setContentsMargins(4, 4, 4, 4);
     sectionLayout->setSpacing(kSectionSpacing);
-    sectionLayout->addWidget(createSectionLabel(title, sectionWidget));
+
+    auto *header = new QWidget(sectionWidget);
+    auto *headerLayout = new QHBoxLayout(header);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(kSectionSpacing);
+
+    visibilityButton = new QToolButton(header);
+    visibilityButton->setAutoRaise(true);
+    visibilityButton->setCheckable(true);
+    visibilityButton->setChecked(true);
+    visibilityButton->setCursor(Qt::PointingHandCursor);
+    visibilityButton->setFixedSize(20, 20);
+    visibilityButton->setIconSize(QSize(16, 16));
+    visibilityButton->setIcon(SignalLayerWidget::visibilityIcon(visibilityButton, true));
+    headerLayout->addWidget(visibilityButton);
+    headerLayout->addWidget(createSectionLabel(title, header));
+    headerLayout->addStretch(1);
+    sectionLayout->addWidget(header);
     sectionSplitter->addWidget(sectionWidget);
     return sectionLayout;
+}
+
+void SignalControl::registerLayerGroup(
+    QTreeWidget *tree,
+    QToolButton *visibilityButton) {
+    if (tree == nullptr || visibilityButton == nullptr) {
+        return;
+    }
+
+    LayerGroupVisibility &group = layerGroupVisibility[tree];
+    group.button = visibilityButton;
+    group.visible = true;
+    visibilityButton->setObjectName(tree->objectName() + QStringLiteral("GroupVisibilityButton"));
+    visibilityButton->setToolTip(tr("Hide all layers in this group"));
+    visibilityButton->setAccessibleName(tr("Toggle group visibility"));
+
+    connect(visibilityButton, &QToolButton::toggled, this, [this, tree](bool visible) {
+        setLayerGroupVisible(tree, visible);
+    });
+}
+
+void SignalControl::setLayerGroupVisible(QTreeWidget *tree, bool visible) {
+    const auto groupIt = layerGroupVisibility.find(tree);
+    if (groupIt == layerGroupVisibility.end() || groupIt->second.visible == visible) {
+        return;
+    }
+
+    LayerGroupVisibility &group = groupIt->second;
+    if (!visible) {
+        group.savedLayerVisibility.clear();
+        for (int itemIndex = 0; itemIndex < tree->topLevelItemCount(); ++itemIndex) {
+            itkSignalBase *signal = signalForItem(tree->topLevelItem(itemIndex));
+            if (signal == nullptr) {
+                continue;
+            }
+            group.savedLayerVisibility[signal] = signal->getIsActive();
+            signal->setIsActive(false);
+        }
+    } else {
+        for (int itemIndex = 0; itemIndex < tree->topLevelItemCount(); ++itemIndex) {
+            itkSignalBase *signal = signalForItem(tree->topLevelItem(itemIndex));
+            if (signal == nullptr) {
+                continue;
+            }
+            const auto savedIt = group.savedLayerVisibility.find(signal);
+            if (savedIt != group.savedLayerVisibility.end()) {
+                signal->setIsActive(savedIt->second);
+            }
+        }
+        group.savedLayerVisibility.clear();
+    }
+
+    group.visible = visible;
+    group.button->setIcon(SignalLayerWidget::visibilityIcon(group.button, visible));
+    group.button->setToolTip(
+        visible
+            ? tr("Hide all layers in this group")
+            : tr("Show this group and restore previous layer visibility"));
+    SP_LOG_DEBUG(
+        "viewer.interaction",
+        QStringLiteral("Layer group tree=%1 visible=%2 layers=%3")
+            .arg(tree->objectName())
+            .arg(visible)
+            .arg(tree->topLevelItemCount()));
+    updateLayerSelectionState(tree);
+    refreshAfterVisibilityChange();
+}
+
+bool SignalControl::layerVisibilityForUi(
+    QTreeWidget *tree,
+    itkSignalBase *signal) const {
+    if (signal == nullptr) {
+        return false;
+    }
+
+    const auto groupIt = layerGroupVisibility.find(tree);
+    if (groupIt == layerGroupVisibility.end() || groupIt->second.visible) {
+        return signal->getIsActive();
+    }
+
+    const auto savedIt = groupIt->second.savedLayerVisibility.find(signal);
+    return savedIt != groupIt->second.savedLayerVisibility.end()
+               ? savedIt->second
+               : false;
+}
+
+void SignalControl::rememberNewLayerWhileGroupHidden(
+    QTreeWidget *tree,
+    itkSignalBase *signal) {
+    const auto groupIt = layerGroupVisibility.find(tree);
+    if (signal == nullptr
+        || groupIt == layerGroupVisibility.end()
+        || groupIt->second.visible) {
+        return;
+    }
+
+    groupIt->second.savedLayerVisibility[signal] = signal->getIsActive();
+    signal->setIsActive(false);
 }
 
 SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
@@ -2194,7 +2326,8 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
 }
 
 void SignalControl::setupSignalTreeWidget() {
-    auto *signalWidgetLayout = createSectionLayout(tr("Layers"));
+    QToolButton *groupVisibilityButton = nullptr;
+    auto *signalWidgetLayout = createSectionLayout(tr("Layers"), groupVisibilityButton);
 
     signalTreeWidget = new QTreeWidget();
     signalTreeWidget->setObjectName(QStringLiteral("layersTree"));
@@ -2206,6 +2339,7 @@ void SignalControl::setupSignalTreeWidget() {
     signalTreeWidget->setRootIsDecorated(false);
     signalTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(signalTreeWidget);
+    registerLayerGroup(signalTreeWidget, groupVisibilityButton);
     setTreeMinimumRows(signalTreeWidget, kLayersVisibleRows);
     // Extra vertical space should go into the tree, not the section title.
     signalWidgetLayout->addWidget(signalTreeWidget, 1);
@@ -2219,7 +2353,8 @@ void SignalControl::setupSignalTreeWidget() {
 
 
 void SignalControl::setupProbabilityTreeWidget() {
-    auto *probabilityWidgetLayout = createSectionLayout(tr("Boundaries"));
+    QToolButton *groupVisibilityButton = nullptr;
+    auto *probabilityWidgetLayout = createSectionLayout(tr("Boundaries"), groupVisibilityButton);
 
     probabilityTreeWidget = new QTreeWidget();
     probabilityTreeWidget->setObjectName(QStringLiteral("boundariesTree"));
@@ -2231,6 +2366,7 @@ void SignalControl::setupProbabilityTreeWidget() {
     probabilityTreeWidget->setRootIsDecorated(false);
     probabilityTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(probabilityTreeWidget);
+    registerLayerGroup(probabilityTreeWidget, groupVisibilityButton);
     setTreeMinimumRows(probabilityTreeWidget, kOtherSectionVisibleRows);
     probabilityWidgetLayout->addWidget(probabilityTreeWidget, 1);
 
@@ -2265,7 +2401,8 @@ void SignalControl::setupProbabilityTreeWidget() {
 
 
 void SignalControl::setupRefinementTreeWidget() {
-    auto *refinementWidgetLayout = createSectionLayout(tr("Refinements"));
+    QToolButton *groupVisibilityButton = nullptr;
+    auto *refinementWidgetLayout = createSectionLayout(tr("Refinements"), groupVisibilityButton);
 
     refinementTreeWidget = new QTreeWidget();
     refinementTreeWidget->setObjectName(QStringLiteral("refinementsTree"));
@@ -2277,6 +2414,7 @@ void SignalControl::setupRefinementTreeWidget() {
     refinementTreeWidget->setRootIsDecorated(false);
     refinementTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(refinementTreeWidget);
+    registerLayerGroup(refinementTreeWidget, groupVisibilityButton);
     setTreeMinimumRows(refinementTreeWidget, kOtherSectionVisibleRows);
     refinementWidgetLayout->addWidget(refinementTreeWidget, 1);
     selectedRefinementLabel = new QLabel("Selected: none");
@@ -2443,7 +2581,8 @@ void SignalControl::setupSegmentationTreeWidget() {
     // i.e., if the active segmentation is changed,
     // the pointer in graphbase should be pointing to the new segmentation volume
 
-    auto *segmentationWidgetLayout = createSectionLayout(tr("Segmentations"));
+    QToolButton *groupVisibilityButton = nullptr;
+    auto *segmentationWidgetLayout = createSectionLayout(tr("Segmentations"), groupVisibilityButton);
 
     segmentationTreeWidget = new QTreeWidget();
     segmentationTreeWidget->setObjectName(QStringLiteral("segmentationsTree"));
@@ -2455,6 +2594,7 @@ void SignalControl::setupSegmentationTreeWidget() {
     segmentationTreeWidget->setRootIsDecorated(false);
     segmentationTreeWidget->setIndentation(0);
     SignalLayerWidget::configureHostTree(segmentationTreeWidget);
+    registerLayerGroup(segmentationTreeWidget, groupVisibilityButton);
     setTreeMinimumRows(segmentationTreeWidget, kOtherSectionVisibleRows);
     segmentationWidgetLayout->addWidget(segmentationTreeWidget, 1);
 
@@ -3134,13 +3274,17 @@ void SignalControl::setIsActive(QTreeWidgetItem *item, bool isActiveIn) {
         SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting signal active state to %1").arg(isActiveIn));
     }
     const size_t signalIndex = signalIndexForItem(item);
-
-    allSignalList[signalIndex]->setIsActive(isActiveIn);
-
-    for (auto *viewer: orthoViewer->viewerList) {
-        viewer->setSliceIndex(viewer->getSliceIndex()); // update slice indices of newly activated signals
-        viewer->recalculateQImages();
+    itkSignalBase *signal = allSignalList[signalIndex];
+    const auto groupIt = layerGroupVisibility.find(item->treeWidget());
+    if (groupIt != layerGroupVisibility.end() && !groupIt->second.visible) {
+        groupIt->second.savedLayerVisibility[signal] = isActiveIn;
+        refreshLayerWidget(item->treeWidget(), item);
+        return;
     }
+
+    signal->setIsActive(isActiveIn);
+
+    refreshAfterVisibilityChange();
 
     refreshLayerWidget(item->treeWidget(), item);
 }
