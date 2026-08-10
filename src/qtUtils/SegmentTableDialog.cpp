@@ -143,6 +143,9 @@ QStandardItem *makeBooleanItem(bool value) {
     auto *item = new QStandardItem(value ? "Yes" : "No");
     item->setTextAlignment(Qt::AlignCenter);
     item->setData(QVariant(value ? 1.0 : 0.0), Qt::UserRole);
+    const QColor background = colorForNormalizedValue(value ? 0.0 : 1.0);
+    item->setBackground(background);
+    item->setForeground(textColorForBackground(background));
     return item;
 }
 
