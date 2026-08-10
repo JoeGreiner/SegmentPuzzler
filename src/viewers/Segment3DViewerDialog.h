@@ -138,6 +138,8 @@ private:
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
     };
 
+    void cycleSegmentColors();
+    void applyColorCycle(std::vector<SegmentActorInfo> &actors) const;
     void stepExplodeSlider(int direction);
     QHBoxLayout *ensureControlsRow();
     void addOrbitControls(QHBoxLayout *controlsRow);
@@ -201,6 +203,7 @@ private:
     std::set<dataType::SegmentIdType> m_unavailableSceneLabels;
     dataType::SegmentIdType m_pendingSceneLabel = 0;
     dataType::SegmentIdType m_activateWhenReadyLabel = 0;
+    quint32 m_colorCycleSeed = 0;
     int m_launchSliceAxis = -1;
     bool m_initialFrameScheduled = false;
     bool m_initialFrameRendered = false;

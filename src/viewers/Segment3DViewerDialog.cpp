@@ -17,6 +17,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QRandomGenerator>
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSlider>
@@ -65,6 +66,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <set>
 #include <unordered_map>
@@ -267,6 +269,30 @@ constexpr dataType::SegmentIdType kDenseLabelLookupLimit = 1'000'000;
 constexpr vtkIdType kParallelScanVoxelThreshold = 1'000'000;
 constexpr int kMaximumExplodePercent = 1000;
 
+quint32 randomCycleColor(dataType::SegmentIdType labelId, quint32 seed) {
+    std::uint64_t mixed = static_cast<std::uint64_t>(labelId)
+                          ^ (static_cast<std::uint64_t>(seed) << 32U);
+    mixed += 0x9e3779b97f4a7c15ULL;
+    mixed = (mixed ^ (mixed >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    mixed = (mixed ^ (mixed >> 27U)) * 0x94d049bb133111ebULL;
+    mixed ^= mixed >> 31U;
+
+    const int hue = static_cast<int>(mixed % 360U);
+    const int saturation = 180 + static_cast<int>((mixed >> 9U) % 60U);
+    const int value = 210 + static_cast<int>((mixed >> 17U) % 46U);
+    return QColor::fromHsv(hue, saturation, value).rgb();
+}
+
+void setActorColor(vtkActor *actor, quint32 color) {
+    if (actor == nullptr) {
+        return;
+    }
+    actor->GetProperty()->SetColor(
+        qRed(color) / 255.0,
+        qGreen(color) / 255.0,
+        qBlue(color) / 255.0);
+}
+
 double elapsedMilliseconds(qint64 nanoseconds) {
     return static_cast<double>(nanoseconds) / 1'000'000.0;
 }
@@ -314,6 +340,7 @@ QString threeDViewHelpText(bool showExplodeControls, bool showCutControls) {
                      .arg(kMaximumExplodePercent);
         lines << QStringLiteral("Use the left/right arrow keys to step the explode slider.");
     }
+    lines << QStringLiteral("Press R to cycle the segment colors in this 3D view.");
     lines << QStringLiteral("Press Q to close the 3D view.");
     return lines.join(QStringLiteral("\n"));
 }
@@ -1306,10 +1333,7 @@ vtkSmartPointer<vtkActor> createMeshActor(
 
     auto actor = vtkSmartPointer<vtkActor>::New();
     actor->SetMapper(mapper);
-    const double red = ((mesh.lutColor >> 16) & 0xFF) / 255.0;
-    const double green = ((mesh.lutColor >> 8) & 0xFF) / 255.0;
-    const double blue = (mesh.lutColor & 0xFF) / 255.0;
-    actor->GetProperty()->SetColor(red, green, blue);
+    setActorColor(actor, mesh.lutColor);
     actor->GetProperty()->SetAmbient(0.1);
     actor->GetProperty()->SetDiffuse(0.7);
     actor->GetProperty()->SetSpecular(0.3);
@@ -1883,6 +1907,11 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     closeShortcut->setContext(Qt::WindowShortcut);
     connect(closeShortcut, &QShortcut::activated, this, &QDialog::close);
 
+    auto *colorCycleShortcut = new QShortcut(QKeySequence(Qt::Key_R), this);
+    colorCycleShortcut->setContext(Qt::WindowShortcut);
+    connect(colorCycleShortcut, &QShortcut::activated,
+            this, &Segment3DViewerDialog::cycleSegmentColors);
+
     if (showCutControls) {
         auto *cutHelpShortcut = new QShortcut(QKeySequence(Qt::Key_Question), this);
         cutHelpShortcut->setContext(Qt::WindowShortcut);
@@ -2325,6 +2354,7 @@ bool Segment3DViewerDialog::applyPreparedScene(const PreparedScene &preparedScen
     if (preparedScene.targetLabelId == 0 || newActors.size() != 1 || m_renderer == nullptr) {
         return false;
     }
+    applyColorCycle(newActors);
 
     for (const auto &actorInfo : m_segmentActors) {
         m_renderer->RemoveActor(actorInfo.actor);
@@ -2618,6 +2648,38 @@ void Segment3DViewerDialog::stepExplodeSlider(int direction) {
     m_explodeSlider->triggerAction(direction < 0
                                        ? QAbstractSlider::SliderSingleStepSub
                                        : QAbstractSlider::SliderSingleStepAdd);
+}
+
+void Segment3DViewerDialog::cycleSegmentColors() {
+    if (m_segmentActors.empty()) {
+        return;
+    }
+
+    do {
+        m_colorCycleSeed = QRandomGenerator::global()->generate();
+    } while (m_colorCycleSeed == 0);
+    applyColorCycle(m_segmentActors);
+
+    SP_LOG_DEBUG(
+        "viewer.three_d",
+        QStringLiteral("[3DView] cycled segment colors seed=%1 actors=%2")
+            .arg(m_colorCycleSeed, 8, 16, QLatin1Char('0'))
+            .arg(m_segmentActors.size()));
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+}
+
+void Segment3DViewerDialog::applyColorCycle(
+    std::vector<SegmentActorInfo> &actors) const {
+    if (m_colorCycleSeed == 0) {
+        return;
+    }
+    for (auto &actorInfo : actors) {
+        setActorColor(
+            actorInfo.actor,
+            randomCycleColor(actorInfo.labelId, m_colorCycleSeed));
+    }
 }
 
 void Segment3DViewerDialog::beginCutDrawing() {
