@@ -1420,18 +1420,43 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
         scanStartedAt,
         QStringLiteral("[3DView] [segmentpuzzler] slideshow label and bbox scan"));
 
+    PreparedScene preparedScene;
     const auto requestedBounds = scan.boundsByLabel.find(label.first);
-    if (requestedBounds == scan.boundsByLabel.end()) {
-        return {};
+    if (requestedBounds != scan.boundsByLabel.end()) {
+        const Roi bounds = roiFromBounds(requestedBounds->second);
+        preparedScene = prepareScene(segImage, requestedLabels, bounds, false);
+    } else {
+        preparedScene.targetLabelId = label.first;
+        preparedScene.windowTitle =
+            QString("Segment %1 (press q to quit)").arg(label.first);
     }
 
-    const Roi bounds = roiFromBounds(requestedBounds->second);
-    auto preparedScene = prepareScene(segImage, requestedLabels, bounds, false);
+    preparedScene.navigationCatalogComplete = true;
     preparedScene.navigationLabels = std::move(scan.labels);
     for (const auto &[labelId, labelBounds] : scan.boundsByLabel) {
         preparedScene.navigationBounds.emplace(labelId, roiFromBounds(labelBounds));
     }
     return preparedScene;
+}
+
+Segment3DViewerDialog::PreparedScene
+Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
+    dataType::SegmentsImageType::Pointer segImage,
+    LabelWithColor label,
+    const Roi &cachedBounds)
+{
+    auto preparedScene = prepareScene(segImage, {label}, cachedBounds);
+    if (!preparedScene.meshes.empty()) {
+        return preparedScene;
+    }
+
+    SP_LOG_INFO(
+        "viewer.three_d",
+        QStringLiteral(
+            "operation=3d_slideshow phase=cache_rebuild reason=empty_surface "
+            "target_label=%1")
+            .arg(label.first));
+    return prepareSingleLabelSlideshowScene(segImage, label);
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScene(
@@ -1756,6 +1781,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
         PreparedScene cachedScene = preparedScene;
         cachedScene.navigationLabels.clear();
         cachedScene.navigationBounds.clear();
+        cachedScene.navigationCatalogComplete = false;
         m_preparedSceneCache.emplace(preparedScene.targetLabelId, std::move(cachedScene));
     }
 
@@ -2336,6 +2362,7 @@ void Segment3DViewerDialog::cachePreparedScene(PreparedScene preparedScene) {
     const auto labelId = preparedScene.targetLabelId;
     preparedScene.navigationLabels.clear();
     preparedScene.navigationBounds.clear();
+    preparedScene.navigationCatalogComplete = false;
     m_preparedSceneCache.insert_or_assign(labelId, std::move(preparedScene));
 }
 
@@ -2385,7 +2412,38 @@ bool Segment3DViewerDialog::applyPreparedScene(const PreparedScene &preparedScen
 
 bool Segment3DViewerDialog::acceptPreparedScene(PreparedScene preparedScene) {
     const auto preparedLabel = preparedScene.targetLabelId;
-    if (preparedLabel == 0 || preparedScene.meshes.size() != 1) {
+    if (preparedLabel == 0) {
+        return false;
+    }
+
+    if (preparedScene.navigationCatalogComplete) {
+        const bool targetFound = preparedScene.navigationBounds.find(preparedLabel)
+                                 != preparedScene.navigationBounds.end();
+        auto rebuiltLabels = std::move(preparedScene.navigationLabels);
+        rebuiltLabels.erase(
+            std::remove(rebuiltLabels.begin(), rebuiltLabels.end(), 0),
+            rebuiltLabels.end());
+        std::sort(rebuiltLabels.begin(), rebuiltLabels.end());
+        rebuiltLabels.erase(
+            std::unique(rebuiltLabels.begin(), rebuiltLabels.end()),
+            rebuiltLabels.end());
+        m_navigationLabels = std::move(rebuiltLabels);
+        m_navigationBounds = std::move(preparedScene.navigationBounds);
+        m_preparedSceneCache.clear();
+        m_unavailableSceneLabels.clear();
+        SP_LOG_INFO(
+            "viewer.three_d",
+            QStringLiteral(
+                "operation=3d_slideshow phase=cache_rebuild status=applied "
+                "target_label=%1 target_found=%2 labels=%3 bounds=%4")
+                .arg(preparedLabel)
+                .arg(targetFound)
+                .arg(m_navigationLabels.size())
+                .arg(m_navigationBounds.size()));
+    }
+
+    if (preparedScene.meshes.size() != 1) {
+        updateSingleLabelNavigationUiState();
         return false;
     }
 

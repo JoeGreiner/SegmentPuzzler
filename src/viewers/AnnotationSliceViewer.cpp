@@ -546,16 +546,15 @@ void AnnotationSliceViewer::requestSingleLabel3D(
     taskRunner->runInBackground(
         QStringLiteral("Preparing 3D segment %1...").arg(labelId),
         [segImage, labelId, color, bounds]() {
-            return Segment3DViewerDialog::prepareScene(
-                segImage, {{labelId, color}}, bounds);
+            return Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
+                segImage, {labelId, color}, bounds);
         },
         [guardedDialog, labelId, committed](Segment3DViewerDialog::PreparedScene preparedScene) {
             *committed = true;
             if (guardedDialog == nullptr) {
                 return;
             }
-            if (preparedScene.meshes.empty()
-                || !guardedDialog->acceptPreparedScene(std::move(preparedScene))) {
+            if (!guardedDialog->acceptPreparedScene(std::move(preparedScene))) {
                 if (!guardedDialog->rejectPreparedScene(labelId)) {
                     return;
                 }

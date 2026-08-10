@@ -1215,15 +1215,15 @@ void SegmentTableDialog::requestSingleLabel3D(
                      .arg(labelId));
 
     const auto segImage = currentTableSegmentation;
-    std::vector<Segment3DViewerDialog::LabelWithColor> labels{{labelId, color}};
+    const Segment3DViewerDialog::LabelWithColor label{labelId, color};
     const QPointer<SegmentTableDialog> guardedThis(this);
     const QPointer<Segment3DViewerDialog> guardedDialog(dialog);
     const auto committed = std::make_shared<bool>(false);
     runner->runInBackground(
         QStringLiteral("Preparing 3D segment %1...").arg(labelId),
-        [segImage, labels = std::move(labels), bounds]() mutable {
-            return Segment3DViewerDialog::prepareScene(
-                segImage, std::move(labels), bounds);
+        [segImage, label, bounds]() {
+            return Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
+                segImage, label, bounds);
         },
         [guardedThis, committed](Segment3DViewerDialog::PreparedScene preparedScene) {
             if (guardedThis == nullptr) {
@@ -1443,8 +1443,7 @@ void SegmentTableDialog::onView3DPreparationFinished(
                 return;
             }
 
-            if (preparedScene.meshes.empty()
-                || !updateDialog->acceptPreparedScene(std::move(preparedScene))) {
+            if (!updateDialog->acceptPreparedScene(std::move(preparedScene))) {
                 if (!updateDialog->rejectPreparedScene(requestedLabel)) {
                     updateResultsActionState();
                     return;

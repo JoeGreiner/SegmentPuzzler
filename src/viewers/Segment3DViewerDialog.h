@@ -61,6 +61,7 @@ public:
         std::vector<PreparedMesh> meshes;
         std::vector<dataType::SegmentIdType> navigationLabels;
         std::map<dataType::SegmentIdType, Roi> navigationBounds;
+        bool navigationCatalogComplete = false;
         std::array<double, 3> sceneCenterWorld{0.0, 0.0, 0.0};
         double sceneExtent = 1.0;
     };
@@ -75,6 +76,10 @@ public:
     static PreparedScene prepareSingleLabelSlideshowScene(
         dataType::SegmentsImageType::Pointer segImage,
         LabelWithColor label);
+    static PreparedScene prepareSingleLabelSlideshowScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        LabelWithColor label,
+        const Roi &cachedBounds);
     static PreparedScene prepareAllLabelsScene(
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<quint32> labelColors);
