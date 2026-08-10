@@ -120,6 +120,19 @@ void testDeterministicCoverageAndMarkers() {
     }
     require(imagesEqual(singleThread, parallel), "Blockwise result must not depend on scheduling.");
 
+    options.watershed.compactness =
+        segment_puzzler::kDefaultFastMarkerWatershedCompactness;
+    options.threadCount = 1;
+    auto compactSingleThread = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
+        images.cost, images.markers, options);
+    options.threadCount = 4;
+    auto compactParallel = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
+        images.cost, images.markers, options);
+    require(imagesEqual(compactSingleThread, compactParallel),
+            "Compact blockwise result must not depend on scheduling.");
+    require(!imagesEqual(singleThread, compactSingleThread),
+            "Compactness should affect the blockwise result.");
+
     const std::size_t voxelCount = singleThread->GetLargestPossibleRegion().GetNumberOfPixels();
     require(std::none_of(singleThread->GetBufferPointer(), singleThread->GetBufferPointer() + voxelCount,
                          [](unsigned int label) { return label == 0; }),

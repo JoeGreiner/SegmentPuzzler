@@ -157,7 +157,18 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        std::cout << "Fast-marker sample hash: " << actualHash << "\n";
+        options.compactness = segment_puzzler::kDefaultFastMarkerWatershedCompactness;
+        dataType::SegmentsImageType::Pointer compactWatershedImage;
+        runWatershed(
+            invertedDistanceMap, seeds, compactWatershedImage, options);
+        const std::string compactHash = computeLabelHash(compactWatershedImage);
+        if (compactHash == actualHash) {
+            std::cerr << "Compactness did not affect the fast-marker result.\n";
+            return 1;
+        }
+
+        std::cout << "Fast-marker sample hash: " << actualHash
+                  << " (compact: " << compactHash << ")\n";
         return 0;
     } catch (const std::exception &exception) {
         std::cerr << "test_fast_marker_reference failed: " << exception.what() << "\n";

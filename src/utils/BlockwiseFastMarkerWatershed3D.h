@@ -46,7 +46,8 @@ int automaticWatershedBlockEdge(
 
 // Approximate blockwise watershed: deterministic for a fixed block layout, but
 // the result may depend on blockEdge/halo and need not match
-// runFastMarkerWatershed3D.
+// runFastMarkerWatershed3D. Domain masks are not supported; a non-null
+// options.watershed.domainMask throws std::invalid_argument.
 FastMarkerWatershedLabelImage::Pointer runBlockwiseFastMarkerWatershed3D(
     FastMarkerWatershedCostImage::Pointer costImage,
     FastMarkerWatershedLabelImage::Pointer markers,

@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <queue>
 #include <stdexcept>
 #include <vector>
 
@@ -185,6 +186,357 @@ std::array<int, 26> buildNeighborStrides26(const std::array<int, 3> &paddedDims)
         }
     }
     return offsets;
+}
+
+struct GeodesicQueueEntry {
+    std::uint16_t level = 0;
+    std::uint32_t distance = 0;
+    std::uint32_t label = 0;
+    std::uint32_t index = 0;
+};
+
+struct GeodesicQueueEntryGreater {
+    bool operator()(const GeodesicQueueEntry &left,
+                    const GeodesicQueueEntry &right) const {
+        if (left.level != right.level) return left.level > right.level;
+        if (left.distance != right.distance) return left.distance > right.distance;
+        if (left.label != right.label) return left.label > right.label;
+        return left.index > right.index;
+    }
+};
+
+using GeodesicQueue = std::priority_queue<
+    GeodesicQueueEntry,
+    std::vector<GeodesicQueueEntry>,
+    GeodesicQueueEntryGreater>;
+
+inline void offerGeodesicCandidate(
+    GeodesicQueue &queue,
+    std::uint32_t *owner,
+    std::uint16_t *bestLevel,
+    std::uint32_t *bestDistance,
+    std::uint8_t *state,
+    std::uint32_t index,
+    std::uint16_t level,
+    std::uint32_t distance,
+    std::uint32_t label,
+    FastMarkerWatershedMetrics &metrics)
+{
+    const bool isBetter = state[index] == kFar
+        || level < bestLevel[index]
+        || (level == bestLevel[index]
+            && (distance < bestDistance[index]
+                || (distance == bestDistance[index] && label < owner[index])));
+    if (state[index] == kDone || !isBetter) {
+        return;
+    }
+
+    if (state[index] == kFar) {
+        state[index] = kInQueue;
+        ++metrics.uniqueQueuedVoxelCount;
+    } else {
+        ++metrics.requeueCount;
+    }
+    bestLevel[index] = level;
+    bestDistance[index] = distance;
+    owner[index] = label;
+    queue.push({level, distance, label, index});
+    ++metrics.enqueuedVoxelCount;
+    metrics.maxQueueDepth = std::max(metrics.maxQueueDepth, queue.size());
+}
+
+template <std::size_t NeighborCount>
+void initializeGeodesicQueue(
+    const std::array<int, NeighborCount> &neighbors,
+    GeodesicQueue &queue,
+    std::vector<std::uint32_t> &owner,
+    std::vector<std::uint16_t> &bestLevel,
+    std::vector<std::uint32_t> &bestDistance,
+    std::vector<std::uint8_t> &state,
+    const std::vector<std::uint16_t> &paddedCosts,
+    const std::vector<std::uint32_t> &seedIndices,
+    FastMarkerWatershedMetrics &metrics)
+{
+    for (const std::uint32_t seedIndex : seedIndices) {
+        const std::uint32_t seedLabel = owner[seedIndex];
+        for (const int offset : neighbors) {
+            ++metrics.neighborCheckCount;
+            const auto neighbor = static_cast<std::uint32_t>(
+                static_cast<int>(seedIndex) + offset);
+            offerGeodesicCandidate(
+                queue,
+                owner.data(), bestLevel.data(), bestDistance.data(), state.data(),
+                neighbor, paddedCosts[neighbor], 1, seedLabel, metrics);
+        }
+    }
+}
+
+template <std::size_t NeighborCount>
+void runGeodesicFlood(
+    const std::array<int, NeighborCount> &neighbors,
+    GeodesicQueue &queue,
+    std::vector<std::uint32_t> &owner,
+    std::vector<std::uint16_t> &bestLevel,
+    std::vector<std::uint32_t> &bestDistance,
+    std::vector<std::uint8_t> &state,
+    const std::vector<std::uint16_t> &paddedCosts,
+    FastMarkerWatershedMetrics &metrics)
+{
+    while (!queue.empty()) {
+        const GeodesicQueueEntry active = queue.top();
+        queue.pop();
+        ++metrics.popCount;
+        if (state[active.index] != kInQueue
+            || bestLevel[active.index] != active.level
+            || bestDistance[active.index] != active.distance
+            || owner[active.index] != active.label) {
+            ++metrics.stalePopCount;
+            continue;
+        }
+
+        state[active.index] = kDone;
+        ++metrics.finalizedVoxelCount;
+        for (const int offset : neighbors) {
+            ++metrics.neighborCheckCount;
+            const auto neighbor = static_cast<std::uint32_t>(
+                static_cast<int>(active.index) + offset);
+            if (state[neighbor] == kDone) {
+                continue;
+            }
+            offerGeodesicCandidate(
+                queue,
+                owner.data(), bestLevel.data(), bestDistance.data(), state.data(),
+                neighbor,
+                std::max(active.level, paddedCosts[neighbor]),
+                active.distance + 1,
+                active.label,
+                metrics);
+        }
+    }
+}
+
+struct CompactNeighbor {
+    int offset = 0;
+    int dx = 0;
+    int dy = 0;
+    int dz = 0;
+};
+
+std::array<CompactNeighbor, 6> buildCompactNeighbors6(
+    const std::array<int, 3> &paddedDims)
+{
+    const int yStride = paddedDims[0];
+    const int zStride = paddedDims[0] * paddedDims[1];
+    return {{{-zStride, 0, 0, -1},
+             {-yStride, 0, -1, 0},
+             {-1, -1, 0, 0},
+             {1, 1, 0, 0},
+             {yStride, 0, 1, 0},
+             {zStride, 0, 0, 1}}};
+}
+
+std::array<CompactNeighbor, 26> buildCompactNeighbors26(
+    const std::array<int, 3> &paddedDims)
+{
+    std::array<CompactNeighbor, 26> neighbors{};
+    std::size_t index = 0;
+    const int yStride = paddedDims[0];
+    const int zStride = paddedDims[0] * paddedDims[1];
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dy == 0 && dz == 0) {
+                    continue;
+                }
+                neighbors[index++] = {
+                    dx + dy * yStride + dz * zStride, dx, dy, dz};
+            }
+        }
+    }
+    return neighbors;
+}
+
+struct CompactQueueEntry {
+    double priority = 0.0;
+    std::uint32_t label = 0;
+    std::uint32_t index = 0;
+    std::uint32_t source = 0;
+};
+
+struct CompactQueueEntryGreater {
+    bool operator()(const CompactQueueEntry &left,
+                    const CompactQueueEntry &right) const
+    {
+        if (left.priority != right.priority) return left.priority > right.priority;
+        if (left.label != right.label) return left.label > right.label;
+        if (left.source != right.source) return left.source > right.source;
+        return left.index > right.index;
+    }
+};
+
+using CompactQueue = std::priority_queue<
+    CompactQueueEntry,
+    std::vector<CompactQueueEntry>,
+    CompactQueueEntryGreater>;
+
+struct CompactGeometry {
+    std::array<int, 3> paddedDims{};
+    std::array<double, 3> spacing{};
+    double inverseDiagonal = 1.0;
+    double compactness = 0.0;
+};
+
+std::array<int, 3> unflattenIndex(
+    std::uint32_t index,
+    const std::array<int, 3> &dims)
+{
+    const int planeSize = dims[0] * dims[1];
+    const int z = static_cast<int>(index) / planeSize;
+    const int remainder = static_cast<int>(index) - z * planeSize;
+    const int y = remainder / dims[0];
+    return {remainder - y * dims[0], y, z};
+}
+
+double compactNodePriority(
+    std::uint16_t level,
+    const std::array<int, 3> &index,
+    const std::array<int, 3> &source,
+    const CompactGeometry &geometry)
+{
+    double squaredDistance = 0.0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const double delta = static_cast<double>(index[axis] - source[axis])
+                             * geometry.spacing[axis];
+        squaredDistance += delta * delta;
+    }
+    // Normalizing both terms makes compactness independent of the cost range
+    // and the physical size of the processed ROI.
+    const double normalizedLevel =
+        static_cast<double>(level) / static_cast<double>(kMaxBucketCount - 1);
+    const double normalizedDistance = std::sqrt(squaredDistance)
+                                      * geometry.inverseDiagonal;
+    return normalizedLevel + geometry.compactness * normalizedDistance;
+}
+
+inline void offerCompactCandidate(
+    CompactQueue &queue,
+    std::uint32_t *owner,
+    std::uint32_t *bestSource,
+    double *bestPriority,
+    std::uint8_t *state,
+    std::uint32_t index,
+    std::uint32_t source,
+    std::uint32_t label,
+    double priority,
+    FastMarkerWatershedMetrics &metrics)
+{
+    const bool isBetter = state[index] == kFar
+        || priority < bestPriority[index]
+        || (priority == bestPriority[index]
+            && (label < owner[index]
+                || (label == owner[index] && source < bestSource[index])));
+    if (state[index] == kDone || !isBetter) {
+        return;
+    }
+
+    if (state[index] == kFar) {
+        state[index] = kInQueue;
+        ++metrics.uniqueQueuedVoxelCount;
+    } else {
+        ++metrics.requeueCount;
+    }
+    owner[index] = label;
+    bestSource[index] = source;
+    bestPriority[index] = priority;
+    queue.push({priority, label, index, source});
+    ++metrics.enqueuedVoxelCount;
+    metrics.maxQueueDepth = std::max(metrics.maxQueueDepth, queue.size());
+}
+
+template <std::size_t NeighborCount>
+void initializeCompactQueue(
+    const std::array<CompactNeighbor, NeighborCount> &neighbors,
+    CompactQueue &queue,
+    std::vector<std::uint32_t> &owner,
+    std::vector<std::uint32_t> &bestSource,
+    std::vector<double> &bestPriority,
+    std::vector<std::uint8_t> &state,
+    const std::vector<std::uint16_t> &paddedCosts,
+    const std::vector<std::uint32_t> &seedIndices,
+    const CompactGeometry &geometry,
+    FastMarkerWatershedMetrics &metrics)
+{
+    for (const std::uint32_t seedIndex : seedIndices) {
+        const auto source = unflattenIndex(seedIndex, geometry.paddedDims);
+        const std::uint32_t seedLabel = owner[seedIndex];
+        for (const CompactNeighbor &neighbor : neighbors) {
+            ++metrics.neighborCheckCount;
+            const auto neighborIndex = static_cast<std::uint32_t>(
+                static_cast<int>(seedIndex) + neighbor.offset);
+            const std::array<int, 3> coordinate{
+                source[0] + neighbor.dx,
+                source[1] + neighbor.dy,
+                source[2] + neighbor.dz};
+            offerCompactCandidate(
+                queue,
+                owner.data(), bestSource.data(), bestPriority.data(), state.data(),
+                neighborIndex, seedIndex, seedLabel,
+                compactNodePriority(
+                    paddedCosts[neighborIndex], coordinate, source, geometry),
+                metrics);
+        }
+    }
+}
+
+template <std::size_t NeighborCount>
+void runCompactFlood(
+    const std::array<CompactNeighbor, NeighborCount> &neighbors,
+    CompactQueue &queue,
+    std::vector<std::uint32_t> &owner,
+    std::vector<std::uint32_t> &bestSource,
+    std::vector<double> &bestPriority,
+    std::vector<std::uint8_t> &state,
+    const std::vector<std::uint16_t> &paddedCosts,
+    const CompactGeometry &geometry,
+    FastMarkerWatershedMetrics &metrics)
+{
+    while (!queue.empty()) {
+        const CompactQueueEntry active = queue.top();
+        queue.pop();
+        ++metrics.popCount;
+        if (state[active.index] != kInQueue
+            || bestPriority[active.index] != active.priority
+            || bestSource[active.index] != active.source
+            || owner[active.index] != active.label) {
+            ++metrics.stalePopCount;
+            continue;
+        }
+
+        state[active.index] = kDone;
+        ++metrics.finalizedVoxelCount;
+        const auto coordinate = unflattenIndex(active.index, geometry.paddedDims);
+        const auto source = unflattenIndex(active.source, geometry.paddedDims);
+        for (const CompactNeighbor &neighbor : neighbors) {
+            ++metrics.neighborCheckCount;
+            const auto neighborIndex = static_cast<std::uint32_t>(
+                static_cast<int>(active.index) + neighbor.offset);
+            if (state[neighborIndex] == kDone) {
+                continue;
+            }
+            const std::array<int, 3> neighborCoordinate{
+                coordinate[0] + neighbor.dx,
+                coordinate[1] + neighbor.dy,
+                coordinate[2] + neighbor.dz};
+            const double priority = std::max(
+                active.priority,
+                compactNodePriority(
+                    paddedCosts[neighborIndex], neighborCoordinate, source, geometry));
+            offerCompactCandidate(
+                queue,
+                owner.data(), bestSource.data(), bestPriority.data(), state.data(),
+                neighborIndex, active.source, active.label, priority, metrics);
+        }
+    }
 }
 
 template <std::size_t NeighborCount>
@@ -373,11 +725,19 @@ struct CostRange {
     }
 };
 
-CostRange computeCostRange(segment_puzzler::FastMarkerWatershedCostImage::Pointer costImage) {
+CostRange computeCostRange(
+    segment_puzzler::FastMarkerWatershedCostImage::Pointer costImage,
+    segment_puzzler::FastMarkerWatershedMaskImage::Pointer domainMask)
+{
     const auto region = costImage->GetLargestPossibleRegion();
     CostRange range;
     itk::ImageRegionConstIterator<segment_puzzler::FastMarkerWatershedCostImage> it(costImage, region);
-    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+    const auto *mask = domainMask.IsNotNull() ? domainMask->GetBufferPointer() : nullptr;
+    std::size_t index = 0;
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++index) {
+        if (mask != nullptr && mask[index] == 0) {
+            continue;
+        }
         const float value = it.Get();
         range.minValue = std::min(range.minValue, value);
         range.maxValue = std::max(range.maxValue, value);
@@ -457,7 +817,11 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     FastMarkerWatershedMetrics *metrics) {
     TRACE_EVENT("watershed", "fast_marker_watershed_backend",
                 "fully_connected", options.fullyConnected,
-                "watershed_lines", options.markWatershedLine);
+                "watershed_lines", options.markWatershedLine,
+                "geodesic_tie_break",
+                options.tieBreak == FastMarkerWatershedTieBreak::GeodesicDistance,
+                "compactness", options.compactness,
+                "masked", options.domainMask.IsNotNull());
     if (TRACE_EVENT_CATEGORY_ENABLED("watershed.parallel")) {
         TRACE_EVENT_INSTANT("watershed.parallel", "fast_marker_parallel_mode",
                             "mode", "sequential",
@@ -469,8 +833,16 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     if (options.markWatershedLine) {
         throw std::runtime_error("Fast marker watershed does not support watershed lines yet.");
     }
+    if (!std::isfinite(options.compactness) || options.compactness < 0.0) {
+        throw std::runtime_error("Fast marker watershed compactness must be finite and non-negative.");
+    }
     if (costImage->GetLargestPossibleRegion().GetSize() != markers->GetLargestPossibleRegion().GetSize()) {
         throw std::runtime_error("Fast marker watershed requires matching cost/marker dimensions.");
+    }
+    if (options.domainMask.IsNotNull()
+        && costImage->GetLargestPossibleRegion().GetSize()
+               != options.domainMask->GetLargestPossibleRegion().GetSize()) {
+        throw std::runtime_error("Fast marker watershed requires matching cost/mask dimensions.");
     }
 
     FastMarkerWatershedMetrics localMetrics;
@@ -492,7 +864,7 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     CostRange costRange;
     {
         TRACE_EVENT("watershed", "fast_marker_quantize_costs", "voxels", static_cast<uint64_t>(voxelCount));
-        costRange = computeCostRange(costImage);
+        costRange = computeCostRange(costImage, options.domainMask);
     }
     const double quantizeEnd = wallTimeSeconds();
     localMetrics.quantizeMs = (quantizeEnd - quantizeStart) * 1000.0;
@@ -510,6 +882,17 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     // already holds the correct label and is used for propagation.
     std::vector<std::uint32_t> owner(paddedVoxelCount, 0);
     std::vector<std::uint16_t> bestLevel(paddedVoxelCount, std::numeric_limits<std::uint16_t>::max());
+    std::vector<std::uint32_t> bestDistance;
+    if (options.compactness == 0.0
+        && options.tieBreak == FastMarkerWatershedTieBreak::GeodesicDistance) {
+        bestDistance.assign(paddedVoxelCount, std::numeric_limits<std::uint32_t>::max());
+    }
+    std::vector<std::uint32_t> bestSource;
+    std::vector<double> bestPriority;
+    if (options.compactness > 0.0) {
+        bestSource.assign(paddedVoxelCount, 0);
+        bestPriority.assign(paddedVoxelCount, std::numeric_limits<double>::infinity());
+    }
     std::vector<std::uint8_t> state(paddedVoxelCount, kDone);
     std::vector<std::uint32_t> seedIndices;
     const int neighborCount = options.fullyConnected ? 26 : 6;
@@ -521,6 +904,9 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
         : 0.0;
     itk::ImageRegionConstIterator<FastMarkerWatershedCostImage> costIt(costImage, region);
     itk::ImageRegionConstIterator<FastMarkerWatershedLabelImage> markerIt(markers, region);
+    const auto *domainMask = options.domainMask.IsNotNull()
+                                 ? options.domainMask->GetBufferPointer()
+                                 : nullptr;
     seedIndices.reserve(1024);
     {
         TRACE_EVENT("watershed", "fast_marker_initialize_markers",
@@ -528,15 +914,24 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
                     "neighbor_count", static_cast<uint64_t>(neighborCount));
         costIt.GoToBegin();
         markerIt.GoToBegin();
+        std::size_t sourceIndex = 0;
         for (int z = 0; z < dims[2]; ++z) {
             for (int y = 0; y < dims[1]; ++y) {
-                for (int x = 0; x < dims[0]; ++x, ++costIt, ++markerIt) {
+                for (int x = 0; x < dims[0];
+                     ++x, ++costIt, ++markerIt, ++sourceIndex) {
                     const std::size_t paddedIdx = flattenIndex(x + 1, y + 1, z + 1, paddedDims);
+                    const std::uint32_t label = markerIt.Get();
+                    if (domainMask != nullptr && domainMask[sourceIndex] == 0) {
+                        if (label != 0) {
+                            throw std::runtime_error(
+                                "Fast marker watershed found a marker outside its domain mask.");
+                        }
+                        continue;
+                    }
                     const std::uint16_t level = quantizeCostValue(costIt.Get(), costRange, quantizeScale);
                     paddedCosts[paddedIdx] = level;
                     usedLevels[static_cast<std::size_t>(level)] = 1;
                     state[paddedIdx] = kFar;
-                    const std::uint32_t label = markerIt.Get();
                     if (label > 0) {
                         owner[paddedIdx] = label;
                         state[paddedIdx] = kDone;
@@ -547,8 +942,30 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
             }
         }
     }
-    const int compactBucketCount = compactQuantizedLevels(paddedCosts, dims, paddedDims, usedLevels);
-    BucketQueueSet queues(compactBucketCount);
+    const int compactBucketCount = options.compactness > 0.0
+        ? kMaxBucketCount
+        : compactQuantizedLevels(paddedCosts, dims, paddedDims, usedLevels);
+    BucketQueueSet queues(
+        options.compactness == 0.0
+            && options.tieBreak == FastMarkerWatershedTieBreak::FirstArrival
+            ? compactBucketCount
+            : 1);
+    GeodesicQueue geodesicQueue;
+    CompactQueue compactQueue;
+    const auto imageSpacing = costImage->GetSpacing();
+    CompactGeometry compactGeometry;
+    compactGeometry.paddedDims = paddedDims;
+    compactGeometry.spacing = {imageSpacing[0], imageSpacing[1], imageSpacing[2]};
+    compactGeometry.compactness = options.compactness;
+    double squaredDiagonal = 0.0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const double extent = static_cast<double>(std::max(0, dims[axis] - 1))
+                              * compactGeometry.spacing[axis];
+        squaredDiagonal += extent * extent;
+    }
+    compactGeometry.inverseDiagonal = squaredDiagonal > 0.0
+        ? 1.0 / std::sqrt(squaredDiagonal)
+        : 1.0;
     localMetrics.seedCount = seedIndices.size();
 
     const double seedFrontierStart = wallTimeSeconds();
@@ -556,7 +973,28 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     // cutting down the empty-bucket scans in the flood loop.
     {
         TRACE_EVENT("watershed", "fast_marker_seed_frontier");
-        if (options.fullyConnected) {
+        if (options.compactness > 0.0 && options.fullyConnected) {
+            const auto neighbors26 = buildCompactNeighbors26(paddedDims);
+            initializeCompactQueue<26>(
+                neighbors26, compactQueue, owner, bestSource, bestPriority,
+                state, paddedCosts, seedIndices, compactGeometry, localMetrics);
+        } else if (options.compactness > 0.0) {
+            const auto neighbors6 = buildCompactNeighbors6(paddedDims);
+            initializeCompactQueue<6>(
+                neighbors6, compactQueue, owner, bestSource, bestPriority,
+                state, paddedCosts, seedIndices, compactGeometry, localMetrics);
+        } else if (options.tieBreak == FastMarkerWatershedTieBreak::GeodesicDistance
+            && options.fullyConnected) {
+            const auto neighbors26 = buildNeighborStrides26(paddedDims);
+            initializeGeodesicQueue<26>(
+                neighbors26, geodesicQueue, owner, bestLevel, bestDistance,
+                state, paddedCosts, seedIndices, localMetrics);
+        } else if (options.tieBreak == FastMarkerWatershedTieBreak::GeodesicDistance) {
+            const auto neighbors6 = buildNeighborStrides6(paddedDims);
+            initializeGeodesicQueue<6>(
+                neighbors6, geodesicQueue, owner, bestLevel, bestDistance,
+                state, paddedCosts, seedIndices, localMetrics);
+        } else if (options.fullyConnected) {
             const auto neighbors26 = buildNeighborStrides26(paddedDims);
             expandSeedFrontier<26>(neighbors26, queues, owner, bestLevel, state, paddedCosts, seedIndices, localMetrics);
         } else {
@@ -572,7 +1010,28 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     const double floodStart = wallTimeSeconds();
     {
         TRACE_EVENT("watershed", "fast_marker_flood");
-        if (options.fullyConnected) {
+        if (options.compactness > 0.0 && options.fullyConnected) {
+            const auto neighbors26 = buildCompactNeighbors26(paddedDims);
+            runCompactFlood<26>(
+                neighbors26, compactQueue, owner, bestSource, bestPriority,
+                state, paddedCosts, compactGeometry, localMetrics);
+        } else if (options.compactness > 0.0) {
+            const auto neighbors6 = buildCompactNeighbors6(paddedDims);
+            runCompactFlood<6>(
+                neighbors6, compactQueue, owner, bestSource, bestPriority,
+                state, paddedCosts, compactGeometry, localMetrics);
+        } else if (options.tieBreak == FastMarkerWatershedTieBreak::GeodesicDistance
+            && options.fullyConnected) {
+            const auto neighbors26 = buildNeighborStrides26(paddedDims);
+            runGeodesicFlood<26>(
+                neighbors26, geodesicQueue, owner, bestLevel, bestDistance,
+                state, paddedCosts, localMetrics);
+        } else if (options.tieBreak == FastMarkerWatershedTieBreak::GeodesicDistance) {
+            const auto neighbors6 = buildNeighborStrides6(paddedDims);
+            runGeodesicFlood<6>(
+                neighbors6, geodesicQueue, owner, bestLevel, bestDistance,
+                state, paddedCosts, localMetrics);
+        } else if (options.fullyConnected) {
             const auto neighbors26 = buildNeighborStrides26(paddedDims);
             runFloodLoop<26>(neighbors26, queues, owner, bestLevel, state, paddedCosts, localMetrics);
         } else {
@@ -585,8 +1044,11 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
 
     localMetrics.floodScanMs = 0.0;
     localMetrics.floodPropagateMs = 0.0;
-    localMetrics.maxQueueDepth = queues.maxQueueDepth;
-    localMetrics.maxBucketOccupancy = queues.maxBucketOccupancy;
+    if (options.compactness == 0.0
+        && options.tieBreak == FastMarkerWatershedTieBreak::FirstArrival) {
+        localMetrics.maxQueueDepth = queues.maxQueueDepth;
+        localMetrics.maxBucketOccupancy = queues.maxBucketOccupancy;
+    }
     TRACE_EVENT("watershed", "fast_marker_flood_summary",
                 "flood_ms", localMetrics.floodMs,
                 "scan_ms", localMetrics.floodScanMs,
@@ -621,11 +1083,17 @@ FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     localMetrics.writebackMs = (writebackEnd - writebackStart) * 1000.0;
 
     localMetrics.elapsedMs = (wallTimeSeconds() - totalStart) * 1000.0;
-    localMetrics.bucketBytes = static_cast<std::size_t>(queues.levelCount) * sizeof(std::vector<std::uint32_t>);
+    localMetrics.bucketBytes = options.compactness == 0.0
+        && options.tieBreak == FastMarkerWatershedTieBreak::FirstArrival
+        ? static_cast<std::size_t>(queues.levelCount) * sizeof(std::vector<std::uint32_t>)
+        : 0;
     localMetrics.scratchBytes =
         paddedCosts.size() * sizeof(std::uint16_t) +
         owner.size() * sizeof(std::uint32_t) +
         bestLevel.size() * sizeof(std::uint16_t) +
+        bestDistance.size() * sizeof(std::uint32_t) +
+        bestSource.size() * sizeof(std::uint32_t) +
+        bestPriority.size() * sizeof(double) +
         state.size() * sizeof(std::uint8_t);
 
     if (metrics != nullptr) {

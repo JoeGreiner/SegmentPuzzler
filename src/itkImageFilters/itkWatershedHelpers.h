@@ -27,6 +27,8 @@ struct WatershedRunOptions {
     WatershedAlgorithm algorithm = WatershedAlgorithm::MorphologicalWatershedFromMarkers;
     bool showWatershedLines = false;
     bool fullyConnected = false;
+    // Fast Marker and Blockwise Fast Marker only; zero disables regularization.
+    double compactness = 0.0;
     int threadCount = 1;
     int blockEdge = 0;
     int blockHalo = 16;

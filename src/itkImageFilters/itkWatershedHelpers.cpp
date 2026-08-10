@@ -650,9 +650,25 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
                   itk::Image<unsigned int, 3>::Pointer &watershedOut,
                   const WatershedRunOptions &options,
                   segment_puzzler::FastMarkerWatershedMetrics *fastMetrics) {
-    emitWatershedLog("Run watershed ...");
+    if (!std::isfinite(options.compactness) || options.compactness < 0.0) {
+        throw std::invalid_argument(
+            "Watershed compactness must be finite and non-negative.");
+    }
+    emitWatershedLog(
+        "Run watershed: compactness=" + std::to_string(options.compactness));
+    const auto fastMarkerOptions = [&options]() {
+        segment_puzzler::FastMarkerWatershedOptions fastOptions;
+        fastOptions.fullyConnected = options.fullyConnected;
+        fastOptions.markWatershedLine = options.showWatershedLines;
+        fastOptions.compactness = options.compactness;
+        return fastOptions;
+    };
     switch (options.algorithm) {
         case WatershedAlgorithm::MorphologicalWatershedFromMarkers: {
+            if (options.compactness > 0.0) {
+                throw std::invalid_argument(
+                    "Compactness is only supported by the fast marker watersheds.");
+            }
             using WatershedFilterType =
                 itk::MorphologicalWatershedFromMarkersImageFilter<itk::Image<float, 3>, itk::Image<unsigned int, 3>>;
             WatershedFilterType::Pointer watershedFilter = WatershedFilterType::New();
@@ -665,11 +681,8 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
             return;
         }
         case WatershedAlgorithm::FastMarkerWatershed: {
-            segment_puzzler::FastMarkerWatershedOptions fastOptions;
-            fastOptions.fullyConnected = options.fullyConnected;
-            fastOptions.markWatershedLine = options.showWatershedLines;
             watershedOut = segment_puzzler::runFastMarkerWatershed3D(
-                invertedDistanceMap, seeds, fastOptions, fastMetrics);
+                invertedDistanceMap, seeds, fastMarkerOptions(), fastMetrics);
             return;
         }
         case WatershedAlgorithm::BlockwiseFastMarkerWatershed: {
@@ -677,8 +690,7 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
             blockwiseOptions.threadCount = options.threadCount;
             blockwiseOptions.blockEdge = options.blockEdge;
             blockwiseOptions.halo = options.blockHalo;
-            blockwiseOptions.watershed.fullyConnected = options.fullyConnected;
-            blockwiseOptions.watershed.markWatershedLine = options.showWatershedLines;
+            blockwiseOptions.watershed = fastMarkerOptions();
             segment_puzzler::BlockwiseFastMarkerWatershedMetrics blockwiseMetrics;
             watershedOut = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
                 invertedDistanceMap, seeds, blockwiseOptions, &blockwiseMetrics);
@@ -686,6 +698,7 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
                 "Blockwise watershed: edge=" + std::to_string(blockwiseMetrics.blockEdge) +
                 ", halo=" + std::to_string(blockwiseOptions.halo) +
                 ", threads=" + std::to_string(blockwiseOptions.threadCount) +
+                ", compactness=" + std::to_string(options.compactness) +
                 ", red_blocks=" + std::to_string(blockwiseMetrics.redBlockCount) +
                 ", black_blocks=" + std::to_string(blockwiseMetrics.blackBlockCount) +
                 ", deferred=" + std::to_string(blockwiseMetrics.deferredBlockCount) +

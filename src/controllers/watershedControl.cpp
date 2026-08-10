@@ -84,9 +84,17 @@ QLabel *createHelpBadgeLabel(const QString &tooltipText, QWidget *parent) {
     return helpLabel;
 }
 
-WatershedRunOptions makeBoundaryRepairOptions(WatershedAlgorithm algorithm) {
+bool supportsCompactWatershed(WatershedAlgorithm algorithm) {
+    return algorithm == WatershedAlgorithm::FastMarkerWatershed
+        || algorithm == WatershedAlgorithm::BlockwiseFastMarkerWatershed;
+}
+
+WatershedRunOptions makeBoundaryRepairOptions(
+    WatershedAlgorithm algorithm,
+    double compactness = 0.0) {
     WatershedRunOptions options;
     options.algorithm = algorithm;
+    options.compactness = compactness;
     options.showWatershedLines = false;
     options.fullyConnected = false;
     options.blockEdge = kDefaultWatershedBlockEdge;
@@ -540,6 +548,8 @@ void WatershedControl::setGuiBusy(bool busy) {
     distanceMapAlgorithmComboBox->setEnabled(!busy);
     seedAlgorithmComboBox->setEnabled(!busy);
     watershedAlgorithmComboBox->setEnabled(!busy);
+    compactWatershedCheckBox->setEnabled(!busy);
+    watershedCompactnessSpinBox->setEnabled(!busy);
     boundaryInputComboBox->setEnabled(!busy);
     thresholdInputComboBox->setEnabled(!busy);
     distanceMapInputComboBox->setEnabled(!busy);
@@ -1227,23 +1237,39 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
     const bool filterEnabled = checkBoxFiltering->isChecked();
     const int minSegmentSize = sizeFilteringInput->value();
     const WatershedAlgorithm watershedAlgorithm = selectedWatershedAlgorithm();
+    const double watershedCompactness = selectedWatershedCompactness();
     const DistanceMapAlgorithm distanceMapAlgorithm = selectedDistanceMapAlgorithm();
     const itk::Image<float, 3>::Pointer distanceMapInput = selectedWatershedDistanceMapInput();
     const itk::Image<unsigned int, 3>::Pointer seedsInput = selectedWatershedSeedsInput();
     const itk::Image<unsigned char, 3>::Pointer thresholdInput = selectedWatershedThresholdInput();
-    const QString signalName =
-        QStringLiteral("Watershed [%1]").arg(watershedOutputToken(watershedAlgorithm));
+    const QString signalName = watershedCompactness > 0.0
+        ? QStringLiteral("Watershed [%1, compact=%2]")
+              .arg(watershedOutputToken(watershedAlgorithm))
+              .arg(watershedCompactness, 0, 'g', 4)
+        : QStringLiteral("Watershed [%1]").arg(watershedOutputToken(watershedAlgorithm));
+
+    SP_LOG_INFO(
+        "watershed",
+        QStringLiteral(
+            "operation=watershed phase=request algorithm=%1 compactness=%2 "
+            "filter_small_segments=%3 min_segment_size=%4")
+            .arg(watershedOutputToken(watershedAlgorithm))
+            .arg(watershedCompactness, 0, 'g', 9)
+            .arg(filterEnabled)
+            .arg(minSegmentSize));
 
     removeRegisteredEdgeSignal();
 
     taskRunner->runWithLabel(
         QStringLiteral("Running watershed..."),
-        [filterEnabled, minSegmentSize, watershedAlgorithm, distanceMapAlgorithm, distanceMapInput, seedsInput, thresholdInput,
+        [filterEnabled, minSegmentSize, watershedAlgorithm, watershedCompactness,
+         distanceMapAlgorithm, distanceMapInput, seedsInput, thresholdInput,
          threadCount = workerThreadCount, this]() {
             itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto distanceMapInputCopy = distanceMapInput;
             WatershedRunOptions watershedOptions;
             watershedOptions.algorithm = watershedAlgorithm;
+            watershedOptions.compactness = watershedCompactness;
             watershedOptions.threadCount = threadCount;
             watershedOptions.blockEdge = kDefaultWatershedBlockEdge;
             watershedOptions.blockHalo = kDefaultWatershedBlockHalo;
@@ -1279,7 +1305,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
             auto derivedPartition = deriveBoundaryConsistentPartition(
                 watershedFragments,
                 thresholdInput,
-                makeBoundaryRepairOptions(watershedAlgorithm),
+                makeBoundaryRepairOptions(watershedAlgorithm, watershedCompactness),
                 /*repairCanonicalLabels=*/true,
                 distanceMapAlgorithm,
                 threadCount);
@@ -1314,6 +1340,7 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
     const itk::Image<unsigned char, 3>::Pointer thresholdInput = selectedWatershedThresholdInput();
     const itk::Image<unsigned char, 3>::Pointer thresholdMask = selectedAgglomertionThresholdMask();
     const WatershedAlgorithm watershedAlgorithm = selectedWatershedAlgorithm();
+    const double watershedCompactness = selectedWatershedCompactness();
     const DistanceMapAlgorithm distanceMapAlgorithm = selectedDistanceMapAlgorithm();
     const segment_puzzler::RagLinkage linkage = selectedAgglomertionLinkage();
     const segment_puzzler::BoundaryNormalizationMode boundaryMode = selectedAgglomertionBoundaryNormalization();
@@ -1344,7 +1371,8 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
 
     taskRunner->runWithLabel(
         QStringLiteral("Running agglomertion..."),
-        [watershedInput, boundaryInput, thresholdInput, thresholdMask, watershedAlgorithm, distanceMapAlgorithm,
+        [watershedInput, boundaryInput, thresholdInput, thresholdMask,
+         watershedAlgorithm, watershedCompactness, distanceMapAlgorithm,
          linkage, boundaryMode, boundaryStrategy, tau, sizeBiasStrategy, sizeBiasThreshold, sizeBiasStrength,
          sizeBiasProtection, sizeBiasRespectMask, this]() {
             using CastFilterType = itk::CastImageFilter<dataType::BoundaryImageType, segment_puzzler::BoundaryFloatImageType>;
@@ -1378,7 +1406,7 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
             auto derivedPartition = deriveBoundaryConsistentPartition(
                 canonicalAgglomertionLabels,
                 thresholdInput,
-                makeBoundaryRepairOptions(watershedAlgorithm),
+                makeBoundaryRepairOptions(watershedAlgorithm, watershedCompactness),
                 /*repairCanonicalLabels=*/false,
                 distanceMapAlgorithm,
                 workerThreadCount);
@@ -1587,6 +1615,8 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     distanceMapAlgorithmComboBox = nullptr;
     seedAlgorithmComboBox = nullptr;
     watershedAlgorithmComboBox = nullptr;
+    compactWatershedCheckBox = nullptr;
+    watershedCompactnessSpinBox = nullptr;
     boundaryInputComboBox = nullptr;
     thresholdInputComboBox = nullptr;
     distanceMapInputComboBox = nullptr;
@@ -1872,6 +1902,22 @@ void WatershedControl::setupWatershedWidget() {
     configureInputCombo(watershedThresholdInputComboBox);
     checkBoxFiltering = new QCheckBox("Activate Segment Size Filtering", this);
     checkBoxFiltering->setChecked(false);
+    compactWatershedCheckBox = new QCheckBox("Compact Watershed", this);
+    compactWatershedCheckBox->setObjectName("compactWatershedCheckBox");
+    compactWatershedCheckBox->setChecked(false);
+    compactWatershedCheckBox->setToolTip(
+        "Add a normalized distance-to-seed penalty. Supported by Fast Marker "
+        "and Blockwise Fast Marker Watershed.");
+    watershedCompactnessSpinBox = new QDoubleSpinBox(this);
+    watershedCompactnessSpinBox->setObjectName("watershedCompactnessSpinBox");
+    watershedCompactnessSpinBox->setDecimals(3);
+    watershedCompactnessSpinBox->setRange(0.001, 10.0);
+    watershedCompactnessSpinBox->setSingleStep(0.01);
+    watershedCompactnessSpinBox->setValue(
+        segment_puzzler::kDefaultFastMarkerWatershedCompactness);
+    watershedCompactnessSpinBox->setToolTip(
+        "Strength of the normalized seed-distance penalty. Larger values "
+        "produce more compact regions.");
     sizeFilteringInput = new QSpinBox(this);
     sizeFilteringInput->setMinimum(100);
     sizeFilteringInput->setMaximum(10000000);
@@ -1890,6 +1936,15 @@ void WatershedControl::setupWatershedWidget() {
     filterLayout->addWidget(sizeFilteringInput);
     filterLayout->addStretch(1);
 
+    auto *compactRow = new QWidget(this);
+    auto *compactLayout = new QHBoxLayout(compactRow);
+    compactLayout->setContentsMargins(0, 0, 0, 0);
+    compactLayout->setSpacing(6);
+    compactLayout->addWidget(compactWatershedCheckBox);
+    compactLayout->addWidget(new QLabel("Compactness", compactRow));
+    compactLayout->addWidget(watershedCompactnessSpinBox);
+    compactLayout->addStretch(1);
+
     auto *controlsWidget = new QWidget(this);
     auto *controlsLayout = new QVBoxLayout(controlsWidget);
     controlsLayout->setContentsMargins(0, 0, 0, 0);
@@ -1898,6 +1953,7 @@ void WatershedControl::setupWatershedWidget() {
     controlsLayout->addWidget(createLabeledInputRow("Seeds", watershedSeedsInputComboBox));
     controlsLayout->addWidget(createLabeledInputRow("Thresholded Boundaries", watershedThresholdInputComboBox));
     controlsLayout->addWidget(createLabeledInputRow("Algorithm", watershedAlgorithmComboBox));
+    controlsLayout->addWidget(compactRow);
     controlsLayout->addWidget(filterRow);
 
     auto *groupBox = createStepGroup("4. Watershed");
@@ -1907,6 +1963,10 @@ void WatershedControl::setupWatershedWidget() {
     connect(watershedDistanceMapInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
     connect(watershedSeedsInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
     connect(watershedThresholdInputComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &WatershedControl::updateStepEnablement);
+    connect(watershedAlgorithmComboBox, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &WatershedControl::updateStepEnablement);
+    connect(compactWatershedCheckBox, &QCheckBox::toggled,
+            this, &WatershedControl::updateStepEnablement);
 }
 
 void WatershedControl::setupAgglomertionWidget() {
@@ -2538,6 +2598,15 @@ void WatershedControl::updateStepEnablement() {
     calculateDistanceMapButton->setEnabled(hasThreshold);
     calculateSeedsButton->setEnabled(hasDistanceMap);
     runWatershedButton->setEnabled(hasWatershedDistanceMap && hasWatershedSeeds && hasWatershedThreshold);
+    const bool compactWatershedSupported =
+        supportsCompactWatershed(selectedWatershedAlgorithm());
+    const bool watershedControlsEnabled = !taskRunner->isBusy();
+    compactWatershedCheckBox->setEnabled(
+        compactWatershedSupported && watershedControlsEnabled);
+    watershedCompactnessSpinBox->setEnabled(
+        compactWatershedSupported
+        && watershedControlsEnabled
+        && compactWatershedCheckBox->isChecked());
     runAgglomertionButton->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask);
     agglomertionPreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
     agglomertionApproximatePreviewCheckBox->setEnabled(hasAgglomertionInput && hasBoundary && hasRequiredAgglomertionMask && !taskRunner->isBusy());
@@ -2563,6 +2632,13 @@ distance_map_benchmark::SeedExtractorKind WatershedControl::selectedSeedAlgorith
 
 WatershedAlgorithm WatershedControl::selectedWatershedAlgorithm() const {
     return static_cast<WatershedAlgorithm>(watershedAlgorithmComboBox->currentData().toInt());
+}
+
+double WatershedControl::selectedWatershedCompactness() const {
+    return supportsCompactWatershed(selectedWatershedAlgorithm())
+        && compactWatershedCheckBox->isChecked()
+        ? watershedCompactnessSpinBox->value()
+        : 0.0;
 }
 
 QString WatershedControl::thresholdAlgorithmLabel(ThresholdAlgorithm algorithm) const {

@@ -18,6 +18,7 @@
 #include <QTreeWidget>
 #include <QCheckBox>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QPointer>
 #include <QScrollArea>
@@ -203,6 +204,8 @@ private:
     QComboBox *watershedSeedsInputComboBox;
     QComboBox *watershedThresholdInputComboBox;
     QComboBox *watershedAlgorithmComboBox;
+    QCheckBox *compactWatershedCheckBox;
+    QDoubleSpinBox *watershedCompactnessSpinBox;
 
     QPushButton *runAgglomertionButton;
     QComboBox *agglomertionInputComboBox;
@@ -312,6 +315,7 @@ private:
     DistanceMapAlgorithm selectedDistanceMapAlgorithm() const;
     distance_map_benchmark::SeedExtractorKind selectedSeedAlgorithm() const;
     WatershedAlgorithm selectedWatershedAlgorithm() const;
+    double selectedWatershedCompactness() const;
 
     QString thresholdAlgorithmLabel(ThresholdAlgorithm algorithm) const;
     QString distanceMapAlgorithmLabel(DistanceMapAlgorithm algorithm) const;

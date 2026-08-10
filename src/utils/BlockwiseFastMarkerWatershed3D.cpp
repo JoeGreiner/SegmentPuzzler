@@ -265,6 +265,9 @@ FastMarkerWatershedLabelImage::Pointer runBlockwiseFastMarkerWatershed3D(
     if (costImage.IsNull() || markers.IsNull()) {
         throw std::invalid_argument("Blockwise fast marker watershed requires cost and marker images.");
     }
+    if (options.watershed.domainMask.IsNotNull()) {
+        throw std::invalid_argument("Blockwise fast marker watershed does not support domain masks.");
+    }
     if (options.threadCount <= 0 || options.blockEdge < 0 || options.halo < 0) {
         throw std::invalid_argument("Thread count must be positive; block edge and halo must be non-negative.");
     }

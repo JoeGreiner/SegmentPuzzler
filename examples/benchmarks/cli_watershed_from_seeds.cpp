@@ -1,12 +1,23 @@
 #include "src/itkImageFilters/itkWatershedHelpers.h"
 #include "src/utils/DistanceMapCliIO.h"
 
+#include <itkMultiThreaderBase.h>
+
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
+
+constexpr int kWatershedBlockEdge = 256;
+constexpr int kWatershedBlockHalo = 16;
+
+int defaultThreadCount() {
+    const unsigned int threadCount = std::thread::hardware_concurrency();
+    return threadCount > 0 ? static_cast<int>(threadCount) : 1;
+}
 
 struct Options {
     std::string distanceMapPath;
@@ -14,21 +25,24 @@ struct Options {
     std::string outputPath;
     std::string thresholdedBoundariesPath;
     int filterSmallSeeds = 0;
+    int threadCount = defaultThreadCount();
     bool showWatershedLines = false;
     bool fullyConnected = false;
-    WatershedAlgorithm algorithm = WatershedAlgorithm::MorphologicalWatershedFromMarkers;
+    WatershedAlgorithm algorithm = WatershedAlgorithm::BlockwiseFastMarkerWatershed;
 };
 
 void printUsage() {
-    std::cout << "cli_watershed_from_seeds\n"
-              << "  --distance-map PATH\n"
-              << "  --seeds PATH\n"
-              << "  --output PATH\n"
-              << "  --thresholded-boundaries PATH\n"
-              << "  --filter-small-seeds VALUE\n"
-              << "  --show-watershed-lines {0,1}\n"
-              << "  --fully-connected {0,1}\n"
-              << "  --algorithm {itk,fast-marker}\n";
+    std::cout << "Usage: cli_watershed_from_seeds [OPTIONS]\n"
+              << "  --distance-map PATH              Required distance map\n"
+              << "  --seeds PATH                     Required marker labels\n"
+              << "  --thresholded-boundaries PATH    Required binary boundary mask\n"
+              << "  --output PATH                    Required output labels\n"
+              << "  --algorithm NAME                 itk, fast-marker, or blockwise-fast-marker\n"
+              << "                                   (default: blockwise-fast-marker)\n"
+              << "  --threads N                      Worker threads (default: available CPUs)\n"
+              << "  --filter-small-seeds N           Remove fragments smaller than N voxels\n"
+              << "  --show-watershed-lines {0,1}     Default: 0\n"
+              << "  --fully-connected {0,1}          Default: 0\n";
 }
 
 Options parseArguments(int argc, char **argv) {
@@ -55,6 +69,8 @@ Options parseArguments(int argc, char **argv) {
             options.thresholdedBoundariesPath = requireValue("--thresholded-boundaries");
         } else if (argument == "--filter-small-seeds") {
             options.filterSmallSeeds = std::stoi(requireValue("--filter-small-seeds"));
+        } else if (argument == "--threads") {
+            options.threadCount = std::stoi(requireValue("--threads"));
         } else if (argument == "--show-watershed-lines") {
             options.showWatershedLines = std::stoi(requireValue("--show-watershed-lines")) != 0;
         } else if (argument == "--fully-connected") {
@@ -65,6 +81,8 @@ Options parseArguments(int argc, char **argv) {
                 options.algorithm = WatershedAlgorithm::MorphologicalWatershedFromMarkers;
             } else if (value == "fast-marker") {
                 options.algorithm = WatershedAlgorithm::FastMarkerWatershed;
+            } else if (value == "blockwise-fast-marker") {
+                options.algorithm = WatershedAlgorithm::BlockwiseFastMarkerWatershed;
             } else {
                 throw std::runtime_error("Unknown watershed algorithm: " + value);
             }
@@ -73,8 +91,16 @@ Options parseArguments(int argc, char **argv) {
         }
     }
 
-    if (options.distanceMapPath.empty() || options.seedsPath.empty() || options.outputPath.empty()) {
-        throw std::runtime_error("--distance-map, --seeds, and --output are required.");
+    if (options.distanceMapPath.empty() || options.seedsPath.empty() ||
+        options.thresholdedBoundariesPath.empty() || options.outputPath.empty()) {
+        throw std::runtime_error(
+            "--distance-map, --seeds, --thresholded-boundaries, and --output are required.");
+    }
+    if (options.threadCount <= 0) {
+        throw std::runtime_error("--threads must be greater than zero.");
+    }
+    if (options.filterSmallSeeds < 0) {
+        throw std::runtime_error("--filter-small-seeds must not be negative.");
     }
     return options;
 }
@@ -84,6 +110,7 @@ Options parseArguments(int argc, char **argv) {
 int main(int argc, char **argv) {
     try {
         const Options options = parseArguments(argc, argv);
+        itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(options.threadCount);
         auto distanceMap = distance_map_benchmark::loadScalarImageAsFloat(options.distanceMapPath);
         auto seeds = distance_map_benchmark::loadSeedImage(options.seedsPath);
         distance_map_benchmark::printImageSummary<distance_map_benchmark::DistanceImageType>("distance_map", distanceMap);
@@ -95,6 +122,9 @@ int main(int argc, char **argv) {
         watershedOptions.algorithm = options.algorithm;
         watershedOptions.showWatershedLines = options.showWatershedLines;
         watershedOptions.fullyConnected = options.fullyConnected;
+        watershedOptions.threadCount = options.threadCount;
+        watershedOptions.blockEdge = kWatershedBlockEdge;
+        watershedOptions.blockHalo = kWatershedBlockHalo;
 
         distance_map_benchmark::SeedImageType::Pointer watershedImage;
         runWatershed(invertedDistanceMap, seeds, watershedImage, watershedOptions);
@@ -106,10 +136,18 @@ int main(int argc, char **argv) {
             runWatershed(invertedDistanceMap, seeds, watershedImage, watershedOptions);
         }
 
-        if (!options.thresholdedBoundariesPath.empty()) {
-            auto thresholdedBoundaries = distance_map_benchmark::loadBinaryImage(options.thresholdedBoundariesPath);
-            insertBoundariesIntoWatershed(watershedImage, thresholdedBoundaries);
-        }
+        auto thresholdedBoundaries = distance_map_benchmark::loadBinaryImage(options.thresholdedBoundariesPath);
+        WatershedRunOptions repairOptions = watershedOptions;
+        repairOptions.showWatershedLines = false;
+        repairOptions.fullyConnected = false;
+        auto partition = deriveBoundaryConsistentPartition(
+            watershedImage,
+            thresholdedBoundaries,
+            repairOptions,
+            true,
+            DistanceMapAlgorithm::Maurer,
+            options.threadCount);
+        watershedImage = partition.displayLabels;
 
         distance_map_benchmark::printImageSummary<distance_map_benchmark::SeedImageType>("watershed", watershedImage);
         distance_map_benchmark::writeImage<distance_map_benchmark::SeedImageType>(watershedImage, options.outputPath);

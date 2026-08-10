@@ -7,9 +7,25 @@
 
 namespace segment_puzzler {
 
+using FastMarkerWatershedCostImage = itk::Image<float, 3>;
+using FastMarkerWatershedLabelImage = itk::Image<unsigned int, 3>;
+using FastMarkerWatershedMaskImage = itk::Image<unsigned char, 3>;
+
+enum class FastMarkerWatershedTieBreak {
+    FirstArrival,
+    GeodesicDistance
+};
+
+inline constexpr double kDefaultFastMarkerWatershedCompactness = 0.05;
+
 struct FastMarkerWatershedOptions {
     bool fullyConnected = false;
     bool markWatershedLine = false;
+    FastMarkerWatershedTieBreak tieBreak = FastMarkerWatershedTieBreak::FirstArrival;
+    // Adds a normalized Euclidean seed-distance penalty and takes precedence
+    // over tieBreak; zero preserves the original marker-watershed behavior.
+    double compactness = 0.0;
+    FastMarkerWatershedMaskImage::Pointer domainMask;
 };
 
 struct FastMarkerWatershedMetrics {
@@ -44,9 +60,6 @@ struct FastMarkerWatershedMetrics {
             : static_cast<double>(enqueuedVoxelCount) / static_cast<double>(uniqueQueuedVoxelCount);
     }
 };
-
-using FastMarkerWatershedCostImage = itk::Image<float, 3>;
-using FastMarkerWatershedLabelImage = itk::Image<unsigned int, 3>;
 
 FastMarkerWatershedLabelImage::Pointer runFastMarkerWatershed3D(
     FastMarkerWatershedCostImage::Pointer costImage,
