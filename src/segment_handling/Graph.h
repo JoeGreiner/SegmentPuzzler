@@ -163,7 +163,8 @@ public:
         SegmentIdType targetWorkingLabel,
         SegmentsImageType::Pointer localPartition,
         const SegmentsImageType::IndexType &globalOffset,
-        std::vector<SegmentIdType> *resultingWorkingLabelsOut = nullptr);
+        std::vector<SegmentIdType> *resultingWorkingLabelsOut = nullptr,
+        Projected3DCutProfile *profileOut = nullptr);
     WorkingSegmentResolution inspectSelectedSegmentationComponentInWorkingGraph(int x, int y, int z);
     // Reuse the clicked WorkingNode when its voxels exactly match the clicked
     // selected-segmentation component; otherwise insert that component via H's path.

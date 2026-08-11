@@ -147,16 +147,12 @@ private:
                               dataType::SegmentIdType labelId,
                               const Roi &bounds);
     void show3DSegmentView(int posX, int posY);
-    bool show3DSegmentCutView(int posX, int posY);
-    bool show3DSeededSplitView(int posX, int posY);
-    bool prepare3DWorkingSegmentCutView(dataType::SegmentIdType workingLabel, int launchSliceAxis);
+    bool show3DSplitView(int posX, int posY);
     bool handleWorkingSegmentResolution(const Graph::WorkingSegmentResolution &resolution);
     void refreshWorkingGraphPresentationAfterInsertion(dataType::SegmentIdType workingLabel);
     void show3DAllLabelsView();
-    quint32 workingSegmentColor(dataType::SegmentIdType label) const;
     void openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
                             int launchSliceAxis,
-                            dataType::SegmentIdType targetWorkingLabel,
                             bool enableSelectedLabelDeletion = false);
     QPoint ROISelectionOrigin;
     int openingRadius = 3;

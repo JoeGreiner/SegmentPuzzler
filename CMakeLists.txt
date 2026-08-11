@@ -299,6 +299,7 @@ set(SRC_WATERSHED_HELPER_DEPS
 
 set(SRC_SEGMENTHANDLERS
         src/segment_handling/Graph.cpp
+        src/segment_handling/Projected3DCut.cpp
         src/segment_handling/SeededWatershedSplit.cpp
         src/segment_handling/graphBase.cpp
         src/segment_handling/initialEdge.cpp

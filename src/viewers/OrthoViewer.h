@@ -80,6 +80,7 @@ public:
     void flashShortcutLegendKey(const QString &shortcutId);
     void setShortcutLegendProfile(ShortcutLegendProfile profile);
     void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
+    void setImageOnlyMode(bool enabled);
 
 
     std::shared_ptr<GraphBase> graphBase;

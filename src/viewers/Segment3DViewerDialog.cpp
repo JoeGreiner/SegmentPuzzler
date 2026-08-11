@@ -22,6 +22,7 @@
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QPolygonF>
 #include <QPushButton>
 #include <QRandomGenerator>
@@ -517,7 +518,6 @@ bool navigationModifierPressed(Qt::KeyboardModifiers modifiers) {
 }
 
 QString threeDViewHelpText(bool showExplodeControls,
-                           bool showCutControls,
                            bool showSeededSplitControls) {
 #ifdef Q_OS_MACOS
     const QString navigateShortcut = QStringLiteral("Cmd (or Ctrl)");
@@ -529,15 +529,14 @@ QString threeDViewHelpText(bool showExplodeControls,
     lines << QStringLiteral("Drag to orbit the 3D camera.");
     lines << QStringLiteral("Hold %1 and click a segment to jump the linked orthogonal views to that label.")
                  .arg(navigateShortcut);
-    if (showCutControls) {
-        lines << QStringLiteral("Use Draw Cut to arm projected cut drawing, Clear to erase the stroke, and Apply to split the segment.");
-    }
     if (showSeededSplitControls) {
-        lines << QStringLiteral("Press 1 or 2 before a click to add a red or blue seed. Split Line (L) previews seeds on both sides of a stroke.");
-        lines << QStringLiteral("Adjust Line Offset and Line Sampling, then use Confirm Seeds. Auto Preview runs once both confirmed seed classes contain a marker.");
+        lines << QStringLiteral("Projected Cut (P) arms one screen-projected line and previews it automatically.");
+        lines << QStringLiteral("Red Seed (1), Blue Seed (2), and Split Line (L) provide markers for Seeded Watershed.");
+        lines << QStringLiteral("Adjust Offset and Sampling, then use Confirm Seeds. The preview updates automatically once both seed classes contain a marker.");
         lines << QStringLiteral("Connect Seeds joins markers of each color through the segment interior before watershed.");
         lines << QStringLiteral("Compact Watershed adds seed-distance regularization. Allow disconnected parts accepts such results but keeps a warning visible.");
         lines << QStringLiteral("Distance-map Smoothing controls Gaussian smoothing in pixels.");
+        lines << QStringLiteral("Reset clears the current method; Apply Split commits its automatic preview.");
         lines << QStringLiteral("Press E to export the latest split input and result for debugging.");
     }
     if (showExplodeControls) {
@@ -1967,20 +1966,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
                                              QWidget *parent,
                                              int launchSliceAxis)
     : Segment3DViewerDialog(std::move(preparedScene),
-                            CutSessionConfig{},
-                            SeededSplitSessionConfig{},
-                            parent,
-                            launchSliceAxis)
-{
-}
-
-Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
-                                             CutSessionConfig cutSession,
-                                             QWidget *parent,
-                                             int launchSliceAxis)
-    : Segment3DViewerDialog(std::move(preparedScene),
-                            std::move(cutSession),
-                            SeededSplitSessionConfig{},
+                            SplitSessionConfig{},
                             parent,
                             launchSliceAxis)
 {
@@ -1988,27 +1974,12 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
 
 Segment3DViewerDialog::Segment3DViewerDialog(
     PreparedScene preparedScene,
-    SeededSplitSessionConfig seededSplitSession,
-    QWidget *parent,
-    int launchSliceAxis)
-    : Segment3DViewerDialog(std::move(preparedScene),
-                            CutSessionConfig{},
-                            std::move(seededSplitSession),
-                            parent,
-                            launchSliceAxis)
-{
-}
-
-Segment3DViewerDialog::Segment3DViewerDialog(
-    PreparedScene preparedScene,
-    CutSessionConfig cutSession,
-    SeededSplitSessionConfig seededSplitSession,
+    SplitSessionConfig splitSession,
     QWidget *parent,
     int launchSliceAxis)
     : QDialog(parent)
     , m_targetLabelId(preparedScene.targetLabelId)
-    , m_cutSession(std::move(cutSession))
-    , m_seededSplitSession(std::move(seededSplitSession))
+    , m_seededSplitSession(std::move(splitSession))
     , m_originalSeededSplitScene(
           m_seededSplitSession.session != nullptr ? preparedScene : PreparedScene{})
     , m_navigationBounds(std::move(preparedScene.navigationBounds))
@@ -2049,8 +2020,8 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         && static_cast<bool>(m_seededSplitSession.applySplit)
         && m_targetLabelId != 0;
     const bool showExplodeControls = m_segmentActors.size() > 1 && !showSeededSplitControls;
-    const bool showCutControls = static_cast<bool>(m_cutSession.applyCut) && m_targetLabelId != 0;
     if (showSeededSplitControls) {
+        setMinimumWidth(700);
         renWin->SetNumberOfLayers(2);
         m_seedRenderer = vtkSmartPointer<vtkRenderer>::New();
         m_seedRenderer->SetLayer(1);
@@ -2093,21 +2064,24 @@ Segment3DViewerDialog::Segment3DViewerDialog(
     vtkStackLayout->setContentsMargins(0, 0, 0, 0);
     vtkStackLayout->setSpacing(0);
     vtkStackLayout->addWidget(m_vtkWidget, 0, 0);
-    if (showCutControls || showSeededSplitControls) {
+    if (showSeededSplitControls) {
         m_strokeOverlay = new StrokeOverlay(vtkContainer);
         m_strokeOverlay->onStrokeChanged = [this]() {
-            updateCutUiState();
             updateSeededSplitUiState();
         };
-        if (showSeededSplitControls) {
-            m_strokeOverlay->onStrokeFinished =
-                [this]() { updateSplitLineSeedPreview(); };
-        }
+        m_strokeOverlay->onStrokeFinished =
+            [this]() {
+                if (m_projectedCutDrawModeActive) {
+                    previewProjectedCut();
+                } else {
+                    updateSplitLineSeedPreview();
+                }
+            };
         vtkStackLayout->addWidget(m_strokeOverlay, 0, 0);
     }
     layout->addWidget(vtkContainer, 1);
 
-    if (showExplodeControls || showCutControls || showSeededSplitControls) {
+    if (showExplodeControls || showSeededSplitControls) {
         m_controlsRow = ensureControlsRow();
 
         if (showExplodeControls) {
@@ -2150,82 +2124,84 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             addOrbitControls(m_controlsRow);
         }
 
-        if (showCutControls) {
-            if (showExplodeControls) {
-                m_controlsRow->addSpacing(8);
-            }
-            m_drawCutButton = new QPushButton(QStringLiteral("Draw Cut"), m_controlsWidget);
-            m_clearCutButton = new QPushButton(QStringLiteral("Clear"), m_controlsWidget);
-            m_applyCutButton = new QPushButton(QStringLiteral("Apply"), m_controlsWidget);
-            connect(m_drawCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::beginCutDrawing);
-            connect(m_clearCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::clearCutStroke);
-            connect(m_applyCutButton, &QPushButton::clicked, this, &Segment3DViewerDialog::applyProjectedCut);
-            m_controlsRow->addWidget(m_drawCutButton);
-            m_controlsRow->addWidget(m_clearCutButton);
-            m_controlsRow->addWidget(m_applyCutButton);
-        }
-
         if (showSeededSplitControls) {
-            m_seedButtons[0] = new QPushButton(QStringLiteral("Red Seed"), m_controlsWidget);
-            m_seedButtons[1] = new QPushButton(QStringLiteral("Blue Seed"), m_controlsWidget);
+            m_controlsRow->setContentsMargins(10, 6, 10, 0);
+            auto *watershedWidget = new QWidget(this);
+            auto *lineOptionsWidget = new QWidget(this);
+            auto *optionsWidget = new QWidget(this);
+            auto *statusWidget = new QWidget(this);
+
+            m_projectedCutButton = new QPushButton(
+                QStringLiteral("(P) Projected Cut"), m_controlsWidget);
+            m_projectedCutButton->setCheckable(true);
+            m_projectedCutButton->setToolTip(
+                QStringLiteral(
+                    "Draw one screen-projected cut line; its 3D preview is created automatically."));
+            m_resetSplitButton = new QPushButton(
+                QStringLiteral("Reset"), m_controlsWidget);
+            m_resetSplitButton->setToolTip(
+                QStringLiteral("Discard the current split input and preview."));
+            m_applySplitButton = new QPushButton(
+                QStringLiteral("Apply Split"), m_controlsWidget);
+            m_applySplitButton->setToolTip(
+                QStringLiteral("Apply the current Projected Cut or Seeded Watershed preview."));
+            m_applySplitButton->setDefault(true);
+
+            m_seedButtons[0] = new QPushButton(
+                QStringLiteral("(1) Red Seed"), watershedWidget);
+            m_seedButtons[1] = new QPushButton(
+                QStringLiteral("(2) Blue Seed"), watershedWidget);
             m_seedButtons[0]->setCheckable(true);
             m_seedButtons[1]->setCheckable(true);
             m_seedButtons[0]->setToolTip(
                 QStringLiteral("Add a red seed (1)."));
             m_seedButtons[1]->setToolTip(
                 QStringLiteral("Add a blue seed (2)."));
-            m_splitLineButton = new QPushButton(QStringLiteral("Redraw Line"), m_controlsWidget);
+            m_splitLineButton = new QPushButton(
+                QStringLiteral("(L) Redraw Line"), watershedWidget);
             m_splitLineButton->setCheckable(true);
             m_splitLineButton->setMinimumWidth(m_splitLineButton->sizeHint().width());
-            m_splitLineButton->setText(QStringLiteral("Split Line"));
+            m_splitLineButton->setText(QStringLiteral("(L) Split Line"));
             m_splitLineButton->setToolTip(
                 QStringLiteral("Draw a line that generates red and blue seeds on either side (L)."));
-            m_seedDistanceSlider = new QSlider(Qt::Horizontal, m_controlsWidget);
+            m_seedDistanceSlider = new QSlider(Qt::Horizontal, lineOptionsWidget);
             m_seedDistanceSlider->setRange(2, kMaximumSeedDistancePixels);
             m_seedDistanceSlider->setValue(kDefaultSeedDistancePixels);
             m_seedDistanceSlider->setSingleStep(1);
             m_seedDistanceSlider->setPageStep(5);
-            m_seedDistanceSlider->setFixedWidth(90);
+            m_seedDistanceSlider->setFixedWidth(80);
             m_seedDistanceSlider->setToolTip(
                 QStringLiteral("Screen-space offset between the split line and generated seeds."));
             m_seedDistanceLabel = new QLabel(
-                QStringLiteral("Line Offset: %1 px").arg(kDefaultSeedDistancePixels),
-                m_controlsWidget);
-            m_lineSamplingSlider = new QSlider(Qt::Horizontal, m_controlsWidget);
+                QStringLiteral("Offset: %1 px").arg(kDefaultSeedDistancePixels),
+                lineOptionsWidget);
+            m_lineSamplingSlider = new QSlider(Qt::Horizontal, lineOptionsWidget);
             m_lineSamplingSlider->setRange(
                 kMinimumLineSamplingPixels, kMaximumLineSamplingPixels);
             m_lineSamplingSlider->setValue(kDefaultLineSamplingPixels);
             m_lineSamplingSlider->setSingleStep(1);
             m_lineSamplingSlider->setPageStep(5);
-            m_lineSamplingSlider->setFixedWidth(90);
+            m_lineSamplingSlider->setFixedWidth(80);
             m_lineSamplingSlider->setToolTip(
                 QStringLiteral(
                     "Screen-space distance between generated seed pairs. "
                     "Smaller values create more seeds."));
             m_lineSamplingLabel = new QLabel(
-                QStringLiteral("Line Sampling: %1 px")
+                QStringLiteral("Sampling: %1 px")
                     .arg(kDefaultLineSamplingPixels),
-                m_controlsWidget);
+                lineOptionsWidget);
             m_confirmLineSeedsButton = new QPushButton(
-                QStringLiteral("Confirm Seeds"), m_controlsWidget);
+                QStringLiteral("Confirm Seeds"), watershedWidget);
             m_confirmLineSeedsButton->setToolTip(
                 QStringLiteral(
                     "Use the currently displayed line seeds for the watershed."));
-            m_clearSeedsButton = new QPushButton(QStringLiteral("Reset"), m_controlsWidget);
-            m_previewSplitButton = new QPushButton(QStringLiteral("Preview"), m_controlsWidget);
-            m_applySplitButton = new QPushButton(QStringLiteral("Apply Split"), m_controlsWidget);
-            m_applySplitButton->setDefault(true);
             m_seedStatusLabel = new QLabel(
-                QStringLiteral("Add at least one seed to each class."), m_controlsWidget);
+                QStringLiteral(
+                    "Choose Projected Cut or add red and blue seeds for Seeded Watershed."),
+                statusWidget);
+            m_seedStatusLabel->setWordWrap(true);
             m_seedStatusLabel->setSizePolicy(
-                QSizePolicy::Ignored, QSizePolicy::Preferred);
-            auto *optionsWidget = new QWidget(this);
-            m_autoPreviewCheckBox = new QCheckBox(
-                QStringLiteral("Auto Preview"), optionsWidget);
-            m_autoPreviewCheckBox->setObjectName(QStringLiteral("autoPreviewCheckBox"));
-            m_autoPreviewCheckBox->setChecked(true);
-            m_autoPreviewCheckBox->setToolTip(
-                QStringLiteral("Automatically update the preview once both seed classes are present."));
+                QSizePolicy::Expanding, QSizePolicy::Preferred);
             m_connectSeedsCheckBox = new QCheckBox(
                 QStringLiteral("Connect Seeds"), optionsWidget);
             m_connectSeedsCheckBox->setObjectName(QStringLiteral("connectSeedsCheckBox"));
@@ -2252,12 +2228,12 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                 QStringLiteral(
                     "Allow applying a result whose red or blue part contains multiple "
                     "disconnected regions. A warning remains visible in the preview."));
-            m_smoothingSlider = new QSlider(Qt::Horizontal, optionsWidget);
+            m_smoothingSlider = new QSlider(Qt::Horizontal, lineOptionsWidget);
             m_smoothingSlider->setObjectName(QStringLiteral("smoothingSlider"));
             m_smoothingSlider->setRange(0, kMaximumSmoothingSliderValue);
             m_smoothingSlider->setSingleStep(1);
             m_smoothingSlider->setPageStep(5);
-            m_smoothingSlider->setFixedWidth(120);
+            m_smoothingSlider->setFixedWidth(100);
             m_smoothingSlider->setMinimumHeight(28);
             m_smoothingSlider->setValue(static_cast<int>(std::lround(
                 m_seededSplitSession.session->landscapeSmoothingSigmaPixels
@@ -2265,10 +2241,10 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             m_smoothingSlider->setToolTip(
                 QStringLiteral("Gaussian smoothing sigma for the watershed distance map (0.0–3.0 px)."));
             m_smoothingLabel = new QLabel(
-                QStringLiteral("Distance-map Smoothing: %1 px")
+                QStringLiteral("Smoothing: %1 px")
                     .arg(m_seededSplitSession.session->landscapeSmoothingSigmaPixels,
                          0, 'f', 1),
-                optionsWidget);
+                lineOptionsWidget);
             m_smoothingUpdateTimer = new QTimer(this);
             m_smoothingUpdateTimer->setSingleShot(true);
             m_smoothingUpdateTimer->setInterval(150);
@@ -2281,7 +2257,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             connect(m_confirmLineSeedsButton, &QPushButton::clicked,
                     this, &Segment3DViewerDialog::confirmSplitLineSeeds);
             connect(m_seedDistanceSlider, &QSlider::valueChanged, this, [this](int value) {
-                m_seedDistanceLabel->setText(QStringLiteral("Line Offset: %1 px").arg(value));
+                m_seedDistanceLabel->setText(QStringLiteral("Offset: %1 px").arg(value));
                 if (!m_splitLineDrawModeActive || m_strokeOverlay == nullptr) {
                     return;
                 }
@@ -2292,17 +2268,11 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             });
             connect(m_lineSamplingSlider, &QSlider::valueChanged, this, [this](int value) {
                 m_lineSamplingLabel->setText(
-                    QStringLiteral("Line Sampling: %1 px").arg(value));
+                    QStringLiteral("Sampling: %1 px").arg(value));
                 if (m_havePendingLineSeeds) {
                     updateSplitLineSeedPreview();
                 }
             });
-            connect(m_autoPreviewCheckBox, &QCheckBox::toggled,
-                    this, [this](bool enabled) {
-                        if (enabled) {
-                            autoPreviewSeededSplitIfReady();
-                        }
-                    });
             const auto watershedOptionChanged = [this]() {
                 m_lastSeededSplitResult.reset();
                 if (m_seededSplitPreview.has_value()) {
@@ -2310,9 +2280,9 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                     m_seededSplitPreview.reset();
                 }
                 setSeededSplitStatus(
-                    QStringLiteral("Watershed options changed; press Preview."));
+                    QStringLiteral("Updating watershed preview..."));
                 updateSeededSplitUiState();
-                autoPreviewSeededSplitIfReady();
+                previewSeededSplitIfReady();
             };
             connect(m_compactWatershedCheckBox, &QCheckBox::toggled,
                     this, watershedOptionChanged);
@@ -2324,7 +2294,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                 const double sigmaPixels =
                     static_cast<double>(value) / kSmoothingSliderStepsPerPixel;
                 m_smoothingLabel->setText(
-                    QStringLiteral("Distance-map Smoothing: %1 px")
+                    QStringLiteral("Smoothing: %1 px")
                         .arg(sigmaPixels, 0, 'f', 1));
                 if (std::abs(
                         sigmaPixels
@@ -2345,45 +2315,61 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             });
             connect(m_smoothingUpdateTimer, &QTimer::timeout,
                     this, &Segment3DViewerDialog::updateSeededSplitSmoothing);
-            connect(m_clearSeedsButton, &QPushButton::clicked,
-                    this, &Segment3DViewerDialog::clearSeededSplit);
-            connect(m_previewSplitButton, &QPushButton::clicked,
-                    this, &Segment3DViewerDialog::previewSeededSplit);
+            connect(m_resetSplitButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::resetSplit);
             connect(m_applySplitButton, &QPushButton::clicked,
-                    this, &Segment3DViewerDialog::applySeededSplit);
-            m_controlsRow->addWidget(m_seedButtons[0]);
-            m_controlsRow->addWidget(m_seedButtons[1]);
-            m_controlsRow->addWidget(m_splitLineButton);
-            m_controlsRow->addWidget(m_seedDistanceLabel);
-            m_controlsRow->addWidget(m_seedDistanceSlider);
-            m_controlsRow->addWidget(m_lineSamplingLabel);
-            m_controlsRow->addWidget(m_lineSamplingSlider);
-            m_controlsRow->addWidget(m_confirmLineSeedsButton);
-            m_controlsRow->addWidget(m_clearSeedsButton);
-            m_controlsRow->addWidget(m_previewSplitButton);
+                    this, &Segment3DViewerDialog::applyActiveSplit);
+            connect(m_projectedCutButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::beginProjectedCutDrawing);
+
+            m_controlsRow->addWidget(m_projectedCutButton);
+            m_controlsRow->addStretch(1);
+            m_controlsRow->addWidget(m_resetSplitButton);
             m_controlsRow->addWidget(m_applySplitButton);
-            m_controlsRow->addWidget(m_seedStatusLabel, 1);
+
+            auto *watershedRow = new QHBoxLayout(watershedWidget);
+            watershedRow->setContentsMargins(10, 6, 10, 0);
+            watershedRow->setSpacing(8);
+            watershedRow->addWidget(new QLabel(
+                QStringLiteral("Seeded Watershed:"), watershedWidget));
+            watershedRow->addWidget(m_seedButtons[0]);
+            watershedRow->addWidget(m_seedButtons[1]);
+            watershedRow->addWidget(m_splitLineButton);
+            watershedRow->addWidget(m_confirmLineSeedsButton);
+            watershedRow->addStretch(1);
+            layout->addWidget(watershedWidget, 0);
+
+            auto *lineOptionsRow = new QHBoxLayout(lineOptionsWidget);
+            lineOptionsRow->setContentsMargins(10, 0, 10, 0);
+            lineOptionsRow->setSpacing(8);
+            lineOptionsRow->addWidget(m_seedDistanceLabel);
+            lineOptionsRow->addWidget(m_seedDistanceSlider);
+            lineOptionsRow->addSpacing(8);
+            lineOptionsRow->addWidget(m_lineSamplingLabel);
+            lineOptionsRow->addWidget(m_lineSamplingSlider);
+            lineOptionsRow->addSpacing(8);
+            lineOptionsRow->addWidget(m_smoothingLabel);
+            lineOptionsRow->addWidget(m_smoothingSlider);
+            lineOptionsRow->addStretch(1);
+            layout->addWidget(lineOptionsWidget, 0);
 
             auto *optionsRow = new QHBoxLayout(optionsWidget);
-            optionsRow->setContentsMargins(10, 0, 10, 6);
+            optionsRow->setContentsMargins(10, 0, 10, 0);
             optionsRow->setSpacing(8);
-            optionsRow->addWidget(m_autoPreviewCheckBox);
             optionsRow->addWidget(m_connectSeedsCheckBox);
             optionsRow->addWidget(m_compactWatershedCheckBox);
             optionsRow->addWidget(m_allowDisconnectedCheckBox);
-            optionsRow->addWidget(m_smoothingLabel);
-            optionsRow->addWidget(m_smoothingSlider);
             optionsRow->addStretch(1);
             layout->addWidget(optionsWidget, 0);
-        }
 
-        if (!showExplodeControls) {
-            m_controlsRow->addStretch(1);
+            auto *statusRow = new QHBoxLayout(statusWidget);
+            statusRow->setContentsMargins(10, 2, 10, 8);
+            statusRow->addWidget(m_seedStatusLabel, 1);
+            layout->addWidget(statusWidget, 0);
         }
 
         if (QLabel *helpLabel = createHelpBadgeLabel(
                 threeDViewHelpText(showExplodeControls,
-                                   showCutControls,
                                    showSeededSplitControls),
                 m_controlsWidget)) {
             m_controlsRow->addWidget(helpLabel);
@@ -2416,17 +2402,12 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                 this, &Segment3DViewerDialog::cycleSegmentColors);
     }
 
-    if (showCutControls) {
-        auto *cutHelpShortcut = new QShortcut(QKeySequence(Qt::Key_Question), this);
-        cutHelpShortcut->setContext(Qt::WindowShortcut);
-        connect(cutHelpShortcut, &QShortcut::activated, this, &Segment3DViewerDialog::showCutHelp);
-
-        auto *cutHelpF1Shortcut = new QShortcut(QKeySequence(Qt::Key_F1), this);
-        cutHelpF1Shortcut->setContext(Qt::WindowShortcut);
-        connect(cutHelpF1Shortcut, &QShortcut::activated, this, &Segment3DViewerDialog::showCutHelp);
-    }
-
     if (showSeededSplitControls) {
+        auto *projectedCutShortcut = new QShortcut(QKeySequence(Qt::Key_P), this);
+        projectedCutShortcut->setContext(Qt::WindowShortcut);
+        connect(projectedCutShortcut, &QShortcut::activated,
+                this, &Segment3DViewerDialog::beginProjectedCutDrawing);
+
         auto *seed1Shortcut = new QShortcut(QKeySequence(Qt::Key_1), this);
         seed1Shortcut->setContext(Qt::WindowShortcut);
         connect(seed1Shortcut, &QShortcut::activated,
@@ -2458,7 +2439,6 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         connect(stepRightShortcut, &QShortcut::activated, this, [this]() { stepExplodeSlider(1); });
     }
 
-    updateCutUiState();
     updateSeededSplitUiState();
 }
 
@@ -3121,17 +3101,15 @@ void Segment3DViewerDialog::finishInitialRender() {
     }
 
     const bool showExplodeControls = m_explodeSlider != nullptr;
-    const bool showCutControls = m_strokeOverlay != nullptr && m_drawCutButton != nullptr;
     const bool showSeededSplitControls = m_seedButtons[0] != nullptr;
     SP_LOG_DEBUG(
         "viewer.three_d",
         QStringLiteral("[3DInputDebug] ready targetLabel=%1 segmentActorCount=%2 "
-                       "showExplodeControls=%3 showCutControls=%4 "
-                       "showSeededSplitControls=%5 interactorEnabled=%6")
+                       "showExplodeControls=%3 showSeededSplitControls=%4 "
+                       "interactorEnabled=%5")
             .arg(m_targetLabelId)
             .arg(m_segmentActors.size())
             .arg(showExplodeControls)
-            .arg(showCutControls)
             .arg(showSeededSplitControls)
             .arg(m_vtkWidget != nullptr
                  && m_vtkWidget->interactor() != nullptr
@@ -3259,33 +3237,6 @@ void Segment3DViewerDialog::applyColorCycle(
     }
 }
 
-void Segment3DViewerDialog::beginCutDrawing() {
-    SP_LOG_DEBUG("viewer.three_d",
-                 QStringLiteral("[3DCutDebug] beginCutDrawing targetLabel=%1 hasApplyCallback=%2")
-                     .arg(m_targetLabelId)
-                     .arg(static_cast<bool>(m_cutSession.applyCut)));
-
-    if (m_strokeOverlay == nullptr || m_cutApplyInFlight) {
-        return;
-    }
-
-    m_cutDrawModeActive = true;
-    m_strokeOverlay->setDrawingEnabled(true);
-    m_strokeOverlay->raise();
-    updateCutUiState();
-}
-
-void Segment3DViewerDialog::clearCutStroke() {
-    SP_LOG_DEBUG("viewer.three_d",
-                 QStringLiteral("[3DCutDebug] clearCutStroke targetLabel=%1").arg(m_targetLabelId));
-
-    if (m_strokeOverlay == nullptr || m_cutApplyInFlight) {
-        return;
-    }
-    m_strokeOverlay->clearStroke();
-    updateCutUiState();
-}
-
 Projected3DCutRequest Segment3DViewerDialog::buildProjectedStrokeRequest() const {
     Projected3DCutRequest request;
     request.targetWorkingLabel = m_targetLabelId;
@@ -3315,70 +3266,169 @@ Projected3DCutRequest Segment3DViewerDialog::buildProjectedStrokeRequest() const
     return request;
 }
 
-void Segment3DViewerDialog::applyProjectedCut() {
-    SP_LOG_DEBUG("viewer.three_d",
-                 QStringLiteral("[3DCutDebug] applyProjectedCut targetLabel=%1 hasApplyCallback=%2")
-                     .arg(m_targetLabelId)
-                     .arg(static_cast<bool>(m_cutSession.applyCut)));
+void Segment3DViewerDialog::discardProjectedCut() {
+    m_activeSplitMethod = SplitMethod::SeededWatershed;
+    m_projectedCutDrawModeActive = false;
+    if (m_projectedCutPreview.has_value()) {
+        replaceSegmentMeshes(m_originalSeededSplitScene, false);
+        m_projectedCutPreview.reset();
+    }
+    if (m_strokeOverlay != nullptr) {
+        m_strokeOverlay->setDrawingEnabled(false);
+        m_strokeOverlay->setSeedDistancePixels(0.0);
+        m_strokeOverlay->clearStroke();
+    }
+}
 
-    if (!m_cutSession.applyCut) {
+void Segment3DViewerDialog::beginProjectedCutDrawing() {
+    if (m_seededSplitBusy || m_strokeOverlay == nullptr
+        || m_seededSplitSession.session == nullptr
+        || !m_seededSplitSession.applyProjectedCut) {
         return;
     }
-    if (m_strokeOverlay == nullptr || !m_strokeOverlay->hasValidStroke()) {
-        QMessageBox::information(this, tr("3D Cut"), tr("Draw a cut stroke before applying the split."));
+
+    // Projected cut and seeded watershed are alternatives. Starting a cut
+    // deliberately discards every seed and preview from the watershed mode.
+    resetSplit();
+    m_activeSplitMethod = SplitMethod::ProjectedCut;
+    m_projectedCutDrawModeActive = true;
+    m_strokeOverlay->setSeedDistancePixels(0.0);
+    m_strokeOverlay->setDrawingEnabled(true);
+    m_strokeOverlay->raise();
+    setSeededSplitStatus(QStringLiteral("Draw one projected cut line."));
+    updateSeededSplitUiState();
+}
+
+void Segment3DViewerDialog::previewProjectedCut() {
+    if (m_activeSplitMethod != SplitMethod::ProjectedCut || m_seededSplitBusy
+        || m_strokeOverlay == nullptr || !m_strokeOverlay->hasValidStroke()
+        || m_seededSplitSession.session == nullptr) {
         return;
     }
 
+    if (m_projectedCutPreview.has_value()) {
+        replaceSegmentMeshes(m_originalSeededSplitScene, false);
+        m_projectedCutPreview.reset();
+    }
     const Projected3DCutRequest request = buildProjectedStrokeRequest();
-    if (request.targetWorkingLabel == 0 || request.strokePixels.size() < 2) {
-        QMessageBox::information(this, tr("3D Cut"), tr("The cut request is incomplete."));
-        return;
-    }
+    const auto mask = m_seededSplitSession.session->mask;
+    m_projectedCutDrawModeActive = false;
+    m_strokeOverlay->setDrawingEnabled(false);
+    m_seededSplitBusy = true;
+    setSeededSplitStatus(QStringLiteral("Computing projected cut preview..."));
+    updateSeededSplitUiState();
 
-    if (m_cutSession.preflightWarning) {
-        const QString warningMessage = m_cutSession.preflightWarning(request);
-        if (!warningMessage.isEmpty()) {
-            QMessageBox::warning(this, tr("3D Cut"), warningMessage);
-        }
-    }
-
-    m_cutApplyInFlight = true;
-    updateCutUiState();
-
-    const auto finishApply = [this](CutApplyResult result) {
-        if (result.mutated) {
-            if (!result.message.isEmpty()) {
-                QMessageBox::warning(this, tr("3D Cut"), result.message);
+    const auto computePreview = [mask, request]() {
+        auto result = computeProjected3DCut(mask, request);
+        PreparedScene scene;
+        if (result.valid()) {
+            std::vector<LabelWithColor> labels;
+            labels.reserve(result.componentVoxelCounts.size());
+            for (std::size_t component = 0;
+                 component < result.componentVoxelCounts.size(); ++component) {
+                const auto label = static_cast<dataType::SegmentIdType>(component + 1);
+                const quint32 color = component == 0
+                                          ? 0xF2483D
+                                      : component == 1
+                                          ? 0x26A6FF
+                                          : randomCycleColor(label, 0x3D5A17U);
+                labels.emplace_back(label, color);
             }
-            accept();
+            scene = Segment3DViewerDialog::prepareScene(
+                result.partition, std::move(labels));
+        }
+        return std::make_pair(std::move(result), std::move(scene));
+    };
+    const auto finishPreview = [this](auto preview) {
+        m_seededSplitBusy = false;
+        auto &[result, scene] = preview;
+        if (!result.valid() || !replaceSegmentMeshes(scene, false)) {
+            const QString message = result.error.empty()
+                                        ? QStringLiteral(
+                                              "Could not create the projected cut preview.")
+                                        : QString::fromStdString(result.error);
+            setSeededSplitStatus(message, true);
+            updateSeededSplitUiState();
             return;
         }
 
-        m_cutApplyInFlight = false;
-        updateCutUiState();
-        QMessageBox::information(this,
-                                 tr("3D Cut"),
-                                 result.message.isEmpty()
-                                     ? tr("The painted cut did not split the working segment.")
-                                     : result.message);
+        m_projectedCutPreview = std::move(result);
+        if (m_strokeOverlay != nullptr) {
+            m_strokeOverlay->clearStroke();
+        }
+        setSeededSplitStatus(
+            QStringLiteral("Projected cut preview: %1 parts (%2 ms).")
+                .arg(m_projectedCutPreview->componentVoxelCounts.size())
+                .arg(m_projectedCutPreview->profile.totalMs, 0, 'f', 1));
+        updateSeededSplitUiState();
     };
 
-    const auto applyCut = m_cutSession.applyCut;
-    if (m_cutSession.taskRunner != nullptr) {
-        m_cutSession.taskRunner->runWithLabel(
-            m_cutSession.progressText.isEmpty()
-                ? QStringLiteral("Applying 3D cut...")
-                : m_cutSession.progressText,
-            [applyCut, request]() {
-                return applyCut(request);
-            },
-            [finishApply](CutApplyResult result) mutable {
-                finishApply(std::move(result));
-            });
+    finishPreview(computePreview());
+}
+
+void Segment3DViewerDialog::applyProjectedCutPreview() {
+    if (m_seededSplitBusy || !m_projectedCutPreview.has_value()
+        || !m_seededSplitSession.applyProjectedCut
+        || (m_seededSplitSession.taskRunner != nullptr
+            && m_seededSplitSession.taskRunner->isBusy())) {
         return;
     }
 
-    finishApply(applyCut(request));
+    m_seededSplitBusy = true;
+    updateSeededSplitUiState();
+    const auto applyCut = m_seededSplitSession.applyProjectedCut;
+    const auto preview = m_projectedCutPreview.value();
+    const QPointer<Segment3DViewerDialog> dialog(this);
+    const auto finishApply = [dialog](SplitApplyResult result) {
+        if (dialog.isNull()) {
+            return;
+        }
+        if (result.mutated) {
+            if (dialog->m_strokeOverlay != nullptr) {
+                dialog->m_strokeOverlay->setDrawingEnabled(false);
+                dialog->m_strokeOverlay->clearStroke();
+            }
+            if (!result.message.isEmpty()) {
+                QMessageBox::warning(dialog, tr("Projected Cut"), result.message);
+            }
+            dialog->accept();
+            return;
+        }
+        dialog->m_seededSplitBusy = false;
+        dialog->updateSeededSplitUiState();
+        QMessageBox::information(
+            dialog,
+            tr("Projected Cut"),
+            result.message.isEmpty()
+                ? tr("The projected cut could not be applied.")
+                : result.message);
+    };
+
+    if (m_seededSplitSession.taskRunner != nullptr) {
+        const auto committed = std::make_shared<bool>(false);
+        m_seededSplitSession.taskRunner->runWithLabel(
+            m_seededSplitSession.projectedCutProgressText,
+            [applyCut, preview]() { return applyCut(preview); },
+            [finishApply, committed](SplitApplyResult result) {
+                finishApply(std::move(result));
+                *committed = true;
+            },
+            [dialog, committed]() {
+                if (dialog.isNull()) {
+                    return;
+                }
+                if (!*committed) {
+                    dialog->m_seededSplitBusy = false;
+                    dialog->updateSeededSplitUiState();
+                }
+                dialog->restoreSeededSplitFocus();
+            });
+    } else {
+        finishApply(applyCut(preview));
+        if (!dialog.isNull()) {
+            dialog->restoreSeededSplitFocus();
+        }
+    }
 }
 
 void Segment3DViewerDialog::armSeedPlacement(int seedNumber) {
@@ -3386,6 +3436,7 @@ void Segment3DViewerDialog::armSeedPlacement(int seedNumber) {
         || m_seededSplitBusy || m_seededSplitSession.session == nullptr) {
         return;
     }
+    discardProjectedCut();
     if (m_seededSplitPreview.has_value()) {
         replaceSegmentMeshes(m_originalSeededSplitScene, false);
         m_seededSplitPreview.reset();
@@ -3414,6 +3465,7 @@ void Segment3DViewerDialog::beginSplitLineDrawing() {
         || m_seededSplitSession.session == nullptr) {
         return;
     }
+    discardProjectedCut();
     if (m_seededSplitPreview.has_value()) {
         replaceSegmentMeshes(m_originalSeededSplitScene, false);
         m_seededSplitPreview.reset();
@@ -3552,7 +3604,7 @@ bool Segment3DViewerDialog::updateSplitLineSeedPreview() {
     } else {
         setSeededSplitStatus(
             QStringLiteral(
-                "Line preview: %1 red and %2 blue seeds. Adjust or Confirm Seeds.")
+                "Line seeds: %1 red and %2 blue.")
                 .arg(m_pendingLineSeeds[0].size())
                 .arg(m_pendingLineSeeds[1].size()));
     }
@@ -3604,7 +3656,7 @@ void Segment3DViewerDialog::confirmSplitLineSeeds() {
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
     }
-    autoPreviewSeededSplitIfReady();
+    previewSeededSplitIfReady();
 }
 
 bool Segment3DViewerDialog::placeSeedAt(int pickX, int pickY) {
@@ -3699,7 +3751,7 @@ bool Segment3DViewerDialog::placeSeedAt(int pickX, int pickY) {
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
     }
-    autoPreviewSeededSplitIfReady();
+    previewSeededSplitIfReady();
     return true;
 }
 
@@ -3752,10 +3804,11 @@ void Segment3DViewerDialog::showSeedActors(
     }
 }
 
-void Segment3DViewerDialog::clearSeededSplit() {
+void Segment3DViewerDialog::resetSplit() {
     if (m_seededSplitBusy) {
         return;
     }
+    discardProjectedCut();
     m_activeSeed = -1;
     m_splitLineDrawModeActive = false;
     m_seedIndices = {};
@@ -3774,7 +3827,8 @@ void Segment3DViewerDialog::clearSeededSplit() {
         replaceSegmentMeshes(m_originalSeededSplitScene, false);
         m_seededSplitPreview.reset();
     }
-    setSeededSplitStatus(QStringLiteral("Add at least one seed to each class."));
+    setSeededSplitStatus(QStringLiteral(
+        "Choose Projected Cut or add red and blue seeds for Seeded Watershed."));
     updateSeededSplitUiState();
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
@@ -3824,14 +3878,13 @@ void Segment3DViewerDialog::updateSeededSplitSmoothing() {
         }
     }
 
-    setSeededSplitStatus(QStringLiteral("Smoothing updated; press Preview."));
+    setSeededSplitStatus(QStringLiteral("Smoothing updated."));
     updateSeededSplitUiState();
-    autoPreviewSeededSplitIfReady();
+    previewSeededSplitIfReady();
 }
 
-void Segment3DViewerDialog::autoPreviewSeededSplitIfReady() {
-    if (m_autoPreviewCheckBox == nullptr || !m_autoPreviewCheckBox->isChecked()
-        || m_seededSplitBusy || m_seededSplitSmoothingPending
+void Segment3DViewerDialog::previewSeededSplitIfReady() {
+    if (m_seededSplitBusy || m_seededSplitSmoothingPending
         || m_seededSplitPreview.has_value()) {
         return;
     }
@@ -3987,6 +4040,7 @@ void Segment3DViewerDialog::previewSeededSplit() {
 
         if (m_strokeOverlay != nullptr) {
             m_strokeOverlay->setDrawingEnabled(false);
+            m_strokeOverlay->clearStroke();
         }
         m_seededSplitPreview = result;
         SP_LOG_DEBUG(
@@ -4055,7 +4109,7 @@ void Segment3DViewerDialog::exportSeededSplitDebugBundle() {
         QMessageBox::information(
             this,
             tr("Seeded Split Debug Export"),
-            tr("Run Preview first. The latest successful or failed preview can then be exported."));
+            tr("Add seeds first. The latest automatic preview can then be exported."));
         return;
     }
 
@@ -4301,9 +4355,19 @@ void Segment3DViewerDialog::exportSeededSplitDebugBundle() {
     }
 }
 
+void Segment3DViewerDialog::applyActiveSplit() {
+    if (m_activeSplitMethod == SplitMethod::ProjectedCut) {
+        applyProjectedCutPreview();
+        return;
+    }
+    applySeededSplit();
+}
+
 void Segment3DViewerDialog::applySeededSplit() {
     if (m_seededSplitBusy || !m_seededSplitPreview.has_value()
-        || !m_seededSplitSession.applySplit) {
+        || !m_seededSplitSession.applySplit
+        || (m_seededSplitSession.taskRunner != nullptr
+            && m_seededSplitSession.taskRunner->isBusy())) {
         return;
     }
 
@@ -4311,35 +4375,54 @@ void Segment3DViewerDialog::applySeededSplit() {
     updateSeededSplitUiState();
     const auto applySplit = m_seededSplitSession.applySplit;
     const auto preview = m_seededSplitPreview.value();
-    const auto finishApply = [this](SeededSplitApplyResult result) {
-        if (result.mutated) {
-            if (m_strokeOverlay != nullptr) {
-                m_strokeOverlay->setDrawingEnabled(false);
-                m_strokeOverlay->clearStroke();
-            }
-            if (!result.message.isEmpty()) {
-                QMessageBox::warning(this, tr("Seeded Split"), result.message);
-            }
-            accept();
+    const QPointer<Segment3DViewerDialog> dialog(this);
+    const auto finishApply = [dialog](SplitApplyResult result) {
+        if (dialog.isNull()) {
             return;
         }
-        m_seededSplitBusy = false;
-        updateSeededSplitUiState();
+        if (result.mutated) {
+            if (dialog->m_strokeOverlay != nullptr) {
+                dialog->m_strokeOverlay->setDrawingEnabled(false);
+                dialog->m_strokeOverlay->clearStroke();
+            }
+            if (!result.message.isEmpty()) {
+                QMessageBox::warning(dialog, tr("Seeded Split"), result.message);
+            }
+            dialog->accept();
+            return;
+        }
+        dialog->m_seededSplitBusy = false;
+        dialog->updateSeededSplitUiState();
         QMessageBox::information(
-            this,
+            dialog,
             tr("Seeded Split"),
             result.message.isEmpty() ? tr("The segment could not be split.") : result.message);
     };
 
     if (m_seededSplitSession.taskRunner != nullptr) {
+        const auto committed = std::make_shared<bool>(false);
         m_seededSplitSession.taskRunner->runWithLabel(
             m_seededSplitSession.progressText,
             [applySplit, preview]() { return applySplit(preview); },
-            finishApply,
-            [this]() { restoreSeededSplitFocus(); });
+            [finishApply, committed](SplitApplyResult result) {
+                finishApply(std::move(result));
+                *committed = true;
+            },
+            [dialog, committed]() {
+                if (dialog.isNull()) {
+                    return;
+                }
+                if (!*committed) {
+                    dialog->m_seededSplitBusy = false;
+                    dialog->updateSeededSplitUiState();
+                }
+                dialog->restoreSeededSplitFocus();
+            });
     } else {
         finishApply(applySplit(preview));
-        restoreSeededSplitFocus();
+        if (!dialog.isNull()) {
+            dialog->restoreSeededSplitFocus();
+        }
     }
 }
 
@@ -4360,31 +4443,34 @@ void Segment3DViewerDialog::updateSeededSplitUiState() {
     if (m_seedButtons[0] == nullptr) {
         return;
     }
+    const bool watershedActive =
+        m_activeSplitMethod == SplitMethod::SeededWatershed;
+    const bool haveProjectedStroke =
+        m_strokeOverlay != nullptr && m_strokeOverlay->hasValidStroke();
     for (int seedNumber = 0; seedNumber < static_cast<int>(m_seedButtons.size()); ++seedNumber) {
         m_seedButtons[seedNumber]->setEnabled(!m_seededSplitBusy);
         m_seedButtons[seedNumber]->setChecked(m_activeSeed == seedNumber);
+        const int shortcut = seedNumber + 1;
         const QString color = seedNumber == 0
                                   ? QStringLiteral("Red")
                                   : QStringLiteral("Blue");
         m_seedButtons[seedNumber]->setText(
-            m_activeSeed == seedNumber
-                ? QStringLiteral("Adding %1 Seed").arg(color)
-                : QStringLiteral("%1 Seed").arg(color));
+            QStringLiteral("(%1) %2 Seed").arg(shortcut).arg(color));
     }
-    const bool haveSeeds = !m_seedIndices[0].empty() && !m_seedIndices[1].empty();
     if (m_strokeOverlay != nullptr) {
         m_strokeOverlay->setDrawingEnabled(
-            m_splitLineDrawModeActive && !m_seededSplitBusy
-            && !m_havePendingLineSeeds
-            && !m_seededSplitPreview.has_value());
+            !m_seededSplitBusy
+            && ((m_splitLineDrawModeActive && !m_havePendingLineSeeds
+                 && !m_seededSplitPreview.has_value())
+                || m_projectedCutDrawModeActive));
     }
     if (m_splitLineButton != nullptr) {
         m_splitLineButton->setEnabled(!m_seededSplitBusy);
         m_splitLineButton->setChecked(m_splitLineDrawModeActive);
         m_splitLineButton->setText(
             m_havePendingLineSeeds
-                ? QStringLiteral("Redraw Line")
-                : QStringLiteral("Split Line"));
+                ? QStringLiteral("(L) Redraw Line")
+                : QStringLiteral("(L) Split Line"));
     }
     if (m_seedDistanceSlider != nullptr) {
         m_seedDistanceSlider->setEnabled(
@@ -4407,37 +4493,44 @@ void Segment3DViewerDialog::updateSeededSplitUiState() {
             !m_seededSplitBusy && m_splitLineDrawModeActive
             && m_havePendingLineSeeds && m_pendingLineSeedsValid);
     }
-    if (m_autoPreviewCheckBox != nullptr) {
-        m_autoPreviewCheckBox->setEnabled(!m_seededSplitBusy);
-    }
     if (m_connectSeedsCheckBox != nullptr) {
-        m_connectSeedsCheckBox->setEnabled(!m_seededSplitBusy);
+        m_connectSeedsCheckBox->setEnabled(watershedActive && !m_seededSplitBusy);
     }
     if (m_compactWatershedCheckBox != nullptr) {
-        m_compactWatershedCheckBox->setEnabled(!m_seededSplitBusy);
+        m_compactWatershedCheckBox->setEnabled(watershedActive && !m_seededSplitBusy);
     }
     if (m_allowDisconnectedCheckBox != nullptr) {
-        m_allowDisconnectedCheckBox->setEnabled(!m_seededSplitBusy);
+        m_allowDisconnectedCheckBox->setEnabled(watershedActive && !m_seededSplitBusy);
     }
     if (m_smoothingSlider != nullptr) {
-        m_smoothingSlider->setEnabled(!m_seededSplitBusy);
+        m_smoothingSlider->setEnabled(watershedActive && !m_seededSplitBusy);
     }
     if (m_smoothingLabel != nullptr) {
-        m_smoothingLabel->setEnabled(!m_seededSplitBusy);
+        m_smoothingLabel->setEnabled(watershedActive && !m_seededSplitBusy);
     }
-    m_clearSeedsButton->setEnabled(!m_seededSplitBusy
+    m_resetSplitButton->setEnabled(!m_seededSplitBusy
                                    && (!m_seedIndices[0].empty()
                                        || !m_seedIndices[1].empty()
                                        || m_splitLineDrawModeActive
                                        || m_havePendingLineSeeds
-                                       || m_seededSplitPreview.has_value()));
-    m_previewSplitButton->setEnabled(!m_seededSplitBusy
-                                     && !m_seededSplitSmoothingPending
-                                     && !m_splitLineDrawModeActive
-                                     && haveSeeds);
-    m_applySplitButton->setEnabled(!m_seededSplitBusy
-                                   && !m_seededSplitSmoothingPending
-                                   && m_seededSplitPreview.has_value());
+                                       || m_seededSplitPreview.has_value()
+                                       || m_projectedCutDrawModeActive
+                                       || m_projectedCutPreview.has_value()
+                                       || haveProjectedStroke));
+    const bool haveActivePreview = watershedActive
+                                       ? m_seededSplitPreview.has_value()
+                                       : m_projectedCutPreview.has_value();
+    m_applySplitButton->setEnabled(
+        !m_seededSplitBusy
+        && (!watershedActive || !m_seededSplitSmoothingPending)
+        && haveActivePreview);
+    if (m_projectedCutButton != nullptr) {
+        m_projectedCutButton->setEnabled(
+            !m_seededSplitBusy
+            && static_cast<bool>(m_seededSplitSession.applyProjectedCut));
+        m_projectedCutButton->setChecked(
+            m_activeSplitMethod == SplitMethod::ProjectedCut);
+    }
 }
 
 void Segment3DViewerDialog::restoreSeededSplitFocus() {
@@ -4569,39 +4662,4 @@ void Segment3DViewerDialog::handleInteractorLeftButtonPress() {
                                     eventPosition[1],
                                     QApplication::keyboardModifiers(),
                                     "vtk");
-}
-
-void Segment3DViewerDialog::showCutHelp() {
-    QMessageBox::information(
-        this,
-        tr("3D Cut Help"),
-        tr("1. Rotate, pan, and zoom the segment until the intended cut is visible.\n"
-           "2. Press Draw Cut to freeze navigation and arm stroke drawing.\n"
-           "3. Hold the left mouse button and paint the cut line across the 3D view.\n"
-           "4. Use Clear if you want to redraw the stroke.\n"
-           "5. Press Apply to project the painted stroke through the segment and split it.\n"
-           "6. Cancel or close the dialog to leave the graph unchanged.\n\n"
-           "Shortcuts: ? or F1 opens this helper, Q closes the dialog."));
-}
-
-void Segment3DViewerDialog::updateCutUiState() {
-    const bool cutEnabled = m_strokeOverlay != nullptr && static_cast<bool>(m_cutSession.applyCut);
-    if (!cutEnabled) {
-        return;
-    }
-
-    const bool hasStroke = m_strokeOverlay->hasValidStroke();
-    m_strokeOverlay->setDrawingEnabled(m_cutDrawModeActive && !m_cutApplyInFlight);
-
-    if (m_drawCutButton != nullptr) {
-        m_drawCutButton->setEnabled(!m_cutApplyInFlight && !m_cutDrawModeActive);
-        m_drawCutButton->setText(m_cutDrawModeActive ? QStringLiteral("Cut Drawing Active")
-                                                     : QStringLiteral("Draw Cut"));
-    }
-    if (m_clearCutButton != nullptr) {
-        m_clearCutButton->setEnabled(!m_cutApplyInFlight && hasStroke);
-    }
-    if (m_applyCutButton != nullptr) {
-        m_applyCutButton->setEnabled(!m_cutApplyInFlight && m_cutDrawModeActive && hasStroke);
-    }
 }

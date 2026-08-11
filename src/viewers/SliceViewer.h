@@ -82,6 +82,9 @@ public:
     // this can be as simple as update() or a custom repaint function
     virtual void updateFunction();
 
+    void setImageOnlyMode(bool enabled);
+    bool isImageOnlyMode() const { return imageOnlyMode; }
+
 
 //    void recalculateLUT();
     virtual void recalculateQImages();
@@ -103,8 +106,7 @@ public:
         Erode,       // K: single-step erosion on the clicked segmentation label
         Insert,      // H: insert segmentation segment into initial segments (clears after click)
         View3D,      // M: open a 3D view for the clicked segment (clears after click)
-        View3DCut,   // T: resolve the active 3D source to a WorkingNode and open the cut view
-        View3DSeededSplit // W: split a selected segment from two seeds in 3D
+        View3DSplit  // W: open projected-cut and seeded-watershed tools for a selected segment
     };
     ToolMode activeTool = ToolMode::None;
 
@@ -151,6 +153,7 @@ protected:
     std::vector<SliceViewer *> linkedViewerList;
 
     bool verbose;
+    bool imageOnlyMode;
 
     // sliceIndex and sliceAxis indicate current slice position
     // e.g. sliceAxis = 0 -> slice through xAxis, 1->yAxis, 2->zAxis

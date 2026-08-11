@@ -316,9 +316,9 @@ MainWindow::MainWindow() {
         }
     });
     connect(showSegmentTableAction, &QAction::triggered, this, &MainWindow::showSegmentTable);
-    splitWorkingSegment3DCutAction = new QAction(tr("Open Segment in 3D Cut View..."), this);
-    segmentationMenu->addAction(splitWorkingSegment3DCutAction);
-    connect(splitWorkingSegment3DCutAction, &QAction::triggered, this, &MainWindow::arm3DWorkingSegmentCut);
+    splitSegment3DAction = new QAction(tr("Split Segment in 3D..."), this);
+    segmentationMenu->addAction(splitSegment3DAction);
+    connect(splitSegment3DAction, &QAction::triggered, this, &MainWindow::arm3DSegmentSplit);
 
     viewMenu = menuBar()->addMenu(tr("&View"));
     auto *renderOrderAction = new QAction(tr("&Render Order..."), this);
@@ -407,7 +407,7 @@ MainWindow::MainWindow() {
     settingsMenu->addAction(useSelectedSegmentationFor3DViewsAction);
     connect(useSelectedSegmentationFor3DViewsAction, &QAction::toggled, this, [this](bool checked) {
         graphBase->useSelectedSegmentationFor3DView = checked;
-        update3DWorkingSegmentCutActionState();
+        update3DSegmentSplitActionState();
     });
     settingsMenu->addSeparator();
     QAction *imageNormalizationSettingsAction =
@@ -567,10 +567,10 @@ MainWindow::MainWindow() {
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, renderOrderAction, &QAction::setDisabled);
-    connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this]() { update3DWorkingSegmentCutActionState(); });
-    connect(segmentationMenu, &QMenu::aboutToShow, this, &MainWindow::update3DWorkingSegmentCutActionState);
+    connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this]() { update3DSegmentSplitActionState(); });
+    connect(segmentationMenu, &QMenu::aboutToShow, this, &MainWindow::update3DSegmentSplitActionState);
     installInitialFileDropHandling();
-    update3DWorkingSegmentCutActionState();
+    update3DSegmentSplitActionState();
 
     // Title-bar system stats (CPU + RAM + swap), updated every 500 ms.
     windowStats::setupWindowTitleStatsTimer(this, "SegmentPuzzler");
@@ -1162,6 +1162,7 @@ void MainWindow::showHotkeys() {
         {tr("Command/Ctrl + Click"), tr("Center all orthogonal views on the clicked point.")},
         {tr("Middle Drag"), tr("Pan the current view.")},
         {tr("+ / −"), tr("Zoom all linked views in or out.")},
+        {tr("Hold Space"), tr("Temporarily show only loaded source images.")},
         {tr("↑ / ↓"), tr("Move one slice up or down in the stack.")},
         {tr("F9"), tr("Go to explicit X, Y, Z coordinates.")},
         {tr("F10"), tr("Go to a label ID in the selected segmentation.")}
@@ -1190,7 +1191,7 @@ void MainWindow::showHotkeys() {
     addSection(tr("3D & Analysis"), {
         {tr("M + Click"), tr("Open the clicked segment in the 3D surface view.")},
         {tr("N"), tr("Open all segments in a 3D surface view.")},
-        {tr("T + Click"), tr("Open the clicked segment in the 3D cut view; press F1 there for detailed help.")},
+        {tr("W + Click"), tr("Open the clicked segment in the 3D split view with Projected Cut and Seeded Watershed.")},
         {tr("F8"), tr("Open the Segment Feature Table.")}
     });
     addSection(tr("Export & Diagnostics"), {
@@ -1213,41 +1214,31 @@ void MainWindow::receiveStatusMessage(const QString& string) {
     statusBar()->showMessage(string);
 }
 
-void MainWindow::arm3DWorkingSegmentCut() {
-    update3DWorkingSegmentCutActionState();
-    if (splitWorkingSegment3DCutAction == nullptr || !splitWorkingSegment3DCutAction->isEnabled()) {
+void MainWindow::arm3DSegmentSplit() {
+    update3DSegmentSplitActionState();
+    if (splitSegment3DAction == nullptr || !splitSegment3DAction->isEnabled()) {
         return;
     }
 
     if (myOrthowindow != nullptr) {
-        myOrthowindow->setAnnotationToolMode(SliceViewer::ToolMode::View3DCut);
-        myOrthowindow->flashShortcutLegendKey("3dcut");
+        myOrthowindow->setAnnotationToolMode(SliceViewer::ToolMode::View3DSplit);
+        myOrthowindow->flashShortcutLegendKey("3dsplit");
     }
-    if (graphBase != nullptr && graphBase->useSelectedSegmentationFor3DView) {
-        receiveStatusMessage(QStringLiteral(
-            "Click a segment in the selected segmentation to prepare it in the working graph and open the 3D cut view; "
-            "applying the cut transfers all resulting parts back as separate labels."));
-    } else {
-        receiveStatusMessage(QStringLiteral(
-            "Click a working segment to open the 3D cut view; applying the cut transfers all resulting parts "
-            "as separate labels into the selected segmentation."));
-    }
+    receiveStatusMessage(QStringLiteral(
+        "Click a segment in the selected segmentation to open Projected Cut and Seeded Watershed in 3D."));
 }
 
-void MainWindow::update3DWorkingSegmentCutActionState() {
-    if (splitWorkingSegment3DCutAction == nullptr || mySignalControl == nullptr || taskRunner == nullptr) {
+void MainWindow::update3DSegmentSplitActionState() {
+    if (splitSegment3DAction == nullptr || mySignalControl == nullptr || taskRunner == nullptr) {
         return;
     }
-    const bool usesSelectedSegmentation =
-        graphBase != nullptr && graphBase->useSelectedSegmentationFor3DView;
     const bool selectedSegmentationAvailable =
         graphBase != nullptr && graphBase->pSelectedSegmentation != nullptr;
-    splitWorkingSegment3DCutAction->setEnabled(
+    splitSegment3DAction->setEnabled(
         mySignalControl->hasWorkingSegments() && selectedSegmentationAvailable && !taskRunner->isBusy());
 
-    const QString sourceDescription = usesSelectedSegmentation
-        ? tr("Open a segment from the selected segmentation in the 3D cut view; it is inserted into the working graph if needed. Applying the cut transfers every resulting part back as a separate label.")
-        : tr("Open a working segment in the 3D cut view. A selected segmentation is required because applying the cut transfers every resulting part into it as a separate label.");
-    splitWorkingSegment3DCutAction->setStatusTip(sourceDescription);
-    splitWorkingSegment3DCutAction->setToolTip(sourceDescription);
+    const QString description = tr(
+        "Open a selected segment in the 3D split view and choose Projected Cut or Seeded Watershed.");
+    splitSegment3DAction->setStatusTip(description);
+    splitSegment3DAction->setToolTip(description);
 }

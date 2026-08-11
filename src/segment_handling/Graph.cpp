@@ -569,31 +569,6 @@ void logStorageAfterGraphPhase(const Graph &graph, const QString &graphPhase) {
             .arg(summary.trackedVectorCapacityMB, 0, 'f', 3));
 }
 
-struct StrokeSegmentInfo {
-    std::array<double, 2> start;
-    std::array<double, 2> end;
-    double minX = 0.0;
-    double maxX = 0.0;
-    double minY = 0.0;
-    double maxY = 0.0;
-};
-
-struct StrokeMask {
-    int width = 0;
-    int height = 0;
-    std::vector<unsigned char> pixels;
-
-    bool contains(double displayX, double displayY) const {
-        if (pixels.empty() || width <= 0 || height <= 0) {
-            return false;
-        }
-        const int pixelX = std::clamp(static_cast<int>(displayX), 0, width - 1);
-        const int pixelY = std::clamp(static_cast<int>(displayY), 0, height - 1);
-        return pixels[static_cast<std::size_t>(pixelY) * static_cast<std::size_t>(width) +
-                      static_cast<std::size_t>(pixelX)] != 0;
-    }
-};
-
 struct LocalVoxelGrid {
     int minX = 0;
     int minY = 0;
@@ -683,157 +658,6 @@ struct NeighborWorkingGroup {
     Graph::SegmentIdType workingLabel = 0;
     std::vector<Graph::SegmentIdType> initialLabels;
 };
-
-struct ProjectedDisplayTransform {
-    std::array<double, 4> clipXCoefficients{0.0, 0.0, 0.0, 0.0};
-    std::array<double, 4> clipYCoefficients{0.0, 0.0, 0.0, 0.0};
-    std::array<double, 4> clipWCoefficients{0.0, 0.0, 0.0, 1.0};
-    int viewportWidth = 0;
-    int viewportHeight = 0;
-};
-
-std::array<double, 4> buildProjectionRowCoefficients(const std::array<double, 16> &matrix,
-                                                     int row,
-                                                     const Graph::SegmentsImageType::SpacingType &spacing,
-                                                     const Graph::SegmentsImageType::PointType &origin)
-{
-    const double centeredOriginX = origin[0] + 0.5 * spacing[0];
-    const double centeredOriginY = origin[1] + 0.5 * spacing[1];
-    const double centeredOriginZ = origin[2] + 0.5 * spacing[2];
-    const std::size_t rowOffset = static_cast<std::size_t>(row) * 4;
-    return {
-        matrix[rowOffset + 0] * spacing[0],
-        matrix[rowOffset + 1] * spacing[1],
-        matrix[rowOffset + 2] * spacing[2],
-        matrix[rowOffset + 0] * centeredOriginX +
-        matrix[rowOffset + 1] * centeredOriginY +
-        matrix[rowOffset + 2] * centeredOriginZ +
-        matrix[rowOffset + 3]
-    };
-}
-
-ProjectedDisplayTransform buildProjectedDisplayTransform(
-    const Graph::SegmentsImageType::SpacingType &spacing,
-    const Graph::SegmentsImageType::PointType &origin,
-    const Projected3DCutRequest &request)
-{
-    ProjectedDisplayTransform transform;
-    transform.clipXCoefficients = buildProjectionRowCoefficients(request.worldToNdcMatrix, 0, spacing, origin);
-    transform.clipYCoefficients = buildProjectionRowCoefficients(request.worldToNdcMatrix, 1, spacing, origin);
-    transform.clipWCoefficients = buildProjectionRowCoefficients(request.worldToNdcMatrix, 3, spacing, origin);
-    transform.viewportWidth = request.viewportSize[0];
-    transform.viewportHeight = request.viewportSize[1];
-    return transform;
-}
-
-std::array<double, 2> projectVoxelCenterToDisplay(const Voxel &voxel,
-                                                  const ProjectedDisplayTransform &transform)
-{
-    // Current projected-cut math assumes identity direction; non-identity cases are warned at the UI entry point.
-    const double x = static_cast<double>(voxel.x);
-    const double y = static_cast<double>(voxel.y);
-    const double z = static_cast<double>(voxel.z);
-    const double clipX =
-        transform.clipXCoefficients[0] * x +
-        transform.clipXCoefficients[1] * y +
-        transform.clipXCoefficients[2] * z +
-        transform.clipXCoefficients[3];
-    const double clipY =
-        transform.clipYCoefficients[0] * x +
-        transform.clipYCoefficients[1] * y +
-        transform.clipYCoefficients[2] * z +
-        transform.clipYCoefficients[3];
-    const double clipW =
-        transform.clipWCoefficients[0] * x +
-        transform.clipWCoefficients[1] * y +
-        transform.clipWCoefficients[2] * z +
-        transform.clipWCoefficients[3];
-
-    double ndcX = 0.0;
-    double ndcY = 0.0;
-    if (std::abs(clipW) > 1e-9) {
-        ndcX = clipX / clipW;
-        ndcY = clipY / clipW;
-    }
-
-    return {
-        (ndcX * 0.5 + 0.5) * static_cast<double>(transform.viewportWidth),
-        (1.0 - (ndcY * 0.5 + 0.5)) * static_cast<double>(transform.viewportHeight)
-    };
-}
-
-double distanceSquaredToSegment(const std::array<double, 2> &point,
-                                const std::array<double, 2> &segA,
-                                const std::array<double, 2> &segB)
-{
-    const double vx = segB[0] - segA[0];
-    const double vy = segB[1] - segA[1];
-    const double wx = point[0] - segA[0];
-    const double wy = point[1] - segA[1];
-    const double denom = vx * vx + vy * vy;
-    if (denom <= 1e-9) {
-        return wx * wx + wy * wy;
-    }
-
-    const double t = std::clamp((wx * vx + wy * vy) / denom, 0.0, 1.0);
-    const double dx = point[0] - (segA[0] + t * vx);
-    const double dy = point[1] - (segA[1] + t * vy);
-    return dx * dx + dy * dy;
-}
-
-std::vector<StrokeSegmentInfo> buildStrokeSegments(const Projected3DCutRequest &request) {
-    std::vector<StrokeSegmentInfo> segments;
-    if (request.strokePixels.size() < 2) {
-        return segments;
-    }
-
-    segments.reserve(request.strokePixels.size() - 1);
-    for (std::size_t index = 1; index < request.strokePixels.size(); ++index) {
-        StrokeSegmentInfo segment;
-        segment.start = request.strokePixels[index - 1];
-        segment.end = request.strokePixels[index];
-        segment.minX = std::min(segment.start[0], segment.end[0]) - request.strokeWidthPixels;
-        segment.maxX = std::max(segment.start[0], segment.end[0]) + request.strokeWidthPixels;
-        segment.minY = std::min(segment.start[1], segment.end[1]) - request.strokeWidthPixels;
-        segment.maxY = std::max(segment.start[1], segment.end[1]) + request.strokeWidthPixels;
-        segments.push_back(segment);
-    }
-    return segments;
-}
-
-StrokeMask rasterizeStrokeMask(const Projected3DCutRequest &request,
-                               const std::vector<StrokeSegmentInfo> &segments)
-{
-    StrokeMask mask;
-    mask.width = request.viewportSize[0];
-    mask.height = request.viewportSize[1];
-    if (mask.width <= 0 || mask.height <= 0) {
-        return mask;
-    }
-
-    mask.pixels.assign(static_cast<std::size_t>(mask.width) * static_cast<std::size_t>(mask.height), 0);
-    const double maxDistanceSquared = request.strokeWidthPixels * request.strokeWidthPixels;
-
-    for (const auto &segment : segments) {
-        const int minX = std::clamp(static_cast<int>(std::floor(segment.minX)), 0, mask.width - 1);
-        const int maxX = std::clamp(static_cast<int>(std::ceil(segment.maxX)), 0, mask.width - 1);
-        const int minY = std::clamp(static_cast<int>(std::floor(segment.minY)), 0, mask.height - 1);
-        const int maxY = std::clamp(static_cast<int>(std::ceil(segment.maxY)), 0, mask.height - 1);
-
-        for (int pixelY = minY; pixelY <= maxY; ++pixelY) {
-            for (int pixelX = minX; pixelX <= maxX; ++pixelX) {
-                const std::array<double, 2> pixelCenter{
-                    static_cast<double>(pixelX) + 0.5,
-                    static_cast<double>(pixelY) + 0.5};
-                if (distanceSquaredToSegment(pixelCenter, segment.start, segment.end) <= maxDistanceSquared) {
-                    mask.pixels[static_cast<std::size_t>(pixelY) * static_cast<std::size_t>(mask.width) +
-                                static_cast<std::size_t>(pixelX)] = 1;
-                }
-            }
-        }
-    }
-    return mask;
-}
 
 } // namespace
 
@@ -2213,153 +2037,56 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     }
 
     const auto targetWorkingNode = workingNodeIt->second;
-    const auto spacing = graphBase->pWorkingSegmentsImage->GetSpacing();
-    const auto origin = graphBase->pWorkingSegmentsImage->GetOrigin();
     const Roi targetRoi = targetWorkingNode->roi;
-
-    std::vector<Voxel> targetVoxels;
-    std::vector<SegmentIdType> targetInitialLabels;
-    std::vector<int> targetComponentIds;
-    std::vector<unsigned char> targetProvisionalCut;
-    std::size_t totalVoxelCount = 0;
-    for (const auto &initialNodeEntry : targetWorkingNode->subInitialNodes) {
-        if (initialNodeEntry.second == nullptr) {
-            continue;
+    Projected3DCutMaskImage::IndexType globalOffset{{
+        targetRoi.minX - 1, targetRoi.minY - 1, targetRoi.minZ - 1}};
+    Projected3DCutMaskImage::SizeType localSize{{
+        static_cast<Projected3DCutMaskImage::SizeType::SizeValueType>(
+            targetRoi.maxX - targetRoi.minX + 3),
+        static_cast<Projected3DCutMaskImage::SizeType::SizeValueType>(
+            targetRoi.maxY - targetRoi.minY + 3),
+        static_cast<Projected3DCutMaskImage::SizeType::SizeValueType>(
+            targetRoi.maxZ - targetRoi.minZ + 3)}};
+    Projected3DCutMaskImage::IndexType localStart;
+    localStart.Fill(0);
+    Projected3DCutMaskImage::RegionType localRegion(localStart, localSize);
+    Projected3DCutMaskImage::PointType localOrigin;
+    graphBase->pWorkingSegmentsImage->TransformIndexToPhysicalPoint(
+        globalOffset, localOrigin);
+    auto mask = Projected3DCutMaskImage::New();
+    mask->SetRegions(localRegion);
+    mask->SetSpacing(graphBase->pWorkingSegmentsImage->GetSpacing());
+    mask->SetOrigin(localOrigin);
+    mask->SetDirection(graphBase->pWorkingSegmentsImage->GetDirection());
+    mask->Allocate();
+    mask->FillBuffer(0);
+    for (const auto &[initialLabel, initialNode] : targetWorkingNode->subInitialNodes) {
+        static_cast<void>(initialLabel);
+        if (initialNode == nullptr) {
+            return finish(false);
         }
-        totalVoxelCount += initialNodeEntry.second->voxels.size();
+        for (const Voxel &voxel : initialNode->voxels) {
+            Projected3DCutMaskImage::IndexType localIndex{{
+                voxel.x - globalOffset[0],
+                voxel.y - globalOffset[1],
+                voxel.z - globalOffset[2]}};
+            mask->SetPixel(localIndex, 1);
+        }
     }
-    if (totalVoxelCount == 0) {
+
+    Projected3DCutResult projectedCut = computeProjected3DCut(mask, request);
+    if (profileOut != nullptr) {
+        *profileOut = projectedCut.profile;
+    }
+    if (!projectedCut.valid()) {
         return finish(false);
     }
-
-    targetVoxels.reserve(totalVoxelCount);
-    targetInitialLabels.reserve(totalVoxelCount);
-    targetComponentIds.reserve(totalVoxelCount);
-    targetProvisionalCut.reserve(totalVoxelCount);
-    LocalVoxelGrid voxelGrid;
-    voxelGrid.minX = targetRoi.minX;
-    voxelGrid.minY = targetRoi.minY;
-    voxelGrid.minZ = targetRoi.minZ;
-    voxelGrid.sizeX = targetRoi.maxX - targetRoi.minX + 1;
-    voxelGrid.sizeY = targetRoi.maxY - targetRoi.minY + 1;
-    voxelGrid.sizeZ = targetRoi.maxZ - targetRoi.minZ + 1;
-    voxelGrid.voxelIndices.assign(
-        static_cast<std::size_t>(voxelGrid.sizeX) *
-        static_cast<std::size_t>(voxelGrid.sizeY) *
-        static_cast<std::size_t>(voxelGrid.sizeZ),
-        -1);
-    const auto strokeSegments = buildStrokeSegments(request);
-    const auto rasterizeStrokeMaskStart = Clock::now();
-    const StrokeMask strokeMask = rasterizeStrokeMask(request, strokeSegments);
-    const double rasterizeStrokeMaskMs = durationMs(rasterizeStrokeMaskStart, Clock::now());
-    const auto projectedDisplayTransform = buildProjectedDisplayTransform(spacing, origin, request);
-    bool anyProvisionalCut = false;
-    std::size_t provisionalCutVoxelCount = 0;
-
-    const auto collectTargetVoxelsStart = Clock::now();
-    for (const auto &initialNodeEntry : targetWorkingNode->subInitialNodes) {
-        const SegmentIdType initialLabel = initialNodeEntry.first;
-        const auto &voxels = initialNodeEntry.second->voxels;
-        for (const Voxel &voxel : voxels) {
-            const std::array<double, 2> projectedPoint =
-                projectVoxelCenterToDisplay(voxel, projectedDisplayTransform);
-            const bool provisionalCut = strokeMask.contains(projectedPoint[0], projectedPoint[1]);
-            anyProvisionalCut = anyProvisionalCut || provisionalCut;
-            provisionalCutVoxelCount += provisionalCut ? 1 : 0;
-            targetVoxels.push_back(voxel);
-            targetInitialLabels.push_back(initialLabel);
-            targetComponentIds.push_back(-1);
-            targetProvisionalCut.push_back(provisionalCut ? 1U : 0U);
-            const int voxelIndex = static_cast<int>(targetVoxels.size()) - 1;
-            voxelGrid.voxelIndices[voxelGrid.linearIndex(voxel.x, voxel.y, voxel.z)] = voxelIndex;
-        }
-    }
-    if (profileOut != nullptr) {
-        profileOut->targetVoxelCount = targetVoxels.size();
-        profileOut->provisionalCutVoxelCount = provisionalCutVoxelCount;
-        profileOut->rasterizeStrokeMaskMs = rasterizeStrokeMaskMs;
-        profileOut->projectAndClassifyTargetVoxelsMs = durationMs(collectTargetVoxelsStart, Clock::now());
-        profileOut->collectTargetVoxelsMs =
-            profileOut->rasterizeStrokeMaskMs + profileOut->projectAndClassifyTargetVoxelsMs;
-    }
-
-    if (!anyProvisionalCut) {
-        return finish(false);
-    }
-
-    int nextComponentId = 0;
-    std::vector<int> openVoxelIndices;
-    openVoxelIndices.reserve(targetVoxels.size());
-    const auto connectedComponentsStart = Clock::now();
-    for (int voxelIndex = 0; voxelIndex < static_cast<int>(targetVoxels.size()); ++voxelIndex) {
-        if (targetProvisionalCut[static_cast<std::size_t>(voxelIndex)] != 0 ||
-            targetComponentIds[static_cast<std::size_t>(voxelIndex)] != -1) {
-            continue;
-        }
-
-        targetComponentIds[static_cast<std::size_t>(voxelIndex)] = nextComponentId;
-        openVoxelIndices.clear();
-        openVoxelIndices.push_back(voxelIndex);
-
-        for (std::size_t queueIndex = 0; queueIndex < openVoxelIndices.size(); ++queueIndex) {
-            const int activeIndex = openVoxelIndices[queueIndex];
-            const Voxel &activeVoxel = targetVoxels[static_cast<std::size_t>(activeIndex)];
-
-            voxelGrid.forEachPresentNeighborIndex(activeVoxel, [&](int neighborIndex) {
-                if (targetProvisionalCut[static_cast<std::size_t>(neighborIndex)] != 0 ||
-                    targetComponentIds[static_cast<std::size_t>(neighborIndex)] != -1) {
-                    return;
-                }
-                targetComponentIds[static_cast<std::size_t>(neighborIndex)] = nextComponentId;
-                openVoxelIndices.push_back(neighborIndex);
-            });
-        }
-
-        ++nextComponentId;
-    }
-    if (profileOut != nullptr) {
-        profileOut->finalComponentCount = nextComponentId;
-        profileOut->connectedComponentsMs = durationMs(connectedComponentsStart, Clock::now());
-    }
-
-    if (nextComponentId < 2) {
-        return finish(false);
-    }
-
-    std::vector<int> reassignQueue;
-    reassignQueue.reserve(targetVoxels.size());
-    const auto reassignCutVoxelsStart = Clock::now();
-    for (int voxelIndex = 0; voxelIndex < static_cast<int>(targetVoxels.size()); ++voxelIndex) {
-        if (targetComponentIds[static_cast<std::size_t>(voxelIndex)] != -1) {
-            reassignQueue.push_back(voxelIndex);
-        }
-    }
-
-    for (std::size_t queueIndex = 0; queueIndex < reassignQueue.size(); ++queueIndex) {
-        const int activeIndex = reassignQueue[queueIndex];
-        const Voxel &activeVoxel = targetVoxels[static_cast<std::size_t>(activeIndex)];
-        const int componentId = targetComponentIds[static_cast<std::size_t>(activeIndex)];
-
-        voxelGrid.forEachPresentNeighborIndex(activeVoxel, [&](int neighborIndex) {
-            if (targetComponentIds[static_cast<std::size_t>(neighborIndex)] != -1) {
-                return;
-            }
-            targetComponentIds[static_cast<std::size_t>(neighborIndex)] = componentId;
-            reassignQueue.push_back(neighborIndex);
-        });
-    }
-    if (profileOut != nullptr) {
-        profileOut->reassignCutVoxelsMs = durationMs(reassignCutVoxelsStart, Clock::now());
-    }
-
-    const bool mutated = applyWorkingNodePartition(
+    const bool mutated = splitWorkingNodeByVoxelPartition(
         request.targetWorkingLabel,
-        targetVoxels,
-        targetInitialLabels,
-        targetComponentIds,
-        nextComponentId,
-        profileOut,
-        resultingWorkingLabelsOut);
+        projectedCut.partition,
+        globalOffset,
+        resultingWorkingLabelsOut,
+        profileOut);
     return finish(mutated);
 }
 
@@ -2367,7 +2094,8 @@ bool Graph::splitWorkingNodeByVoxelPartition(
     SegmentIdType targetWorkingLabel,
     SegmentsImageType::Pointer localPartition,
     const SegmentsImageType::IndexType &globalOffset,
-    std::vector<SegmentIdType> *resultingWorkingLabelsOut)
+    std::vector<SegmentIdType> *resultingWorkingLabelsOut,
+    Projected3DCutProfile *profileOut)
 {
     if (resultingWorkingLabelsOut != nullptr) {
         resultingWorkingLabelsOut->clear();
@@ -2439,7 +2167,7 @@ bool Graph::splitWorkingNodeByVoxelPartition(
         targetInitialLabels,
         targetComponentIds,
         static_cast<int>(maximumComponentLabel),
-        nullptr,
+        profileOut,
         resultingWorkingLabelsOut);
 }
 

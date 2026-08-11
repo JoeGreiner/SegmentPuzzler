@@ -1648,6 +1648,7 @@ void SignalControl::registerImageSignal(
     std::optional<QColor> color) {
     const bool centerFirstStandaloneLayer = !hasWorkingSegments() && allSignalList.size() == 1;
     itkSignalBase *signal = allSignalList[signalIndexGlobal];
+    signal->setLayerRole(itkSignalBase::LayerRole::SourceImage);
     segment_puzzler::image_normalization::configureLoadedImageDisplay(signal);
     if (!color) {
         const auto &colors = defaultAdditiveImageColors();

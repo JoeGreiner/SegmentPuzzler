@@ -303,10 +303,8 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
             return createSingleActionWithPan("Insert", QColor("#e0a35c"));
         case SliceViewer::ToolMode::View3D:
             return createSingleActionWithPan("3D View", QColor("#8ccf5f"));
-        case SliceViewer::ToolMode::View3DCut:
-            return createSingleActionWithPan("3D Cut", QColor("#ff8e6e"));
-        case SliceViewer::ToolMode::View3DSeededSplit:
-            return createSingleActionWithPan("Seeded Split", QColor("#4dc7c0"));
+        case SliceViewer::ToolMode::View3DSplit:
+            return createSingleActionWithPan("3D Split", QColor("#4dc7c0"));
         case SliceViewer::ToolMode::None:
         default:
             return createDualActionWithPan("Merge", "Unmerge", QColor("#7b8ea1"));
@@ -363,6 +361,9 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("zoom", "+/-", "Zoom",
                            "Press + to zoom in or - to zoom out in all linked viewers.",
                            isFlashed("zoom")),
+        createShortcutHint("images", "Space", "Images",
+                           "Hold Space to temporarily hide all layers except loaded source images.",
+                           (viewer != nullptr && viewer->isImageOnlyMode()) || isFlashed("images")),
         createShortcutHint("slice", "↑/↓", "Indexing",
                            "Press the arrow keys to move one slice up or down in the current stack.",
                            isFlashed("slice")),
@@ -387,12 +388,9 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("f8", "F8", "Feature Table",
                            "Press F8 to open the segment feature table: shape features for all labels, sortable and color-coded.",
                            isFlashed("f8")),
-        createShortcutHint("3dcut", "T", "3D Cut",
-                           "Hold T and click a working segment to open the cut-enabled 3D view.",
-                           activeTool == SliceViewer::ToolMode::View3DCut || isFlashed("3dcut")),
-        createShortcutHint("seededsplit", "W", "Seeded Split",
-                           "Hold W and click a selected segment to split it from two seeds in 3D.",
-                           activeTool == SliceViewer::ToolMode::View3DSeededSplit || isFlashed("seededsplit")),
+        createShortcutHint("3dsplit", "W", "3D Split",
+                           "Hold W and click a selected segment to use Projected Cut or Seeded Watershed in 3D.",
+                           activeTool == SliceViewer::ToolMode::View3DSplit || isFlashed("3dsplit")),
         createShortcutHint("f1", "F1", "Hotkeys",
                            "Press F1 to open the full hotkey reference dialog.",
                            isFlashed("f1")),
@@ -416,6 +414,7 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         "r",
         "ctrl",
         "zoom",
+        "images",
         "slice",
         "brush",
         "u",
@@ -996,6 +995,13 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
     zy->setOrthoViewer(this);
     xy->setOrthoViewer(this);
     xz->setOrthoViewer(this);
+
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState state) {
+                if (state != Qt::ApplicationActive) {
+                    setImageOnlyMode(false);
+                }
+            });
 
     show();
     refreshInteractionModeIndicators();
@@ -1732,6 +1738,15 @@ void OrthoViewer::setShortcutLegendProfile(ShortcutLegendProfile profile) {
     }
 
     shortcutLegendProfile = profile;
+    refreshInteractionModeIndicators();
+}
+
+void OrthoViewer::setImageOnlyMode(bool enabled) {
+    for (auto *viewer : viewerList) {
+        if (viewer != nullptr) {
+            viewer->setImageOnlyMode(enabled);
+        }
+    }
     refreshInteractionModeIndicators();
 }
 

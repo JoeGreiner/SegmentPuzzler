@@ -124,6 +124,11 @@ public:
         Boundaries
     };
 
+    enum class LayerRole {
+        Overlay,
+        SourceImage
+    };
+
     virtual ~itkSignalBase() {};
 
     virtual itk::ImageBase<3>::Pointer getImageBase() const = 0;
@@ -232,6 +237,14 @@ public:
         labelRenderMode = labelRenderModeIn;
     }
 
+    LayerRole getLayerRole() const {
+        return layerRole;
+    }
+
+    void setLayerRole(LayerRole layerRoleIn) {
+        layerRole = layerRoleIn;
+    }
+
 //    virtual void isContinuous() = 0;
 
     virtual void setName(QString name) = 0;
@@ -245,6 +258,7 @@ public:
 private:
     BlendMode blendMode = BlendMode::SourceOver;
     LabelRenderMode labelRenderMode = LabelRenderMode::Filled;
+    LayerRole layerRole = LayerRole::Overlay;
 };
 
 

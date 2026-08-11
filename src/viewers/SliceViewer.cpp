@@ -95,6 +95,7 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
     taskRunner = taskRunnerIn;
 
     linkedSliderSet = false;
+    imageOnlyMode = false;
 
     dimX = 1;
     dimY = 1;
@@ -405,6 +406,9 @@ void SliceViewer::drawActiveSignalLayers(QPainter &painter, const QRect &targetR
         if (sourceSignal == nullptr) {
             continue;
         }
+        if (imageOnlyMode && sourceSignal->getLayerRole() != itkSignalBase::LayerRole::SourceImage) {
+            continue;
+        }
 
         QImage *sliceImage = signal->getAddressSliceQImage();
         if (sliceImage == nullptr) {
@@ -424,6 +428,14 @@ void SliceViewer::drawActiveSignalLayers(QPainter &painter, const QRect &targetR
     }
 
     painter.restore();
+}
+
+void SliceViewer::setImageOnlyMode(bool enabled) {
+    if (imageOnlyMode == enabled) {
+        return;
+    }
+    imageOnlyMode = enabled;
+    update();
 }
 
 void SliceViewer::paintEvent(QPaintEvent *event) {

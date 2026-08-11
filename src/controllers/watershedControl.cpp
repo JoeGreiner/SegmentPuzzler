@@ -1579,6 +1579,7 @@ void WatershedControl::addImage(QString fileName) {
         size_t signalIndexGlobal;
         bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false);
         if (loadSuccessFull) {
+            allSignalList[signalIndexGlobal]->setLayerRole(itkSignalBase::LayerRole::SourceImage);
             segment_puzzler::image_normalization::configureLoadedImageDisplay(
                 allSignalList[signalIndexGlobal]);
             allSignalList[signalIndexGlobal]->setName(

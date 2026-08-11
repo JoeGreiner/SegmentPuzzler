@@ -34,7 +34,7 @@ private slots:
     void showHotkeys();
     void showSegmentTable();
     void showLayerRenderOrder();
-    void arm3DWorkingSegmentCut();
+    void arm3DSegmentSplit();
     void showLoggingSettings();
 
 private:
@@ -48,7 +48,7 @@ private:
     QAction *openHotkeysAction;
     QAction *loadSampleSegmentationAction;
     QAction *showSegmentTableAction = nullptr;
-    QAction *splitWorkingSegment3DCutAction = nullptr;
+    QAction *splitSegment3DAction = nullptr;
     std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
     std::unique_ptr<TaskRunner> taskRunner;
@@ -56,7 +56,7 @@ private:
 
     void installInitialFileDropHandling();
     void registerDropTarget(QWidget *widget);
-    void update3DWorkingSegmentCutActionState();
+    void update3DSegmentSplitActionState();
 };
 
 #endif //SEGMENTCOUPLER_MAINWINDOW_H
