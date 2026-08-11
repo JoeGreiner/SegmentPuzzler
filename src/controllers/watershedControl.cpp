@@ -326,7 +326,7 @@ QString layerToolTipText(itkSignalBase *signal) {
     if (signal->usesEdgeStatusColors()) {
         toolTip += "\nEdge colors are fixed: white, red, green.";
     } else if (signal->usesCategoricalLUT()) {
-        toolTip += "\nClick the heart to randomize categorical colors.";
+        toolTip += "\nClick the heart to switch between filled segments and boundaries.";
     } else {
         toolTip += "\nClick the heart to change the display color.";
     }
@@ -688,6 +688,8 @@ void WatershedControl::refreshLayerWidget(QTreeWidget *treeWidget, QTreeWidgetIt
     presentation.layerColor = QColor::fromRgba(signal->getColor());
     presentation.usesCategoricalPalette = signal->usesCategoricalLUT();
     presentation.usesEdgeStatusColors = signal->usesEdgeStatusColors();
+    presentation.showsLabelBoundaries =
+        signal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries;
     presentation.layerVisible = active;
     presentation.selected = item == signal_tree::topLevelSignalItem(treeWidget->currentItem());
     presentation.contrastText = contrastChipText(signal);
@@ -2760,19 +2762,30 @@ void WatershedControl::treeClicked(QTreeWidgetItem *item, int) {
 
 void WatershedControl::setUserColor(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
-    if (verbose) {
-        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Opening color picker for watershed signal index=%1").arg(signalIndex));
-    }
-
-    if (allSignalList[signalIndex]->usesCategoricalLUT()) {
-        allSignalList[signalIndex]->randomizeCategoricalLUT();
+    itkSignalBase *signal = allSignalList[signalIndex];
+    if (signal->usesCategoricalLUT()) {
+        const auto nextMode =
+            signal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Filled
+                ? itkSignalBase::LabelRenderMode::Boundaries
+                : itkSignalBase::LabelRenderMode::Filled;
+        signal->setLabelRenderMode(nextMode);
+        SP_LOG_INFO("viewer.render",
+                    QStringLiteral("Watershed label render mode signal=%1 mode=%2")
+                        .arg(signal->name,
+                             nextMode == itkSignalBase::LabelRenderMode::Boundaries
+                                 ? QStringLiteral("boundaries")
+                                 : QStringLiteral("filled")));
         refreshLayerWidget(item->treeWidget(), item);
         refreshViewers();
         return;
     }
 
-    if (allSignalList[signalIndex]->usesEdgeStatusColors()) {
+    if (signal->usesEdgeStatusColors()) {
         return;
+    }
+
+    if (verbose) {
+        SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Opening color picker for watershed signal index=%1").arg(signalIndex));
     }
 
     QColor newColor = QColorDialog::getColor();
@@ -2780,7 +2793,7 @@ void WatershedControl::setUserColor(QTreeWidgetItem *item) {
         return;
     }
 
-    allSignalList[signalIndex]->setMainColor(newColor);
+    signal->setMainColor(newColor);
 
     refreshLayerWidget(item->treeWidget(), item);
     refreshViewers();

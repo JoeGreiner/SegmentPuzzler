@@ -119,6 +119,11 @@ public:
         Additive
     };
 
+    enum class LabelRenderMode {
+        Filled,
+        Boundaries
+    };
+
     virtual ~itkSignalBase() {};
 
     virtual itk::ImageBase<3>::Pointer getImageBase() const = 0;
@@ -219,6 +224,14 @@ public:
         calculateLUT();
     }
 
+    LabelRenderMode getLabelRenderMode() const {
+        return labelRenderMode;
+    }
+
+    void setLabelRenderMode(LabelRenderMode labelRenderModeIn) {
+        labelRenderMode = labelRenderModeIn;
+    }
+
 //    virtual void isContinuous() = 0;
 
     virtual void setName(QString name) = 0;
@@ -231,6 +244,7 @@ public:
 
 private:
     BlendMode blendMode = BlendMode::SourceOver;
+    LabelRenderMode labelRenderMode = LabelRenderMode::Filled;
 };
 
 

@@ -848,7 +848,68 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
     const dType* imageBuffer = pImage->GetBufferPointer();
     quint32* sliceBufferPtr = sliceBuffer->data();
     if constexpr (!std::is_floating_point_v<dType>) {
-        if (sliceAxis == 0) {  // x slices
+        const bool renderLabelBoundaries =
+            isCategorical && !isEdge &&
+            getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries;
+
+        if (renderLabelBoundaries) {
+            unsigned long sliceWidth = 0;
+            unsigned long sliceHeight = 0;
+            unsigned long baseOffset = 0;
+            unsigned long columnStride = 0;
+            unsigned long rowStride = 0;
+
+            switch (sliceAxis) {
+                case 0:
+                    sliceWidth = dimZ;
+                    sliceHeight = dimY;
+                    baseOffset = sliceIndex;
+                    columnStride = dimX * dimY;
+                    rowStride = dimX;
+                    break;
+                case 1:
+                    sliceWidth = dimX;
+                    sliceHeight = dimZ;
+                    baseOffset = sliceIndex * dimX;
+                    columnStride = 1;
+                    rowStride = dimX * dimY;
+                    break;
+                case 2:
+                    sliceWidth = dimX;
+                    sliceHeight = dimY;
+                    baseOffset = sliceIndex * dimX * dimY;
+                    columnStride = 1;
+                    rowStride = dimX;
+                    break;
+                default:
+                    throw std::logic_error("sliceAxis not implemented!");
+            }
+
+            const quint32 transparentPixel = qRgba(0, 0, 0, 0);
+            for (unsigned long row = 0; row < sliceHeight; ++row) {
+                const unsigned long imageRowOffset = baseOffset + row * rowStride;
+                const unsigned long sliceRowOffset = row * sliceWidth;
+                for (unsigned long column = 0; column < sliceWidth; ++column) {
+                    const unsigned long imageOffset = imageRowOffset + column * columnStride;
+                    const dType value = imageBuffer[imageOffset];
+                    const bool hasFourInPlaneNeighbors =
+                        row > 0 && row + 1 < sliceHeight &&
+                        column > 0 && column + 1 < sliceWidth;
+                    const bool isBoundary =
+                        !hasFourInPlaneNeighbors ||
+                        imageBuffer[imageOffset - rowStride] != value ||
+                        imageBuffer[imageOffset + rowStride] != value ||
+                        imageBuffer[imageOffset - columnStride] != value ||
+                        imageBuffer[imageOffset + columnStride] != value;
+                    const unsigned long sliceBufferIndex = sliceRowOffset + column;
+#if LUT_SAVE_ACCESS
+                    sliceBufferPtr[sliceBufferIndex] = isBoundary ? LUT.at(value) : transparentPixel;
+#else
+                    sliceBufferPtr[sliceBufferIndex] = isBoundary ? LUT[value] : transparentPixel;
+#endif
+                }
+            }
+        } else if (sliceAxis == 0) {  // x slices
             for (unsigned long z = 0; z < dimZ; ++z) { // Loop over depth (z-axis)
                 unsigned long zOffset = z * dimX * dimY; // Start of the z-plane in the buffer
 

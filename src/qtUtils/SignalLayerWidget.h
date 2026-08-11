@@ -28,6 +28,7 @@ public:
         QString toolTip;
         bool usesCategoricalPalette = false;
         bool usesEdgeStatusColors = false;
+        bool showsLabelBoundaries = false;
         bool layerVisible = true;
         bool selected = false;
         bool contrastAvailable = true;
@@ -51,6 +52,7 @@ public:
     void setLayerColor(const QColor &color);
     void setUsesCategoricalPalette(bool usesCategoricalPaletteIn);
     void setUsesEdgeStatusColors(bool usesEdgeStatusColorsIn);
+    void setShowsLabelBoundaries(bool showsBoundaries);
     void setLayerVisible(bool visible);
     void setSelected(bool selected);
     void setContrastText(const QString &text);
@@ -107,6 +109,7 @@ private:
     QColor layerColor = Qt::white;
     bool usesCategoricalPalette = false;
     bool usesEdgeStatusColors = false;
+    bool showsLabelBoundaries = false;
     bool layerVisible = true;
     bool selected = false;
     bool hovered = false;

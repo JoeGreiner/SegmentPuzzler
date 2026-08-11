@@ -201,7 +201,7 @@ QIcon makeSingleColorHeartIcon(const QColor &color) {
     return QIcon(pixmap);
 }
 
-QIcon makeCategoricalHeartIcon() {
+QIcon makeCategoricalHeartIcon(bool boundariesOnly = false) {
     QPixmap pixmap(28, 24);
     pixmap.fill(Qt::transparent);
 
@@ -232,20 +232,29 @@ QIcon makeCategoricalHeartIcon() {
     painter.setRenderHint(QPainter::Antialiasing, true);
 
     const QPainterPath heart = heartPathForRect(QRectF(2.0, 1.0, 24.0, 21.5));
-    painter.fillPath(heart, QColor(255, 255, 255, 34));
+    if (!boundariesOnly) {
+        painter.fillPath(heart, QColor(255, 255, 255, 34));
+    }
 
     painter.save();
     painter.setClipPath(heart);
-    painter.setPen(Qt::NoPen);
     for (size_t index = 0; index < blobs.size(); ++index) {
-        painter.setBrush(blobs[index].color);
+        if (boundariesOnly) {
+            painter.setPen(QPen(blobs[index].color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setBrush(Qt::NoBrush);
+        } else {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(blobs[index].color);
+        }
         painter.drawRoundedRect(blobs[index].rect, radii[index], radii[index]);
     }
 
-    painter.setBrush(QColor(255, 255, 255, 42));
-    painter.drawEllipse(QRectF(7.2, 4.2, 3.0, 2.2));
-    painter.drawEllipse(QRectF(14.7, 4.6, 2.6, 2.0));
-    painter.drawEllipse(QRectF(9.4, 12.9, 2.5, 1.9));
+    if (!boundariesOnly) {
+        painter.setBrush(QColor(255, 255, 255, 42));
+        painter.drawEllipse(QRectF(7.2, 4.2, 3.0, 2.2));
+        painter.drawEllipse(QRectF(14.7, 4.6, 2.6, 2.0));
+        painter.drawEllipse(QRectF(9.4, 12.9, 2.5, 1.9));
+    }
     painter.restore();
 
     drawHeartChrome(painter, heart);
@@ -624,6 +633,7 @@ void SignalLayerWidget::applyPresentation(const Presentation &presentation) {
     setLayerColor(presentation.layerColor);
     setUsesCategoricalPalette(presentation.usesCategoricalPalette);
     setUsesEdgeStatusColors(presentation.usesEdgeStatusColors);
+    setShowsLabelBoundaries(presentation.showsLabelBoundaries);
     setLayerVisible(presentation.layerVisible);
     setSelected(presentation.selected);
     setContrastText(presentation.contrastText);
@@ -683,6 +693,11 @@ void SignalLayerWidget::setUsesEdgeStatusColors(bool usesEdgeStatusColorsIn) {
     updateColorButtonAppearance();
 }
 
+void SignalLayerWidget::setShowsLabelBoundaries(bool showsBoundaries) {
+    showsLabelBoundaries = showsBoundaries;
+    updateColorButtonAppearance();
+}
+
 void SignalLayerWidget::setLayerVisible(bool visible) {
     layerVisible = visible;
     updateVisibilityIcon();
@@ -736,7 +751,9 @@ void SignalLayerWidget::setLayerToolTip(const QString &toolTip) {
     if (usesEdgeStatusColors) {
         colorButton->setToolTip("Edge colors are fixed: white, red, green");
     } else if (usesCategoricalPalette) {
-        colorButton->setToolTip("Randomize categorical colors");
+        colorButton->setToolTip(showsLabelBoundaries
+                                    ? "Show filled segments"
+                                    : "Show segment boundaries");
     } else {
         colorButton->setToolTip("Change display color");
     }
@@ -864,11 +881,13 @@ void SignalLayerWidget::updateColorButtonAppearance() {
     }
 
     if (usesCategoricalPalette) {
-        colorButton->setIcon(makeCategoricalHeartIcon());
+        colorButton->setIcon(makeCategoricalHeartIcon(showsLabelBoundaries));
         colorButton->setIconSize(QSize(28, 24));
         colorButton->setText(QString());
         colorButton->setCursor(Qt::PointingHandCursor);
-        colorButton->setToolTip("Randomize categorical colors");
+        colorButton->setToolTip(showsLabelBoundaries
+                                    ? "Show filled segments"
+                                    : "Show segment boundaries");
         colorButton->setStyleSheet("QPushButton { background: transparent; border: 0px; padding: 0px; }");
         return;
     }
