@@ -8,18 +8,26 @@
 #include <QEvent>
 #include <QGridLayout>
 #include <QDateTime>
+#include <QDir>
+#include <QFileDialog>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineF>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPolygonF>
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QShortcut>
 #include <QShowEvent>
+#include <QSaveFile>
 #include <QSlider>
 #include <QStyle>
 #include <QStyleOptionSpinBox>
@@ -52,6 +60,7 @@
 #include <vtkProperty.h>
 #include <vtkCellData.h>
 #include <vtkCallbackCommand.h>
+#include <vtkCellPicker.h>
 #include <vtkCommand.h>
 #include <vtkDataArray.h>
 #include <vtkProp.h>
@@ -62,13 +71,18 @@
 #include <vtkOrientationMarkerWidget.h>
 #include <vtkObjectFactory.h>
 #include <vtkSMPTools.h>
+#include <vtkSphereSource.h>
 #include <vtkSurfaceNets3D.h>
+
+#include <itkImageFileWriter.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <set>
+#include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -80,6 +94,31 @@
 
 namespace {
 
+constexpr int kDefaultSeedDistancePixels = 10;
+constexpr int kMaximumSeedDistancePixels = 80;
+constexpr int kDefaultLineSamplingPixels = 30;
+constexpr int kMinimumLineSamplingPixels = 5;
+constexpr int kMaximumLineSamplingPixels = 100;
+constexpr int kMaximumSplitLineSeedPairs = 64;
+constexpr int kSmoothingSliderStepsPerPixel = 10;
+constexpr int kMaximumSmoothingSliderValue = 30;
+
+class SurfaceOnlyTrackballCameraStyle : public vtkInteractorStyleTrackballCamera {
+public:
+    static SurfaceOnlyTrackballCameraStyle *New();
+    vtkTypeMacro(SurfaceOnlyTrackballCameraStyle, vtkInteractorStyleTrackballCamera);
+
+    void OnChar() override {
+        const char key = Interactor != nullptr ? Interactor->GetKeyCode() : '\0';
+        if (key == 'w' || key == 'W') {
+            return;
+        }
+        Superclass::OnChar();
+    }
+};
+
+vtkStandardNewMacro(SurfaceOnlyTrackballCameraStyle);
+
 QPointF mouseEventPosition(const QMouseEvent *event) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     return event->position();
@@ -88,11 +127,133 @@ QPointF mouseEventPosition(const QMouseEvent *event) {
 #endif
 }
 
+QPolygonF offsetPolyline(const QPolygonF &points, double distance) {
+    QPolygonF offsetPoints;
+    offsetPoints.reserve(points.size());
+    for (int index = 0; index < points.size(); ++index) {
+        const QPointF &before = points[index == 0 ? 0 : index - 1];
+        const QPointF &after = points[index + 1 < points.size() ? index + 1 : index];
+        const double dx = after.x() - before.x();
+        const double dy = after.y() - before.y();
+        const double length = std::hypot(dx, dy);
+        if (length <= 1e-9) {
+            offsetPoints << points[index];
+            continue;
+        }
+        offsetPoints << QPointF(
+            points[index].x() - distance * dy / length,
+            points[index].y() + distance * dx / length);
+    }
+    return offsetPoints;
 }
 
-class CutStrokeOverlay : public QWidget {
+double polylineLength(const QPolygonF &points) {
+    double length = 0.0;
+    for (int index = 1; index < points.size(); ++index) {
+        length += QLineF(points[index - 1], points[index]).length();
+    }
+    return length;
+}
+
+std::vector<QPointF> samplePolyline(const QPolygonF &points, int sampleCount) {
+    std::vector<QPointF> samples;
+    if (points.size() < 2 || sampleCount <= 0) {
+        return samples;
+    }
+    std::vector<double> accumulatedLength(static_cast<std::size_t>(points.size()), 0.0);
+    for (int index = 1; index < points.size(); ++index) {
+        accumulatedLength[static_cast<std::size_t>(index)] =
+            accumulatedLength[static_cast<std::size_t>(index - 1)]
+            + QLineF(points[index - 1], points[index]).length();
+    }
+    const double totalLength = accumulatedLength.back();
+    if (totalLength <= 1e-9) {
+        return samples;
+    }
+    samples.reserve(static_cast<std::size_t>(sampleCount));
+    int segment = 1;
+    for (int sample = 0; sample < sampleCount; ++sample) {
+        const double targetLength =
+            (static_cast<double>(sample) + 0.5) * totalLength / sampleCount;
+        while (segment + 1 < points.size()
+               && accumulatedLength[static_cast<std::size_t>(segment)] < targetLength) {
+            ++segment;
+        }
+        const double segmentStart = accumulatedLength[static_cast<std::size_t>(segment - 1)];
+        const double segmentLength =
+            accumulatedLength[static_cast<std::size_t>(segment)] - segmentStart;
+        const double fraction = segmentLength > 1e-9
+                                    ? (targetLength - segmentStart) / segmentLength
+                                    : 0.0;
+        samples.push_back(points[segment - 1]
+                          + fraction * (points[segment] - points[segment - 1]));
+    }
+    return samples;
+}
+
+template<typename Values>
+QString formatTriple(const Values &values) {
+    return QStringLiteral("[%1,%2,%3]")
+        .arg(QString::number(static_cast<double>(values[0]), 'g', 17))
+        .arg(QString::number(static_cast<double>(values[1]), 'g', 17))
+        .arg(QString::number(static_cast<double>(values[2]), 'g', 17));
+}
+
+QString formatHash(std::uint64_t hash) {
+    return QStringLiteral("0x%1").arg(
+        QString::number(static_cast<qulonglong>(hash), 16).rightJustified(16, QLatin1Char('0')));
+}
+
+QString formatSeedIndices(
+    const std::vector<segment_puzzler::SeededWatershedSplitSession::IndexType> &seeds,
+    const segment_puzzler::SeededWatershedSplitSession::IndexType *offset = nullptr)
+{
+    QStringList values;
+    values.reserve(static_cast<int>(seeds.size()));
+    for (auto seed : seeds) {
+        if (offset != nullptr) {
+            for (unsigned int axis = 0; axis < 3; ++axis) {
+                seed[axis] += (*offset)[axis];
+            }
+        }
+        values << formatTriple(seed);
+    }
+    return QStringLiteral("[%1]").arg(values.join(QLatin1Char(',')));
+}
+
+QString formatSeedDistances(
+    const std::vector<segment_puzzler::SeededWatershedSplitSession::IndexType> &seeds,
+    const segment_puzzler::SeededSplitDistanceImage *distance)
+{
+    QStringList values;
+    values.reserve(static_cast<int>(seeds.size()));
+    for (const auto &seed : seeds) {
+        values << QString::number(distance->GetPixel(seed), 'g', 9);
+    }
+    return QStringLiteral("[%1]").arg(values.join(QLatin1Char(',')));
+}
+
+template<typename Values>
+QJsonArray jsonTriple(const Values &values) {
+    return {static_cast<double>(values[0]),
+            static_cast<double>(values[1]),
+            static_cast<double>(values[2])};
+}
+
+template<typename TImage>
+void writeDebugImage(const TImage *image, const QString &filePath) {
+    using Writer = itk::ImageFileWriter<TImage>;
+    auto writer = Writer::New();
+    writer->SetFileName(filePath.toStdString());
+    writer->SetInput(image);
+    writer->Update();
+}
+
+}
+
+class StrokeOverlay : public QWidget {
 public:
-    explicit CutStrokeOverlay(QWidget *parent = nullptr)
+    explicit StrokeOverlay(QWidget *parent = nullptr)
         : QWidget(parent)
     {
         setAttribute(Qt::WA_TranslucentBackground);
@@ -136,7 +297,25 @@ public:
         return pixels;
     }
 
+    QPolygonF offsetStroke(double distancePixels) const {
+        QPolygonF points;
+        points.reserve(static_cast<int>(m_points.size()));
+        for (const QPointF &point : m_points) {
+            points << point;
+        }
+        return offsetPolyline(points, distancePixels);
+    }
+
+    void setSeedDistancePixels(double distancePixels) {
+        if (std::abs(m_seedDistancePixels - distancePixels) <= 1e-9) {
+            return;
+        }
+        m_seedDistancePixels = distancePixels;
+        update();
+    }
+
     std::function<void()> onStrokeChanged;
+    std::function<void()> onStrokeFinished;
 
 protected:
     void paintEvent(QPaintEvent *event) override {
@@ -147,8 +326,8 @@ protected:
 
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
-        QPen pen(QColor("#ff6f61"));
-        pen.setWidthF(6.0);
+        QPen pen(QColor("#ffb05c"));
+        pen.setWidthF(m_seedDistancePixels > 0.0 ? 3.0 : 6.0);
         pen.setCapStyle(Qt::RoundCap);
         pen.setJoinStyle(Qt::RoundJoin);
         painter.setPen(pen);
@@ -157,6 +336,17 @@ protected:
             polyline << point;
         }
         painter.drawPolyline(polyline);
+
+        if (m_seedDistancePixels <= 0.0 || m_points.size() < 2) {
+            return;
+        }
+        pen.setWidthF(4.0);
+        pen.setColor(QColor("#f2483d"));
+        painter.setPen(pen);
+        painter.drawPolyline(offsetStroke(-m_seedDistancePixels));
+        pen.setColor(QColor("#26a6ff"));
+        painter.setPen(pen);
+        painter.drawPolyline(offsetStroke(m_seedDistancePixels));
     }
 
     void mousePressEvent(QMouseEvent *event) override {
@@ -202,9 +392,13 @@ protected:
 
     void mouseReleaseEvent(QMouseEvent *event) override {
         if (m_drawingEnabled && event->button() == Qt::LeftButton) {
+            const bool finishedStroke = m_dragging && hasValidStroke();
             m_dragging = false;
             if (onStrokeChanged) {
                 onStrokeChanged();
+            }
+            if (finishedStroke && onStrokeFinished) {
+                onStrokeFinished();
             }
         }
         event->accept();
@@ -217,6 +411,7 @@ protected:
 private:
     bool m_drawingEnabled = false;
     bool m_dragging = false;
+    double m_seedDistancePixels = 0.0;
     std::vector<QPointF> m_points;
 };
 
@@ -321,7 +516,9 @@ bool navigationModifierPressed(Qt::KeyboardModifiers modifiers) {
 #endif
 }
 
-QString threeDViewHelpText(bool showExplodeControls, bool showCutControls) {
+QString threeDViewHelpText(bool showExplodeControls,
+                           bool showCutControls,
+                           bool showSeededSplitControls) {
 #ifdef Q_OS_MACOS
     const QString navigateShortcut = QStringLiteral("Cmd (or Ctrl)");
 #else
@@ -335,12 +532,22 @@ QString threeDViewHelpText(bool showExplodeControls, bool showCutControls) {
     if (showCutControls) {
         lines << QStringLiteral("Use Draw Cut to arm projected cut drawing, Clear to erase the stroke, and Apply to split the segment.");
     }
+    if (showSeededSplitControls) {
+        lines << QStringLiteral("Press 1 or 2 before a click to add a red or blue seed. Split Line (L) previews seeds on both sides of a stroke.");
+        lines << QStringLiteral("Adjust Line Offset and Line Sampling, then use Confirm Seeds. Auto Preview runs once both confirmed seed classes contain a marker.");
+        lines << QStringLiteral("Connect Seeds joins markers of each color through the segment interior before watershed.");
+        lines << QStringLiteral("Compact Watershed adds seed-distance regularization. Allow disconnected parts accepts such results but keeps a warning visible.");
+        lines << QStringLiteral("Distance-map Smoothing controls Gaussian smoothing in pixels.");
+        lines << QStringLiteral("Press E to export the latest split input and result for debugging.");
+    }
     if (showExplodeControls) {
         lines << QStringLiteral("Move the Explode slider to add up to %1% of each segment's original distance from the scene center; 0% shows the unshifted view and 100% doubles that distance.")
                      .arg(kMaximumExplodePercent);
         lines << QStringLiteral("Use the left/right arrow keys to step the explode slider.");
     }
-    lines << QStringLiteral("Press R to cycle the segment colors in this 3D view.");
+    if (!showSeededSplitControls) {
+        lines << QStringLiteral("Press R to cycle the segment colors in this 3D view.");
+    }
     lines << QStringLiteral("Press Q to close the 3D view.");
     return lines.join(QStringLiteral("\n"));
 }
@@ -1759,7 +1966,11 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
 Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
                                              QWidget *parent,
                                              int launchSliceAxis)
-    : Segment3DViewerDialog(std::move(preparedScene), CutSessionConfig{}, parent, launchSliceAxis)
+    : Segment3DViewerDialog(std::move(preparedScene),
+                            CutSessionConfig{},
+                            SeededSplitSessionConfig{},
+                            parent,
+                            launchSliceAxis)
 {
 }
 
@@ -1767,9 +1978,39 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
                                              CutSessionConfig cutSession,
                                              QWidget *parent,
                                              int launchSliceAxis)
+    : Segment3DViewerDialog(std::move(preparedScene),
+                            std::move(cutSession),
+                            SeededSplitSessionConfig{},
+                            parent,
+                            launchSliceAxis)
+{
+}
+
+Segment3DViewerDialog::Segment3DViewerDialog(
+    PreparedScene preparedScene,
+    SeededSplitSessionConfig seededSplitSession,
+    QWidget *parent,
+    int launchSliceAxis)
+    : Segment3DViewerDialog(std::move(preparedScene),
+                            CutSessionConfig{},
+                            std::move(seededSplitSession),
+                            parent,
+                            launchSliceAxis)
+{
+}
+
+Segment3DViewerDialog::Segment3DViewerDialog(
+    PreparedScene preparedScene,
+    CutSessionConfig cutSession,
+    SeededSplitSessionConfig seededSplitSession,
+    QWidget *parent,
+    int launchSliceAxis)
     : QDialog(parent)
     , m_targetLabelId(preparedScene.targetLabelId)
     , m_cutSession(std::move(cutSession))
+    , m_seededSplitSession(std::move(seededSplitSession))
+    , m_originalSeededSplitScene(
+          m_seededSplitSession.session != nullptr ? preparedScene : PreparedScene{})
     , m_navigationBounds(std::move(preparedScene.navigationBounds))
     , m_launchSliceAxis(launchSliceAxis)
 {
@@ -1803,8 +2044,21 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
 
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
     m_sceneExtent = preparedScene.sceneExtent;
-    const bool showExplodeControls = m_segmentActors.size() > 1;
+    const bool showSeededSplitControls =
+        m_seededSplitSession.session != nullptr
+        && static_cast<bool>(m_seededSplitSession.applySplit)
+        && m_targetLabelId != 0;
+    const bool showExplodeControls = m_segmentActors.size() > 1 && !showSeededSplitControls;
     const bool showCutControls = static_cast<bool>(m_cutSession.applyCut) && m_targetLabelId != 0;
+    if (showSeededSplitControls) {
+        renWin->SetNumberOfLayers(2);
+        m_seedRenderer = vtkSmartPointer<vtkRenderer>::New();
+        m_seedRenderer->SetLayer(1);
+        m_seedRenderer->PreserveDepthBufferOff();
+        m_seedRenderer->SetActiveCamera(m_renderer->GetActiveCamera());
+        m_seedRenderer->InteractiveOff();
+        renWin->AddRenderer(m_seedRenderer);
+    }
 
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setRenderWindow(renWin);
@@ -1817,7 +2071,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     m_vtkWidget->setFocusPolicy(Qt::StrongFocus);
     m_vtkWidget->hide();
 
-    auto style = vtkSmartPointer<vtkInteractorStyleTrackballCamera>::New();
+    auto style = vtkSmartPointer<SurfaceOnlyTrackballCameraStyle>::New();
     style->SetDefaultRenderer(m_renderer);
     if (m_vtkWidget->interactor() != nullptr) {
         m_vtkWidget->interactor()->SetInteractorStyle(style);
@@ -1839,14 +2093,21 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     vtkStackLayout->setContentsMargins(0, 0, 0, 0);
     vtkStackLayout->setSpacing(0);
     vtkStackLayout->addWidget(m_vtkWidget, 0, 0);
-    if (showCutControls) {
-        m_cutOverlay = new CutStrokeOverlay(vtkContainer);
-        m_cutOverlay->onStrokeChanged = [this]() { updateCutUiState(); };
-        vtkStackLayout->addWidget(m_cutOverlay, 0, 0);
+    if (showCutControls || showSeededSplitControls) {
+        m_strokeOverlay = new StrokeOverlay(vtkContainer);
+        m_strokeOverlay->onStrokeChanged = [this]() {
+            updateCutUiState();
+            updateSeededSplitUiState();
+        };
+        if (showSeededSplitControls) {
+            m_strokeOverlay->onStrokeFinished =
+                [this]() { updateSplitLineSeedPreview(); };
+        }
+        vtkStackLayout->addWidget(m_strokeOverlay, 0, 0);
     }
     layout->addWidget(vtkContainer, 1);
 
-    if (showExplodeControls || showCutControls) {
+    if (showExplodeControls || showCutControls || showSeededSplitControls) {
         m_controlsRow = ensureControlsRow();
 
         if (showExplodeControls) {
@@ -1904,12 +2165,227 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
             m_controlsRow->addWidget(m_applyCutButton);
         }
 
+        if (showSeededSplitControls) {
+            m_seedButtons[0] = new QPushButton(QStringLiteral("Red Seed"), m_controlsWidget);
+            m_seedButtons[1] = new QPushButton(QStringLiteral("Blue Seed"), m_controlsWidget);
+            m_seedButtons[0]->setCheckable(true);
+            m_seedButtons[1]->setCheckable(true);
+            m_seedButtons[0]->setToolTip(
+                QStringLiteral("Add a red seed (1)."));
+            m_seedButtons[1]->setToolTip(
+                QStringLiteral("Add a blue seed (2)."));
+            m_splitLineButton = new QPushButton(QStringLiteral("Redraw Line"), m_controlsWidget);
+            m_splitLineButton->setCheckable(true);
+            m_splitLineButton->setMinimumWidth(m_splitLineButton->sizeHint().width());
+            m_splitLineButton->setText(QStringLiteral("Split Line"));
+            m_splitLineButton->setToolTip(
+                QStringLiteral("Draw a line that generates red and blue seeds on either side (L)."));
+            m_seedDistanceSlider = new QSlider(Qt::Horizontal, m_controlsWidget);
+            m_seedDistanceSlider->setRange(2, kMaximumSeedDistancePixels);
+            m_seedDistanceSlider->setValue(kDefaultSeedDistancePixels);
+            m_seedDistanceSlider->setSingleStep(1);
+            m_seedDistanceSlider->setPageStep(5);
+            m_seedDistanceSlider->setFixedWidth(90);
+            m_seedDistanceSlider->setToolTip(
+                QStringLiteral("Screen-space offset between the split line and generated seeds."));
+            m_seedDistanceLabel = new QLabel(
+                QStringLiteral("Line Offset: %1 px").arg(kDefaultSeedDistancePixels),
+                m_controlsWidget);
+            m_lineSamplingSlider = new QSlider(Qt::Horizontal, m_controlsWidget);
+            m_lineSamplingSlider->setRange(
+                kMinimumLineSamplingPixels, kMaximumLineSamplingPixels);
+            m_lineSamplingSlider->setValue(kDefaultLineSamplingPixels);
+            m_lineSamplingSlider->setSingleStep(1);
+            m_lineSamplingSlider->setPageStep(5);
+            m_lineSamplingSlider->setFixedWidth(90);
+            m_lineSamplingSlider->setToolTip(
+                QStringLiteral(
+                    "Screen-space distance between generated seed pairs. "
+                    "Smaller values create more seeds."));
+            m_lineSamplingLabel = new QLabel(
+                QStringLiteral("Line Sampling: %1 px")
+                    .arg(kDefaultLineSamplingPixels),
+                m_controlsWidget);
+            m_confirmLineSeedsButton = new QPushButton(
+                QStringLiteral("Confirm Seeds"), m_controlsWidget);
+            m_confirmLineSeedsButton->setToolTip(
+                QStringLiteral(
+                    "Use the currently displayed line seeds for the watershed."));
+            m_clearSeedsButton = new QPushButton(QStringLiteral("Reset"), m_controlsWidget);
+            m_previewSplitButton = new QPushButton(QStringLiteral("Preview"), m_controlsWidget);
+            m_applySplitButton = new QPushButton(QStringLiteral("Apply Split"), m_controlsWidget);
+            m_applySplitButton->setDefault(true);
+            m_seedStatusLabel = new QLabel(
+                QStringLiteral("Add at least one seed to each class."), m_controlsWidget);
+            m_seedStatusLabel->setSizePolicy(
+                QSizePolicy::Ignored, QSizePolicy::Preferred);
+            auto *optionsWidget = new QWidget(this);
+            m_autoPreviewCheckBox = new QCheckBox(
+                QStringLiteral("Auto Preview"), optionsWidget);
+            m_autoPreviewCheckBox->setObjectName(QStringLiteral("autoPreviewCheckBox"));
+            m_autoPreviewCheckBox->setChecked(true);
+            m_autoPreviewCheckBox->setToolTip(
+                QStringLiteral("Automatically update the preview once both seed classes are present."));
+            m_connectSeedsCheckBox = new QCheckBox(
+                QStringLiteral("Connect Seeds"), optionsWidget);
+            m_connectSeedsCheckBox->setObjectName(QStringLiteral("connectSeedsCheckBox"));
+            m_connectSeedsCheckBox->setChecked(true);
+            m_connectSeedsCheckBox->setToolTip(
+                QStringLiteral(
+                    "Connect seeds of each color through the segment interior before "
+                    "running the watershed."));
+            m_compactWatershedCheckBox = new QCheckBox(
+                QStringLiteral("Compact Watershed"), optionsWidget);
+            m_compactWatershedCheckBox->setObjectName(
+                QStringLiteral("compactWatershedCheckBox"));
+            m_compactWatershedCheckBox->setChecked(true);
+            m_compactWatershedCheckBox->setToolTip(
+                QStringLiteral(
+                    "Regularize the watershed by distance to the seeds while retaining "
+                    "the distance-map landscape."));
+            m_allowDisconnectedCheckBox = new QCheckBox(
+                QStringLiteral("Allow disconnected parts"), optionsWidget);
+            m_allowDisconnectedCheckBox->setObjectName(
+                QStringLiteral("allowDisconnectedCheckBox"));
+            m_allowDisconnectedCheckBox->setChecked(false);
+            m_allowDisconnectedCheckBox->setToolTip(
+                QStringLiteral(
+                    "Allow applying a result whose red or blue part contains multiple "
+                    "disconnected regions. A warning remains visible in the preview."));
+            m_smoothingSlider = new QSlider(Qt::Horizontal, optionsWidget);
+            m_smoothingSlider->setObjectName(QStringLiteral("smoothingSlider"));
+            m_smoothingSlider->setRange(0, kMaximumSmoothingSliderValue);
+            m_smoothingSlider->setSingleStep(1);
+            m_smoothingSlider->setPageStep(5);
+            m_smoothingSlider->setFixedWidth(120);
+            m_smoothingSlider->setMinimumHeight(28);
+            m_smoothingSlider->setValue(static_cast<int>(std::lround(
+                m_seededSplitSession.session->landscapeSmoothingSigmaPixels
+                * kSmoothingSliderStepsPerPixel)));
+            m_smoothingSlider->setToolTip(
+                QStringLiteral("Gaussian smoothing sigma for the watershed distance map (0.0–3.0 px)."));
+            m_smoothingLabel = new QLabel(
+                QStringLiteral("Distance-map Smoothing: %1 px")
+                    .arg(m_seededSplitSession.session->landscapeSmoothingSigmaPixels,
+                         0, 'f', 1),
+                optionsWidget);
+            m_smoothingUpdateTimer = new QTimer(this);
+            m_smoothingUpdateTimer->setSingleShot(true);
+            m_smoothingUpdateTimer->setInterval(150);
+            connect(m_seedButtons[0], &QPushButton::clicked,
+                    this, [this]() { armSeedPlacement(0); });
+            connect(m_seedButtons[1], &QPushButton::clicked,
+                    this, [this]() { armSeedPlacement(1); });
+            connect(m_splitLineButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::beginSplitLineDrawing);
+            connect(m_confirmLineSeedsButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::confirmSplitLineSeeds);
+            connect(m_seedDistanceSlider, &QSlider::valueChanged, this, [this](int value) {
+                m_seedDistanceLabel->setText(QStringLiteral("Line Offset: %1 px").arg(value));
+                if (!m_splitLineDrawModeActive || m_strokeOverlay == nullptr) {
+                    return;
+                }
+                m_strokeOverlay->setSeedDistancePixels(value);
+                if (m_havePendingLineSeeds) {
+                    updateSplitLineSeedPreview();
+                }
+            });
+            connect(m_lineSamplingSlider, &QSlider::valueChanged, this, [this](int value) {
+                m_lineSamplingLabel->setText(
+                    QStringLiteral("Line Sampling: %1 px").arg(value));
+                if (m_havePendingLineSeeds) {
+                    updateSplitLineSeedPreview();
+                }
+            });
+            connect(m_autoPreviewCheckBox, &QCheckBox::toggled,
+                    this, [this](bool enabled) {
+                        if (enabled) {
+                            autoPreviewSeededSplitIfReady();
+                        }
+                    });
+            const auto watershedOptionChanged = [this]() {
+                m_lastSeededSplitResult.reset();
+                if (m_seededSplitPreview.has_value()) {
+                    replaceSegmentMeshes(m_originalSeededSplitScene, false);
+                    m_seededSplitPreview.reset();
+                }
+                setSeededSplitStatus(
+                    QStringLiteral("Watershed options changed; press Preview."));
+                updateSeededSplitUiState();
+                autoPreviewSeededSplitIfReady();
+            };
+            connect(m_compactWatershedCheckBox, &QCheckBox::toggled,
+                    this, watershedOptionChanged);
+            connect(m_connectSeedsCheckBox, &QCheckBox::toggled,
+                    this, watershedOptionChanged);
+            connect(m_allowDisconnectedCheckBox, &QCheckBox::toggled,
+                    this, watershedOptionChanged);
+            connect(m_smoothingSlider, &QSlider::valueChanged, this, [this](int value) {
+                const double sigmaPixels =
+                    static_cast<double>(value) / kSmoothingSliderStepsPerPixel;
+                m_smoothingLabel->setText(
+                    QStringLiteral("Distance-map Smoothing: %1 px")
+                        .arg(sigmaPixels, 0, 'f', 1));
+                if (std::abs(
+                        sigmaPixels
+                        - m_seededSplitSession.session->landscapeSmoothingSigmaPixels)
+                    <= 1e-9) {
+                    return;
+                }
+                m_seededSplitSmoothingPending = true;
+                m_lastSeededSplitResult.reset();
+                if (m_seededSplitPreview.has_value()) {
+                    replaceSegmentMeshes(m_originalSeededSplitScene, false);
+                    m_seededSplitPreview.reset();
+                }
+                setSeededSplitStatus(
+                    QStringLiteral("Updating distance-map smoothing..."));
+                m_smoothingUpdateTimer->start();
+                updateSeededSplitUiState();
+            });
+            connect(m_smoothingUpdateTimer, &QTimer::timeout,
+                    this, &Segment3DViewerDialog::updateSeededSplitSmoothing);
+            connect(m_clearSeedsButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::clearSeededSplit);
+            connect(m_previewSplitButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::previewSeededSplit);
+            connect(m_applySplitButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::applySeededSplit);
+            m_controlsRow->addWidget(m_seedButtons[0]);
+            m_controlsRow->addWidget(m_seedButtons[1]);
+            m_controlsRow->addWidget(m_splitLineButton);
+            m_controlsRow->addWidget(m_seedDistanceLabel);
+            m_controlsRow->addWidget(m_seedDistanceSlider);
+            m_controlsRow->addWidget(m_lineSamplingLabel);
+            m_controlsRow->addWidget(m_lineSamplingSlider);
+            m_controlsRow->addWidget(m_confirmLineSeedsButton);
+            m_controlsRow->addWidget(m_clearSeedsButton);
+            m_controlsRow->addWidget(m_previewSplitButton);
+            m_controlsRow->addWidget(m_applySplitButton);
+            m_controlsRow->addWidget(m_seedStatusLabel, 1);
+
+            auto *optionsRow = new QHBoxLayout(optionsWidget);
+            optionsRow->setContentsMargins(10, 0, 10, 6);
+            optionsRow->setSpacing(8);
+            optionsRow->addWidget(m_autoPreviewCheckBox);
+            optionsRow->addWidget(m_connectSeedsCheckBox);
+            optionsRow->addWidget(m_compactWatershedCheckBox);
+            optionsRow->addWidget(m_allowDisconnectedCheckBox);
+            optionsRow->addWidget(m_smoothingLabel);
+            optionsRow->addWidget(m_smoothingSlider);
+            optionsRow->addStretch(1);
+            layout->addWidget(optionsWidget, 0);
+        }
+
         if (!showExplodeControls) {
             m_controlsRow->addStretch(1);
         }
 
         if (QLabel *helpLabel = createHelpBadgeLabel(
-                threeDViewHelpText(showExplodeControls, showCutControls), m_controlsWidget)) {
+                threeDViewHelpText(showExplodeControls,
+                                   showCutControls,
+                                   showSeededSplitControls),
+                m_controlsWidget)) {
             m_controlsRow->addWidget(helpLabel);
         }
     }
@@ -1933,10 +2409,12 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     closeShortcut->setContext(Qt::WindowShortcut);
     connect(closeShortcut, &QShortcut::activated, this, &QDialog::close);
 
-    auto *colorCycleShortcut = new QShortcut(QKeySequence(Qt::Key_R), this);
-    colorCycleShortcut->setContext(Qt::WindowShortcut);
-    connect(colorCycleShortcut, &QShortcut::activated,
-            this, &Segment3DViewerDialog::cycleSegmentColors);
+    if (!showSeededSplitControls) {
+        auto *colorCycleShortcut = new QShortcut(QKeySequence(Qt::Key_R), this);
+        colorCycleShortcut->setContext(Qt::WindowShortcut);
+        connect(colorCycleShortcut, &QShortcut::activated,
+                this, &Segment3DViewerDialog::cycleSegmentColors);
+    }
 
     if (showCutControls) {
         auto *cutHelpShortcut = new QShortcut(QKeySequence(Qt::Key_Question), this);
@@ -1946,6 +2424,28 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
         auto *cutHelpF1Shortcut = new QShortcut(QKeySequence(Qt::Key_F1), this);
         cutHelpF1Shortcut->setContext(Qt::WindowShortcut);
         connect(cutHelpF1Shortcut, &QShortcut::activated, this, &Segment3DViewerDialog::showCutHelp);
+    }
+
+    if (showSeededSplitControls) {
+        auto *seed1Shortcut = new QShortcut(QKeySequence(Qt::Key_1), this);
+        seed1Shortcut->setContext(Qt::WindowShortcut);
+        connect(seed1Shortcut, &QShortcut::activated,
+                this, [this]() { armSeedPlacement(0); });
+
+        auto *seed2Shortcut = new QShortcut(QKeySequence(Qt::Key_2), this);
+        seed2Shortcut->setContext(Qt::WindowShortcut);
+        connect(seed2Shortcut, &QShortcut::activated,
+                this, [this]() { armSeedPlacement(1); });
+
+        auto *splitLineShortcut = new QShortcut(QKeySequence(Qt::Key_L), this);
+        splitLineShortcut->setContext(Qt::WindowShortcut);
+        connect(splitLineShortcut, &QShortcut::activated,
+                this, &Segment3DViewerDialog::beginSplitLineDrawing);
+
+        auto *exportSplitShortcut = new QShortcut(QKeySequence(Qt::Key_E), this);
+        exportSplitShortcut->setContext(Qt::WindowShortcut);
+        connect(exportSplitShortcut, &QShortcut::activated,
+                this, &Segment3DViewerDialog::exportSeededSplitDebugBundle);
     }
 
     if (showExplodeControls) {
@@ -1959,6 +2459,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(PreparedScene preparedScene,
     }
 
     updateCutUiState();
+    updateSeededSplitUiState();
 }
 
 std::optional<Segment3DViewerDialog::CameraOrientation>
@@ -2367,6 +2868,25 @@ void Segment3DViewerDialog::cachePreparedScene(PreparedScene preparedScene) {
 }
 
 bool Segment3DViewerDialog::applyPreparedScene(const PreparedScene &preparedScene) {
+    if (preparedScene.targetLabelId == 0 || preparedScene.meshes.size() != 1) {
+        return false;
+    }
+    if (!replaceSegmentMeshes(preparedScene, true)) {
+        return false;
+    }
+
+    m_targetLabelId = preparedScene.targetLabelId;
+    setWindowTitle(preparedScene.windowTitle);
+    m_singleLabelNavigationBusy = false;
+    updateSingleLabelNavigationUiState();
+    SP_LOG_DEBUG("viewer.three_d",
+                 QStringLiteral("[3DView] switched single-label scene targetLabel=%1")
+                     .arg(m_targetLabelId));
+    return true;
+}
+
+bool Segment3DViewerDialog::replaceSegmentMeshes(const PreparedScene &preparedScene,
+                                                  bool resetCamera) {
     std::vector<SegmentActorInfo> newActors;
     newActors.reserve(preparedScene.meshes.size());
     for (const auto &mesh : preparedScene.meshes) {
@@ -2375,10 +2895,11 @@ bool Segment3DViewerDialog::applyPreparedScene(const PreparedScene &preparedScen
             || mesh.polyData->GetNumberOfCells() == 0) {
             continue;
         }
-        newActors.push_back({createMeshActor(mesh), mesh.labelId, mesh.centerWorld});
+        auto actor = createMeshActor(mesh);
+        newActors.push_back({actor, mesh.labelId, mesh.centerWorld});
     }
 
-    if (preparedScene.targetLabelId == 0 || newActors.size() != 1 || m_renderer == nullptr) {
+    if (newActors.empty() || m_renderer == nullptr) {
         return false;
     }
     applyColorCycle(newActors);
@@ -2391,22 +2912,17 @@ bool Segment3DViewerDialog::applyPreparedScene(const PreparedScene &preparedScen
     }
 
     m_segmentActors = std::move(newActors);
-    m_targetLabelId = preparedScene.targetLabelId;
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
     m_sceneExtent = preparedScene.sceneExtent;
-    setWindowTitle(preparedScene.windowTitle);
 
-    m_renderer->ResetCamera();
+    if (resetCamera) {
+        m_renderer->ResetCamera();
+    }
     m_renderer->ResetCameraClippingRange();
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
     }
 
-    m_singleLabelNavigationBusy = false;
-    updateSingleLabelNavigationUiState();
-    SP_LOG_DEBUG("viewer.three_d",
-                 QStringLiteral("[3DView] switched single-label scene targetLabel=%1")
-                     .arg(m_targetLabelId));
     return true;
 }
 
@@ -2600,20 +3116,23 @@ void Segment3DViewerDialog::finishInitialRender() {
     if (m_controlsWidget != nullptr) {
         m_controlsWidget->raise();
     }
-    if (m_cutOverlay != nullptr) {
-        m_cutOverlay->raise();
+    if (m_strokeOverlay != nullptr) {
+        m_strokeOverlay->raise();
     }
 
     const bool showExplodeControls = m_explodeSlider != nullptr;
-    const bool showCutControls = m_cutOverlay != nullptr;
+    const bool showCutControls = m_strokeOverlay != nullptr && m_drawCutButton != nullptr;
+    const bool showSeededSplitControls = m_seedButtons[0] != nullptr;
     SP_LOG_DEBUG(
         "viewer.three_d",
         QStringLiteral("[3DInputDebug] ready targetLabel=%1 segmentActorCount=%2 "
-                       "showExplodeControls=%3 showCutControls=%4 interactorEnabled=%5")
+                       "showExplodeControls=%3 showCutControls=%4 "
+                       "showSeededSplitControls=%5 interactorEnabled=%6")
             .arg(m_targetLabelId)
             .arg(m_segmentActors.size())
             .arg(showExplodeControls)
             .arg(showCutControls)
+            .arg(showSeededSplitControls)
             .arg(m_vtkWidget != nullptr
                  && m_vtkWidget->interactor() != nullptr
                  && m_vtkWidget->interactor()->GetEnabled()));
@@ -2746,13 +3265,13 @@ void Segment3DViewerDialog::beginCutDrawing() {
                      .arg(m_targetLabelId)
                      .arg(static_cast<bool>(m_cutSession.applyCut)));
 
-    if (m_cutOverlay == nullptr || m_cutApplyInFlight) {
+    if (m_strokeOverlay == nullptr || m_cutApplyInFlight) {
         return;
     }
 
     m_cutDrawModeActive = true;
-    m_cutOverlay->setDrawingEnabled(true);
-    m_cutOverlay->raise();
+    m_strokeOverlay->setDrawingEnabled(true);
+    m_strokeOverlay->raise();
     updateCutUiState();
 }
 
@@ -2760,21 +3279,21 @@ void Segment3DViewerDialog::clearCutStroke() {
     SP_LOG_DEBUG("viewer.three_d",
                  QStringLiteral("[3DCutDebug] clearCutStroke targetLabel=%1").arg(m_targetLabelId));
 
-    if (m_cutOverlay == nullptr || m_cutApplyInFlight) {
+    if (m_strokeOverlay == nullptr || m_cutApplyInFlight) {
         return;
     }
-    m_cutOverlay->clearStroke();
+    m_strokeOverlay->clearStroke();
     updateCutUiState();
 }
 
-Projected3DCutRequest Segment3DViewerDialog::buildProjected3DCutRequest() const {
+Projected3DCutRequest Segment3DViewerDialog::buildProjectedStrokeRequest() const {
     Projected3DCutRequest request;
     request.targetWorkingLabel = m_targetLabelId;
     request.strokeWidthPixels = 6.0;
 
-    if (m_cutOverlay != nullptr) {
-        request.viewportSize = {m_cutOverlay->width(), m_cutOverlay->height()};
-        request.strokePixels = m_cutOverlay->strokePixels();
+    if (m_strokeOverlay != nullptr) {
+        request.viewportSize = {m_strokeOverlay->width(), m_strokeOverlay->height()};
+        request.strokePixels = m_strokeOverlay->strokePixels();
     } else if (m_vtkWidget != nullptr) {
         request.viewportSize = {m_vtkWidget->width(), m_vtkWidget->height()};
     }
@@ -2805,12 +3324,12 @@ void Segment3DViewerDialog::applyProjectedCut() {
     if (!m_cutSession.applyCut) {
         return;
     }
-    if (m_cutOverlay == nullptr || !m_cutOverlay->hasValidStroke()) {
+    if (m_strokeOverlay == nullptr || !m_strokeOverlay->hasValidStroke()) {
         QMessageBox::information(this, tr("3D Cut"), tr("Draw a cut stroke before applying the split."));
         return;
     }
 
-    const Projected3DCutRequest request = buildProjected3DCutRequest();
+    const Projected3DCutRequest request = buildProjectedStrokeRequest();
     if (request.targetWorkingLabel == 0 || request.strokePixels.size() < 2) {
         QMessageBox::information(this, tr("3D Cut"), tr("The cut request is incomplete."));
         return;
@@ -2862,12 +3381,1089 @@ void Segment3DViewerDialog::applyProjectedCut() {
     finishApply(applyCut(request));
 }
 
+void Segment3DViewerDialog::armSeedPlacement(int seedNumber) {
+    if (seedNumber < 0 || seedNumber >= static_cast<int>(m_seedIndices.size())
+        || m_seededSplitBusy || m_seededSplitSession.session == nullptr) {
+        return;
+    }
+    if (m_seededSplitPreview.has_value()) {
+        replaceSegmentMeshes(m_originalSeededSplitScene, false);
+        m_seededSplitPreview.reset();
+    }
+    m_lastSeededSplitResult.reset();
+    m_lastSeededSplitSeeds.reset();
+    m_splitLineDrawModeActive = false;
+    m_pendingLineSeeds = {};
+    m_havePendingLineSeeds = false;
+    m_pendingLineSeedsValid = false;
+    if (m_strokeOverlay != nullptr) {
+        m_strokeOverlay->setDrawingEnabled(false);
+        m_strokeOverlay->setSeedDistancePixels(0.0);
+        m_strokeOverlay->clearStroke();
+    }
+    showSeedActors(m_seedIndices);
+    m_activeSeed = seedNumber;
+    setSeededSplitStatus(
+        QStringLiteral("Click the surface to add a seed to class %1.")
+            .arg(seedNumber + 1));
+    updateSeededSplitUiState();
+}
+
+void Segment3DViewerDialog::beginSplitLineDrawing() {
+    if (m_seededSplitBusy || m_strokeOverlay == nullptr
+        || m_seededSplitSession.session == nullptr) {
+        return;
+    }
+    if (m_seededSplitPreview.has_value()) {
+        replaceSegmentMeshes(m_originalSeededSplitScene, false);
+        m_seededSplitPreview.reset();
+    }
+    m_lastSeededSplitResult.reset();
+    m_lastSeededSplitSeeds.reset();
+    m_activeSeed = -1;
+    m_splitLineDrawModeActive = true;
+    m_pendingLineSeeds = {};
+    m_havePendingLineSeeds = false;
+    m_pendingLineSeedsValid = false;
+    showSeedActors(m_seedIndices);
+    m_strokeOverlay->setSeedDistancePixels(m_seedDistanceSlider->value());
+    m_strokeOverlay->clearStroke();
+    m_strokeOverlay->setDrawingEnabled(true);
+    m_strokeOverlay->raise();
+    setSeededSplitStatus(
+        QStringLiteral("Draw a line between the two intended parts."));
+    updateSeededSplitUiState();
+}
+
+std::optional<Segment3DViewerDialog::SeedRayHit>
+Segment3DViewerDialog::seedAlongDisplayRay(double displayX, double displayY) const {
+    if (m_renderer == nullptr || m_seededSplitSession.session == nullptr) {
+        return std::nullopt;
+    }
+    SeedRayHit hit;
+    for (int endpoint = 0; endpoint < 2; ++endpoint) {
+        m_renderer->SetDisplayPoint(displayX, displayY, static_cast<double>(endpoint));
+        m_renderer->DisplayToWorld();
+        double worldPoint[4]{0.0, 0.0, 0.0, 0.0};
+        m_renderer->GetWorldPoint(worldPoint);
+        if (std::abs(worldPoint[3]) <= 1e-12) {
+            return std::nullopt;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            hit.rayEndpoints[endpoint][axis] = worldPoint[axis] / worldPoint[3];
+        }
+    }
+    const auto seed = segment_puzzler::seededSplitMaximumAlongWorldRay(
+        *m_seededSplitSession.session,
+        hit.rayEndpoints[0],
+        hit.rayEndpoints[1]);
+    if (!seed.has_value()) {
+        return std::nullopt;
+    }
+    hit.index = seed.value();
+    return hit;
+}
+
+bool Segment3DViewerDialog::updateSplitLineSeedPreview() {
+    if (!m_splitLineDrawModeActive || m_seededSplitBusy
+        || m_strokeOverlay == nullptr || !m_strokeOverlay->hasValidStroke()
+        || m_vtkWidget == nullptr || m_seededSplitSession.session == nullptr) {
+        return false;
+    }
+    const double samplingPixels = m_lineSamplingSlider != nullptr
+                                      ? m_lineSamplingSlider->value()
+                                      : kDefaultLineSamplingPixels;
+    const int sampleCount = std::clamp(
+        static_cast<int>(std::ceil(
+            polylineLength(m_strokeOverlay->offsetStroke(0.0))
+            / samplingPixels)),
+        1,
+        kMaximumSplitLineSeedPairs);
+    const double offsetPixels = m_seedDistanceSlider != nullptr
+                                    ? m_seedDistanceSlider->value()
+                                    : kDefaultSeedDistancePixels;
+    const auto redSamples = samplePolyline(
+        m_strokeOverlay->offsetStroke(-offsetPixels), sampleCount);
+    const auto blueSamples = samplePolyline(
+        m_strokeOverlay->offsetStroke(offsetPixels), sampleCount);
+    segment_puzzler::SeededSplitSeedGroups candidateSeeds;
+    const double devicePixelRatio = m_vtkWidget->devicePixelRatioF();
+    for (std::size_t sample = 0;
+         sample < std::min(redSamples.size(), blueSamples.size()); ++sample) {
+        const auto displayHit = [this, devicePixelRatio](const QPointF &point) {
+            return seedAlongDisplayRay(
+                point.x() * devicePixelRatio,
+                (m_vtkWidget->height() - point.y() - 1.0) * devicePixelRatio);
+        };
+        const auto redHit = displayHit(redSamples[sample]);
+        const auto blueHit = displayHit(blueSamples[sample]);
+        if (!redHit.has_value() || !blueHit.has_value()
+            || redHit->index == blueHit->index) {
+            continue;
+        }
+        if (std::find(candidateSeeds[0].begin(), candidateSeeds[0].end(), redHit->index)
+            == candidateSeeds[0].end()) {
+            candidateSeeds[0].push_back(redHit->index);
+        }
+        if (std::find(candidateSeeds[1].begin(), candidateSeeds[1].end(), blueHit->index)
+            == candidateSeeds[1].end()) {
+            candidateSeeds[1].push_back(blueHit->index);
+        }
+    }
+    const bool seedsOverlap = std::any_of(
+        candidateSeeds[0].begin(), candidateSeeds[0].end(),
+        [&candidateSeeds](const auto &redSeed) {
+            return std::find(
+                       candidateSeeds[1].begin(),
+                       candidateSeeds[1].end(),
+                       redSeed)
+                   != candidateSeeds[1].end();
+        });
+    m_pendingLineSeeds = std::move(candidateSeeds);
+    m_havePendingLineSeeds = true;
+    m_pendingLineSeedsValid = !seedsOverlap
+                              && !m_pendingLineSeeds[0].empty()
+                              && !m_pendingLineSeeds[1].empty();
+    showSeedActors(m_pendingLineSeeds);
+    SP_LOG_DEBUG(
+        "segmentation",
+        QStringLiteral(
+            "operation=seeded_watershed_split phase=line_seed_preview "
+            "source_label=%1 line_offset_px=%2 line_sampling_px=%3 "
+            "requested_pairs=%4 accepted_seed_counts=%5,%6 valid=%7 overlap=%8")
+            .arg(m_seededSplitSession.session->sourceLabel)
+            .arg(offsetPixels, 0, 'g', 9)
+            .arg(samplingPixels, 0, 'g', 9)
+            .arg(sampleCount)
+            .arg(m_pendingLineSeeds[0].size())
+            .arg(m_pendingLineSeeds[1].size())
+            .arg(m_pendingLineSeedsValid)
+            .arg(seedsOverlap));
+    if (seedsOverlap) {
+        setSeededSplitStatus(
+            QStringLiteral(
+                "Red and blue line seeds overlap; increase Line Offset."),
+            true);
+    } else if (!m_pendingLineSeedsValid) {
+        setSeededSplitStatus(
+            QStringLiteral(
+                "Could not place seeds on both sides; adjust the line settings."),
+            true);
+    } else {
+        setSeededSplitStatus(
+            QStringLiteral(
+                "Line preview: %1 red and %2 blue seeds. Adjust or Confirm Seeds.")
+                .arg(m_pendingLineSeeds[0].size())
+                .arg(m_pendingLineSeeds[1].size()));
+    }
+    updateSeededSplitUiState();
+    if (m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+    return m_pendingLineSeedsValid;
+}
+
+void Segment3DViewerDialog::confirmSplitLineSeeds() {
+    if (m_seededSplitBusy || !m_splitLineDrawModeActive
+        || !m_havePendingLineSeeds || !m_pendingLineSeedsValid
+        || m_strokeOverlay == nullptr || m_seededSplitSession.session == nullptr) {
+        return;
+    }
+    m_seedIndices = m_pendingLineSeeds;
+    m_pendingLineSeeds = {};
+    m_havePendingLineSeeds = false;
+    m_pendingLineSeedsValid = false;
+    m_splitLineDrawModeActive = false;
+    m_strokeOverlay->setDrawingEnabled(false);
+    m_strokeOverlay->setSeedDistancePixels(0.0);
+    m_strokeOverlay->clearStroke();
+    showSeedActors(m_seedIndices);
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral(
+            "operation=seeded_watershed_split phase=line_seeds_confirmed "
+            "source_label=%1 line_offset_px=%2 line_sampling_px=%3 "
+            "seed_counts=%4,%5 seeds_local_1=%6 seeds_local_2=%7 "
+            "seeds_global_1=%8 seeds_global_2=%9")
+            .arg(m_seededSplitSession.session->sourceLabel)
+            .arg(m_seedDistanceSlider->value())
+            .arg(m_lineSamplingSlider->value())
+            .arg(m_seedIndices[0].size())
+            .arg(m_seedIndices[1].size())
+            .arg(formatSeedIndices(m_seedIndices[0]))
+            .arg(formatSeedIndices(m_seedIndices[1]))
+            .arg(formatSeedIndices(
+                m_seedIndices[0], &m_seededSplitSession.session->globalOffset))
+            .arg(formatSeedIndices(
+                m_seedIndices[1], &m_seededSplitSession.session->globalOffset)));
+    setSeededSplitStatus(
+        QStringLiteral("Confirmed %1 red and %2 blue seeds.")
+            .arg(m_seedIndices[0].size())
+            .arg(m_seedIndices[1].size()));
+    updateSeededSplitUiState();
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+    autoPreviewSeededSplitIfReady();
+}
+
+bool Segment3DViewerDialog::placeSeedAt(int pickX, int pickY) {
+    if (m_activeSeed < 0 || m_seededSplitBusy || m_renderer == nullptr
+        || m_seededSplitSession.session == nullptr) {
+        return false;
+    }
+
+    auto picker = vtkSmartPointer<vtkCellPicker>::New();
+    picker->SetTolerance(0.0005);
+    picker->PickFromListOn();
+    for (const auto &actorInfo : m_segmentActors) {
+        if (actorInfo.actor != nullptr) {
+            picker->AddPickList(actorInfo.actor);
+        }
+    }
+    if (picker->Pick(pickX, pickY, 0.0, m_renderer) == 0) {
+        setSeededSplitStatus(QStringLiteral("No segment surface was hit; try again."));
+        return true;
+    }
+
+    const auto hit = seedAlongDisplayRay(pickX, pickY);
+    if (!hit.has_value()) {
+        setSeededSplitStatus(
+            QStringLiteral("Could not find segment voxels along the viewing ray."));
+        return true;
+    }
+    const auto &raySeed = hit->index;
+
+    const int seedNumber = m_activeSeed;
+    const int otherSeed = 1 - seedNumber;
+    if (std::find(m_seedIndices[otherSeed].begin(),
+                  m_seedIndices[otherSeed].end(),
+                  raySeed) != m_seedIndices[otherSeed].end()) {
+        setSeededSplitStatus(
+            QStringLiteral("That voxel already belongs to seed class %1.")
+                .arg(otherSeed + 1));
+        return true;
+    }
+    if (std::find(m_seedIndices[seedNumber].begin(),
+                  m_seedIndices[seedNumber].end(),
+                  raySeed) != m_seedIndices[seedNumber].end()) {
+        setSeededSplitStatus(
+            QStringLiteral("That seed is already present in class %1.")
+                .arg(seedNumber + 1));
+        return true;
+    }
+
+    if (m_seededSplitPreview.has_value()) {
+        replaceSegmentMeshes(m_originalSeededSplitScene, false);
+        m_seededSplitPreview.reset();
+    }
+    m_seedIndices[seedNumber].push_back(raySeed);
+
+    auto globalSeed = raySeed;
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        globalSeed[axis] += m_seededSplitSession.session->globalOffset[axis];
+    }
+    const auto seedWorld = segment_puzzler::seededSplitSeedWorldPoint(
+        *m_seededSplitSession.session, raySeed);
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral(
+            "operation=seeded_watershed_split phase=seed_placed source_label=%1 "
+            "seed_class=%2 class_seed_count=%3 pick_display=[%4,%5] "
+            "local_seed=%6 global_seed=%7 "
+            "world_seed=%8 distance=%9 maximum_distance=%10 "
+            "ray_start=%11 ray_end=%12")
+            .arg(m_seededSplitSession.session->sourceLabel)
+            .arg(seedNumber + 1)
+            .arg(m_seedIndices[seedNumber].size())
+            .arg(pickX)
+            .arg(pickY)
+            .arg(formatTriple(raySeed))
+            .arg(formatTriple(globalSeed))
+            .arg(formatTriple(seedWorld))
+            .arg(m_seededSplitSession.session->distance->GetPixel(raySeed), 0, 'g', 9)
+            .arg(m_seededSplitSession.session->maximumDistance, 0, 'g', 9)
+            .arg(formatTriple(hit->rayEndpoints[0]))
+            .arg(formatTriple(hit->rayEndpoints[1])));
+
+    m_lastSeededSplitResult.reset();
+    m_lastSeededSplitSeeds.reset();
+    m_activeSeed = -1;
+    showSeedActors(m_seedIndices);
+    setSeededSplitStatus(
+        QStringLiteral("Seed added to class %1 (%2 class 1, %3 class 2).")
+            .arg(seedNumber + 1)
+            .arg(m_seedIndices[0].size())
+            .arg(m_seedIndices[1].size()));
+    updateSeededSplitUiState();
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+    autoPreviewSeededSplitIfReady();
+    return true;
+}
+
+void Segment3DViewerDialog::showSeedActors(
+    const segment_puzzler::SeededSplitSeedGroups &seeds)
+{
+    if (m_renderer == nullptr) {
+        return;
+    }
+    vtkRenderer *seedRenderer =
+        m_seedRenderer != nullptr ? m_seedRenderer.GetPointer() : m_renderer.GetPointer();
+    for (auto &actors : m_seedActors) {
+        for (auto &actor : actors) {
+            if (actor != nullptr) {
+                seedRenderer->RemoveActor(actor);
+            }
+        }
+        actors.clear();
+    }
+    if (m_seededSplitSession.session == nullptr) {
+        return;
+    }
+
+    const auto spacing = m_seededSplitSession.session->mask->GetSpacing();
+    for (int seedNumber = 0; seedNumber < static_cast<int>(seeds.size()); ++seedNumber) {
+        for (const auto &seed : seeds[seedNumber]) {
+            const auto point = segment_puzzler::seededSplitSeedWorldPoint(
+                *m_seededSplitSession.session, seed);
+            auto sphere = vtkSmartPointer<vtkSphereSource>::New();
+            sphere->SetCenter(point.data());
+            sphere->SetRadius(std::max(
+                2.5 * std::min({spacing[0], spacing[1], spacing[2]}),
+                0.012 * m_sceneExtent));
+            sphere->SetThetaResolution(20);
+            sphere->SetPhiResolution(20);
+
+            auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+            mapper->SetInputConnection(sphere->GetOutputPort());
+            auto actor = vtkSmartPointer<vtkActor>::New();
+            actor->SetMapper(mapper);
+            actor->PickableOff();
+            if (seedNumber == 0) {
+                actor->GetProperty()->SetColor(1.0, 0.2, 0.15);
+            } else {
+                actor->GetProperty()->SetColor(0.15, 0.85, 1.0);
+            }
+            seedRenderer->AddActor(actor);
+            m_seedActors[seedNumber].push_back(actor);
+        }
+    }
+}
+
+void Segment3DViewerDialog::clearSeededSplit() {
+    if (m_seededSplitBusy) {
+        return;
+    }
+    m_activeSeed = -1;
+    m_splitLineDrawModeActive = false;
+    m_seedIndices = {};
+    m_pendingLineSeeds = {};
+    m_havePendingLineSeeds = false;
+    m_pendingLineSeedsValid = false;
+    m_lastSeededSplitResult.reset();
+    m_lastSeededSplitSeeds.reset();
+    if (m_strokeOverlay != nullptr) {
+        m_strokeOverlay->setDrawingEnabled(false);
+        m_strokeOverlay->setSeedDistancePixels(0.0);
+        m_strokeOverlay->clearStroke();
+    }
+    showSeedActors(m_seedIndices);
+    if (m_seededSplitPreview.has_value()) {
+        replaceSegmentMeshes(m_originalSeededSplitScene, false);
+        m_seededSplitPreview.reset();
+    }
+    setSeededSplitStatus(QStringLiteral("Add at least one seed to each class."));
+    updateSeededSplitUiState();
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
+}
+
+void Segment3DViewerDialog::updateSeededSplitSmoothing() {
+    m_seededSplitSmoothingPending = false;
+    if (m_seededSplitBusy || m_seededSplitSession.session == nullptr
+        || m_smoothingSlider == nullptr) {
+        updateSeededSplitUiState();
+        return;
+    }
+
+    const double sigmaPixels =
+        static_cast<double>(m_smoothingSlider->value())
+        / kSmoothingSliderStepsPerPixel;
+    auto &session = *m_seededSplitSession.session;
+    if (std::abs(sigmaPixels - session.landscapeSmoothingSigmaPixels) > 1e-9) {
+        try {
+            segment_puzzler::updateSeededWatershedSplitLandscape(
+                session, sigmaPixels);
+            SP_LOG_INFO(
+                "segmentation",
+                QStringLiteral(
+                    "operation=seeded_watershed_split phase=landscape_update "
+                    "source_label=%1 smoothing_sigma_px=%2 landscape_hash=%3 "
+                    "smoothing_ms=%4")
+                    .arg(session.sourceLabel)
+                    .arg(session.landscapeSmoothingSigmaPixels, 0, 'f', 1)
+                    .arg(formatHash(session.landscapeHash))
+                    .arg(session.landscapeSmoothingMs, 0, 'f', 1));
+        } catch (const std::exception &error) {
+            const QString message = QStringLiteral("Could not update smoothing: %1")
+                                        .arg(QString::fromUtf8(error.what()));
+            SP_LOG_WARNING(
+                "segmentation",
+                QStringLiteral(
+                    "operation=seeded_watershed_split status=landscape_update_failed "
+                    "source_label=%1 smoothing_sigma_px=%2 message=\"%3\"")
+                    .arg(session.sourceLabel)
+                    .arg(sigmaPixels, 0, 'f', 1)
+                    .arg(message));
+            setSeededSplitStatus(message);
+            updateSeededSplitUiState();
+            return;
+        }
+    }
+
+    setSeededSplitStatus(QStringLiteral("Smoothing updated; press Preview."));
+    updateSeededSplitUiState();
+    autoPreviewSeededSplitIfReady();
+}
+
+void Segment3DViewerDialog::autoPreviewSeededSplitIfReady() {
+    if (m_autoPreviewCheckBox == nullptr || !m_autoPreviewCheckBox->isChecked()
+        || m_seededSplitBusy || m_seededSplitSmoothingPending
+        || m_seededSplitPreview.has_value()) {
+        return;
+    }
+    if (!m_seedIndices[0].empty() && !m_seedIndices[1].empty()) {
+        previewSeededSplit();
+    }
+}
+
+void Segment3DViewerDialog::previewSeededSplit() {
+    const bool haveSeeds = !m_seedIndices[0].empty() && !m_seedIndices[1].empty();
+    if (m_seededSplitBusy || m_seededSplitSmoothingPending
+        || m_seededSplitSession.session == nullptr || !haveSeeds) {
+        return;
+    }
+
+    const auto session = m_seededSplitSession.session;
+    const auto seeds = m_seedIndices;
+    segment_puzzler::SeededWatershedSplitOptions options;
+    options.compactness = m_compactWatershedCheckBox != nullptr
+                                  && m_compactWatershedCheckBox->isChecked()
+                              ? segment_puzzler::kDefaultSeededSplitCompactness
+                              : 0.0;
+    options.connectSeeds = m_connectSeedsCheckBox != nullptr
+                           && m_connectSeedsCheckBox->isChecked();
+    options.allowDisconnectedParts = m_allowDisconnectedCheckBox != nullptr
+                                     && m_allowDisconnectedCheckBox->isChecked();
+
+    const auto maskRegion = session->mask->GetLargestPossibleRegion();
+    const QString commonInput = QStringLiteral(
+        "source_label=%1 source_mtime=%2 source_voxels=%3 source_roi=[%4,%5,%6,%7,%8,%9] "
+        "global_offset=%10 mask_size=%11 spacing=%12 origin=%13 mask_hash=%14 "
+        "maximum_distance=%15 distance=foreground_to_background_voxel_center "
+        "landscape=negative_mask_normalized_gaussian_distance "
+        "landscape_smoothing_sigma_px=%16 landscape_hash=%17 "
+        "landscape_smoothing_ms=%18 distance_use_spacing=1 "
+        "landscape_smoothing_use_spacing=0 markers=imposed_minima domain_mask=1")
+        .arg(session->sourceLabel)
+        .arg(static_cast<qulonglong>(session->sourceModifiedTime))
+        .arg(session->voxelCount)
+        .arg(session->sourceRoi.minX)
+        .arg(session->sourceRoi.minY)
+        .arg(session->sourceRoi.minZ)
+        .arg(session->sourceRoi.maxX)
+        .arg(session->sourceRoi.maxY)
+        .arg(session->sourceRoi.maxZ)
+        .arg(formatTriple(session->globalOffset))
+        .arg(formatTriple(maskRegion.GetSize()))
+        .arg(formatTriple(session->mask->GetSpacing()))
+        .arg(formatTriple(session->mask->GetOrigin()))
+        .arg(formatHash(session->maskHash))
+        .arg(session->maximumDistance, 0, 'g', 9)
+        .arg(session->landscapeSmoothingSigmaPixels, 0, 'g', 9)
+        .arg(formatHash(session->landscapeHash))
+        .arg(session->landscapeSmoothingMs, 0, 'f', 1);
+    const QString algorithmInput = commonInput
+        + (options.compactness > 0.0
+               ? QStringLiteral(
+                     " watershed=compact_marker compactness=%1 fully_connected=0 "
+                     "priority=minimax_normalized_landscape_plus_compactness_times_"
+                     "normalized_seed_distance")
+                     .arg(options.compactness, 0, 'g', 9)
+               : QStringLiteral(
+                     " watershed=fast_marker compactness=0 fully_connected=0 "
+                     "tie_break=minimax_then_geodesic"))
+        + QStringLiteral(" connect_seeds=%1 allow_disconnected_parts=%2")
+              .arg(options.connectSeeds)
+              .arg(options.allowDisconnectedParts);
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral(
+            "operation=seeded_watershed_split phase=preview_request mode=seeds %1 "
+            "seed_counts=[%2,%3] seeds_local_1=%4 seeds_local_2=%5 "
+            "seeds_global_1=%6 seeds_global_2=%7 "
+            "seed_distances_1=%8 seed_distances_2=%9")
+            .arg(algorithmInput)
+            .arg(seeds[0].size())
+            .arg(seeds[1].size())
+            .arg(formatSeedIndices(seeds[0]))
+            .arg(formatSeedIndices(seeds[1]))
+            .arg(formatSeedIndices(seeds[0], &session->globalOffset))
+            .arg(formatSeedIndices(seeds[1], &session->globalOffset))
+            .arg(formatSeedDistances(seeds[0], session->distance))
+            .arg(formatSeedDistances(seeds[1], session->distance)));
+    if (m_seededSplitPreview.has_value()) {
+        replaceSegmentMeshes(m_originalSeededSplitScene, false);
+        m_seededSplitPreview.reset();
+    }
+    m_lastSeededSplitResult.reset();
+    m_lastSeededSplitSeeds = seeds;
+    m_seededSplitBusy = true;
+    setSeededSplitStatus(QStringLiteral("Running marker-controlled watershed..."));
+    updateSeededSplitUiState();
+
+    const auto computePreview = [session, seeds, options]() {
+        auto result = segment_puzzler::computeSeededWatershedSplit(
+            *session, seeds, options);
+        PreparedScene scene;
+        if (result.valid()) {
+            scene = Segment3DViewerDialog::prepareScene(
+                result.partition, {{1, 0xF2483D}, {2, 0x26A6FF}});
+        }
+        return std::make_pair(std::move(result), std::move(scene));
+    };
+    const auto finishPreview = [this](auto preview) {
+        m_seededSplitBusy = false;
+        auto &[result, scene] = preview;
+        m_lastSeededSplitResult = result;
+        if (!result.valid() || !replaceSegmentMeshes(scene, false)) {
+            const bool disconnectedRejected =
+                !result.valid() && result.hasDisconnectedParts()
+                && !result.disconnectedPartsAllowed;
+            const QString message = disconnectedRejected
+                ? QStringLiteral(
+                      "Disconnected result (red: %1 regions, blue: %2 regions). "
+                      "Enable Allow disconnected parts to preview and apply it.")
+                      .arg(result.connectedComponentCounts[0])
+                      .arg(result.connectedComponentCounts[1])
+                : result.error.empty()
+                    ? QStringLiteral("Could not create both preview surfaces.")
+                    : QString::fromStdString(result.error);
+            SP_LOG_WARNING(
+                "segmentation",
+                QStringLiteral(
+                    "operation=seeded_watershed_split status=preview_failed "
+                    "source_label=%1 marker_voxels=%2,%3 connection_voxels=%4,%5 "
+                    "connect_seeds=%6 marker_connection_ms=%7 marker_hash=%8 "
+                    "part_voxels=%9,%10 part_components=%11,%12 compactness=%13 "
+                    "allow_disconnected_parts=%14 flood_pops=%15 flood_requeues=%16 "
+                    "watershed_ms=%17 message=\"%18\"")
+                    .arg(m_seededSplitSession.session->sourceLabel)
+                    .arg(result.markerVoxelCounts[0])
+                    .arg(result.markerVoxelCounts[1])
+                    .arg(result.connectionVoxelCounts[0])
+                    .arg(result.connectionVoxelCounts[1])
+                    .arg(result.connectSeeds)
+                    .arg(result.markerConnectionMs, 0, 'f', 1)
+                    .arg(formatHash(result.markerHash))
+                    .arg(result.voxelCounts[0])
+                    .arg(result.voxelCounts[1])
+                    .arg(result.connectedComponentCounts[0])
+                    .arg(result.connectedComponentCounts[1])
+                    .arg(result.compactness, 0, 'g', 9)
+                    .arg(result.disconnectedPartsAllowed)
+                    .arg(result.floodMetrics.popCount)
+                    .arg(result.floodMetrics.requeueCount)
+                    .arg(result.watershedMs, 0, 'f', 1)
+                    .arg(message));
+            setSeededSplitStatus(message, disconnectedRejected);
+            QMessageBox::information(this, tr("Seeded Split"), message);
+            updateSeededSplitUiState();
+            return;
+        }
+
+        if (m_strokeOverlay != nullptr) {
+            m_strokeOverlay->setDrawingEnabled(false);
+        }
+        m_seededSplitPreview = result;
+        SP_LOG_DEBUG(
+            "segmentation",
+            QStringLiteral(
+                "operation=seeded_watershed_split phase=preview source_label=%1 "
+                "marker_voxels=%2,%3 connection_voxels=%4,%5 connect_seeds=%6 "
+                "marker_connection_ms=%7 marker_hash=%8 part_voxels=%9,%10 "
+                "partition_hash=%11 part_components=%12,%13 compactness=%14 "
+                "allow_disconnected_parts=%15 flood_pops=%16 flood_requeues=%17 "
+                "flood_ms=%18 watershed_ms=%19")
+                .arg(m_seededSplitSession.session->sourceLabel)
+                .arg(m_seededSplitPreview->markerVoxelCounts[0])
+                .arg(m_seededSplitPreview->markerVoxelCounts[1])
+                .arg(m_seededSplitPreview->connectionVoxelCounts[0])
+                .arg(m_seededSplitPreview->connectionVoxelCounts[1])
+                .arg(m_seededSplitPreview->connectSeeds)
+                .arg(m_seededSplitPreview->markerConnectionMs, 0, 'f', 1)
+                .arg(formatHash(m_seededSplitPreview->markerHash))
+                .arg(m_seededSplitPreview->voxelCounts[0])
+                .arg(m_seededSplitPreview->voxelCounts[1])
+                .arg(formatHash(m_seededSplitPreview->partitionHash))
+                .arg(m_seededSplitPreview->connectedComponentCounts[0])
+                .arg(m_seededSplitPreview->connectedComponentCounts[1])
+                .arg(m_seededSplitPreview->compactness, 0, 'g', 9)
+                .arg(m_seededSplitPreview->disconnectedPartsAllowed)
+                .arg(m_seededSplitPreview->floodMetrics.popCount)
+                .arg(m_seededSplitPreview->floodMetrics.requeueCount)
+                .arg(m_seededSplitPreview->floodMetrics.floodMs, 0, 'f', 1)
+                .arg(m_seededSplitPreview->watershedMs, 0, 'f', 1));
+        if (m_seededSplitPreview->hasDisconnectedParts()) {
+            SP_LOG_WARNING(
+                "segmentation",
+                QStringLiteral(
+                    "operation=seeded_watershed_split status=preview_disconnected "
+                    "source_label=%1 part_components=%2,%3 "
+                    "allow_disconnected_parts=1")
+                    .arg(m_seededSplitSession.session->sourceLabel)
+                    .arg(m_seededSplitPreview->connectedComponentCounts[0])
+                    .arg(m_seededSplitPreview->connectedComponentCounts[1]));
+            setSeededSplitStatus(
+                QStringLiteral(
+                    "Warning: disconnected result (red: %1 regions, blue: %2 regions). "
+                    "Preview: %3 + %4 voxels (%5 ms).")
+                    .arg(m_seededSplitPreview->connectedComponentCounts[0])
+                    .arg(m_seededSplitPreview->connectedComponentCounts[1])
+                    .arg(m_seededSplitPreview->voxelCounts[0])
+                    .arg(m_seededSplitPreview->voxelCounts[1])
+                    .arg(m_seededSplitPreview->watershedMs, 0, 'f', 1),
+                true);
+        } else {
+            setSeededSplitStatus(
+                QStringLiteral("Preview: %1 + %2 voxels (%3 ms).")
+                    .arg(m_seededSplitPreview->voxelCounts[0])
+                    .arg(m_seededSplitPreview->voxelCounts[1])
+                    .arg(m_seededSplitPreview->watershedMs, 0, 'f', 1));
+        }
+        updateSeededSplitUiState();
+    };
+
+    finishPreview(computePreview());
+}
+
+void Segment3DViewerDialog::exportSeededSplitDebugBundle() {
+    if (m_seededSplitSession.session == nullptr || !m_lastSeededSplitResult.has_value()) {
+        QMessageBox::information(
+            this,
+            tr("Seeded Split Debug Export"),
+            tr("Run Preview first. The latest successful or failed preview can then be exported."));
+        return;
+    }
+
+    const QString selectedDirectory = QFileDialog::getExistingDirectory(
+        this, tr("Export Seeded Split Debug Bundle"), QDir::homePath());
+    if (selectedDirectory.isEmpty()) {
+        return;
+    }
+
+    const auto &session = *m_seededSplitSession.session;
+    const auto &result = m_lastSeededSplitResult.value();
+    const QString bundleName = QStringLiteral("seeded_split_%1_%2")
+                                   .arg(session.sourceLabel)
+                                   .arg(QDateTime::currentDateTime().toString(
+                                       QStringLiteral("yyyyMMdd_HHmmss_zzz")));
+    QDir parentDirectory(selectedDirectory);
+    if (!parentDirectory.mkdir(bundleName)) {
+        QMessageBox::warning(
+            this, tr("Seeded Split Debug Export"),
+            tr("Could not create the debug bundle directory."));
+        return;
+    }
+    const QString bundlePath = parentDirectory.filePath(bundleName);
+    QDir bundleDirectory(bundlePath);
+
+    try {
+        QJsonObject files;
+        const auto writeImage = [&](const QString &fileName, const auto *image) {
+            if (image == nullptr) {
+                return;
+            }
+            writeDebugImage(image, bundleDirectory.filePath(fileName));
+            files.insert(fileName.left(fileName.size() - 5), fileName);
+        };
+        writeImage(QStringLiteral("mask.nrrd"), session.mask.GetPointer());
+        writeImage(QStringLiteral("distance.nrrd"), session.distance.GetPointer());
+        writeImage(QStringLiteral("landscape.nrrd"), session.landscape.GetPointer());
+        writeImage(QStringLiteral("markers.nrrd"), result.markers.GetPointer());
+        writeImage(QStringLiteral("partition.nrrd"), result.partition.GetPointer());
+
+        const auto maskRegion = session.mask->GetLargestPossibleRegion();
+        const auto direction = session.mask->GetDirection();
+        QJsonArray directionRows;
+        for (unsigned int row = 0; row < 3; ++row) {
+            directionRows.append(QJsonArray{
+                direction[row][0], direction[row][1], direction[row][2]});
+        }
+
+        QJsonObject input;
+        if (m_lastSeededSplitSeeds.has_value()) {
+            input.insert(QStringLiteral("mode"), QStringLiteral("seeds"));
+            QJsonArray seeds;
+            for (std::size_t seedClass = 0;
+                 seedClass < m_lastSeededSplitSeeds->size(); ++seedClass) {
+                for (const auto &localSeed : m_lastSeededSplitSeeds.value()[seedClass]) {
+                    auto globalSeed = localSeed;
+                    for (unsigned int axis = 0; axis < 3; ++axis) {
+                        globalSeed[axis] += session.globalOffset[axis];
+                    }
+                    seeds.append(QJsonObject{
+                        {QStringLiteral("marker_label"), static_cast<int>(seedClass + 1)},
+                        {QStringLiteral("local_index"), jsonTriple(localSeed)},
+                        {QStringLiteral("global_index"), jsonTriple(globalSeed)},
+                        {QStringLiteral("world"), jsonTriple(
+                             segment_puzzler::seededSplitSeedWorldPoint(session, localSeed))},
+                        {QStringLiteral("distance"),
+                         static_cast<double>(session.distance->GetPixel(localSeed))}});
+                }
+            }
+            input.insert(QStringLiteral("seeds"), seeds);
+        } else {
+            input.insert(QStringLiteral("mode"), QStringLiteral("unknown"));
+        }
+
+        QJsonObject algorithm{
+            {QStringLiteral("distance"),
+             QStringLiteral("foreground_to_background_voxel_center")},
+            {QStringLiteral("distance_use_image_spacing"), true},
+            {QStringLiteral("landscape"),
+             QStringLiteral("negative_mask_normalized_gaussian_distance")},
+            {QStringLiteral("landscape_smoothing_sigma_pixels"),
+             session.landscapeSmoothingSigmaPixels},
+            {QStringLiteral("landscape_smoothing_use_image_spacing"), false},
+            {QStringLiteral("landscape_hash"), formatHash(session.landscapeHash)},
+            {QStringLiteral("markers"), QStringLiteral("imposed_minima")},
+            {QStringLiteral("domain_mask"), true},
+            {QStringLiteral("connect_seeds"), result.connectSeeds},
+            {QStringLiteral("seed_connection"),
+             QStringLiteral("six_connected_minimax_landscape_then_physical_distance")},
+            {QStringLiteral("allow_disconnected_parts"),
+             result.disconnectedPartsAllowed}};
+        if (result.compactness > 0.0) {
+            algorithm.insert(
+                QStringLiteral("watershed"),
+                QStringLiteral("segmentpuzzler_compact_marker"));
+            algorithm.insert(
+                QStringLiteral("compactness"),
+                result.compactness);
+            algorithm.insert(QStringLiteral("fully_connected"), false);
+            algorithm.insert(
+                QStringLiteral("priority"),
+                QStringLiteral(
+                    "minimax(normalized_landscape + compactness * "
+                    "normalized_seed_distance)"));
+            algorithm.insert(
+                QStringLiteral("seed_distance"),
+                QStringLiteral("physical_euclidean_normalized_by_roi_diagonal"));
+        } else {
+            algorithm.insert(
+                QStringLiteral("watershed"),
+                QStringLiteral("segmentpuzzler_fast_marker"));
+            algorithm.insert(QStringLiteral("compactness"), 0.0);
+            algorithm.insert(QStringLiteral("fully_connected"), false);
+            algorithm.insert(
+                QStringLiteral("tie_break"),
+                QStringLiteral("minimax_level_geodesic_distance_label_index"));
+        }
+
+        const QJsonObject metadata{
+            {QStringLiteral("format_version"), 3},
+            {QStringLiteral("created_utc"),
+             QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+            {QStringLiteral("operation"), QStringLiteral("seeded_watershed_split")},
+            {QStringLiteral("source"), QJsonObject{
+                 {QStringLiteral("label"), static_cast<double>(session.sourceLabel)},
+                 {QStringLiteral("modified_time"),
+                  QString::number(static_cast<qulonglong>(session.sourceModifiedTime))},
+                 {QStringLiteral("voxel_count"), static_cast<double>(session.voxelCount)},
+                 {QStringLiteral("connected_components"),
+                  static_cast<double>(session.connectedComponentCount)},
+                 {QStringLiteral("mask_hash"), formatHash(session.maskHash)},
+                 {QStringLiteral("roi"), QJsonObject{
+                      {QStringLiteral("min"), QJsonArray{
+                           session.sourceRoi.minX,
+                           session.sourceRoi.minY,
+                           session.sourceRoi.minZ}},
+                      {QStringLiteral("max"), QJsonArray{
+                           session.sourceRoi.maxX,
+                           session.sourceRoi.maxY,
+                           session.sourceRoi.maxZ}}}},
+                 {QStringLiteral("global_offset"), jsonTriple(session.globalOffset)}}},
+            {QStringLiteral("geometry"), QJsonObject{
+                 {QStringLiteral("region_start"), jsonTriple(maskRegion.GetIndex())},
+                 {QStringLiteral("region_size"), jsonTriple(maskRegion.GetSize())},
+                 {QStringLiteral("spacing"), jsonTriple(session.mask->GetSpacing())},
+                 {QStringLiteral("origin"), jsonTriple(session.mask->GetOrigin())},
+                 {QStringLiteral("direction"), directionRows}}},
+            {QStringLiteral("preparation"), QJsonObject{
+                 {QStringLiteral("maximum_distance"), session.maximumDistance},
+                 {QStringLiteral("mask_and_connectivity_ms"),
+                  session.maskAndConnectivityMs},
+                 {QStringLiteral("distance_transform_ms"),
+                  session.distanceTransformMs},
+                 {QStringLiteral("landscape_smoothing_ms"),
+                  session.landscapeSmoothingMs}}},
+            {QStringLiteral("algorithm"), algorithm},
+            {QStringLiteral("input"), input},
+            {QStringLiteral("result"), QJsonObject{
+                 {QStringLiteral("valid"), result.valid()},
+                 {QStringLiteral("error"), QString::fromStdString(result.error)},
+                 {QStringLiteral("marker_hash"), formatHash(result.markerHash)},
+                 {QStringLiteral("marker_voxel_counts"), QJsonArray{
+                      static_cast<double>(result.markerVoxelCounts[0]),
+                      static_cast<double>(result.markerVoxelCounts[1])}},
+                 {QStringLiteral("connection_voxel_counts"), QJsonArray{
+                      static_cast<double>(result.connectionVoxelCounts[0]),
+                      static_cast<double>(result.connectionVoxelCounts[1])}},
+                 {QStringLiteral("marker_connection_ms"), result.markerConnectionMs},
+                 {QStringLiteral("part_voxel_counts"), QJsonArray{
+                      static_cast<double>(result.voxelCounts[0]),
+                      static_cast<double>(result.voxelCounts[1])}},
+                 {QStringLiteral("part_connected_component_counts"), QJsonArray{
+                      static_cast<double>(result.connectedComponentCounts[0]),
+                      static_cast<double>(result.connectedComponentCounts[1])}},
+                 {QStringLiteral("has_disconnected_parts"),
+                  result.hasDisconnectedParts()},
+                 {QStringLiteral("partition_hash"), formatHash(result.partitionHash)},
+                 {QStringLiteral("watershed_ms"), result.watershedMs},
+                 {QStringLiteral("flood_metrics"), QJsonObject{
+                      {QStringLiteral("elapsed_ms"), result.floodMetrics.elapsedMs},
+                      {QStringLiteral("quantize_ms"), result.floodMetrics.quantizeMs},
+                      {QStringLiteral("init_ms"), result.floodMetrics.initMs},
+                      {QStringLiteral("flood_ms"), result.floodMetrics.floodMs},
+                      {QStringLiteral("writeback_ms"), result.floodMetrics.writebackMs},
+                      {QStringLiteral("pop_count"),
+                       static_cast<double>(result.floodMetrics.popCount)},
+                      {QStringLiteral("stale_pop_count"),
+                       static_cast<double>(result.floodMetrics.stalePopCount)},
+                      {QStringLiteral("requeue_count"),
+                       static_cast<double>(result.floodMetrics.requeueCount)},
+                      {QStringLiteral("finalized_voxel_count"),
+                       static_cast<double>(result.floodMetrics.finalizedVoxelCount)},
+                      {QStringLiteral("max_queue_depth"),
+                       static_cast<double>(result.floodMetrics.maxQueueDepth)},
+                      {QStringLiteral("scratch_bytes"),
+                       static_cast<double>(result.floodMetrics.scratchBytes)}}}}},
+            {QStringLiteral("files"), files}};
+
+        QSaveFile metadataFile(bundleDirectory.filePath(QStringLiteral("metadata.json")));
+        if (!metadataFile.open(QIODevice::WriteOnly)) {
+            throw std::runtime_error(metadataFile.errorString().toStdString());
+        }
+        if (metadataFile.write(QJsonDocument(metadata).toJson(QJsonDocument::Indented)) < 0
+            || !metadataFile.commit()) {
+            throw std::runtime_error(metadataFile.errorString().toStdString());
+        }
+
+        SP_LOG_INFO(
+            "segmentation",
+            QStringLiteral(
+                "operation=seeded_watershed_split phase=debug_export source_label=%1 "
+                "path=\"%2\" files=%3")
+                .arg(session.sourceLabel)
+                .arg(bundlePath)
+                .arg(files.size()));
+        if (result.hasDisconnectedParts()) {
+            setSeededSplitStatus(
+                QStringLiteral(
+                    "Warning: disconnected result (red: %1 regions, blue: %2 regions). "
+                    "Debug bundle exported: %3")
+                    .arg(result.connectedComponentCounts[0])
+                    .arg(result.connectedComponentCounts[1])
+                    .arg(bundlePath),
+                true);
+        } else {
+            setSeededSplitStatus(
+                QStringLiteral("Debug bundle exported: %1").arg(bundlePath));
+        }
+    } catch (const std::exception &error) {
+        SP_LOG_WARNING(
+            "segmentation",
+            QStringLiteral(
+                "operation=seeded_watershed_split status=debug_export_failed "
+                "source_label=%1 path=\"%2\" message=\"%3\"")
+                .arg(session.sourceLabel)
+                .arg(bundlePath)
+                .arg(QString::fromUtf8(error.what())));
+        QMessageBox::warning(
+            this,
+            tr("Seeded Split Debug Export"),
+            tr("Could not export the debug bundle: %1")
+                .arg(QString::fromUtf8(error.what())));
+    }
+}
+
+void Segment3DViewerDialog::applySeededSplit() {
+    if (m_seededSplitBusy || !m_seededSplitPreview.has_value()
+        || !m_seededSplitSession.applySplit) {
+        return;
+    }
+
+    m_seededSplitBusy = true;
+    updateSeededSplitUiState();
+    const auto applySplit = m_seededSplitSession.applySplit;
+    const auto preview = m_seededSplitPreview.value();
+    const auto finishApply = [this](SeededSplitApplyResult result) {
+        if (result.mutated) {
+            if (m_strokeOverlay != nullptr) {
+                m_strokeOverlay->setDrawingEnabled(false);
+                m_strokeOverlay->clearStroke();
+            }
+            if (!result.message.isEmpty()) {
+                QMessageBox::warning(this, tr("Seeded Split"), result.message);
+            }
+            accept();
+            return;
+        }
+        m_seededSplitBusy = false;
+        updateSeededSplitUiState();
+        QMessageBox::information(
+            this,
+            tr("Seeded Split"),
+            result.message.isEmpty() ? tr("The segment could not be split.") : result.message);
+    };
+
+    if (m_seededSplitSession.taskRunner != nullptr) {
+        m_seededSplitSession.taskRunner->runWithLabel(
+            m_seededSplitSession.progressText,
+            [applySplit, preview]() { return applySplit(preview); },
+            finishApply,
+            [this]() { restoreSeededSplitFocus(); });
+    } else {
+        finishApply(applySplit(preview));
+        restoreSeededSplitFocus();
+    }
+}
+
+void Segment3DViewerDialog::setSeededSplitStatus(
+    const QString &text,
+    bool warning)
+{
+    if (m_seedStatusLabel == nullptr) {
+        return;
+    }
+    m_seedStatusLabel->setText(text);
+    m_seedStatusLabel->setStyleSheet(
+        warning ? QStringLiteral("color: #e69f00; font-weight: 600;")
+                : QString{});
+}
+
+void Segment3DViewerDialog::updateSeededSplitUiState() {
+    if (m_seedButtons[0] == nullptr) {
+        return;
+    }
+    for (int seedNumber = 0; seedNumber < static_cast<int>(m_seedButtons.size()); ++seedNumber) {
+        m_seedButtons[seedNumber]->setEnabled(!m_seededSplitBusy);
+        m_seedButtons[seedNumber]->setChecked(m_activeSeed == seedNumber);
+        const QString color = seedNumber == 0
+                                  ? QStringLiteral("Red")
+                                  : QStringLiteral("Blue");
+        m_seedButtons[seedNumber]->setText(
+            m_activeSeed == seedNumber
+                ? QStringLiteral("Adding %1 Seed").arg(color)
+                : QStringLiteral("%1 Seed").arg(color));
+    }
+    const bool haveSeeds = !m_seedIndices[0].empty() && !m_seedIndices[1].empty();
+    if (m_strokeOverlay != nullptr) {
+        m_strokeOverlay->setDrawingEnabled(
+            m_splitLineDrawModeActive && !m_seededSplitBusy
+            && !m_havePendingLineSeeds
+            && !m_seededSplitPreview.has_value());
+    }
+    if (m_splitLineButton != nullptr) {
+        m_splitLineButton->setEnabled(!m_seededSplitBusy);
+        m_splitLineButton->setChecked(m_splitLineDrawModeActive);
+        m_splitLineButton->setText(
+            m_havePendingLineSeeds
+                ? QStringLiteral("Redraw Line")
+                : QStringLiteral("Split Line"));
+    }
+    if (m_seedDistanceSlider != nullptr) {
+        m_seedDistanceSlider->setEnabled(
+            m_splitLineDrawModeActive && !m_seededSplitBusy);
+    }
+    if (m_seedDistanceLabel != nullptr) {
+        m_seedDistanceLabel->setEnabled(
+            m_splitLineDrawModeActive && !m_seededSplitBusy);
+    }
+    if (m_lineSamplingSlider != nullptr) {
+        m_lineSamplingSlider->setEnabled(
+            m_splitLineDrawModeActive && !m_seededSplitBusy);
+    }
+    if (m_lineSamplingLabel != nullptr) {
+        m_lineSamplingLabel->setEnabled(
+            m_splitLineDrawModeActive && !m_seededSplitBusy);
+    }
+    if (m_confirmLineSeedsButton != nullptr) {
+        m_confirmLineSeedsButton->setEnabled(
+            !m_seededSplitBusy && m_splitLineDrawModeActive
+            && m_havePendingLineSeeds && m_pendingLineSeedsValid);
+    }
+    if (m_autoPreviewCheckBox != nullptr) {
+        m_autoPreviewCheckBox->setEnabled(!m_seededSplitBusy);
+    }
+    if (m_connectSeedsCheckBox != nullptr) {
+        m_connectSeedsCheckBox->setEnabled(!m_seededSplitBusy);
+    }
+    if (m_compactWatershedCheckBox != nullptr) {
+        m_compactWatershedCheckBox->setEnabled(!m_seededSplitBusy);
+    }
+    if (m_allowDisconnectedCheckBox != nullptr) {
+        m_allowDisconnectedCheckBox->setEnabled(!m_seededSplitBusy);
+    }
+    if (m_smoothingSlider != nullptr) {
+        m_smoothingSlider->setEnabled(!m_seededSplitBusy);
+    }
+    if (m_smoothingLabel != nullptr) {
+        m_smoothingLabel->setEnabled(!m_seededSplitBusy);
+    }
+    m_clearSeedsButton->setEnabled(!m_seededSplitBusy
+                                   && (!m_seedIndices[0].empty()
+                                       || !m_seedIndices[1].empty()
+                                       || m_splitLineDrawModeActive
+                                       || m_havePendingLineSeeds
+                                       || m_seededSplitPreview.has_value()));
+    m_previewSplitButton->setEnabled(!m_seededSplitBusy
+                                     && !m_seededSplitSmoothingPending
+                                     && !m_splitLineDrawModeActive
+                                     && haveSeeds);
+    m_applySplitButton->setEnabled(!m_seededSplitBusy
+                                   && !m_seededSplitSmoothingPending
+                                   && m_seededSplitPreview.has_value());
+}
+
+void Segment3DViewerDialog::restoreSeededSplitFocus() {
+    m_seededSplitBusy = false;
+    updateSeededSplitUiState();
+    QTimer::singleShot(0, this, [this]() {
+        if (!isVisible()) {
+            return;
+        }
+        raiseAndRequestActivation();
+        if (m_vtkWidget != nullptr) {
+            m_vtkWidget->setFocus(Qt::OtherFocusReason);
+        }
+    });
+}
+
 bool Segment3DViewerDialog::tryHandlePickedLabelInteraction(
     int pickX,
     int pickY,
     Qt::KeyboardModifiers modifiers,
     const char *sourceTag)
 {
+    if (placeSeedAt(pickX, pickY)) {
+        return true;
+    }
+
     QElapsedTimer totalTimer;
     totalTimer.start();
 
@@ -2989,13 +4585,13 @@ void Segment3DViewerDialog::showCutHelp() {
 }
 
 void Segment3DViewerDialog::updateCutUiState() {
-    const bool cutEnabled = m_cutOverlay != nullptr && static_cast<bool>(m_cutSession.applyCut);
+    const bool cutEnabled = m_strokeOverlay != nullptr && static_cast<bool>(m_cutSession.applyCut);
     if (!cutEnabled) {
         return;
     }
 
-    const bool hasStroke = m_cutOverlay->hasValidStroke();
-    m_cutOverlay->setDrawingEnabled(m_cutDrawModeActive && !m_cutApplyInFlight);
+    const bool hasStroke = m_strokeOverlay->hasValidStroke();
+    m_strokeOverlay->setDrawingEnabled(m_cutDrawModeActive && !m_cutApplyInFlight);
 
     if (m_drawCutButton != nullptr) {
         m_drawCutButton->setEnabled(!m_cutApplyInFlight && !m_cutDrawModeActive);

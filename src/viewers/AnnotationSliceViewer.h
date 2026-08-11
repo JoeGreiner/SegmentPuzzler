@@ -148,6 +148,7 @@ private:
                               const Roi &bounds);
     void show3DSegmentView(int posX, int posY);
     bool show3DSegmentCutView(int posX, int posY);
+    bool show3DSeededSplitView(int posX, int posY);
     bool prepare3DWorkingSegmentCutView(dataType::SegmentIdType workingLabel, int launchSliceAxis);
     bool handleWorkingSegmentResolution(const Graph::WorkingSegmentResolution &resolution);
     void refreshWorkingGraphPresentationAfterInsertion(dataType::SegmentIdType workingLabel);

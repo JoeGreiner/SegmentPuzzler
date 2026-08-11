@@ -299,6 +299,7 @@ set(SRC_WATERSHED_HELPER_DEPS
 
 set(SRC_SEGMENTHANDLERS
         src/segment_handling/Graph.cpp
+        src/segment_handling/SeededWatershedSplit.cpp
         src/segment_handling/graphBase.cpp
         src/segment_handling/initialEdge.cpp
         src/segment_handling/baseEdge.cpp
@@ -392,6 +393,13 @@ endif()
 #configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${SAMPLE_SEGMENTATION_FILE} ${CMAKE_CURRENT_BINARY_DIR}/${SAMPLE_SEGMENTATION_FILE} COPYONLY)
 
 if (BUILD_TESTING)
+    add_executable(test_SeededWatershedSplit
+            examples/viewers/test_seeded_watershed_split.cpp
+            src/segment_handling/SeededWatershedSplit.cpp
+            src/utils/FastMarkerWatershed3D.cpp
+            src/utils/ConnectedComponentLabelSplitter.cpp
+            src/utils/roi.cpp
+            src/utils/voxel.cpp)
     add_executable(profile_SliceViewer examples/viewers/profile_sliceviewer.cpp ${SRC_CORRECT_ORDER})
     add_executable(profile_Projected3DCut examples/viewers/profile_projected_3d_cut.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_Projected3DCut examples/viewers/test_projected_3d_cut.cpp ${SRC_CORRECT_ORDER})
@@ -424,6 +432,9 @@ if (BUILD_TESTING)
     add_executable(test_RagRegionMerger
             examples/benchmarks/test_rag_region_merger.cpp
             ${SRC_RAG_MERGING_CORE})
+    target_include_directories(test_SeededWatershedSplit PRIVATE ${CMAKE_SOURCE_DIR})
+    set_target_properties(test_SeededWatershedSplit PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_SeededWatershedSplit ${SEGMENT_PUZZLER_ITK_LIBRARIES})
     target_link_libraries(profile_SliceViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(profile_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})

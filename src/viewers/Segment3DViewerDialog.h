@@ -6,6 +6,7 @@
 #include <array>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <vector>
@@ -16,6 +17,7 @@
 #include <vtkSmartPointer.h>
 #include "src/file_definitions/dataTypes.h"
 #include "src/segment_handling/Projected3DCut.h"
+#include "src/segment_handling/SeededWatershedSplit.h"
 #include "src/utils/roi.h"
 
 class vtkOrientationMarkerWidget;
@@ -31,7 +33,7 @@ class QSlider;
 class QTimer;
 class QWidget;
 class TaskRunner;
-class CutStrokeOverlay;
+class StrokeOverlay;
 
 class Segment3DViewerDialog : public QDialog {
     Q_OBJECT
@@ -111,11 +113,28 @@ public:
         LabelActivatedHandler labelActivated;
     };
 
+    struct SeededSplitApplyResult {
+        bool mutated = false;
+        QString message;
+    };
+
+    struct SeededSplitSessionConfig {
+        TaskRunner *taskRunner = nullptr;
+        std::shared_ptr<segment_puzzler::SeededWatershedSplitSession> session;
+        std::function<SeededSplitApplyResult(
+            const segment_puzzler::SeededWatershedSplitResult &)> applySplit;
+        QString progressText = QStringLiteral("Applying seeded split...");
+    };
+
     explicit Segment3DViewerDialog(PreparedScene preparedScene,
                                    CutSessionConfig cutSession,
                                    QWidget *parent = nullptr,
                                    int launchSliceAxis = -1);
     explicit Segment3DViewerDialog(PreparedScene preparedScene,
+                                   QWidget *parent = nullptr,
+                                   int launchSliceAxis = -1);
+    explicit Segment3DViewerDialog(PreparedScene preparedScene,
+                                   SeededSplitSessionConfig seededSplitSession,
                                    QWidget *parent = nullptr,
                                    int launchSliceAxis = -1);
 
@@ -131,6 +150,12 @@ protected:
     void showEvent(QShowEvent *event) override;
 
 private:
+    Segment3DViewerDialog(PreparedScene preparedScene,
+                          CutSessionConfig cutSession,
+                          SeededSplitSessionConfig seededSplitSession,
+                          QWidget *parent,
+                          int launchSliceAxis);
+
     static PreparedScene prepareScene(
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<LabelWithColor> labels,
@@ -143,6 +168,11 @@ private:
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
     };
 
+    struct SeedRayHit {
+        segment_puzzler::SeededWatershedSplitSession::IndexType index;
+        std::array<std::array<double, 3>, 2> rayEndpoints{};
+    };
+
     void cycleSegmentColors();
     void applyColorCycle(std::vector<SegmentActorInfo> &actors) const;
     void stepExplodeSlider(int direction);
@@ -151,6 +181,7 @@ private:
     void requestAdjacentLabel(int direction);
     void activateOrRequestLabel(dataType::SegmentIdType labelId);
     bool applyPreparedScene(const PreparedScene &preparedScene);
+    bool replaceSegmentMeshes(const PreparedScene &preparedScene, bool resetCamera);
     void cachePreparedScene(PreparedScene preparedScene);
     void prefetchAdjacentLabel();
     void prunePreparedSceneCache();
@@ -166,7 +197,23 @@ private:
     void applyProjectedCut();
     void showCutHelp();
     void updateCutUiState();
-    Projected3DCutRequest buildProjected3DCutRequest() const;
+    void armSeedPlacement(int seedNumber);
+    void beginSplitLineDrawing();
+    bool updateSplitLineSeedPreview();
+    void confirmSplitLineSeeds();
+    std::optional<SeedRayHit> seedAlongDisplayRay(double displayX, double displayY) const;
+    bool placeSeedAt(int pickX, int pickY);
+    void showSeedActors(const segment_puzzler::SeededSplitSeedGroups &seeds);
+    void clearSeededSplit();
+    void updateSeededSplitSmoothing();
+    void autoPreviewSeededSplitIfReady();
+    void previewSeededSplit();
+    void applySeededSplit();
+    void exportSeededSplitDebugBundle();
+    void setSeededSplitStatus(const QString &text, bool warning = false);
+    void updateSeededSplitUiState();
+    void restoreSeededSplitFocus();
+    Projected3DCutRequest buildProjectedStrokeRequest() const;
     bool tryHandlePickedLabelInteraction(int pickX,
                                          int pickY,
                                          Qt::KeyboardModifiers modifiers,
@@ -193,11 +240,38 @@ private:
     QPushButton *m_drawCutButton = nullptr;
     QPushButton *m_clearCutButton = nullptr;
     QPushButton *m_applyCutButton = nullptr;
+    std::array<QPushButton *, 2> m_seedButtons{nullptr, nullptr};
+    QPushButton *m_clearSeedsButton = nullptr;
+    QPushButton *m_splitLineButton = nullptr;
+    QPushButton *m_confirmLineSeedsButton = nullptr;
+    QSlider *m_seedDistanceSlider = nullptr;
+    QLabel *m_seedDistanceLabel = nullptr;
+    QSlider *m_lineSamplingSlider = nullptr;
+    QLabel *m_lineSamplingLabel = nullptr;
+    QCheckBox *m_autoPreviewCheckBox = nullptr;
+    QCheckBox *m_connectSeedsCheckBox = nullptr;
+    QCheckBox *m_compactWatershedCheckBox = nullptr;
+    QCheckBox *m_allowDisconnectedCheckBox = nullptr;
+    QSlider *m_smoothingSlider = nullptr;
+    QLabel *m_smoothingLabel = nullptr;
+    QTimer *m_smoothingUpdateTimer = nullptr;
+    QPushButton *m_previewSplitButton = nullptr;
+    QPushButton *m_applySplitButton = nullptr;
+    QLabel *m_seedStatusLabel = nullptr;
     QWidget *m_controlsWidget = nullptr;
     QVTKOpenGLNativeWidget *m_vtkWidget = nullptr;
-    CutStrokeOverlay *m_cutOverlay = nullptr;
+    StrokeOverlay *m_strokeOverlay = nullptr;
+    vtkSmartPointer<vtkRenderer> m_seedRenderer;
     vtkSmartPointer<vtkOrientationMarkerWidget> m_orientationWidget;
     CutSessionConfig m_cutSession;
+    SeededSplitSessionConfig m_seededSplitSession;
+    PreparedScene m_originalSeededSplitScene;
+    std::optional<segment_puzzler::SeededWatershedSplitResult> m_seededSplitPreview;
+    std::optional<segment_puzzler::SeededWatershedSplitResult> m_lastSeededSplitResult;
+    std::optional<segment_puzzler::SeededSplitSeedGroups> m_lastSeededSplitSeeds;
+    segment_puzzler::SeededSplitSeedGroups m_seedIndices;
+    segment_puzzler::SeededSplitSeedGroups m_pendingLineSeeds;
+    std::array<std::vector<vtkSmartPointer<vtkActor>>, 2> m_seedActors;
     NavigateToLabelHandler m_navigateToLabelHandler;
     DeleteLabelHandler m_deleteLabelHandler;
     RequestLabelHandler m_requestLabelHandler;
@@ -214,6 +288,12 @@ private:
     bool m_initialFrameRendered = false;
     bool m_cutDrawModeActive = false;
     bool m_cutApplyInFlight = false;
+    int m_activeSeed = -1;
+    bool m_seededSplitBusy = false;
+    bool m_seededSplitSmoothingPending = false;
+    bool m_splitLineDrawModeActive = false;
+    bool m_havePendingLineSeeds = false;
+    bool m_pendingLineSeedsValid = false;
     bool m_singleLabelNavigationBusy = false;
     bool m_deleteModeActive = false;
 };

@@ -30,6 +30,12 @@ namespace {
 
 constexpr double kKeyboardZoomFactor = 1.25;
 
+struct PreparedSeededSplitView {
+    std::shared_ptr<segment_puzzler::SeededWatershedSplitSession> session;
+    Segment3DViewerDialog::PreparedScene scene;
+    Graph::WorkingSegmentResolution workingResolution;
+};
+
 bool hasIdentityDirection(dataType::SegmentsImageType::Pointer image, double epsilon = 1e-6) {
     if (image == nullptr) {
         return true;
@@ -480,6 +486,11 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             orthoViewer()->flashShortcutLegendKey("3dcut");
         }
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::View3DCut);
+    } else if (event->key() == Qt::Key_W) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("seededsplit");
+        }
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::View3DSeededSplit);
     } else if (event->key() == Qt::Key_M) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("m");
@@ -771,6 +782,9 @@ bool AnnotationSliceViewer::handleWorkingSegmentResolution(
     case Status::Inserted:
         refreshWorkingGraphPresentationAfterInsertion(resolution.workingLabel);
         return true;
+    case Status::NeedsInsertion:
+        sendStatusMessage(QStringLiteral("The selected segment must be inserted into the working graph first."));
+        return false;
     case Status::NoForeground:
         sendStatusMessage(QStringLiteral("3D cut: clicked background in the selected segmentation."));
         return false;
@@ -915,6 +929,223 @@ bool AnnotationSliceViewer::show3DSegmentCutView(int posX, int posY) {
     return true;
 }
 
+bool AnnotationSliceViewer::show3DSeededSplitView(int posX, int posY) {
+    if (graphBase == nullptr || graphBase->pGraph == nullptr
+        || graphBase->pWorkingSegmentsImage == nullptr
+        || graphBase->pSelectedSegmentation == nullptr) {
+        sendStatusMessage(QStringLiteral(
+            "Load working segments and select a segmentation before using seeded split."));
+        return false;
+    }
+    const auto selectedImage = graphBase->pSelectedSegmentation;
+    if (!haveMatchingImageRegions(selectedImage, graphBase->pWorkingSegmentsImage)) {
+        sendStatusMessage(QStringLiteral(
+            "The selected segmentation and working segments must have matching image regions."));
+        return false;
+    }
+    if (!hasIdentityDirection(selectedImage)) {
+        QMessageBox::information(
+            this,
+            tr("Seeded Split"),
+            tr("Seeded split currently requires an image with identity direction."));
+        return false;
+    }
+
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    dataType::SegmentsImageType::IndexType selectedIndex{{x, y, z}};
+    if (!selectedImage->GetLargestPossibleRegion().IsInside(selectedIndex)) {
+        return false;
+    }
+    const auto selectedLabel = selectedImage->GetPixel(selectedIndex);
+    if (selectedLabel == graphBase->pGraph->backgroundId) {
+        sendStatusMessage(QStringLiteral("Seeded split: clicked background."));
+        return false;
+    }
+
+    quint32 color = 0xFFAAAAAA;
+    if (graphBase->pSelectedSegmentationSignal != nullptr
+        && selectedLabel < static_cast<dataType::SegmentIdType>(
+                               graphBase->pSelectedSegmentationSignal->LUT.size())) {
+        color = graphBase->pSelectedSegmentationSignal->LUT[selectedLabel];
+    }
+    Graph *const graph = graphBase->pGraph;
+    const int launchSliceAxis = sliceAxis;
+    const auto prepare = [selectedImage, selectedLabel, color, graph, x, y, z]() {
+        PreparedSeededSplitView prepared;
+        prepared.session = std::make_shared<segment_puzzler::SeededWatershedSplitSession>(
+            segment_puzzler::prepareSeededWatershedSplit(selectedImage, selectedLabel));
+        prepared.scene = Segment3DViewerDialog::prepareScene(
+            selectedImage, {{selectedLabel, color}}, prepared.session->sourceRoi);
+        prepared.workingResolution =
+            graph->inspectSelectedSegmentationComponentInWorkingGraph(x, y, z);
+        return prepared;
+    };
+
+    const auto openPrepared =
+        [this, selectedImage, selectedLabel, graph, x, y, z, launchSliceAxis](
+            PreparedSeededSplitView prepared) {
+            if (prepared.session == nullptr || prepared.scene.meshes.empty()) {
+                QMessageBox::information(
+                    this, tr("Seeded Split"), tr("No 3D surface could be generated."));
+                return;
+            }
+            if (prepared.session->connectedComponentCount != 1) {
+                QMessageBox::information(
+                    this,
+                    tr("Seeded Split"),
+                    tr("The selected segment is disconnected (%1 regions were found).")
+                        .arg(prepared.session->connectedComponentCount));
+                return;
+            }
+
+            SP_LOG_INFO(
+                "segmentation",
+                QStringLiteral(
+                    "operation=seeded_watershed_split phase=prepared label=%1 voxels=%2 "
+                    "components=%3 roi=[%4,%5,%6,%7,%8,%9] "
+                    "global_offset=[%10,%11,%12] mask_hash=0x%13 "
+                    "maximum_distance=%14 mask_ms=%15 distance_ms=%16")
+                    .arg(selectedLabel)
+                    .arg(prepared.session->voxelCount)
+                    .arg(prepared.session->connectedComponentCount)
+                    .arg(prepared.session->sourceRoi.minX)
+                    .arg(prepared.session->sourceRoi.minY)
+                    .arg(prepared.session->sourceRoi.minZ)
+                    .arg(prepared.session->sourceRoi.maxX)
+                    .arg(prepared.session->sourceRoi.maxY)
+                    .arg(prepared.session->sourceRoi.maxZ)
+                    .arg(prepared.session->globalOffset[0])
+                    .arg(prepared.session->globalOffset[1])
+                    .arg(prepared.session->globalOffset[2])
+                    .arg(QString::number(
+                        static_cast<qulonglong>(prepared.session->maskHash), 16)
+                             .rightJustified(16, QLatin1Char('0')))
+                    .arg(prepared.session->maximumDistance, 0, 'g', 9)
+                    .arg(prepared.session->maskAndConnectivityMs, 0, 'f', 1)
+                    .arg(prepared.session->distanceTransformMs, 0, 'f', 1));
+
+            using Status = Graph::WorkingSegmentResolution::Status;
+            bool allowInsertion = false;
+            if (prepared.workingResolution.status == Status::NeedsInsertion) {
+                const auto answer = QMessageBox::question(
+                    this,
+                    tr("Insert Segment?"),
+                    tr("The selected segment does not exactly match a working segment. "
+                       "Insert it into the working graph if the split is applied?"),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No);
+                if (answer != QMessageBox::Yes) {
+                    return;
+                }
+                allowInsertion = true;
+            } else if (prepared.workingResolution.status != Status::ReusedExisting) {
+                handleWorkingSegmentResolution(prepared.workingResolution);
+                return;
+            }
+
+            const auto session = prepared.session;
+            Segment3DViewerDialog::SeededSplitSessionConfig splitSession;
+            splitSession.taskRunner = taskRunner;
+            splitSession.session = session;
+            splitSession.progressText = QStringLiteral(
+                "Applying seeded split and transferring results...");
+            splitSession.applySplit =
+                [this, selectedImage, selectedLabel, graph, session, x, y, z, allowInsertion](
+                    const segment_puzzler::SeededWatershedSplitResult &split) {
+                    Segment3DViewerDialog::SeededSplitApplyResult result;
+                    if (graphBase == nullptr || graphBase->pGraph != graph
+                        || graphBase->pSelectedSegmentation != selectedImage
+                        || selectedImage->GetMTime() != session->sourceModifiedTime
+                        || selectedImage->GetPixel({x, y, z}) != selectedLabel) {
+                        result.message = QStringLiteral(
+                            "The selected segmentation changed after the viewer was opened.");
+                        return result;
+                    }
+
+                    auto resolution =
+                        graph->inspectSelectedSegmentationComponentInWorkingGraph(x, y, z);
+                    if (resolution.status == Status::NeedsInsertion && allowInsertion) {
+                        resolution = graph->ensureSelectedSegmentationComponentInWorkingGraph(x, y, z);
+                    }
+                    if (resolution.status != Status::ReusedExisting
+                        && resolution.status != Status::Inserted) {
+                        result.message = resolution.status == Status::NeedsInsertion
+                                             ? QStringLiteral(
+                                                   "The segment now requires insertion, but it was not approved.")
+                                             : QStringLiteral(
+                                                   "The segment could not be resolved in the working graph.");
+                        return result;
+                    }
+
+                    std::vector<dataType::SegmentIdType> workingLabels;
+                    if (!graph->splitWorkingNodeByVoxelPartition(
+                            resolution.workingLabel,
+                            split.partition,
+                            session->globalOffset,
+                            &workingLabels)) {
+                        result.message = QStringLiteral(
+                            "The watershed partition no longer matches the working segment.");
+                        return result;
+                    }
+                    const auto selectedLabels =
+                        graph->transferWorkingNodesToSegmentation(workingLabels);
+                    result.mutated = true;
+                    if (selectedLabels.size() != workingLabels.size()) {
+                        result.message = QStringLiteral(
+                            "The working segment was split, but not all parts could be transferred.");
+                        return result;
+                    }
+                    selectedImage->Modified();
+                    SP_LOG_INFO(
+                        "segmentation",
+                        QStringLiteral(
+                            "operation=seeded_watershed_split status=split source_label=%1 "
+                            "source_voxels=%2 part_voxels=%3,%4 part_components=%5,%6 "
+                            "allow_disconnected_parts=%7 working_parts=%8 selected_parts=%9")
+                            .arg(selectedLabel)
+                            .arg(session->voxelCount)
+                            .arg(split.voxelCounts[0])
+                            .arg(split.voxelCounts[1])
+                            .arg(split.connectedComponentCounts[0])
+                            .arg(split.connectedComponentCounts[1])
+                            .arg(split.disconnectedPartsAllowed)
+                            .arg(workingLabels.size())
+                            .arg(selectedLabels.size()));
+                    return result;
+                };
+
+            auto *dialog = new Segment3DViewerDialog(
+                std::move(prepared.scene), std::move(splitSession), this, launchSliceAxis);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            connect(dialog, &QDialog::finished, this, [this](int result) {
+                if (result != QDialog::Accepted) {
+                    return;
+                }
+                if (graphBase != nullptr
+                    && graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
+                    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+                }
+                if (orthoViewer() != nullptr) {
+                    orthoViewer()->refreshViewers();
+                }
+            });
+            dialog->presentInFront();
+        };
+
+    SP_LOG_INFO(
+        "segmentation",
+        QStringLiteral("operation=seeded_watershed_split phase=prepare label=%1")
+            .arg(selectedLabel));
+    if (taskRunner != nullptr) {
+        taskRunner->runWithLabel(
+            QStringLiteral("Preparing seeded watershed split..."), prepare, openPrepared);
+    } else {
+        openPrepared(prepare());
+    }
+    return true;
+}
+
 void AnnotationSliceViewer::show3DAllLabelsView() {
     const auto segImage = active3DViewSegmentsImage();
     if (segImage == nullptr) {
@@ -989,6 +1220,7 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
         {Qt::Key_K,       ToolMode::Erode},
         {Qt::Key_H,       ToolMode::Insert},
         {Qt::Key_T,       ToolMode::View3DCut},
+        {Qt::Key_W,       ToolMode::View3DSeededSplit},
         {Qt::Key_M,       ToolMode::View3D},
     };
     auto it = keyToToolMode.find(event->key());
@@ -1108,6 +1340,11 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
                          .arg(event->pos().y())
                          .arg(static_cast<int>(event->button())));
         if (show3DSegmentCutView(event->pos().x(), event->pos().y())) {
+            setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
+        }
+        break;
+    case ToolMode::View3DSeededSplit:
+        if (show3DSeededSplitView(event->pos().x(), event->pos().y())) {
             setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         }
         break;

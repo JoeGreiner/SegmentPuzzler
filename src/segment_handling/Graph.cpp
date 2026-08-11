@@ -2215,30 +2215,17 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     const auto targetWorkingNode = workingNodeIt->second;
     const auto spacing = graphBase->pWorkingSegmentsImage->GetSpacing();
     const auto origin = graphBase->pWorkingSegmentsImage->GetOrigin();
-    auto *workingSegmentsBuffer = graphBase->pWorkingSegmentsImage->GetBufferPointer();
-    const auto workingSegmentsSize = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetSize();
-    const unsigned long strideZ = workingSegmentsSize[1] * workingSegmentsSize[0];
-    const unsigned long strideY = workingSegmentsSize[0];
-    const auto workingSegmentsLinearIndex = [strideY, strideZ](const Voxel &voxel) {
-        return static_cast<unsigned long>(voxel.z) * strideZ +
-               static_cast<unsigned long>(voxel.y) * strideY +
-               static_cast<unsigned long>(voxel.x);
-    };
     const Roi targetRoi = targetWorkingNode->roi;
 
     std::vector<Voxel> targetVoxels;
     std::vector<SegmentIdType> targetInitialLabels;
     std::vector<int> targetComponentIds;
     std::vector<unsigned char> targetProvisionalCut;
-    std::vector<SegmentIdType> originalInitialLabels;
-    std::unordered_map<SegmentIdType, std::vector<int>> voxelIndicesByInitialLabel;
-
     std::size_t totalVoxelCount = 0;
     for (const auto &initialNodeEntry : targetWorkingNode->subInitialNodes) {
         if (initialNodeEntry.second == nullptr) {
             continue;
         }
-        originalInitialLabels.push_back(initialNodeEntry.first);
         totalVoxelCount += initialNodeEntry.second->voxels.size();
     }
     if (totalVoxelCount == 0) {
@@ -2249,7 +2236,6 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     targetInitialLabels.reserve(totalVoxelCount);
     targetComponentIds.reserve(totalVoxelCount);
     targetProvisionalCut.reserve(totalVoxelCount);
-    voxelIndicesByInitialLabel.reserve(targetWorkingNode->subInitialNodes.size());
     LocalVoxelGrid voxelGrid;
     voxelGrid.minX = targetRoi.minX;
     voxelGrid.minY = targetRoi.minY;
@@ -2274,8 +2260,6 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     for (const auto &initialNodeEntry : targetWorkingNode->subInitialNodes) {
         const SegmentIdType initialLabel = initialNodeEntry.first;
         const auto &voxels = initialNodeEntry.second->voxels;
-        auto &indices = voxelIndicesByInitialLabel[initialLabel];
-        indices.reserve(voxels.size());
         for (const Voxel &voxel : voxels) {
             const std::array<double, 2> projectedPoint =
                 projectVoxelCenterToDisplay(voxel, projectedDisplayTransform);
@@ -2287,7 +2271,6 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
             targetComponentIds.push_back(-1);
             targetProvisionalCut.push_back(provisionalCut ? 1U : 0U);
             const int voxelIndex = static_cast<int>(targetVoxels.size()) - 1;
-            indices.push_back(voxelIndex);
             voxelGrid.voxelIndices[voxelGrid.linearIndex(voxel.x, voxel.y, voxel.z)] = voxelIndex;
         }
     }
@@ -2369,6 +2352,165 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
         profileOut->reassignCutVoxelsMs = durationMs(reassignCutVoxelsStart, Clock::now());
     }
 
+    const bool mutated = applyWorkingNodePartition(
+        request.targetWorkingLabel,
+        targetVoxels,
+        targetInitialLabels,
+        targetComponentIds,
+        nextComponentId,
+        profileOut,
+        resultingWorkingLabelsOut);
+    return finish(mutated);
+}
+
+bool Graph::splitWorkingNodeByVoxelPartition(
+    SegmentIdType targetWorkingLabel,
+    SegmentsImageType::Pointer localPartition,
+    const SegmentsImageType::IndexType &globalOffset,
+    std::vector<SegmentIdType> *resultingWorkingLabelsOut)
+{
+    if (resultingWorkingLabelsOut != nullptr) {
+        resultingWorkingLabelsOut->clear();
+    }
+    if (localPartition.IsNull() || targetWorkingLabel == backgroundId) {
+        return false;
+    }
+    const auto targetIt = workingNodes.find(targetWorkingLabel);
+    if (targetIt == workingNodes.end() || targetIt->second == nullptr) {
+        return false;
+    }
+
+    std::vector<Voxel> targetVoxels;
+    std::vector<SegmentIdType> targetInitialLabels;
+    std::vector<int> targetComponentIds;
+    std::size_t targetVoxelCount = 0;
+    for (const auto &[initialLabel, initialNode] : targetIt->second->subInitialNodes) {
+        if (initialNode == nullptr) {
+            return false;
+        }
+        targetVoxelCount += initialNode->voxels.size();
+    }
+    targetVoxels.reserve(targetVoxelCount);
+    targetInitialLabels.reserve(targetVoxelCount);
+    targetComponentIds.reserve(targetVoxelCount);
+
+    const auto partitionRegion = localPartition->GetLargestPossibleRegion();
+    SegmentIdType maximumComponentLabel = 0;
+    std::size_t assignedPartitionVoxelCount = 0;
+    itk::ImageRegionConstIterator<SegmentsImageType> partitionIt(localPartition, partitionRegion);
+    for (partitionIt.GoToBegin(); !partitionIt.IsAtEnd(); ++partitionIt) {
+        if (partitionIt.Get() != 0) {
+            ++assignedPartitionVoxelCount;
+            maximumComponentLabel = std::max(maximumComponentLabel, partitionIt.Get());
+        }
+    }
+    if (maximumComponentLabel < 2 || assignedPartitionVoxelCount != targetVoxelCount) {
+        return false;
+    }
+
+    std::vector<std::size_t> componentVoxelCounts(maximumComponentLabel, 0);
+    for (const auto &[initialLabel, initialNode] : targetIt->second->subInitialNodes) {
+        for (const Voxel &voxel : initialNode->voxels) {
+            SegmentsImageType::IndexType localIndex{{
+                static_cast<SegmentsImageType::IndexType::IndexValueType>(voxel.x) - globalOffset[0],
+                static_cast<SegmentsImageType::IndexType::IndexValueType>(voxel.y) - globalOffset[1],
+                static_cast<SegmentsImageType::IndexType::IndexValueType>(voxel.z) - globalOffset[2]}};
+            if (!partitionRegion.IsInside(localIndex)) {
+                return false;
+            }
+            const SegmentIdType componentLabel = localPartition->GetPixel(localIndex);
+            if (componentLabel == 0 || componentLabel > maximumComponentLabel) {
+                return false;
+            }
+            targetVoxels.push_back(voxel);
+            targetInitialLabels.push_back(initialLabel);
+            targetComponentIds.push_back(static_cast<int>(componentLabel - 1));
+            ++componentVoxelCounts[componentLabel - 1];
+        }
+    }
+    if (std::any_of(componentVoxelCounts.begin(), componentVoxelCounts.end(),
+                    [](std::size_t count) { return count == 0; })) {
+        return false;
+    }
+
+    return applyWorkingNodePartition(
+        targetWorkingLabel,
+        targetVoxels,
+        targetInitialLabels,
+        targetComponentIds,
+        static_cast<int>(maximumComponentLabel),
+        nullptr,
+        resultingWorkingLabelsOut);
+}
+
+bool Graph::applyWorkingNodePartition(
+    SegmentIdType targetWorkingLabel,
+    const std::vector<Voxel> &targetVoxels,
+    const std::vector<SegmentIdType> &targetInitialLabels,
+    const std::vector<int> &targetComponentIds,
+    int componentCount,
+    Projected3DCutProfile *profileOut,
+    std::vector<SegmentIdType> *resultingWorkingLabelsOut)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto durationMs = [](const Clock::time_point &start, const Clock::time_point &end) {
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    };
+    if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr || componentCount < 2 ||
+        targetVoxels.empty() || targetVoxels.size() != targetInitialLabels.size() ||
+        targetVoxels.size() != targetComponentIds.size()) {
+        return false;
+    }
+    const auto targetIt = workingNodes.find(targetWorkingLabel);
+    if (targetIt == workingNodes.end() || targetIt->second == nullptr) {
+        return false;
+    }
+    const auto targetWorkingNode = targetIt->second;
+    const Roi targetRoi = targetWorkingNode->roi;
+
+    std::vector<SegmentIdType> originalInitialLabels;
+    originalInitialLabels.reserve(targetWorkingNode->subInitialNodes.size());
+    for (const auto &[initialLabel, initialNode] : targetWorkingNode->subInitialNodes) {
+        if (initialNode == nullptr) {
+            return false;
+        }
+        originalInitialLabels.push_back(initialLabel);
+    }
+
+    std::unordered_map<SegmentIdType, std::vector<int>> voxelIndicesByInitialLabel;
+    voxelIndicesByInitialLabel.reserve(originalInitialLabels.size());
+    LocalVoxelGrid voxelGrid;
+    voxelGrid.minX = targetRoi.minX;
+    voxelGrid.minY = targetRoi.minY;
+    voxelGrid.minZ = targetRoi.minZ;
+    voxelGrid.sizeX = targetRoi.maxX - targetRoi.minX + 1;
+    voxelGrid.sizeY = targetRoi.maxY - targetRoi.minY + 1;
+    voxelGrid.sizeZ = targetRoi.maxZ - targetRoi.minZ + 1;
+    voxelGrid.voxelIndices.assign(
+        static_cast<std::size_t>(voxelGrid.sizeX) *
+        static_cast<std::size_t>(voxelGrid.sizeY) *
+        static_cast<std::size_t>(voxelGrid.sizeZ), -1);
+    for (int voxelIndex = 0; voxelIndex < static_cast<int>(targetVoxels.size()); ++voxelIndex) {
+        const Voxel &voxel = targetVoxels[static_cast<std::size_t>(voxelIndex)];
+        const int componentId = targetComponentIds[static_cast<std::size_t>(voxelIndex)];
+        if (componentId < 0 || componentId >= componentCount ||
+            !voxelGrid.contains(voxel.x, voxel.y, voxel.z)) {
+            return false;
+        }
+        voxelIndicesByInitialLabel[targetInitialLabels[static_cast<std::size_t>(voxelIndex)]].push_back(voxelIndex);
+        voxelGrid.voxelIndices[voxelGrid.linearIndex(voxel.x, voxel.y, voxel.z)] = voxelIndex;
+    }
+
+    auto *workingSegmentsBuffer = graphBase->pWorkingSegmentsImage->GetBufferPointer();
+    const auto workingSegmentsSize = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetSize();
+    const unsigned long strideZ = workingSegmentsSize[1] * workingSegmentsSize[0];
+    const unsigned long strideY = workingSegmentsSize[0];
+    const auto workingSegmentsLinearIndex = [strideY, strideZ](const Voxel &voxel) {
+        return static_cast<unsigned long>(voxel.z) * strideZ +
+               static_cast<unsigned long>(voxel.y) * strideY +
+               static_cast<unsigned long>(voxel.x);
+    };
+
     std::vector<ReplacementInitialComponent> replacementInitialComponents;
     replacementInitialComponents.reserve(targetVoxels.size());
     std::vector<unsigned char> replacementVisited(targetVoxels.size(), 0);
@@ -2418,7 +2560,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     }
 
     if (replacementInitialComponents.empty()) {
-        return finish(false);
+        return false;
     }
 
     std::vector<NeighborWorkingGroup> neighborGroups;
@@ -2451,7 +2593,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     };
 
     const auto splitWorkingNodesStart = Clock::now();
-    splitWorkingNodeIntoInitialNodes(request.targetWorkingLabel);
+    splitWorkingNodeIntoInitialNodes(targetWorkingLabel);
     for (const auto &neighborGroup : neighborGroups) {
         // Initial-edge recomputation must see neighboring labels in the working image as initial-node labels,
         // not stale synthetic working labels left behind by an earlier projected cut.
@@ -2486,9 +2628,9 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     }
 
     std::vector<std::vector<SegmentIdType>> replacementInitialLabelsByComponent(
-        static_cast<std::size_t>(nextComponentId));
+        static_cast<std::size_t>(componentCount));
     std::vector<std::size_t> replacementVoxelCountsByComponent(
-        static_cast<std::size_t>(nextComponentId), 0);
+        static_cast<std::size_t>(componentCount), 0);
     std::vector<SegmentIdType> replacementInitialLabels;
     replacementInitialLabels.reserve(replacementInitialComponents.size());
 
@@ -2556,8 +2698,8 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     }
 
     std::vector<int> componentOrder;
-    componentOrder.reserve(static_cast<std::size_t>(nextComponentId));
-    for (int componentId = 0; componentId < nextComponentId; ++componentId) {
+    componentOrder.reserve(static_cast<std::size_t>(componentCount));
+    for (int componentId = 0; componentId < componentCount; ++componentId) {
         componentOrder.push_back(componentId);
     }
     std::sort(componentOrder.begin(), componentOrder.end(), [&replacementVoxelCountsByComponent](int lhs, int rhs) {
@@ -2579,7 +2721,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
         }
 
         const SegmentIdType workingLabel =
-            orderIndex == 0 ? request.targetWorkingLabel : nextFreeId++;
+            orderIndex == 0 ? targetWorkingLabel : nextFreeId++;
         auto *replacementWorkingNode =
             new WorkingNode(componentLabels, workingLabel, initialNodes);
         segmentManager.addWorkingNode(replacementWorkingNode);
@@ -2615,7 +2757,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     if (resultingWorkingLabelsOut != nullptr) {
         *resultingWorkingLabelsOut = std::move(resultingWorkingLabels);
     }
-    return finish(true);
+    return true;
 }
 
 
@@ -3590,7 +3732,7 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
 }
 
 
-Graph::WorkingSegmentResolution Graph::ensureSelectedSegmentationComponentInWorkingGraph(int x, int y, int z) {
+Graph::WorkingSegmentResolution Graph::inspectSelectedSegmentationComponentInWorkingGraph(int x, int y, int z) {
     WorkingSegmentResolution resolution;
     if (graphBase->pSelectedSegmentation == nullptr) {
         logGraph(LogLevel::Warning, __func__, QStringLiteral("No selected segmentation is loaded"));
@@ -3656,6 +3798,18 @@ Graph::WorkingSegmentResolution Graph::ensureSelectedSegmentationComponentInWork
         }
     }
 
+    resolution.status = WorkingSegmentResolution::Status::NeedsInsertion;
+    return resolution;
+}
+
+Graph::WorkingSegmentResolution Graph::ensureSelectedSegmentationComponentInWorkingGraph(int x, int y, int z) {
+    WorkingSegmentResolution resolution =
+        inspectSelectedSegmentationComponentInWorkingGraph(x, y, z);
+    if (resolution.status != WorkingSegmentResolution::Status::NeedsInsertion) {
+        return resolution;
+    }
+
+    const SegmentIdType selectedLabel = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
     const auto insertedLabel = transferSegmentationSegmentToInitialSegment(x, y, z);
     if (!insertedLabel.has_value()) {
         return resolution;

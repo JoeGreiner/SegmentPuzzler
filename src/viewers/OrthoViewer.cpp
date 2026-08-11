@@ -305,6 +305,8 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
             return createSingleActionWithPan("3D View", QColor("#8ccf5f"));
         case SliceViewer::ToolMode::View3DCut:
             return createSingleActionWithPan("3D Cut", QColor("#ff8e6e"));
+        case SliceViewer::ToolMode::View3DSeededSplit:
+            return createSingleActionWithPan("Seeded Split", QColor("#4dc7c0"));
         case SliceViewer::ToolMode::None:
         default:
             return createDualActionWithPan("Merge", "Unmerge", QColor("#7b8ea1"));
@@ -388,6 +390,9 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("3dcut", "T", "3D Cut",
                            "Hold T and click a working segment to open the cut-enabled 3D view.",
                            activeTool == SliceViewer::ToolMode::View3DCut || isFlashed("3dcut")),
+        createShortcutHint("seededsplit", "W", "Seeded Split",
+                           "Hold W and click a selected segment to split it from two seeds in 3D.",
+                           activeTool == SliceViewer::ToolMode::View3DSeededSplit || isFlashed("seededsplit")),
         createShortcutHint("f1", "F1", "Hotkeys",
                            "Press F1 to open the full hotkey reference dialog.",
                            isFlashed("f1")),

@@ -104,6 +104,7 @@ public:
     struct WorkingSegmentResolution {
         enum class Status {
             ReusedExisting,
+            NeedsInsertion,
             Inserted,
             NoForeground,
             Failed
@@ -158,6 +159,12 @@ public:
     bool splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &request,
                                           Projected3DCutProfile *profileOut = nullptr,
                                           std::vector<SegmentIdType> *resultingWorkingLabelsOut = nullptr);
+    bool splitWorkingNodeByVoxelPartition(
+        SegmentIdType targetWorkingLabel,
+        SegmentsImageType::Pointer localPartition,
+        const SegmentsImageType::IndexType &globalOffset,
+        std::vector<SegmentIdType> *resultingWorkingLabelsOut = nullptr);
+    WorkingSegmentResolution inspectSelectedSegmentationComponentInWorkingGraph(int x, int y, int z);
     // Reuse the clicked WorkingNode when its voxels exactly match the clicked
     // selected-segmentation component; otherwise insert that component via H's path.
     WorkingSegmentResolution ensureSelectedSegmentationComponentInWorkingGraph(int x, int y, int z);
@@ -367,6 +374,15 @@ public:
 
 
 private:
+    bool applyWorkingNodePartition(
+        SegmentIdType targetWorkingLabel,
+        const std::vector<Voxel> &targetVoxels,
+        const std::vector<SegmentIdType> &targetInitialLabels,
+        const std::vector<int> &targetComponentIds,
+        int componentCount,
+        Projected3DCutProfile *profileOut,
+        std::vector<SegmentIdType> *resultingWorkingLabelsOut);
+
     void constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage);
 
     void generateWorkingCopyOfInitialNodesAndEdges();
