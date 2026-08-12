@@ -24,6 +24,10 @@ find_package(${SEGMENT_PUZZLER_QT_PACKAGE}Gui REQUIRED
         COMPONENTS QCocoaIntegrationPlugin QTiffPlugin)
 install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QCocoaIntegrationPlugin" QT_PLUGINS ${prefix})
 install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QTiffPlugin" QT_PLUGINS ${prefix})
+if (SEGMENT_PUZZLER_QT_MAJOR STREQUAL "6")
+    find_package(Qt6Network REQUIRED COMPONENTS QSecureTransportBackendPlugin)
+    install_qt_plugin("Qt6::QSecureTransportBackendPlugin" QT_PLUGINS ${prefix})
+endif ()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/qt.conf"
         "[Paths]\nPlugins = PlugIns\n")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/qt.conf"
@@ -77,6 +81,14 @@ message(STATUS "DIRS: ${DIRS}")
 
 install(CODE "include(BundleUtilities)
     fixup_bundle(\"${APPS}\" \"${QT_PLUGINS}\" \"${DIRS}\")")
+
+if (SEGMENT_PUZZLER_QT_MAJOR STREQUAL "6")
+    install(CODE "
+      if (NOT EXISTS \"${APPS}/Contents/PlugIns/tls/libqsecuretransportbackend.dylib\")
+        message(FATAL_ERROR \"Packaged application is missing the Qt Secure Transport TLS backend\")
+      endif()
+    ")
+endif ()
 
 install(CODE "
   execute_process(

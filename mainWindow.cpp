@@ -867,11 +867,6 @@ std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *pr
     QLoggingCategory::setFilterRules(QStringLiteral("qt.network.ssl.warning=true\n"
                                                     "qt.network.ssl.debug=true\n"));
 
-    SP_LOG_INFO("network", QStringLiteral("QSslSocket supportsSsl=%1 buildVersion=%2 runtimeVersion=%3")
-        .arg(QSslSocket::supportsSsl())
-        .arg(QSslSocket::sslLibraryBuildVersionString())
-        .arg(QSslSocket::sslLibraryVersionString()));
-
     QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     if (tempDir.isEmpty()) {
         SP_LOG_ERROR("io", QStringLiteral("Failed to retrieve the temporary directory path for the sample download"));
@@ -891,6 +886,23 @@ std::tuple<QString, QString, QString, QString> downloadFiles(QProgressDialog *pr
     QString outputFilePathWGA = QDir(tempDir).filePath("WGA.nrrd");
     QString outputFilePathRefinement = QDir(tempDir).filePath("Watershed.nrrd");
     QString outputFilePathBnd = QDir(tempDir).filePath("BoundaryPrediction.tif");
+
+    const bool downloadRequired = !QFile::exists(outputFilePathMC) ||
+                                  !QFile::exists(outputFilePathWGA) ||
+                                  !QFile::exists(outputFilePathRefinement) ||
+                                  !QFile::exists(outputFilePathBnd);
+    if (downloadRequired) {
+        const bool supportsSsl = QSslSocket::supportsSsl();
+        SP_LOG_INFO("network", QStringLiteral("QSslSocket supportsSsl=%1 buildVersion=%2 runtimeVersion=%3")
+            .arg(supportsSsl)
+            .arg(QSslSocket::sslLibraryBuildVersionString())
+            .arg(QSslSocket::sslLibraryVersionString()));
+        if (!supportsSsl) {
+            SP_LOG_ERROR("network",
+                         QStringLiteral("Sample download unavailable because no functional TLS backend was found"));
+            return std::make_tuple("", "", "", "");
+        }
+    }
 
     QString url_segments_mc = "https://drive.google.com/uc?export=download&id=18VtLYTFA0EVa_JLOVoSmXPjDJrW0Ievr";
     QString url_segments_wga = "https://drive.google.com/uc?export=download&id=1pd6ybdzrQFdgpANKweNG7hB7i1diOgxC";
@@ -1032,7 +1044,15 @@ void MainWindow::loadSegmentationSample() {
 
     progressDialog.close();
 
-    if (utils::check_if_file_exists(downloadedFilePathMC)){
+    const bool sampleDatasetAvailable = !downloadedFilePathMC.isEmpty() &&
+                                        !downloadedFilePathWGA.isEmpty() &&
+                                        !downloadedFilePathRefinement.isEmpty() &&
+                                        !downloadedFilePathBnd.isEmpty() &&
+                                        QFile::exists(downloadedFilePathMC) &&
+                                        QFile::exists(downloadedFilePathWGA) &&
+                                        QFile::exists(downloadedFilePathRefinement) &&
+                                        QFile::exists(downloadedFilePathBnd);
+    if (sampleDatasetAvailable) {
         graph->setBackgroundIdStrategy("backgroundIsLowestId");
         mySignalControl->addSegmentsGraphAsync(
             downloadedFilePathMC,
@@ -1076,10 +1096,12 @@ void MainWindow::loadSegmentationSample() {
                             });
                     });
             });
-
-
     } else {
-        SP_LOG_ERROR("io", QStringLiteral("Downloaded sample segments file is missing at %1").arg(downloadedFilePathMC));
+        SP_LOG_ERROR("io", QStringLiteral("Sample dataset download failed or produced incomplete files"));
+        QMessageBox::critical(this,
+                              tr("Sample download failed"),
+                              tr("The sample dataset could not be downloaded. "
+                                 "Please check the application log for details."));
     }
 }
 
