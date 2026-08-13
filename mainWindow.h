@@ -36,6 +36,7 @@ private slots:
     void showLayerRenderOrder();
     void arm3DSegmentSplit();
     void showLoggingSettings();
+    void showVoxelSpacingSettings();
 
 private:
     OrthoViewer *myOrthowindow;
@@ -49,6 +50,7 @@ private:
     QAction *loadSampleSegmentationAction;
     QAction *showSegmentTableAction = nullptr;
     QAction *splitSegment3DAction = nullptr;
+    QAction *voxelSpacingAction = nullptr;
     std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
     std::unique_ptr<TaskRunner> taskRunner;

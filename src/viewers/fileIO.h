@@ -1,6 +1,7 @@
 #ifndef GRAPHBASEDSEGMENTATION_FILEOUTPUT_H
 #define GRAPHBASEDSEGMENTATION_FILEOUTPUT_H
 
+#include <array>
 #include <string>
 #include <vector>
 #include <iostream>
@@ -25,6 +26,7 @@ struct ImageFileInfo {
         itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE;
     itk::IOPixelEnum pixelType = itk::IOPixelEnum::UNKNOWNPIXELTYPE;
     unsigned int componentCount = 0;
+    std::array<double, 3> spacing{{1.0, 1.0, 1.0}};
 };
 
 ImageFileInfo getImageFileInfo(const QString &fileName);

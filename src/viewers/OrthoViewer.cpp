@@ -14,9 +14,11 @@
 #include <QApplication>
 #include <QScreen>
 #include <QThread>
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 
 #define CHECK_IF_MAIN_THREAD True
@@ -760,6 +762,13 @@ void logOrthoInteractionState(const QString &key, const QString &message) {
     SP_LOG_DEBUG_CHANGED("viewer.interaction", key, message);
 }
 
+int roundedAndClampedExtent(double extent, int maximum = QWIDGETSIZE_MAX) {
+    if (!std::isfinite(extent) || extent <= 1.0) {
+        return 1;
+    }
+    return static_cast<int>(std::lround(std::min(extent, static_cast<double>(maximum))));
+}
+
 } // namespace
 
 
@@ -1090,10 +1099,13 @@ double OrthoViewer::computeFittedZoom() const {
                                          viewZY->height() - scrollAreaZY->viewport()->height());
     const int bottomChromeHeight = viewXZ->height() - scrollAreaXZ->viewport()->height();
 
+    const double scaleX = voxel_geometry::normalizedAxisScale(voxelSpacing, 0);
+    const double scaleY = voxel_geometry::normalizedAxisScale(voxelSpacing, 1);
+    const double scaleZ = voxel_geometry::normalizedAxisScale(voxelSpacing, 2);
     const double zoomFromWidth = static_cast<double>(availableWidth - leftChromeWidth - rightChromeWidth) /
-                                 static_cast<double>(dimX + dimZ);
+                                 (static_cast<double>(dimX) * scaleX + static_cast<double>(dimZ) * scaleZ);
     const double zoomFromHeight = static_cast<double>(availableHeight - topChromeHeight - bottomChromeHeight) /
-                                  static_cast<double>(dimY + dimZ);
+                                  (static_cast<double>(dimY) * scaleY + static_cast<double>(dimZ) * scaleZ);
     const double fittedZoom = std::min(zoomFromWidth, zoomFromHeight);
     if (zoomFromWidth <= 0.0 || zoomFromHeight <= 0.0 || fittedZoom <= 0.0) {
         return 1.0;
@@ -1119,9 +1131,17 @@ int OrthoViewer::maximumSliceExtent() const {
         return 1;
     }
 
-    return std::max(std::max(xy->getCurrentSliceWidth(), xy->getCurrentSliceHeight()),
-                    std::max(std::max(xz->getCurrentSliceWidth(), xz->getCurrentSliceHeight()),
-                             std::max(zy->getCurrentSliceWidth(), zy->getCurrentSliceHeight())));
+    const auto maximumExtentForViewer = [](const SliceViewer *viewer) {
+        const auto scale = viewer->getPlaneScale();
+        return std::max(
+            static_cast<double>(viewer->getCurrentSliceWidth()) * scale.horizontal,
+            static_cast<double>(viewer->getCurrentSliceHeight()) * scale.vertical);
+    };
+    return roundedAndClampedExtent(std::ceil(std::max({
+        maximumExtentForViewer(xy),
+        maximumExtentForViewer(xz),
+        maximumExtentForViewer(zy)
+    })));
 }
 
 void OrthoViewer::placeSplittersForZoom(double zoom) {
@@ -1162,11 +1182,13 @@ void OrthoViewer::placeSplittersForZoom(double zoom) {
                                          viewZY->height() - scrollAreaZY->viewport()->height());
 
     const int placementSlack = xy->getDimZ() == 1 ? kTwoDimensionalPlacementSlack : 0;
+    const double scaleX = voxel_geometry::normalizedAxisScale(voxelSpacing, 0);
+    const double scaleY = voxel_geometry::normalizedAxisScale(voxelSpacing, 1);
     int leftWidth = leftChromeWidth +
-                    static_cast<int>(std::lround(static_cast<double>(dimX) * zoom)) +
+                    roundedAndClampedExtent(static_cast<double>(dimX) * scaleX * zoom, availableWidth) +
                     placementSlack;
     int topHeight = topChromeHeight +
-                    static_cast<int>(std::lround(static_cast<double>(dimY) * zoom)) +
+                    roundedAndClampedExtent(static_cast<double>(dimY) * scaleY * zoom, availableHeight) +
                     placementSlack;
 
     leftWidth = std::clamp(leftWidth, 1, std::max(1, availableWidth - 1));
@@ -1311,11 +1333,16 @@ void OrthoViewer::adjustSplittersForCurrentZoom() {
 void OrthoViewer::addSignal(itkSignalBase *signal) {
     std::lock_guard<std::mutex> lock(viewerListMutex);
     if (!initialized) { initialize(); }
+    const bool isFirstSignal = xy->signalList.empty();
     zy->addSignal(new SliceViewerITKSignal(signal, zy->getSliceIndex(), 0));
     xz->addSignal(new SliceViewerITKSignal(signal, xz->getSliceIndex(), 1));
     xy->addSignal(new SliceViewerITKSignal(signal, xy->getSliceIndex(), 2));
 
-    refreshZoomLayout();
+    if (isFirstSignal && signal != nullptr && signal->getImageBase().IsNotNull()) {
+        setVoxelSpacing(voxel_geometry::fromItkSpacing(signal->getImageBase()->GetSpacing()));
+    } else {
+        refreshZoomLayout();
+    }
     sliderXY->setMinimum(0);
     sliderZY->setMinimum(0);
     sliderXZ->setMinimum(0);
@@ -1477,8 +1504,10 @@ void OrthoViewer::applyInitialZoom() {
         fittedZoom = slice_viewer_zoom::fittedZoomForViewport(
                 scrollAreaXY->viewport()->width(),
                 scrollAreaXY->viewport()->height(),
-                xy->getDimX(),
-                xy->getDimY());
+                roundedAndClampedExtent(voxel_geometry::sliceWidthInNormalizedUnits(
+                    xy->getCurrentSliceWidth(), voxelSpacing, 2)),
+                roundedAndClampedExtent(voxel_geometry::sliceHeightInNormalizedUnits(
+                    xy->getCurrentSliceHeight(), voxelSpacing, 2)));
     } else {
         fittedZoom = computeFittedZoom();
     }
@@ -1763,6 +1792,63 @@ void OrthoViewer::setImageOnlyMode(bool enabled) {
     refreshInteractionModeIndicators();
 }
 
+void OrthoViewer::setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing) {
+    if (!voxel_geometry::isValid(spacing)) {
+        throw std::invalid_argument("Voxel spacing values must be finite and greater than zero");
+    }
+
+    struct ViewCenter {
+        QScrollAreaNoWheel *scrollArea = nullptr;
+        SliceViewer *viewer = nullptr;
+        QPoint slicePixel;
+        bool valid = false;
+    };
+    const auto captureCenter = [](QScrollAreaNoWheel *scrollArea, SliceViewer *viewer) {
+        ViewCenter result{scrollArea, viewer, {}, false};
+        if (scrollArea == nullptr || scrollArea->viewport() == nullptr || viewer == nullptr
+            || viewer->signalList.empty()) {
+            return result;
+        }
+        const QPoint viewportCenter = scrollArea->viewport()->rect().center();
+        const QPoint widgetPoint = viewer->mapFrom(scrollArea->viewport(), viewportCenter);
+        result.slicePixel = viewer->slicePixelFromWidgetPoint(widgetPoint);
+        result.valid = true;
+        return result;
+    };
+
+    const std::array<ViewCenter, 3> centers{
+        captureCenter(scrollAreaXY, xy),
+        captureCenter(scrollAreaXZ, xz),
+        captureCenter(scrollAreaZY, zy)
+    };
+
+    voxelSpacing = spacing;
+    if (xy != nullptr) {
+        xy->setVoxelSpacing(spacing);
+    }
+    if (xz != nullptr) {
+        xz->setVoxelSpacing(spacing);
+    }
+    if (zy != nullptr) {
+        zy->setVoxelSpacing(spacing);
+    }
+    refreshZoomLayout();
+
+    QTimer::singleShot(0, this, [this, centers]() {
+        for (const auto &center : centers) {
+            if (center.valid) {
+                centerViewportOnSlicePixel(
+                    center.scrollArea,
+                    center.viewer,
+                    center.slicePixel.x(),
+                    center.slicePixel.y(),
+                    true);
+            }
+        }
+        updatePlaneIndicators();
+    });
+}
+
 void OrthoViewer::setOverlayOnlyMode(bool enabled) {
     for (auto *viewer : viewerList) {
         if (viewer != nullptr) {
@@ -1823,31 +1909,23 @@ void OrthoViewer::setAnnotationSelection(dataType::SegmentIdType label,
 }
 
 void OrthoViewer::centerViewportsToXYZImageSpace(int x, int y, int z) {
-    centerViewportsToXYViewportSpace(scrollAreaXY,
-                                     static_cast<double>(x),
-                                     static_cast<double>(y),
-                                     xy->zoomFactor);
-    centerViewportsToXYViewportSpace(scrollAreaXZ,
-                                     static_cast<double>(x),
-                                     static_cast<double>(z),
-                                     xz->zoomFactor);
-    centerViewportsToXYViewportSpace(scrollAreaZY,
-                                     static_cast<double>(z),
-                                     static_cast<double>(y),
-                                     zy->zoomFactor);
+    centerViewportOnSlicePixel(scrollAreaXY, xy, x, y);
+    centerViewportOnSlicePixel(scrollAreaXZ, xz, x, z);
+    centerViewportOnSlicePixel(scrollAreaZY, zy, z, y);
 }
 
-
-void OrthoViewer::centerViewportsToXYViewportSpace(QScrollArea* scrollArea,
-                                                   double xWanted,
-                                                   double yWanted,
-                                                   double zoomFactor)
+void OrthoViewer::centerViewportOnSlicePixel(QScrollArea *scrollArea,
+                                             SliceViewer *viewer,
+                                             double sliceX,
+                                             double sliceY,
+                                             bool alwaysCenter)
 {
-    if (!scrollArea)
+    if (scrollArea == nullptr || viewer == nullptr)
         return;
 
-    double centerXWanted = xWanted * zoomFactor;
-    double centerYWanted = yWanted * zoomFactor;
+    const QPointF center = viewer->widgetPositionForSlicePixel(sliceX, sliceY);
+    const double centerXWanted = center.x();
+    const double centerYWanted = center.y();
 
     QRect visibleRect = scrollArea->viewport()->rect();
 
@@ -1865,7 +1943,7 @@ void OrthoViewer::centerViewportsToXYViewportSpace(QScrollArea* scrollArea,
     bool yIsVisible = (centerYWanted >= topInView  && centerYWanted <= bottomInView);
 
     // Already visible, no scrolling needed.
-    if (xIsVisible && yIsVisible) {
+    if (!alwaysCenter && xIsVisible && yIsVisible) {
         return;
     }
 

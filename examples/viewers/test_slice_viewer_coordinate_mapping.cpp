@@ -1,6 +1,8 @@
 #include "src/viewers/SliceViewerCoordinateMapping.h"
+#include "src/viewers/VoxelSpacing.h"
 
 #include <climits>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -25,6 +27,14 @@ bool expectMapping(const std::string &name,
 
 bool expectValue(const std::string &name, int actual, int expected) {
     if (actual == expected) {
+        return true;
+    }
+    std::cerr << name << ": got " << actual << ", expected " << expected << '\n';
+    return false;
+}
+
+bool expectNear(const std::string &name, double actual, double expected) {
+    if (std::abs(actual - expected) <= 1e-12) {
         return true;
     }
     std::cerr << name << ": got " << actual << ", expected " << expected << '\n';
@@ -66,6 +76,59 @@ int main() {
             "64-bit intermediate",
             slice_viewer_geometry::sourcePixelForPaintedPixel(INT_MAX - 1, INT_MAX, INT_MAX),
             INT_MAX - 1);
+
+    passed &= expectNear(
+            "source center to target",
+            slice_viewer_geometry::paintedPositionForSourcePixelCenter(4.0, 10, 40),
+            18.0);
+    passed &= expectValue(
+            "source boundary to target",
+            slice_viewer_geometry::paintedBoundaryForSourceBoundary(5, 10, 40),
+            20);
+
+    const voxel_geometry::VoxelSpacing anisotropic{1.0, 1.0, 4.0};
+    passed &= expectValue(
+        "absolute spacing tolerance",
+        voxel_geometry::nearlyEqual(1.0, 1.00005),
+        1);
+    passed &= expectValue(
+        "absolute spacing difference",
+        voxel_geometry::nearlyEqual(1.0, 1.0002),
+        0);
+    passed &= expectValue(
+        "relative spacing tolerance",
+        voxel_geometry::nearlyEqual(1000.0, 1000.05),
+        1);
+    passed &= expectValue(
+        "relative spacing difference",
+        voxel_geometry::nearlyEqual(1000.0, 1000.2),
+        0);
+    const auto yzAxes = voxel_geometry::planeAxes(0);
+    const auto xzAxes = voxel_geometry::planeAxes(1);
+    const auto xyAxes = voxel_geometry::planeAxes(2);
+    passed &= expectValue("YZ horizontal axis", static_cast<int>(yzAxes.horizontal), 2);
+    passed &= expectValue("YZ vertical axis", static_cast<int>(yzAxes.vertical), 1);
+    passed &= expectValue("XZ horizontal axis", static_cast<int>(xzAxes.horizontal), 0);
+    passed &= expectValue("XZ vertical axis", static_cast<int>(xzAxes.vertical), 2);
+    passed &= expectValue("XY horizontal axis", static_cast<int>(xyAxes.horizontal), 0);
+    passed &= expectValue("XY vertical axis", static_cast<int>(xyAxes.vertical), 1);
+    const auto xyScale = voxel_geometry::planeScale(anisotropic, 2);
+    const auto xzScale = voxel_geometry::planeScale(anisotropic, 1);
+    const auto yzScale = voxel_geometry::planeScale(anisotropic, 0);
+    passed &= expectNear("XY horizontal spacing scale", xyScale.horizontal, 1.0);
+    passed &= expectNear("XY vertical spacing scale", xyScale.vertical, 1.0);
+    passed &= expectNear("XZ horizontal spacing scale", xzScale.horizontal, 1.0);
+    passed &= expectNear("XZ vertical spacing scale", xzScale.vertical, 4.0);
+    passed &= expectNear("YZ horizontal spacing scale", yzScale.horizontal, 4.0);
+    passed &= expectNear("YZ vertical spacing scale", yzScale.vertical, 1.0);
+    passed &= expectNear(
+            "XZ normalized width",
+            voxel_geometry::sliceWidthInNormalizedUnits(20, anisotropic, 1),
+            20.0);
+    passed &= expectNear(
+            "XZ normalized height",
+            voxel_geometry::sliceHeightInNormalizedUnits(7, anisotropic, 1),
+            28.0);
 
     if (!passed) {
         return 1;

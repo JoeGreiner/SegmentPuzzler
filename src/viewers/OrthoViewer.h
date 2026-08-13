@@ -85,6 +85,8 @@ public:
     void resetPaintSelection();
     void setAnnotationSelection(dataType::SegmentIdType label, const QColor &color);
     void setImageOnlyMode(bool enabled);
+    void setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing);
+    voxel_geometry::VoxelSpacing getVoxelSpacing() const { return voxelSpacing; }
     void setOverlayOnlyMode(bool enabled);
 
 
@@ -115,10 +117,11 @@ public slots:
     void setMorphologyDilationRadius(int radius);
     void setMorphologyErosionRadius(int radius);
     void centerViewportsToXYZImageSpace(int x, int y, int z);
-    void centerViewportsToXYViewportSpace(QScrollArea* scrollArea,
-                                                       double xWanted,
-                                                       double yWanted,
-                                                       double zoomFactor);
+    void centerViewportOnSlicePixel(QScrollArea *scrollArea,
+                                    SliceViewer *viewer,
+                                    double sliceX,
+                                    double sliceY,
+                                    bool alwaysCenter = false);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -178,6 +181,7 @@ private:
     QHash<QString, int> shortcutFlashGenerations;
     ShortcutLegendProfile shortcutLegendProfile = ShortcutLegendProfile::Default;
     bool autoAdjustingSplitters = false;
+    voxel_geometry::VoxelSpacing voxelSpacing;
     dataType::SegmentIdType annotationSelectionLabel = 0;
 };
 

@@ -1228,14 +1228,14 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         int x, y, z;
         getXYZfromPixmapPos(event->pos().x(), event->pos().y(), x, y, z);
         if (sliceAxis == 0) {
-            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXY, x, y, zoomFactor);
-            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXZ, x, z, zoomFactor);
+            orthoViewer()->centerViewportOnSlicePixel(orthoViewer()->scrollAreaXY, orthoViewer()->xy, x, y);
+            orthoViewer()->centerViewportOnSlicePixel(orthoViewer()->scrollAreaXZ, orthoViewer()->xz, x, z);
         } else if (sliceAxis == 1) {
-            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXY, x, y, zoomFactor);
-            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaZY, z, y, zoomFactor);
+            orthoViewer()->centerViewportOnSlicePixel(orthoViewer()->scrollAreaXY, orthoViewer()->xy, x, y);
+            orthoViewer()->centerViewportOnSlicePixel(orthoViewer()->scrollAreaZY, orthoViewer()->zy, z, y);
         } else if (sliceAxis == 2) {
-            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaXZ, x, z, zoomFactor);
-            orthoViewer()->centerViewportsToXYViewportSpace(orthoViewer()->scrollAreaZY, z, y, zoomFactor);
+            orthoViewer()->centerViewportOnSlicePixel(orthoViewer()->scrollAreaXZ, orthoViewer()->xz, x, z);
+            orthoViewer()->centerViewportOnSlicePixel(orthoViewer()->scrollAreaZY, orthoViewer()->zy, z, y);
         }
         break;
     }
@@ -1942,40 +1942,37 @@ void AnnotationSliceViewer::mouseReleaseEvent(QMouseEvent *event) {
         updateFunction();
     } else if (ROISelectionModeIsActive) {
         if (ROISelectionRubberBand != nullptr) {
-            //TODO: think about zoom
             SP_LOG_DEBUG("viewer.interaction",
                          QStringLiteral("ROI rubber band x=%1 y=%2 width=%3 height=%4")
                              .arg(ROISelectionRubberBand->x())
                              .arg(ROISelectionRubberBand->y())
                              .arg(ROISelectionRubberBand->width())
                              .arg(ROISelectionRubberBand->height()));
+            const QRect sliceBounds = slicePixelBoundsFromWidgetRect(ROISelectionRubberBand->geometry());
+            if (!sliceBounds.isValid()) {
+                return;
+            }
             if (sliceAxis == 0) {
-                graphBase->ROI_fz = static_cast<int>((ROISelectionRubberBand->x()) / zoomFactor);
-                graphBase->ROI_tz = static_cast<int>((ROISelectionRubberBand->x() + ROISelectionRubberBand->width()) /
-                                                     zoomFactor);
-                graphBase->ROI_fy = static_cast<int>((ROISelectionRubberBand->y()) / zoomFactor);
-                graphBase->ROI_ty = static_cast<int>((ROISelectionRubberBand->y() + ROISelectionRubberBand->height()) /
-                                                     zoomFactor);
+                graphBase->ROI_fz = sliceBounds.left();
+                graphBase->ROI_tz = sliceBounds.right();
+                graphBase->ROI_fy = sliceBounds.top();
+                graphBase->ROI_ty = sliceBounds.bottom();
                 graphBase->ROI_fx = 0;
-                graphBase->ROI_tx = graphBase->pWorkingSegments->getDimX();
+                graphBase->ROI_tx = graphBase->pWorkingSegments->getDimX() - 1;
             } else if (sliceAxis == 1) {
-                graphBase->ROI_fx = static_cast<int>((ROISelectionRubberBand->x()) / zoomFactor);
-                graphBase->ROI_tx = static_cast<int>((ROISelectionRubberBand->x() + ROISelectionRubberBand->width()) /
-                                                     zoomFactor);
-                graphBase->ROI_fz = static_cast<int>((ROISelectionRubberBand->y()) / zoomFactor);
-                graphBase->ROI_tz = static_cast<int>((ROISelectionRubberBand->y() + ROISelectionRubberBand->height()) /
-                                                     zoomFactor);
+                graphBase->ROI_fx = sliceBounds.left();
+                graphBase->ROI_tx = sliceBounds.right();
+                graphBase->ROI_fz = sliceBounds.top();
+                graphBase->ROI_tz = sliceBounds.bottom();
                 graphBase->ROI_fy = 0;
-                graphBase->ROI_ty = graphBase->pWorkingSegments->getDimY();
+                graphBase->ROI_ty = graphBase->pWorkingSegments->getDimY() - 1;
             } else if (sliceAxis == 2) {
-                graphBase->ROI_fx = static_cast<int>((ROISelectionRubberBand->x()) / zoomFactor);
-                graphBase->ROI_tx = static_cast<int>((ROISelectionRubberBand->x() + ROISelectionRubberBand->width()) /
-                                                     zoomFactor);
-                graphBase->ROI_fy = static_cast<int>((ROISelectionRubberBand->y()) / zoomFactor);
-                graphBase->ROI_ty = static_cast<int>((ROISelectionRubberBand->y() + ROISelectionRubberBand->height()) /
-                                                     zoomFactor);
+                graphBase->ROI_fx = sliceBounds.left();
+                graphBase->ROI_tx = sliceBounds.right();
+                graphBase->ROI_fy = sliceBounds.top();
+                graphBase->ROI_ty = sliceBounds.bottom();
                 graphBase->ROI_fz = 0;
-                graphBase->ROI_tz = graphBase->pWorkingSegments->getDimZ();
+                graphBase->ROI_tz = graphBase->pWorkingSegments->getDimZ() - 1;
             }
             graphBase->ROI_set = true;
 //            ROISelectionRubberBand->hide();
@@ -2283,6 +2280,13 @@ void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
                 setAnnotationSelection(selectedLabel, selectedColor);
             }
         }
+    }
+}
+
+void AnnotationSliceViewer::setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing) {
+    SliceViewer::setVoxelSpacing(spacing);
+    if (ROISelectionRubberBand != nullptr) {
+        ROISelectionRubberBand->hide();
     }
 }
 

@@ -34,6 +34,7 @@
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/LoggingSettingsDialog.h"
 #include "src/qtUtils/ImageNormalizationSettingsDialog.h"
+#include "src/qtUtils/VoxelSpacingDialog.h"
 #include "src/utils/AppLogger.h"
 
 MainWindow::~MainWindow() = default;
@@ -327,6 +328,17 @@ MainWindow::MainWindow() {
     connect(renderOrderAction, &QAction::triggered, this, &MainWindow::showLayerRenderOrder);
 
     settingsMenu = menuBar()->addMenu(tr("&Settings"));
+    voxelSpacingAction = new QAction(tr("Voxel Spacing..."), this);
+    settingsMenu->addAction(voxelSpacingAction);
+    connect(voxelSpacingAction, &QAction::triggered, this, &MainWindow::showVoxelSpacingSettings);
+    connect(taskRunner.get(), &TaskRunner::busyChanged, voxelSpacingAction, &QAction::setDisabled);
+    connect(settingsMenu, &QMenu::aboutToShow, this, [this]() {
+        voxelSpacingAction->setEnabled(
+            taskRunner != nullptr && !taskRunner->isBusy()
+            && mySignalControl != nullptr
+            && mySignalControl->voxelSpacing().has_value());
+    });
+    settingsMenu->addSeparator();
     QMenu *morphologyMenu = settingsMenu->addMenu(tr("Morphology Parameters"));
     QAction *setClosingRadiusAction = new QAction(tr("Set Closing Radius"), this);
     morphologyMenu->addAction(setClosingRadiusAction);
@@ -1146,6 +1158,37 @@ void MainWindow::showLayerRenderOrder() {
                 QStringLiteral("Updated render order for %1 layers")
                     .arg(requestedOrder->size()));
     statusBar()->showMessage(tr("Layer render order updated"), 3000);
+}
+
+void MainWindow::showVoxelSpacingSettings() {
+    if (mySignalControl == nullptr || taskRunner == nullptr || taskRunner->isBusy()) {
+        return;
+    }
+    const auto currentSpacing = mySignalControl->voxelSpacing();
+    if (!currentSpacing.has_value()) {
+        QMessageBox::information(
+            this,
+            tr("Voxel Spacing"),
+            tr("Load an image or segmentation before setting voxel spacing."));
+        return;
+    }
+
+    VoxelSpacingDialog dialog(*currentSpacing, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const auto requestedSpacing = dialog.spacing();
+    if (voxel_geometry::nearlyEqual(*currentSpacing, requestedSpacing)) {
+        return;
+    }
+    mySignalControl->setVoxelSpacing(requestedSpacing);
+    statusBar()->showMessage(
+        tr("Voxel spacing updated to %1 x %2 x %3")
+            .arg(requestedSpacing.x, 0, 'g', 8)
+            .arg(requestedSpacing.y, 0, 'g', 8)
+            .arg(requestedSpacing.z, 0, 'g', 8),
+        4000);
 }
 
 void MainWindow::showLoggingSettings() {

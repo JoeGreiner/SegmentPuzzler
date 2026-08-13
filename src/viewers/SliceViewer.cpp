@@ -43,6 +43,22 @@ void logSliceViewerState(const QString &key, const QString &message) {
     SP_LOG_DEBUG_CHANGED("viewer.render", key, message);
 }
 
+int boundedWidgetExtent(double extent) {
+    if (!std::isfinite(extent) || extent <= 1.0) {
+        return 1;
+    }
+    return static_cast<int>(std::lround(std::min(extent, static_cast<double>(QWIDGETSIZE_MAX))));
+}
+
+QColor sliceIndicatorColor(int sliceAxis) {
+    switch (sliceAxis) {
+        case 0: return {255, 255, 0};
+        case 1: return {0, 255, 0};
+        case 2: return {255, 0, 0};
+        default: throw std::out_of_range("Slice axis must be 0, 1, or 2");
+    }
+}
+
 QString summarizeActiveSignalImageRects(const std::vector<SliceViewerITKSignal *> &signalList) {
     QStringList entries;
     entries.reserve(static_cast<int>(signalList.size()));
@@ -201,7 +217,6 @@ void SliceViewer::setSliceIndex(int proposedSliceIndex) {
         if (verbose) {
             SP_LOG_DEBUG("viewer.interaction", QStringLiteral("Setting slice index to %1").arg(proposedSliceIndex));
         }
-        int oldSliceIndex = sliceIndex;
         sliceIndex = proposedSliceIndex;
         updateLastMouseXYZAfterSliceInOrDecrement();
         QString logMessage = QString("sx: %1/%2 y: %3/%4 z:%5/%6 sliceAxis:%7").arg(lastMouseX).arg(getDimX() - 1)
@@ -220,54 +235,9 @@ void SliceViewer::setSliceIndex(int proposedSliceIndex) {
             }
         }
         updateFunction();
-//         update slice index indicators
-// two things that have to be updated:
-// old indicator has to be erase (around oldSliceIndex)
-// new indicator has to be drawn
-        int xStart, width, yStart, height, xStart2, yStart2;
-        int buffer = 10;
         for (auto &viewer : linkedViewerList) {
             if (viewer->getSliceAxis() != sliceAxis) {
-                if (sliceAxis == 2) { //TODO: Is there a prettier way?
-                    // xy viewer updating xz and zy
-                    if (viewer->getSliceAxis() == 0) { // zy
-                        xStart = (proposedSliceIndex - buffer) * zoomFactor;
-                        xStart2 = (oldSliceIndex - buffer) * zoomFactor;
-
-                        width = 2 * buffer * zoomFactor;
-                        height = (viewer->getCurrentSliceHeight()) * zoomFactor;
-
-                        yStart = 0;
-                        // attention: update works in zoomed-image-space!
-                        viewer->update(xStart, yStart, width, height);
-                        viewer->update(xStart2, yStart, width, height);
-                    } else { // xz
-                        xStart = 0;
-                        width = (viewer->getCurrentSliceWidth()) * zoomFactor;
-                        yStart = (oldSliceIndex - buffer) * zoomFactor;
-                        height = 2 * buffer * zoomFactor;
-                        yStart2 = (proposedSliceIndex - buffer) * zoomFactor;
-
-                        viewer->update(xStart, yStart, width, height);
-                        viewer->update(xStart, yStart2, width, height);
-                    }
-                } else if (sliceAxis == 1) { // xz viewer updating zy and xy
-                    xStart = 0;
-                    width = (viewer->getCurrentSliceWidth()) * zoomFactor;
-                    yStart = (oldSliceIndex - buffer) * zoomFactor;
-                    height = 2 * buffer * zoomFactor;
-                    yStart2 = (proposedSliceIndex - buffer) * zoomFactor;
-                    viewer->update(xStart, yStart, width, height);
-                    viewer->update(xStart, yStart2, width, height);
-                } else { // zy viewer updating xy and xz
-                    xStart = (proposedSliceIndex - buffer) * zoomFactor;
-                    xStart2 = (oldSliceIndex - buffer) * zoomFactor;
-                    width = 2 * buffer * zoomFactor;
-                    height = (viewer->getCurrentSliceHeight()) * zoomFactor;
-                    yStart = 0;
-                    viewer->update(xStart, yStart, width, height);
-                    viewer->update(xStart2, yStart, width, height);
-                }
+                viewer->scheduleSliceIndicatorRepaint(sliceAxis, proposedSliceIndex);
             }
         }
 
@@ -572,48 +542,77 @@ void SliceViewer::drawOtherViewerSliceIndicator(int otherSliceAxis, int otherSli
 
     QPainter painter(&sliceIndicatorImage);
 
-    int lineAlpha = 255;
-    QColor xy_red = QColor(255, 0, 0, lineAlpha);
-    QColor xz_green = QColor(0, 255, 0, lineAlpha);
-    QColor yz_yellow = QColor(255, 255, 0, lineAlpha);
-    int penWidth = static_cast<int>(2/zoomFactor);
+    const auto axes = voxel_geometry::planeAxes(static_cast<unsigned int>(sliceAxis));
+    const bool verticalLine = otherSliceAxis == static_cast<int>(axes.horizontal);
+    if (!verticalLine && otherSliceAxis != static_cast<int>(axes.vertical)) {
+        return;
+    }
 
-    switch (sliceAxis) {
-        case 0: // zy
-            if (otherSliceAxis == 1) { // y
-                painter.setPen(QPen(xz_green, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.drawLine(0, otherSliceIndex, getCurrentSliceWidth(), otherSliceIndex);
-                indexHorizontalIndicator = otherSliceIndex;
-            } else if (otherSliceAxis == 2) { // z
-                painter.setPen(QPen(xy_red, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.drawLine(otherSliceIndex, 0, otherSliceIndex, getCurrentSliceHeight());
-                indexVerticalIndicator = otherSliceIndex;
-            }
-            break;
-        case 1: // xz
-            if (otherSliceAxis == 0) { // zy
-                painter.setPen(QPen(yz_yellow, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.drawLine(otherSliceIndex, 0, otherSliceIndex, getCurrentSliceHeight());
-                indexVerticalIndicator = otherSliceIndex;
-            } else if (otherSliceAxis == 2) { // xy
-                painter.setPen(QPen(xy_red, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.drawLine(0, otherSliceIndex, getCurrentSliceWidth(), otherSliceIndex);
-                indexHorizontalIndicator = otherSliceIndex;
-            }
-            break;
-        case 2: // xy
-            if (otherSliceAxis == 0) { // x = 10
-                painter.setPen(QPen(yz_yellow, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.drawLine(otherSliceIndex, 0, otherSliceIndex, getCurrentSliceHeight());
-                indexVerticalIndicator = otherSliceIndex;
-            } else if (otherSliceAxis == 1) {
-                painter.setPen(QPen(xz_green, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.drawLine(0, otherSliceIndex, getCurrentSliceWidth(), otherSliceIndex);
-                indexHorizontalIndicator = otherSliceIndex;
-            }
-            break;
-        default:
-            throw std::logic_error("SliceAxis not implemented!");
+    painter.setPen(QPen(sliceIndicatorColor(otherSliceAxis),
+                        sliceIndicatorSourcePenWidth(verticalLine),
+                        Qt::SolidLine,
+                        Qt::RoundCap,
+                        Qt::RoundJoin));
+    if (verticalLine) {
+        painter.drawLine(otherSliceIndex, 0, otherSliceIndex, getCurrentSliceHeight());
+        indexVerticalIndicator = otherSliceIndex;
+    } else {
+        painter.drawLine(0, otherSliceIndex, getCurrentSliceWidth(), otherSliceIndex);
+        indexHorizontalIndicator = otherSliceIndex;
+    }
+}
+
+int SliceViewer::sliceIndicatorSourcePenWidth(bool verticalLine) const {
+    const int sourceExtent = verticalLine ? getCurrentSliceWidth() : getCurrentSliceHeight();
+    const int targetExtent = verticalLine ? width() : height();
+    if (sourceExtent <= 0 || targetExtent <= 0) {
+        return 1;
+    }
+    const double displayScale = static_cast<double>(targetExtent) / sourceExtent;
+    return std::max(1, static_cast<int>(std::ceil(2.0 / displayScale)));
+}
+
+QRect SliceViewer::sliceIndicatorRepaintRect(int otherSliceAxis, int otherSliceIndex) const {
+    const auto axes = voxel_geometry::planeAxes(static_cast<unsigned int>(sliceAxis));
+    const bool verticalLine = otherSliceAxis == static_cast<int>(axes.horizontal);
+    if (!verticalLine && otherSliceAxis != static_cast<int>(axes.vertical)) {
+        return {};
+    }
+
+    const int sourceExtent = verticalLine ? getCurrentSliceWidth() : getCurrentSliceHeight();
+    const int targetExtent = verticalLine ? width() : height();
+    const double displayScale = sourceExtent > 0
+        ? static_cast<double>(targetExtent) / sourceExtent
+        : 1.0;
+    const int displayedPenWidth = static_cast<int>(std::ceil(
+        sliceIndicatorSourcePenWidth(verticalLine) * displayScale));
+    // Cover the 5 px indicator dot, its outline, and rasterization at fractional positions.
+    const int repaintMargin = std::max(7, (displayedPenWidth + 1) / 2 + 2);
+
+    if (verticalLine) {
+        const int x = qRound(widgetPositionForSlicePixel(otherSliceIndex, 0).x());
+        return QRect(x - repaintMargin, 0, 2 * repaintMargin + 1, height()).intersected(rect());
+    }
+    const int y = qRound(widgetPositionForSlicePixel(0, otherSliceIndex).y());
+    return QRect(0, y - repaintMargin, width(), 2 * repaintMargin + 1).intersected(rect());
+}
+
+void SliceViewer::scheduleSliceIndicatorRepaint(int otherSliceAxis, int newSliceIndex) {
+    const auto axes = voxel_geometry::planeAxes(static_cast<unsigned int>(sliceAxis));
+    int *displayedIndex = nullptr;
+    if (otherSliceAxis == static_cast<int>(axes.horizontal)) {
+        displayedIndex = &indexVerticalIndicator;
+    } else if (otherSliceAxis == static_cast<int>(axes.vertical)) {
+        displayedIndex = &indexHorizontalIndicator;
+    }
+    if (displayedIndex == nullptr) {
+        return;
+    }
+
+    update(sliceIndicatorRepaintRect(otherSliceAxis, *displayedIndex));
+    if (*displayedIndex != newSliceIndex) {
+        update(sliceIndicatorRepaintRect(otherSliceAxis, newSliceIndex));
+        *displayedIndex = newSliceIndex;
     }
 }
 
@@ -735,6 +734,20 @@ void SliceViewer::setZoom(double zoom) {
     }
 }
 
+void SliceViewer::setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing) {
+    if (!voxel_geometry::isValid(spacing)) {
+        throw std::invalid_argument("Voxel spacing values must be finite and greater than zero");
+    }
+    voxelSpacing = spacing;
+    syncViewerSizeToImage();
+    refreshBrushCursor();
+    update();
+}
+
+voxel_geometry::PlaneScale SliceViewer::getPlaneScale() const {
+    return voxel_geometry::planeScale(voxelSpacing, static_cast<unsigned int>(sliceAxis));
+}
+
 QPoint SliceViewer::slicePixelFromWidgetPoint(const QPoint &point) const {
     return {
         slice_viewer_geometry::sourcePixelForPaintedPixel(
@@ -742,6 +755,16 @@ QPoint SliceViewer::slicePixelFromWidgetPoint(const QPoint &point) const {
         slice_viewer_geometry::sourcePixelForPaintedPixel(
             point.y(), getCurrentSliceHeight(), height())
     };
+}
+
+QRect SliceViewer::slicePixelBoundsFromWidgetRect(const QRect &rect) const {
+    if (!rect.isValid() || getCurrentSliceWidth() <= 0 || getCurrentSliceHeight() <= 0) {
+        return {};
+    }
+    const QRect normalized = rect.normalized();
+    const QPoint first = slicePixelFromWidgetPoint(normalized.topLeft());
+    const QPoint last = slicePixelFromWidgetPoint(normalized.bottomRight());
+    return QRect(first, last).normalized();
 }
 
 QPointF SliceViewer::widgetPositionForSlicePixel(double sliceX, double sliceY) const {
@@ -835,8 +858,9 @@ void SliceViewer::modifyZoom(double factor) {
         int verical_before_max = viewer->scrollAreaXY->verticalScrollBar()->maximum();
         int offX;
         int offY;
-        double centerXWanted = lastMouseX * zoomFactor;
-        double centerYWanted = lastMouseY * zoomFactor;
+        const QPointF center = viewer->xy->widgetPositionForSlicePixel(lastMouseX, lastMouseY);
+        double centerXWanted = center.x();
+        double centerYWanted = center.y();
 
         offX = static_cast<int>(centerXWanted - (rect.width() / 2.));
         offY = static_cast<int>(centerYWanted - (rect.height() / 2.));
@@ -855,8 +879,11 @@ OrthoViewer *SliceViewer::orthoViewer() const {
 }
 
 void SliceViewer::syncViewerSizeToImage() {
-    const int scaledWidth = std::max(1, static_cast<int>(std::lround(getCurrentSliceWidth() * zoomFactor)));
-    const int scaledHeight = std::max(1, static_cast<int>(std::lround(getCurrentSliceHeight() * zoomFactor)));
+    const auto planeScale = getPlaneScale();
+    const int scaledWidth = boundedWidgetExtent(
+        static_cast<double>(getCurrentSliceWidth()) * zoomFactor * planeScale.horizontal);
+    const int scaledHeight = boundedWidgetExtent(
+        static_cast<double>(getCurrentSliceHeight()) * zoomFactor * planeScale.vertical);
     const QSize oldSize = size();
     setFixedSize(scaledWidth, scaledHeight);
 

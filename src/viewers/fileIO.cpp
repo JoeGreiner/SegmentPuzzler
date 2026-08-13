@@ -13,6 +13,8 @@
 #include "src/utils/AppLogger.h"
 #include "fileIO.h"
 
+#include <algorithm>
+
 namespace {
 
 void parseDatasetHeader(const std::string &line,
@@ -433,12 +435,15 @@ void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut
 
 ImageFileInfo getImageFileInfo(const QString &fileName) {
     const itk::ImageIOBase::Pointer imageIO = readImageInformation(fileName);
-    return {
-        imageIO->GetNumberOfDimensions(),
-        imageIO->GetComponentType(),
-        imageIO->GetPixelType(),
-        imageIO->GetNumberOfComponents()
-    };
+    ImageFileInfo imageInfo;
+    imageInfo.dimension = imageIO->GetNumberOfDimensions();
+    imageInfo.componentType = imageIO->GetComponentType();
+    imageInfo.pixelType = imageIO->GetPixelType();
+    imageInfo.componentCount = imageIO->GetNumberOfComponents();
+    for (unsigned int axis = 0; axis < std::min(3U, imageInfo.dimension); ++axis) {
+        imageInfo.spacing[axis] = imageIO->GetSpacing(axis);
+    }
+    return imageInfo;
 }
 
 void validateScalarImageFile(const QString &fileName) {

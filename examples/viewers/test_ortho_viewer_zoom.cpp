@@ -37,6 +37,11 @@ int main(int argc, char *argv[]) {
     Image::RegionType region;
     region.SetSize(size);
     image->SetRegions(region);
+    Image::SpacingType fileSpacing;
+    fileSpacing[0] = 0.25;
+    fileSpacing[1] = 0.25;
+    fileSpacing[2] = 1.0;
+    image->SetSpacing(fileSpacing);
     image->Allocate();
     image->FillBuffer(1);
 
@@ -56,6 +61,10 @@ int main(int argc, char *argv[]) {
     processDeferredLayout();
 
     bool passed = true;
+    const auto loadedSpacing = orthoViewer->getVoxelSpacing();
+    passed &= expectNear("loaded X spacing", loadedSpacing.x, 0.25);
+    passed &= expectNear("loaded Y spacing", loadedSpacing.y, 0.25);
+    passed &= expectNear("loaded Z spacing", loadedSpacing.z, 1.0);
     const double initialZoom = orthoViewer->xy->zoomFactor;
     passed &= expectNear("linked XZ zoom", orthoViewer->xz->zoomFactor, initialZoom);
     passed &= expectNear("linked YZ zoom", orthoViewer->zy->zoomFactor, initialZoom);
@@ -63,6 +72,21 @@ int main(int argc, char *argv[]) {
     if (orthoViewer->xy->width() > orthoViewer->scrollAreaXY->viewport()->width() ||
         orthoViewer->xy->height() > orthoViewer->scrollAreaXY->viewport()->height()) {
         std::cerr << "2D initial image does not fit the XY viewport\n";
+        passed = false;
+    }
+
+    orthoViewer->setVoxelSpacing({1.0, 1.0, 4.0});
+    processDeferredLayout();
+    if (orthoViewer->xy->width() != 256 || orthoViewer->xy->height() != 128) {
+        std::cerr << "XY view changed size for X/Y-isotropic spacing\n";
+        passed = false;
+    }
+    if (orthoViewer->xz->width() != 256 || orthoViewer->xz->height() != 4) {
+        std::cerr << "XZ view did not apply the fourfold Z spacing\n";
+        passed = false;
+    }
+    if (orthoViewer->zy->width() != 4 || orthoViewer->zy->height() != 128) {
+        std::cerr << "YZ view did not apply the fourfold Z spacing\n";
         passed = false;
     }
 

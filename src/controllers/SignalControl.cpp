@@ -102,6 +102,24 @@ const std::array<QColor, 5> &defaultAdditiveImageColors() {
     return colors;
 }
 
+QString formatVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing) {
+    return QStringLiteral("X: %1, Y: %2, Z: %3")
+        .arg(spacing.x, 0, 'g', 12)
+        .arg(spacing.y, 0, 'g', 12)
+        .arg(spacing.z, 0, 'g', 12);
+}
+
+void applyVoxelSpacingOverride(
+    itk::ImageBase<3> *image,
+    const std::optional<voxel_geometry::VoxelSpacing> &spacingOverride) {
+    if (image == nullptr || !spacingOverride.has_value()) {
+        return;
+    }
+    auto itkSpacing = image->GetSpacing();
+    voxel_geometry::assignToItkSpacing(*spacingOverride, itkSpacing);
+    image->SetSpacing(itkSpacing);
+}
+
 class FirstPageTIFFImageIO final : public itk::TIFFImageIO {
 public:
     ITK_DISALLOW_COPY_AND_MOVE(FirstPageTIFFImageIO);
@@ -594,6 +612,79 @@ std::optional<SignalControl::FloatBoundaryConversionMode> SignalControl::askForF
 
 bool SignalControl::hasWorkingSegments() const {
     return segmentsGraph != nullptr && graphBase->pWorkingSegmentsImage != nullptr;
+}
+
+std::optional<voxel_geometry::VoxelSpacing> SignalControl::voxelSpacing() const {
+    for (const auto *signal : allSignalList) {
+        if (signal == nullptr) {
+            continue;
+        }
+        const auto image = signal->getImageBase();
+        if (image.IsNotNull()) {
+            return voxel_geometry::fromItkSpacing(image->GetSpacing());
+        }
+    }
+
+    const itk::ImageBase<3> *fallbackImages[] = {
+        graphBase->pWorkingSegmentsImage.GetPointer(),
+        graphBase->pSelectedSegmentation.GetPointer(),
+        graphBase->pSelectedRefinement.GetPointer(),
+        graphBase->pSelectedBoundary.GetPointer(),
+        graphBase->pEdgesInitialSegmentsImage.GetPointer(),
+        graphBase->pGroundTruth.GetPointer()
+    };
+    for (const auto *image : fallbackImages) {
+        if (image != nullptr) {
+            return voxel_geometry::fromItkSpacing(image->GetSpacing());
+        }
+    }
+    return std::nullopt;
+}
+
+void SignalControl::setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing) {
+    if (!voxel_geometry::isValid(spacing)) {
+        throw std::invalid_argument("Voxel spacing values must be finite and greater than zero");
+    }
+
+    std::unordered_set<itk::ImageBase<3> *> seenImages;
+    std::vector<itk::ImageBase<3> *> images;
+    const auto addImage = [&seenImages, &images](itk::ImageBase<3> *image) {
+        if (image != nullptr && seenImages.insert(image).second) {
+            images.push_back(image);
+        }
+    };
+
+    for (const auto *signal : allSignalList) {
+        if (signal == nullptr) {
+            continue;
+        }
+        const auto image = signal->getImageBase();
+        addImage(image.GetPointer());
+    }
+    addImage(graphBase->pWorkingSegmentsImage.GetPointer());
+    addImage(graphBase->pSelectedSegmentation.GetPointer());
+    addImage(graphBase->pSelectedRefinement.GetPointer());
+    addImage(graphBase->pSelectedBoundary.GetPointer());
+    addImage(graphBase->pEdgesInitialSegmentsImage.GetPointer());
+    addImage(graphBase->pGroundTruth.GetPointer());
+
+    for (auto *image : images) {
+        auto itkSpacing = image->GetSpacing();
+        voxel_geometry::assignToItkSpacing(spacing, itkSpacing);
+        image->SetSpacing(itkSpacing);
+    }
+
+    SP_LOG_INFO(
+        "io",
+        QStringLiteral("Updated voxel spacing to [%1,%2,%3] on %4 loaded image object(s)")
+            .arg(spacing.x, 0, 'g', 12)
+            .arg(spacing.y, 0, 'g', 12)
+            .arg(spacing.z, 0, 'g', 12)
+            .arg(images.size()));
+
+    if (orthoViewer != nullptr) {
+        orthoViewer->setVoxelSpacing(spacing);
+    }
 }
 
 bool SignalControl::hasSelectedSegmentation() const {
@@ -1429,6 +1520,79 @@ void SignalControl::reportDimensionMismatch(unsigned long dimX,
             .arg(dimZ));
 }
 
+SignalControl::LoadedFileSpacingDecision SignalControl::askForLoadedFileSpacing(
+    const QString &fileName) {
+    const auto currentSpacing = voxelSpacing();
+    if (!currentSpacing.has_value()) {
+        return {};
+    }
+
+    ImageFileInfo imageInfo;
+    try {
+        imageInfo = getImageFileInfo(fileName);
+    } catch (const std::exception &error) {
+        SP_LOG_DEBUG(
+            "io",
+            QStringLiteral("Could not inspect voxel spacing before loading %1: %2")
+                .arg(fileName, QString::fromUtf8(error.what())));
+        return {};
+    } catch (...) {
+        SP_LOG_DEBUG(
+            "io",
+            QStringLiteral("Could not inspect voxel spacing before loading %1")
+                .arg(fileName));
+        return {};
+    }
+
+    const auto loadedSpacing = voxel_geometry::fromItkSpacing(imageInfo.spacing);
+    if (voxel_geometry::nearlyEqual(*currentSpacing, loadedSpacing)) {
+        return {};
+    }
+
+    QMessageBox dialog(this);
+    dialog.setIcon(QMessageBox::Warning);
+    dialog.setWindowTitle(tr("Voxel Spacing Differs"));
+    dialog.setText(
+        tr("The loaded file \"%1\" has different voxel spacing.\n\n"
+           "Current dataset: %2\n"
+           "Loaded file: %3")
+            .arg(QFileInfo(fileName).fileName(),
+                 formatVoxelSpacing(*currentSpacing),
+                 formatVoxelSpacing(loadedSpacing)));
+    dialog.setInformativeText(
+        tr("Layers are displayed aligned by voxel index using the current dataset proportions. "
+           "Choose which spacing should be stored for the newly loaded layer(s)."));
+
+    auto *keepFileSpacingButton = dialog.addButton(
+        tr("Keep File"), QMessageBox::AcceptRole);
+    auto *useDatasetSpacingButton = dialog.addButton(
+        tr("Use Dataset"), QMessageBox::ActionRole);
+    auto *cancelButton = dialog.addButton(QMessageBox::Cancel);
+    dialog.setDefaultButton(keepFileSpacingButton);
+    dialog.setEscapeButton(cancelButton);
+    dialog.exec();
+
+    if (dialog.clickedButton() == useDatasetSpacingButton) {
+        SP_LOG_INFO(
+            "io",
+            QStringLiteral("Using current dataset spacing [%1] while loading %2")
+                .arg(formatVoxelSpacing(*currentSpacing), fileName));
+        return {true, currentSpacing};
+    }
+    if (dialog.clickedButton() == keepFileSpacingButton) {
+        SP_LOG_WARNING(
+            "io",
+            QStringLiteral("Keeping differing file spacing [%1] while loading %2; current dataset spacing is [%3]")
+                .arg(formatVoxelSpacing(loadedSpacing),
+                     fileName,
+                     formatVoxelSpacing(*currentSpacing)));
+        return {};
+    }
+
+    SP_LOG_INFO("io", QStringLiteral("Canceled loading %1 after voxel spacing mismatch").arg(fileName));
+    return {false, std::nullopt};
+}
+
 void SignalControl::invokeLoadCallbackLater(LoadCallback then, LoadResult result) {
     if (!then) {
         return;
@@ -1760,9 +1924,23 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
         return;
     }
 
+    const auto spacingDecision = askForLoadedFileSpacing(fileName);
+    if (!spacingDecision.shouldLoad) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
     taskRunner->runWithLabel(
         QStringLiteral("Loading image..."),
-        [this, fileName]() { return loadImageData(fileName); },
+        [this, fileName, spacingOverride = spacingDecision.spacingOverride]() {
+            auto loadedImage = loadImageData(fileName);
+            for (auto &layer : loadedImage.layers) {
+                applyVoxelSpacingOverride(
+                    dynamic_cast<itk::ImageBase<3> *>(layer.image.GetPointer()),
+                    spacingOverride);
+            }
+            return loadedImage;
+        },
         [this, fileName, displayedName, then = std::move(then)](LoadedImageData loadedImage) mutable {
             if (loadedImage.layers.empty()) {
                 invokeLoadCallbackLater(std::move(then), std::nullopt);
@@ -1851,13 +2029,25 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
         return;
     }
 
+    const auto spacingDecision = askForLoadedFileSpacing(fileName);
+    if (!spacingDecision.shouldLoad) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
     const bool hadWorkingSegments = hasWorkingSegments();
     const auto expectedDimensions = expectedDimensionsForNewSignal(hadWorkingSegments);
     taskRunner->runWithLabel(
         QStringLiteral("Loading segmentation..."),
-        [this, fileName, createWorkingSegments, hadWorkingSegments, expectedDimensions]() mutable {
+        [this,
+         fileName,
+         createWorkingSegments,
+         hadWorkingSegments,
+         expectedDimensions,
+         spacingOverride = spacingDecision.spacingOverride]() mutable {
             SegmentationLoadResultData result;
             result.segmentationImage = ITKImageLoader<GraphSegmentType>(fileName);
+            applyVoxelSpacingOverride(result.segmentationImage.GetPointer(), spacingOverride);
             if (expectedDimensions && !imageMatchesDimensions(result.segmentationImage, *expectedDimensions)) {
                 result.dimensionMismatch = true;
                 return result;
@@ -1905,9 +2095,19 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
         return;
     }
 
+    const auto spacingDecision = askForLoadedFileSpacing(fileName);
+    if (!spacingDecision.shouldLoad) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
     taskRunner->runWithLabel(
         QStringLiteral("Loading refinement..."),
-        [fileName]() mutable { return ITKImageLoader<GraphSegmentType>(fileName); },
+        [fileName, spacingOverride = spacingDecision.spacingOverride]() mutable {
+            auto image = ITKImageLoader<GraphSegmentType>(fileName);
+            applyVoxelSpacingOverride(image.GetPointer(), spacingOverride);
+            return image;
+        },
         [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, true);
@@ -1925,6 +2125,12 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
         return;
     }
 
+    const auto spacingDecision = askForLoadedFileSpacing(fileName);
+    if (!spacingDecision.shouldLoad) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
     struct SegmentsGraphLoadResult {
         GraphSegmentImageType::Pointer image;
         bool dimensionMismatch = false;
@@ -1933,11 +2139,15 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
     const auto expectedDimensions = expectedDimensionsForNewSignal(false);
     taskRunner->runWithLabel(
         QStringLiteral("Loading supervoxels and building graph..."),
-        [this, fileName, expectedDimensions]() mutable {
+        [this,
+         fileName,
+         expectedDimensions,
+         spacingOverride = spacingDecision.spacingOverride]() mutable {
             SegmentsGraphLoadResult result;
             // Modifies graphBase on the worker thread. Safe only because
             // one task runs at a time and the owning window is blocked.
             auto pImage = ITKImageLoader<GraphSegmentType>(fileName);
+            applyVoxelSpacingOverride(pImage.GetPointer(), spacingOverride);
             result.image = pImage;
             if (expectedDimensions && !imageMatchesDimensions(pImage, *expectedDimensions)) {
                 result.dimensionMismatch = true;
@@ -1983,11 +2193,22 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
         return;
     }
 
+    const auto spacingDecision = askForLoadedFileSpacing(fileName);
+    if (!spacingDecision.shouldLoad) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
     const bool createEmptySegments = loadMode == BoundaryLoadMode::CreateEmptySegments;
     const auto expectedDimensions = expectedDimensionsForNewSignal(false);
     taskRunner->runWithLabel(
         QStringLiteral("Loading boundaries..."),
-        [this, fileName, createEmptySegments, floatConversionMode, expectedDimensions]() mutable {
+        [this,
+         fileName,
+         createEmptySegments,
+         floatConversionMode,
+         expectedDimensions,
+         spacingOverride = spacingDecision.spacingOverride]() mutable {
             BoundaryLoadResult result;
             unsigned int dimension = 0;
             itk::ImageIOBase::IOComponentType boundaryDataType = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
@@ -2008,6 +2229,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                     result.boundaryImage = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
                     break;
             }
+            applyVoxelSpacingOverride(result.boundaryImage.GetPointer(), spacingOverride);
             if (createEmptySegments) {
                 if (expectedDimensions && !imageMatchesDimensions(result.boundaryImage, *expectedDimensions)) {
                     return result;
@@ -3677,80 +3899,81 @@ bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentTyp
                 dataTypeOut = forcedDataType;
             }
 
+            const auto spacingDecision = askForLoadedFileSpacing(fileName);
+            if (!spacingDecision.shouldLoad) {
+                return false;
+            }
+            const auto loadAndInsert = [&](auto valueOfPixelType) {
+                using PixelType = decltype(valueOfPixelType);
+                auto image = ITKImageLoader<PixelType>(fileName);
+                applyVoxelSpacingOverride(
+                    image.GetPointer(), spacingDecision.spacingOverride);
+                return insertTypedImage<PixelType>(
+                    image, signalIndexGlobalOut, forceShapeOfSegments);
+            };
+
             switch (dataTypeOut) {
                 case itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE: {
                     throw std::logic_error("Unknown datatype");
                 }
 
                 case itk::ImageIOBase::IOComponentType::UCHAR: {
-                    auto pImage = ITKImageLoader<unsigned char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(static_cast<unsigned char>(0));
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::CHAR: {
-                    auto pImage = ITKImageLoader<char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(static_cast<char>(0));
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::USHORT: {
-                    auto pImage = ITKImageLoader<unsigned short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(static_cast<unsigned short>(0));
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::SHORT: {
-                    auto pImage = ITKImageLoader<short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(static_cast<short>(0));
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::UINT: {
-                    auto pImage = ITKImageLoader<unsigned int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0U);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::INT: {
-                    auto pImage = ITKImageLoader<int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONG: {
-                    auto pImage = ITKImageLoader<unsigned long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0UL);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONG: {
-                    auto pImage = ITKImageLoader<long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0L);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONGLONG: {
-                    auto pImage = ITKImageLoader<unsigned long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0ULL);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONGLONG: {
-                    auto pImage = ITKImageLoader<long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0LL);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::FLOAT: {
-                    auto pImage = ITKImageLoader<float>(fileName);
-                    loadingWasSuccessful = insertTypedImage<float>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0.0F);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::DOUBLE: {
-                    auto pImage = ITKImageLoader<double>(fileName);
-                    loadingWasSuccessful = insertTypedImage<double>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    loadingWasSuccessful = loadAndInsert(0.0);
                     break;
                 }
 

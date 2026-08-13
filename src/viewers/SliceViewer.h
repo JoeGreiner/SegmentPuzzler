@@ -9,6 +9,7 @@
 #include "src/file_definitions/dataTypes.h"
 #include "src/segment_handling/graphBase.h"
 #include "src/segment_handling/Graph.h"
+#include "src/viewers/VoxelSpacing.h"
 
 class TaskRunner;
 class OrthoViewer;
@@ -123,7 +124,11 @@ public:
 
     void setZoom(double zoom);
 
+    virtual void setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing);
+    voxel_geometry::VoxelSpacing getVoxelSpacing() const { return voxelSpacing; }
+    voxel_geometry::PlaneScale getPlaneScale() const;
     QPoint slicePixelFromWidgetPoint(const QPoint &point) const;
+    QRect slicePixelBoundsFromWidgetRect(const QRect &rect) const;
     QPointF widgetPositionForSlicePixel(double sliceX, double sliceY) const;
     QRect widgetRectForSlicePixelBounds(const QRect &rect) const;
 
@@ -171,6 +176,8 @@ protected:
     // dimensions of the signals
     int dimX, dimY, dimZ;
 
+    voxel_geometry::VoxelSpacing voxelSpacing;
+
     virtual void refreshBrushCursor();
     void syncViewerSizeToImage();
 
@@ -209,6 +216,9 @@ protected:
 
 private:
     void updateLastMouseXYZAfterSliceInOrDecrement();
+    int sliceIndicatorSourcePenWidth(bool verticalLine) const;
+    QRect sliceIndicatorRepaintRect(int otherSliceAxis, int otherSliceIndex) const;
+    void scheduleSliceIndicatorRepaint(int otherSliceAxis, int newSliceIndex);
     OrthoViewer *linkedOrthoViewer;
 
 };

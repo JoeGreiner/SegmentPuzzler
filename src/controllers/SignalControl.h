@@ -31,6 +31,7 @@
 #include "src/utils/AppLogger.h"
 #include "src/utils/ConnectedComponentLabelSplitter.h"
 #include "src/qtUtils/BoundaryConversionDialog.h"
+#include "src/viewers/VoxelSpacing.h"
 
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <src/qtUtils/QBackgroundIdRadioBox.h>
@@ -133,6 +134,8 @@ public:
                                  const QString &name = QStringLiteral("Supervoxels"));
 
     bool hasWorkingSegments() const;
+    std::optional<voxel_geometry::VoxelSpacing> voxelSpacing() const;
+    void setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing);
     std::size_t deleteSelectedSegmentationLabels(
         dataType::SegmentsImageType::Pointer expectedSegmentation,
         const std::unordered_set<dataType::SegmentIdType> &labels);
@@ -230,6 +233,11 @@ private:
     struct LoadedImageData {
         itk::ImageIOBase::IOComponentType dataType = itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE;
         std::vector<LoadedImageLayer> layers;
+    };
+
+    struct LoadedFileSpacingDecision {
+        bool shouldLoad = true;
+        std::optional<voxel_geometry::VoxelSpacing> spacingOverride;
     };
 
     struct BoundaryLoadResult {
@@ -430,6 +438,7 @@ private:
                                  unsigned long dimY,
                                  unsigned long dimZ,
                                  bool forceShapeOfSegments) const;
+    LoadedFileSpacingDecision askForLoadedFileSpacing(const QString &fileName);
 
     LoadedImageData loadImageData(QString fileName,
                                   bool forceSegmentDataTypeUInt = false,

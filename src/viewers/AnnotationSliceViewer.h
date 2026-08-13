@@ -29,6 +29,8 @@ public:
 
     void resetQImages() override;
 
+    void setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing) override;
+
     void togglePaintMode();
 
     void togglePaintBoundaryMode();
