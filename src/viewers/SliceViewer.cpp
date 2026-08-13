@@ -96,6 +96,7 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
 
     linkedSliderSet = false;
     imageOnlyMode = false;
+    overlayOnlyMode = false;
 
     dimX = 1;
     dimY = 1;
@@ -406,7 +407,9 @@ void SliceViewer::drawActiveSignalLayers(QPainter &painter, const QRect &targetR
         if (sourceSignal == nullptr) {
             continue;
         }
-        if (imageOnlyMode && sourceSignal->getLayerRole() != itkSignalBase::LayerRole::SourceImage) {
+        const auto layerRole = sourceSignal->getLayerRole();
+        if ((imageOnlyMode && layerRole != itkSignalBase::LayerRole::SourceImage) ||
+            (!imageOnlyMode && overlayOnlyMode && layerRole == itkSignalBase::LayerRole::SourceImage)) {
             continue;
         }
 
@@ -435,6 +438,14 @@ void SliceViewer::setImageOnlyMode(bool enabled) {
         return;
     }
     imageOnlyMode = enabled;
+    update();
+}
+
+void SliceViewer::setOverlayOnlyMode(bool enabled) {
+    if (overlayOnlyMode == enabled) {
+        return;
+    }
+    overlayOnlyMode = enabled;
     update();
 }
 

@@ -81,6 +81,7 @@ public:
     void setShortcutLegendProfile(ShortcutLegendProfile profile);
     void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
     void setImageOnlyMode(bool enabled);
+    void setOverlayOnlyMode(bool enabled);
 
 
     std::shared_ptr<GraphBase> graphBase;

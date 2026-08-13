@@ -364,6 +364,9 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("images", "Space", "Images",
                            "Hold Space to temporarily hide all layers except loaded source images.",
                            (viewer != nullptr && viewer->isImageOnlyMode()) || isFlashed("images")),
+        createShortcutHint("annotations", "A", "Annotations",
+                           "Hold A to temporarily hide loaded source images while keeping annotations and overlays.",
+                           (viewer != nullptr && viewer->isOverlayOnlyMode()) || isFlashed("annotations")),
         createShortcutHint("slice", "↑/↓", "Indexing",
                            "Press the arrow keys to move one slice up or down in the current stack.",
                            isFlashed("slice")),
@@ -1000,7 +1003,16 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
             [this](Qt::ApplicationState state) {
                 if (state != Qt::ApplicationActive) {
                     setImageOnlyMode(false);
+                    setOverlayOnlyMode(false);
                 }
+            });
+    connect(qApp, &QGuiApplication::focusObjectChanged, this,
+            [this](QObject *) {
+                if (xy == nullptr || (!xy->isImageOnlyMode() && !xy->isOverlayOnlyMode())) {
+                    return;
+                }
+                setImageOnlyMode(false);
+                setOverlayOnlyMode(false);
             });
 
     show();
@@ -1745,6 +1757,15 @@ void OrthoViewer::setImageOnlyMode(bool enabled) {
     for (auto *viewer : viewerList) {
         if (viewer != nullptr) {
             viewer->setImageOnlyMode(enabled);
+        }
+    }
+    refreshInteractionModeIndicators();
+}
+
+void OrthoViewer::setOverlayOnlyMode(bool enabled) {
+    for (auto *viewer : viewerList) {
+        if (viewer != nullptr) {
+            viewer->setOverlayOnlyMode(enabled);
         }
     }
     refreshInteractionModeIndicators();

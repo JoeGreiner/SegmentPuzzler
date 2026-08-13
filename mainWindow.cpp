@@ -1185,6 +1185,7 @@ void MainWindow::showHotkeys() {
         {tr("Middle Drag"), tr("Pan the current view.")},
         {tr("+ / −"), tr("Zoom all linked views in or out.")},
         {tr("Hold Space"), tr("Temporarily show only loaded source images.")},
+        {tr("Hold A"), tr("Temporarily hide loaded source images while keeping annotations and overlays.")},
         {tr("↑ / ↓"), tr("Move one slice up or down in the stack.")},
         {tr("F9"), tr("Go to explicit X, Y, Z coordinates.")},
         {tr("F10"), tr("Go to a label ID in the selected segmentation.")}

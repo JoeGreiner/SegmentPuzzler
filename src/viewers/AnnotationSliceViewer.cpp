@@ -345,6 +345,15 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
+    if (event->key() == Qt::Key_A) {
+        if (!event->isAutoRepeat()) {
+            if (auto *viewer = orthoViewer(); viewer != nullptr) {
+                viewer->setOverlayOnlyMode(true);
+            }
+        }
+        event->accept();
+        return;
+    }
     if (taskRunner != nullptr && taskRunner->isBusy()) {
         SP_LOG_WARNING("viewer.interaction", QStringLiteral("Ignoring key press because a background task is still running"));
         return;
@@ -1007,6 +1016,15 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
         if (!event->isAutoRepeat()) {
             if (auto *viewer = orthoViewer(); viewer != nullptr) {
                 viewer->setImageOnlyMode(false);
+            }
+        }
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_A) {
+        if (!event->isAutoRepeat()) {
+            if (auto *viewer = orthoViewer(); viewer != nullptr) {
+                viewer->setOverlayOnlyMode(false);
             }
         }
         event->accept();

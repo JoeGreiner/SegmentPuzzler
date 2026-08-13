@@ -84,6 +84,8 @@ public:
 
     void setImageOnlyMode(bool enabled);
     bool isImageOnlyMode() const { return imageOnlyMode; }
+    void setOverlayOnlyMode(bool enabled);
+    bool isOverlayOnlyMode() const { return overlayOnlyMode; }
 
 
 //    void recalculateLUT();
@@ -154,6 +156,7 @@ protected:
 
     bool verbose;
     bool imageOnlyMode;
+    bool overlayOnlyMode;
 
     // sliceIndex and sliceAxis indicate current slice position
     // e.g. sliceAxis = 0 -> slice through xAxis, 1->yAxis, 2->zAxis
