@@ -853,6 +853,7 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
     currentTableSegmentation = segImg;
     currentTableSegmentationSignal = graphBase->pSelectedSegmentationSignal;
     tableLabelIdsAreStale = true;
+    tableFeaturesAreStale = true;
     SP_LOG_DEBUG(
         "segmentation",
         QStringLiteral("Segment table featureFlags volume=%1 isIsolated=%2 centroid=%3 elongation=%4 "
@@ -1045,7 +1046,8 @@ void SegmentTableDialog::updateResultsActionState() {
     }
     if (exportCsvButton != nullptr) {
         exportCsvButton->setEnabled(
-            !busy && labelIdsAreCurrent && model != nullptr && model->rowCount() > 0);
+            !busy && labelIdsAreCurrent && !tableFeaturesAreStale
+            && model != nullptr && model->rowCount() > 0);
     }
 }
 
@@ -1078,7 +1080,11 @@ void SegmentTableDialog::applyExternalNeighborMergeResult(
         return;
     }
 
-    statusLabel->setText(QStringLiteral("Table is out of date."));
+    tableFeaturesAreStale = true;
+    statusLabel->setText(
+        tableLabelIdsAreStale
+            ? QStringLiteral("Table labels and feature values are out of date; please recompute.")
+            : QStringLiteral("Feature values are out of date; recompute to export CSV."));
     updateResultsActionState();
 }
 
@@ -1113,9 +1119,15 @@ void SegmentTableDialog::applyExternalDeletedLabels(
         removeModelRowsInDescendingBlocks(model, std::move(rowsToRemove));
     sortModel->setSourceModel(model);
 
+    if (removalStats.rows > 0) {
+        tableFeaturesAreStale = true;
+    }
+
     statusLabel->setText(
         tableLabelIdsAreStale
-            ? QStringLiteral("Table is out of date.")
+            ? QStringLiteral("Table labels and feature values are out of date; please recompute.")
+        : tableFeaturesAreStale
+            ? QStringLiteral("Feature values are out of date; recompute to export CSV.")
             : QStringLiteral("%1 labels").arg(model->rowCount()));
     SP_LOG_DEBUG(
         "segmentation",
@@ -1395,6 +1407,7 @@ void SegmentTableDialog::onComputeFinished(ComputeResult result) {
     populateTable(result);
     const double tablePopulateSeconds = tableTimer.elapsed() / 1000.0;
     tableLabelIdsAreStale = false;
+    tableFeaturesAreStale = false;
 
     backButton->setEnabled(true);
     computeButton->setEnabled(true);
@@ -1864,6 +1877,14 @@ QString SegmentTableDialog::suggestedCsvExportPath(const QString &storedDefaultS
 }
 
 void SegmentTableDialog::onExportCsvClicked() {
+    if (isBusy() || tableLabelIdsAreStale || tableFeaturesAreStale) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Export Disabled"),
+            QStringLiteral("Feature values are out of date; recompute before exporting CSV."));
+        return;
+    }
+
     QSettings settings;
     const QString defaultSavePath =
         settings.value(QStringLiteral("default_save_dir")).toString();

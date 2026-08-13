@@ -198,6 +198,7 @@ private:
     FeatureFlags currentResultFlags;
     bool currentResultIs2D = false;
     bool tableLabelIdsAreStale = false;
+    bool tableFeaturesAreStale = false;
     DeleteSegmentationLabelsHandler deleteSegmentationLabelsHandler;
     QStackedWidget *stack = nullptr;
 
