@@ -6,6 +6,7 @@
 #endif
 #include <Qt>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <optional>
@@ -28,6 +29,50 @@
 namespace {
 
 constexpr double kKeyboardZoomFactor = 1.25;
+
+int brushWidthForNumberKey(int key) {
+    // Index 0 represents key 0; keys 1-9 follow their numeric index.
+    static constexpr std::array<int, 10> brushWidths{101, 1, 3, 5, 9, 15, 21, 31, 51, 75};
+    if (key < Qt::Key_0 || key > Qt::Key_9) {
+        return 0;
+    }
+    return brushWidths[static_cast<std::size_t>(key - Qt::Key_0)];
+}
+
+void drawVoxelBrushStroke(QPainter &painter,
+                          const QPoint &start,
+                          const QPoint &end,
+                          const QColor &color,
+                          int brushWidth) {
+    if (brushWidth == 1 || brushWidth == 3 || brushWidth == 5) {
+        painter.setPen(QPen(color, 1));
+        const int radius = brushWidth / 2;
+        for (int yOffset = -radius; yOffset <= radius; ++yOffset) {
+            for (int xOffset = -radius; xOffset <= radius; ++xOffset) {
+                if (std::abs(xOffset) + std::abs(yOffset) > radius) {
+                    continue;
+                }
+                const QPoint offset(xOffset, yOffset);
+                if (start == end) {
+                    painter.drawPoint(start + offset);
+                } else {
+                    painter.drawLine(start + offset, end + offset);
+                }
+            }
+        }
+        return;
+    }
+
+    painter.setPen(QPen(color, brushWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const QPointF voxelCenterOffset(0.5, 0.5);
+    const QPointF centeredStart = QPointF(start) + voxelCenterOffset;
+    const QPointF centeredEnd = QPointF(end) + voxelCenterOffset;
+    if (start == end) {
+        painter.drawPoint(centeredStart);
+    } else {
+        painter.drawLine(centeredStart, centeredEnd);
+    }
+}
 
 struct Prepared3DSplitView {
     std::shared_ptr<segment_puzzler::SeededWatershedSplitSession> session;
@@ -242,6 +287,7 @@ AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBas
     scribbling = false;
 
     this->setMouseTracking(true);
+    refreshBrushCursor();
 
 }
 
@@ -349,6 +395,8 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
             throw (std::logic_error("SliceAxis not implemented!"));
     }
 
+    drawBrushPreview(painter);
+
     const QString planeName = sliceAxis == 0 ? "YZ" : (sliceAxis == 1 ? "XZ" : "XY");
     const QString logKey = QString("AnnotationViewerPaint_%1").arg(planeName);
     const QString message = QString("[AnnotationViewerPaint %1] eventRect=%2,%3 %4x%5 widgetRect=%6,%7 %8x%9 "
@@ -373,6 +421,75 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
                          .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
     }
 
+}
+
+void AnnotationSliceViewer::drawBrushPreview(QPainter &painter) const {
+    if (!brushPreviewVisible || !rect().contains(brushPreviewPosition)
+        || getCurrentSliceWidth() <= 0 || getCurrentSliceHeight() <= 0) {
+        return;
+    }
+
+    const QPoint slicePoint = slicePixelFromWidgetPoint(brushPreviewPosition);
+    const QPointF center = widgetPositionForSlicePixel(slicePoint.x(), slicePoint.y());
+    const double scaleX = static_cast<double>(width()) / getCurrentSliceWidth();
+    const double scaleY = static_cast<double>(height()) / getCurrentSliceHeight();
+    const qreal brushRadiusX = myPenWidth * scaleX / 2.0;
+    const qreal brushRadiusY = myPenWidth * scaleY / 2.0;
+    constexpr qreal minimumDisplayedBrushRadius = 4.0;
+    const qreal largestBrushRadius = std::max(brushRadiusX, brushRadiusY);
+    // Enlarge only the preview when it would rasterize as a tiny box. Scaling
+    // both axes equally keeps the voxel-spacing aspect ratio intact.
+    const qreal previewScale = largestBrushRadius < minimumDisplayedBrushRadius
+        ? minimumDisplayedBrushRadius / largestBrushRadius
+        : 1.0;
+    const qreal displayedBrushRadiusX = brushRadiusX * previewScale;
+    const qreal displayedBrushRadiusY = brushRadiusY * previewScale;
+
+    QColor fillColor = cursorColor;
+    fillColor.setAlpha(35);
+    QColor outlineColor = cursorColor;
+    outlineColor.setAlpha(230);
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setBrush(fillColor);
+    painter.setPen(QPen(QColor(0, 0, 0, 190), 2.0));
+    painter.drawEllipse(center, displayedBrushRadiusX, displayedBrushRadiusY);
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(outlineColor, 1.0));
+    painter.drawEllipse(center, displayedBrushRadiusX, displayedBrushRadiusY);
+
+    constexpr qreal targetDotRadius = 2.5;
+    if (paintModeIsActive) {
+        constexpr qreal paintModeDotRadius = 3.5;
+        QConicalGradient paintModeGradient(center, 90.0);
+        paintModeGradient.setColorAt(0.0, QColor("#ff304f"));
+        paintModeGradient.setColorAt(1.0 / 6.0, QColor("#ffcc33"));
+        paintModeGradient.setColorAt(2.0 / 6.0, QColor("#39d353"));
+        paintModeGradient.setColorAt(3.0 / 6.0, QColor("#27d7e7"));
+        paintModeGradient.setColorAt(4.0 / 6.0, QColor("#3974ff"));
+        paintModeGradient.setColorAt(5.0 / 6.0, QColor("#c642f5"));
+        paintModeGradient.setColorAt(1.0, QColor("#ff304f"));
+        painter.setBrush(paintModeGradient);
+        painter.setPen(QPen(QColor(0, 0, 0, 230), 1.0));
+        painter.drawEllipse(center, paintModeDotRadius, paintModeDotRadius);
+    } else {
+        painter.setBrush(QColor(255, 255, 255, 235));
+        painter.setPen(QPen(QColor(0, 0, 0, 220), 1.0));
+        painter.drawEllipse(center, targetDotRadius, targetDotRadius);
+    }
+    painter.restore();
+}
+
+void AnnotationSliceViewer::refreshBrushCursor() {
+    Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
+    setCursor(Qt::BlankCursor);
+    brushPreviewVisible = underMouse();
+    if (brushPreviewVisible) {
+        brushPreviewPosition = mapFromGlobal(QCursor::pos());
+        brushPreviewVisible = rect().contains(brushPreviewPosition);
+    }
+    update();
 }
 
 
@@ -408,7 +525,13 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         return;
     }
 //    std::cout << event->key() << std::endl;
-    if (event->key() == Qt::Key_R) {
+    const int requestedBrushWidth = brushWidthForNumberKey(event->key());
+    if (requestedBrushWidth > 0) {
+        if (orthoViewer() != nullptr) {
+            orthoViewer()->flashShortcutLegendKey("brush");
+        }
+        updatePenWidthInAllViewers(requestedBrushWidth);
+    } else if (event->key() == Qt::Key_R) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("r");
         }
@@ -433,6 +556,21 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         for (auto *viewer : linkedViewerList) {
             viewer->recalculateQImages();
         }
+        if (paintModeIsActive) {
+            if (auto *viewer = orthoViewer(); viewer != nullptr) {
+                viewer->refreshPaintSelectionColor();
+            }
+        } else if (paintBoundaryModeIsActive && pThresholdedBoundariesSignal != nullptr &&
+                   labelOfClickedSegmentation < static_cast<dataType::SegmentIdType>(
+                       pThresholdedBoundariesSignal->LUT.size())) {
+            const QColor selectedColor = QColor::fromRgb(
+                pThresholdedBoundariesSignal->LUT[labelOfClickedSegmentation]);
+            if (auto *viewer = orthoViewer(); viewer != nullptr) {
+                viewer->setAnnotationSelection(labelOfClickedSegmentation, selectedColor);
+            } else {
+                setAnnotationSelection(labelOfClickedSegmentation, selectedColor);
+            }
+        }
     } else if (event->key() == Qt::Key_Plus) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("zoom");
@@ -443,56 +581,6 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             orthoViewer()->flashShortcutLegendKey("zoom");
         }
         modifyZoomInAllViewers(1.0 / kKeyboardZoomFactor);
-    } else if (event->key() == Qt::Key_1) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(5);
-    } else if (event->key() == Qt::Key_2) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(10);
-    } else if (event->key() == Qt::Key_3) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(15);
-    } else if (event->key() == Qt::Key_4) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(20);
-    } else if (event->key() == Qt::Key_5) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(25);
-    } else if (event->key() == Qt::Key_6) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(30);
-    } else if (event->key() == Qt::Key_7) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(35);
-    } else if (event->key() == Qt::Key_8) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(55);
-    } else if (event->key() == Qt::Key_9) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(75);
-    } else if (event->key() == Qt::Key_0) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("brush");
-        }
-        updatePenWidthInAllViewers(100);
     } else if (event->key() == Qt::Key_Up) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("slice");
@@ -1098,6 +1186,9 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         return;
     }
 
+    brushPreviewPosition = event->pos();
+    brushPreviewVisible = rect().contains(brushPreviewPosition);
+
     // Middle click is a general panning gesture across tools.
     // The overlay badge describes the primary tool actions, while pan stays available separately.
     if (event->button() == Qt::MiddleButton) {
@@ -1121,12 +1212,12 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
             ROISelectionRubberBand->setGeometry(QRect(ROISelectionOrigin, QSize(1, 1)));
             ROISelectionRubberBand->show();
         } else if (event->button() == Qt::LeftButton) {
-            lastPoint = QPoint(event->pos().x() / zoomFactor, event->pos().y() / zoomFactor);
+            lastPoint = slicePixelFromWidgetPoint(event->pos());
             scribbling = true;
             rightClicked = false;
             drawPoint(event->pos());
         } else if (event->button() == Qt::RightButton) {
-            lastPoint = QPoint(event->pos().x() / zoomFactor, event->pos().y() / zoomFactor);
+            lastPoint = slicePixelFromWidgetPoint(event->pos());
             rightClicked = true;
             scribbling = true;
             drawPoint(event->pos());
@@ -1735,6 +1826,9 @@ void AnnotationSliceViewer::deleteConnectedLabelFromSegmentation(int posX, int p
 
 
 void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
+    brushPreviewPosition = event->pos();
+    brushPreviewVisible = rect().contains(brushPreviewPosition);
+
     int x, y, z;
     getXYZfromPixmapPos(event->pos().x(), event->pos().y(), x, y, z);
 
@@ -1807,6 +1901,23 @@ void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
             }
         }
     }
+}
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+void AnnotationSliceViewer::enterEvent(QEnterEvent *event) {
+#else
+void AnnotationSliceViewer::enterEvent(QEvent *event) {
+#endif
+    SliceViewer::enterEvent(event);
+    brushPreviewPosition = mapFromGlobal(QCursor::pos());
+    brushPreviewVisible = rect().contains(brushPreviewPosition);
+    update();
+}
+
+void AnnotationSliceViewer::leaveEvent(QEvent *event) {
+    SliceViewer::leaveEvent(event);
+    brushPreviewVisible = false;
+    update();
 }
 
 void AnnotationSliceViewer::mouseReleaseEvent(QMouseEvent *event) {
@@ -1902,8 +2013,7 @@ void AnnotationSliceViewer::turnROISelectonModeActive() {
 void AnnotationSliceViewer::drawPoint(QPoint point) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
 
-    point.setX(point.x() / zoomFactor);
-    point.setY(point.y() / zoomFactor);
+    point = slicePixelFromWidgetPoint(point);
     SP_LOG_DEBUG("viewer.interaction",
                  QStringLiteral("Drawing point at (%1, %2)")
                      .arg(point.x())
@@ -1920,16 +2030,12 @@ void AnnotationSliceViewer::drawPoint(QPoint point) {
     } else {
         myPenColor = rightClicked ? Qt::red : Qt::green;
     }
-    painter.setPen(QPen(myPenColor, myPenWidth, Qt::SolidLine, Qt::RoundCap,
-                        Qt::RoundJoin));
-    painter.drawPoint(point);
+    drawVoxelBrushStroke(painter, point, point, myPenColor, myPenWidth);
 
     // while the point is drawn on the annotationimage as normal, update() works on the scaled picture!
-    int topLeftPoint_x = static_cast<int>((point.x() - myPenWidth) * zoomFactor);
-    int topLeftPoint_y = static_cast<int>((point.y() - myPenWidth) * zoomFactor);
-    int updateRect_width = static_cast<int>((2 * myPenWidth) * zoomFactor);
-    int updateRect_height = static_cast<int>((2 * myPenWidth) * zoomFactor);
-    update(QRect(topLeftPoint_x, topLeftPoint_y, updateRect_width, updateRect_height));
+    const QRect sourceUpdateRect = QRect(point, QSize(1, 1))
+        .adjusted(-myPenWidth, -myPenWidth, myPenWidth, myPenWidth);
+    update(widgetRectForSlicePixelBounds(sourceUpdateRect));
 //    update();
 }
 
@@ -1937,8 +2043,7 @@ void AnnotationSliceViewer::drawLineTo(QPoint endPoint) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
 
 
-    endPoint.setX(endPoint.x() / zoomFactor);
-    endPoint.setY(endPoint.y() / zoomFactor);
+    endPoint = slicePixelFromWidgetPoint(endPoint);
     SP_LOG_DEBUG("viewer.interaction",
                  QStringLiteral("Drawing line to (%1, %2)")
                      .arg(endPoint.x())
@@ -1956,13 +2061,12 @@ void AnnotationSliceViewer::drawLineTo(QPoint endPoint) {
         myPenColor = rightClicked ? Qt::red : Qt::green;
     }
 
-    painter.setPen(QPen(myPenColor, myPenWidth, Qt::SolidLine, Qt::RoundCap,
-                        Qt::RoundJoin));
-    painter.drawLine(lastPoint, endPoint);
+    drawVoxelBrushStroke(painter, lastPoint, endPoint, myPenColor, myPenWidth);
 
     int rad = (myPenWidth / 2) + 2;
-    update(QRect(lastPoint, endPoint).normalized()
-                   .adjusted(-rad, -rad, +rad, +rad));
+    const QRect sourceUpdateRect = QRect(lastPoint, endPoint).normalized()
+        .adjusted(-rad, -rad, +rad, +rad);
+    update(widgetRectForSlicePixelBounds(sourceUpdateRect));
     lastPoint = endPoint;
 }
 
@@ -1976,11 +2080,11 @@ void AnnotationSliceViewer::updatePenWidthInAllViewers(int newPenWidth) {
 
 void AnnotationSliceViewer::setPenWidth(int newPenWidth) {
     myPenWidth = newPenWidth;
-    setUpCustomCursor();
+    refreshBrushCursor();
 }
 
 
-void AnnotationSliceViewer::processAnnotationImage(QImage image) {
+void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
     const bool canEditEdges = graphBase->pEdgesInitialSegmentsImage != nullptr;
     const bool canEditBoundaries = pThresholdedBoundaries != nullptr;
     const bool canEditSegmentation = graphBase->pSelectedSegmentation != nullptr;
@@ -1988,50 +2092,27 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
     if (canEditEdges || canEditBoundaries || canEditSegmentation) {
         //TODO: Separate function into smaller parts, make sliceblabla general
 
-        int bytesPerPixel = 4;
-        unsigned char *bits = image.bits(); // pointer to the first image data
-        std::vector<unsigned char> annotationImageRed(image.width() * image.height(), 0);
-        std::vector<unsigned char> annotationImageGreen(image.width() * image.height(), 0);
-        std::vector<unsigned char> annotationImageBlue(image.width() * image.height(), 0);
-        std::vector<unsigned char> annotationImageAlpha(image.width() * image.height(), 0);
-
-        int x = 0;
-        int y = 0;
-
-        int offset_1;
-        int offset_2;
-        int offset_3;
-        int vecIndex;
-        for (y = 0; y < image.height(); y++) {
-            offset_1 = y * image.width();
-            offset_2 = offset_1 * bytesPerPixel;
-            for (x = 0; x < image.width(); x++) {
-                offset_3 = x * bytesPerPixel + offset_2;
-                vecIndex = x + offset_1;
-                annotationImageRed[vecIndex] = bits[offset_3];
-                annotationImageGreen[vecIndex] = bits[1 + offset_3];
-                annotationImageBlue[vecIndex] = bits[2 + offset_3];
-                annotationImageAlpha[vecIndex] = bits[3 + offset_3];
-            }
-        }
-
+        Q_ASSERT(image.format() == QImage::Format_RGBA8888);
+        constexpr int bytesPerPixel = 4;
 
         if (!paintModeIsActive && !paintBoundaryModeIsActive) { // edge merging/unmerging modus
             if (canEditEdges) {
                 std::set<unsigned int> annotatedEdgeNumIdsToMerge;
                 std::set<unsigned int> annotatedEdgeNumIdsToUnmerge;
 
-                for (y = 0; y < image.height(); y++) {
-                    for (x = 0; x < image.width(); x++) {
+                for (int y = 0; y < image.height(); ++y) {
+                    const auto *scanLine = image.constScanLine(y);
+                    for (int x = 0; x < image.width(); ++x) {
+                        const int pixelOffset = x * bytesPerPixel;
                         int worldX, worldY, worldZ;
-                        if (annotationImageRed[x + image.width() * y] == 255) {
+                        if (scanLine[pixelOffset] == 255) {
                             getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
                             int edgeNumId = graphBase->pEdgesInitialSegmentsImage->GetPixel({worldX, worldY, worldZ});;
                             if (edgeNumId != 0) {
                                 //std::cout << "Unmerge: EdgeNumId: " << edgeNumId << " at position: " << worldX << " " << worldY << " " << worldZ << "\n";
                                 annotatedEdgeNumIdsToUnmerge.insert(edgeNumId);
                             }
-                        } else if (annotationImageGreen[x + image.width() * y] == 255) {
+                        } else if (scanLine[pixelOffset + 1] == 255) {
                             getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
                             int edgeNumId = graphBase->pEdgesInitialSegmentsImage->GetPixel({worldX, worldY, worldZ});;
                             if (edgeNumId != 0) {
@@ -2072,41 +2153,27 @@ void AnnotationSliceViewer::processAnnotationImage(QImage image) {
                 }
             }
         } else { // edit the segmentation modus
-            if (labelOfClickedSegmentation != backgroundLabel) {
-                for (y = 0; y < image.height(); y++) {
-                    for (x = 0; x < image.width(); x++) {
-                        int worldX, worldY, worldZ;
-                        unsigned char r, g, b, a;
-                        r = annotationImageRed[x + image.width() * y];
-                        g = annotationImageGreen[x + image.width() * y];
-                        b = annotationImageBlue[x + image.width() * y];
-                        a = annotationImageAlpha[x + image.width() * y];
+            for (int y = 0; y < image.height(); ++y) {
+                const auto *scanLine = image.constScanLine(y);
+                for (int x = 0; x < image.width(); ++x) {
+                    if (scanLine[x * bytesPerPixel + 3] == 0) {
+                        continue;
+                    }
 
-                        // insert color
-                        if (QColor(r, g, b, a) == (cursorColor)) {
-                            getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
-                            if (paintModeIsActive && canEditSegmentation) {
-                                graphBase->pSelectedSegmentation->SetPixel({worldX, worldY, worldZ},
-                                                                           labelOfClickedSegmentation);
-                            } else {
-                                if (canEditBoundaries) {
-                                    pThresholdedBoundaries->SetPixel({worldX, worldY, worldZ},
-                                                          labelOfClickedSegmentation);
-                                }
-                            }
-                        } else if (QColor(r, g, b, a) == Qt::black) { // delete stuff
-                            getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
-                            if (paintModeIsActive && canEditSegmentation) {
-                                if (graphBase->pSelectedSegmentation->GetPixel({worldX, worldY, worldZ}) ==
-                                    labelOfClickedSegmentation) {
-                                    graphBase->pSelectedSegmentation->SetPixel({worldX, worldY, worldZ}, backgroundLabel);
-                                }
-                            } else {
-                                if (canEditBoundaries) {
-                                    pThresholdedBoundaries->SetPixel({worldX, worldY, worldZ}, 0);
-                                }
-                            }
+                    int worldX, worldY, worldZ;
+                    getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
+                    if (paintModeIsActive && canEditSegmentation) {
+                        if (rightClicked) {
+                            graphBase->pSelectedSegmentation->SetPixel(
+                                {worldX, worldY, worldZ}, backgroundLabel);
+                        } else if (labelOfClickedSegmentation != backgroundLabel) {
+                            graphBase->pSelectedSegmentation->SetPixel(
+                                {worldX, worldY, worldZ}, labelOfClickedSegmentation);
                         }
+                    } else if (canEditBoundaries) {
+                        pThresholdedBoundaries->SetPixel(
+                            {worldX, worldY, worldZ},
+                            rightClicked ? 0 : labelOfClickedSegmentation);
                     }
                 }
             }
@@ -2161,33 +2228,24 @@ void AnnotationSliceViewer::updateFunction() {
 
 void AnnotationSliceViewer::togglePaintMode() {
     paintModeIsActive = !paintModeIsActive;
-    if (paintModeIsActive) {
-        setPaintId(labelOfClickedSegmentation);
-    } else if (!paintBoundaryModeIsActive) {
+    if (!paintModeIsActive && !paintBoundaryModeIsActive) {
         cursorColor = Qt::white;
-        setUpCustomCursor();
     }
+    refreshBrushCursor();
     notifyOrthoViewerInteractionModeChanged();
 }
 
 void AnnotationSliceViewer::togglePaintBoundaryMode() {
     paintBoundaryModeIsActive = !paintBoundaryModeIsActive;
+    refreshBrushCursor();
     notifyOrthoViewerInteractionModeChanged();
 }
 
-void AnnotationSliceViewer::setPaintId(dataType::SegmentIdType){
-    if (graphBase == nullptr || graphBase->pSelectedSegmentationSignal == nullptr ||
-        labelOfClickedSegmentation >= static_cast<dataType::SegmentIdType>(graphBase->pSelectedSegmentationSignal->LUT.size())) {
-        return;
-    }
-
-    quint32 colorOfClickedSegment = graphBase->pSelectedSegmentationSignal->LUT[labelOfClickedSegmentation];
-    unsigned char red, green, blue;
-    red = (unsigned char) (colorOfClickedSegment >> 16);
-    green = (unsigned char) (colorOfClickedSegment >> 8);
-    blue = (unsigned char) (colorOfClickedSegment >> 0);
-    cursorColor = QColor(red, green, blue);
-    setUpCustomCursor();
+void AnnotationSliceViewer::setAnnotationSelection(dataType::SegmentIdType label,
+                                                   const QColor &color) {
+    labelOfClickedSegmentation = label;
+    cursorColor = color;
+    refreshBrushCursor();
 }
 
 void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
@@ -2195,37 +2253,35 @@ void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
         if (graphBase->pSelectedSegmentation != nullptr && graphBase->pSelectedSegmentationSignal != nullptr) {
             int xWorld, yWorld, zWorld;
             getXYZfromPixmapPos(x, y, xWorld, yWorld, zWorld);
-            labelOfClickedSegmentation = graphBase->pSelectedSegmentation->GetPixel({xWorld, yWorld, zWorld});
-            if (labelOfClickedSegmentation >=
+            const auto selectedLabel = graphBase->pSelectedSegmentation->GetPixel({xWorld, yWorld, zWorld});
+            if (selectedLabel >=
                 static_cast<dataType::SegmentIdType>(graphBase->pSelectedSegmentationSignal->LUT.size())) {
                 return;
             }
-            quint32 colorOfClickedSegment = graphBase->pSelectedSegmentationSignal->LUT[labelOfClickedSegmentation];
-            unsigned char red, green, blue;
-            red = (unsigned char) (colorOfClickedSegment >> 16);
-            green = (unsigned char) (colorOfClickedSegment >> 8);
-            blue = (unsigned char) (colorOfClickedSegment >> 0);
-//        std::cout << labelOfClickedSegmentation << " " << (int)alpha << " " << (int)red << " " << (int)green << " " << (int)blue << "\n";
-            cursorColor = QColor(red, green, blue);
-            setUpCustomCursor();
+            const QColor selectedColor = QColor::fromRgb(
+                graphBase->pSelectedSegmentationSignal->LUT[selectedLabel]);
+            if (auto *viewer = orthoViewer(); viewer != nullptr) {
+                viewer->setAnnotationSelection(selectedLabel, selectedColor);
+            } else {
+                setAnnotationSelection(selectedLabel, selectedColor);
+            }
         }
     } else if (paintBoundaryModeIsActive){
         if(pThresholdedBoundaries != nullptr && pThresholdedBoundariesSignal != nullptr) {
             int xWorld, yWorld, zWorld;
             getXYZfromPixmapPos(x, y, xWorld, yWorld, zWorld);
-            labelOfClickedSegmentation = pThresholdedBoundaries->GetPixel({xWorld, yWorld, zWorld});
-            if (labelOfClickedSegmentation >=
+            const auto selectedLabel = pThresholdedBoundaries->GetPixel({xWorld, yWorld, zWorld});
+            if (selectedLabel >=
                 static_cast<dataType::SegmentIdType>(pThresholdedBoundariesSignal->LUT.size())) {
                 return;
             }
-            quint32 colorOfClickedSegment = pThresholdedBoundariesSignal->LUT[labelOfClickedSegmentation];
-            unsigned char red, green, blue;
-            red = (unsigned char) (colorOfClickedSegment >> 16);
-            green = (unsigned char) (colorOfClickedSegment >> 8);
-            blue = (unsigned char) (colorOfClickedSegment >> 0);
-//        std::cout << labelOfClickedSegmentation << " " << (int)alpha << " " << (int)red << " " << (int)green << " " << (int)blue << "\n";
-            cursorColor = QColor(red, green, blue);
-            setUpCustomCursor();
+            const QColor selectedColor = QColor::fromRgb(
+                pThresholdedBoundariesSignal->LUT[selectedLabel]);
+            if (auto *viewer = orthoViewer(); viewer != nullptr) {
+                viewer->setAnnotationSelection(selectedLabel, selectedColor);
+            } else {
+                setAnnotationSelection(selectedLabel, selectedColor);
+            }
         }
     }
 }

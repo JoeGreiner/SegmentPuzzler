@@ -3272,6 +3272,7 @@ void WatershedControl::inspectSegmentsPressed() {
         graphBase->pGraph != nullptr ? graphBase->pGraph->getLargestIdInSegmentVolume(selectedOutput) : 0;
 
     if (orthoViewer != nullptr) {
+        orthoViewer->resetPaintSelection();
         orthoViewer->flashShortcutLegendKey("f8");
     }
 

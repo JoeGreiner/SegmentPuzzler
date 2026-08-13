@@ -56,9 +56,9 @@ public:
 
     virtual void setSliceAxis(int proposedSliceAxis);
 
-    int getCurrentSliceWidth();
+    int getCurrentSliceWidth() const;
 
-    int getCurrentSliceHeight();
+    int getCurrentSliceHeight() const;
 
     int getSliceAxis();
 
@@ -123,6 +123,10 @@ public:
 
     void setZoom(double zoom);
 
+    QPoint slicePixelFromWidgetPoint(const QPoint &point) const;
+    QPointF widgetPositionForSlicePixel(double sliceX, double sliceY) const;
+    QRect widgetRectForSlicePixelBounds(const QRect &rect) const;
+
     int predictedSliceIndex;
     std::mutex signalListMutex;
     std::vector<SliceViewerITKSignal *> signalList;
@@ -167,7 +171,7 @@ protected:
     // dimensions of the signals
     int dimX, dimY, dimZ;
 
-    void setUpCustomCursor();
+    virtual void refreshBrushCursor();
     void syncViewerSizeToImage();
 
     void getXYZfromPixmapPos(int posX, int posY, int &xOut, int &yOut, int &zOut, bool adjustForZoom = true);
@@ -200,8 +204,6 @@ protected:
     // color of the cursor. can be modified when in paintmode.
     QColor cursorColor;
     int myPenWidth;
-    QPixmap cursorPixMap;
-    QColor outerColor;
 
 
 

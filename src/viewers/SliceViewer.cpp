@@ -120,10 +120,9 @@ SliceViewer::SliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
 
     //setup custom cursor
     cursorColor = Qt::white;
-    outerColor = QColor(0, 0, 0, 50);
-    myPenWidth = 5;
+    myPenWidth = 3;
     myPenColor = Qt::red;
-    setUpCustomCursor();
+    refreshBrushCursor();
 
     resetQImages();
 //    show();
@@ -387,11 +386,11 @@ void SliceViewer::removeSignal(itkSignalBase *signal) {
     }
 }
 
-int SliceViewer::getCurrentSliceWidth() {
+int SliceViewer::getCurrentSliceWidth() const {
     return slice_geometry::sliceWidth(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
-int SliceViewer::getCurrentSliceHeight() {
+int SliceViewer::getCurrentSliceHeight() const {
     return slice_geometry::sliceHeight(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
@@ -736,6 +735,40 @@ void SliceViewer::setZoom(double zoom) {
     }
 }
 
+QPoint SliceViewer::slicePixelFromWidgetPoint(const QPoint &point) const {
+    return {
+        slice_viewer_geometry::sourcePixelForPaintedPixel(
+            point.x(), getCurrentSliceWidth(), width()),
+        slice_viewer_geometry::sourcePixelForPaintedPixel(
+            point.y(), getCurrentSliceHeight(), height())
+    };
+}
+
+QPointF SliceViewer::widgetPositionForSlicePixel(double sliceX, double sliceY) const {
+    return {
+        slice_viewer_geometry::paintedPositionForSourcePixelCenter(
+            sliceX, getCurrentSliceWidth(), width()),
+        slice_viewer_geometry::paintedPositionForSourcePixelCenter(
+            sliceY, getCurrentSliceHeight(), height())
+    };
+}
+
+QRect SliceViewer::widgetRectForSlicePixelBounds(const QRect &rect) const {
+    if (!rect.isValid() || getCurrentSliceWidth() <= 0 || getCurrentSliceHeight() <= 0) {
+        return {};
+    }
+    const QRect normalized = rect.normalized();
+    const int left = slice_viewer_geometry::paintedBoundaryForSourceBoundary(
+        normalized.left(), getCurrentSliceWidth(), width());
+    const int top = slice_viewer_geometry::paintedBoundaryForSourceBoundary(
+        normalized.top(), getCurrentSliceHeight(), height());
+    const int right = slice_viewer_geometry::paintedBoundaryForSourceBoundary(
+        normalized.right() + 1, getCurrentSliceWidth(), width());
+    const int bottom = slice_viewer_geometry::paintedBoundaryForSourceBoundary(
+        normalized.bottom() + 1, getCurrentSliceHeight(), height());
+    return QRect(QPoint(left, top), QPoint(std::max(left, right - 1), std::max(top, bottom - 1)));
+}
+
 void SliceViewer::modifyZoomInAllViewers(double factor) {
     auto *viewer = orthoViewer();
     if (viewer == nullptr || viewer->xy == nullptr || viewer->xz == nullptr || viewer->zy == nullptr) {
@@ -814,7 +847,7 @@ void SliceViewer::modifyZoom(double factor) {
         viewer->scrollAreaXY->horizontalScrollBar()->setValue(offX);
         viewer->scrollAreaXY->verticalScrollBar()->setValue(offY);
     }
-    setUpCustomCursor();
+    refreshBrushCursor();
 }
 
 OrthoViewer *SliceViewer::orthoViewer() const {
@@ -841,39 +874,10 @@ void SliceViewer::syncViewerSizeToImage() {
     logSliceViewerState(logKey, message);
 }
 
-void SliceViewer::setUpCustomCursor() {
+void SliceViewer::refreshBrushCursor() {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
-
-    int zoomAdjustedPenWidth = myPenWidth * zoomFactor;
-    cursorPixMap = QPixmap(QSize(zoomAdjustedPenWidth + 5, zoomAdjustedPenWidth + 5));
-
-    cursorPixMap.fill(Qt::transparent);
-
-    QPainter cursorPainter(&cursorPixMap);
-    cursorPainter.setRenderHint(QPainter::Antialiasing);
-
-    int cursorLineWidth = 2;
-
-    int startX = 2;
-    int startY = 2;
-
-    int rectWidth = zoomAdjustedPenWidth;
-    int rectHeight = zoomAdjustedPenWidth;
-
-    cursorPainter.setPen(QPen(outerColor, cursorLineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    cursorPainter.drawEllipse(startX - 1, startY - 1, rectWidth + 2, rectHeight + 2);
-
-    cursorPainter.setPen(QPen(cursorColor, cursorLineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    cursorPainter.drawEllipse(startX, startY, rectWidth, rectHeight);
-
-    this->setCursor(QCursor(cursorPixMap));
-
-    // update application around cursor
-    QPoint pos = QCursor::pos();
-    this->update(pos.x() - (zoomAdjustedPenWidth / 2) - 2,
-                 pos.x() - (zoomAdjustedPenWidth / 2) - 2,
-                 zoomAdjustedPenWidth + 5,
-                 zoomAdjustedPenWidth + 5);
+    setCursor(Qt::CrossCursor);
+    update();
 }
 
 unsigned int SliceViewer::getSliceIndexFromXYZ(unsigned int targetSliceAxis, int x, int y, int z) {

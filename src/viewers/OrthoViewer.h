@@ -80,6 +80,10 @@ public:
     void flashShortcutLegendKey(const QString &shortcutId);
     void setShortcutLegendProfile(ShortcutLegendProfile profile);
     void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
+    void setPaintId(dataType::SegmentIdType paintId);
+    void refreshPaintSelectionColor();
+    void resetPaintSelection();
+    void setAnnotationSelection(dataType::SegmentIdType label, const QColor &color);
     void setImageOnlyMode(bool enabled);
     void setOverlayOnlyMode(bool enabled);
 
@@ -174,6 +178,7 @@ private:
     QHash<QString, int> shortcutFlashGenerations;
     ShortcutLegendProfile shortcutLegendProfile = ShortcutLegendProfile::Default;
     bool autoAdjustingSplitters = false;
+    dataType::SegmentIdType annotationSelectionLabel = 0;
 };
 
 

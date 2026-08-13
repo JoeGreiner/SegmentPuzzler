@@ -690,6 +690,9 @@ void SignalControl::setPaintModeActive(bool active) {
     orthoViewer->xy->togglePaintMode();
     orthoViewer->zy->togglePaintMode();
     orthoViewer->xz->togglePaintMode();
+    if (paintModeActive) {
+        orthoViewer->refreshPaintSelectionColor();
+    }
 }
 
 void SignalControl::setAnnotationToolMode(SliceViewer::ToolMode toolMode) {
@@ -1239,6 +1242,9 @@ void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
         graphBase->pSelectedSegmentation = nullptr;
         graphBase->pSelectedSegmentationSignal = nullptr;
         graphBase->selectedSegmentationMaxSegmentId = 0;
+        if (orthoViewer != nullptr) {
+            orthoViewer->resetPaintSelection();
+        }
         return;
     }
 
@@ -1249,6 +1255,9 @@ void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
         allSignalList[signalIndex]);
     graphBase->selectedSegmentationMaxSegmentId =
         graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
+    if (orthoViewer != nullptr) {
+        orthoViewer->resetPaintSelection();
+    }
 }
 
 void SignalControl::setGuiBusy(bool busy) {
@@ -2843,12 +2852,7 @@ void SignalControl::setPaintId(){
         return;
     }
     SP_LOG_INFO("segmentation", QStringLiteral("Setting paint id to %1").arg(paintId));
-    orthoViewer->xy->labelOfClickedSegmentation = paintId;
-    orthoViewer->zy->labelOfClickedSegmentation = paintId;
-    orthoViewer->xz->labelOfClickedSegmentation = paintId;
-    orthoViewer->xy->setPaintId(paintId);
-    orthoViewer->zy->setPaintId(paintId);
-    orthoViewer->xz->setPaintId(paintId);
+    orthoViewer->setPaintId(paintId);
 }
 
 void SignalControl::togglePaintMode() {

@@ -1785,6 +1785,43 @@ void OrthoViewer::setAnnotationToolMode(SliceViewer::ToolMode toolMode) {
     refreshInteractionModeIndicators();
 }
 
+void OrthoViewer::setPaintId(dataType::SegmentIdType paintId) {
+    if (graphBase == nullptr || graphBase->pSelectedSegmentationSignal == nullptr) {
+        return;
+    }
+
+    auto *signal = graphBase->pSelectedSegmentationSignal;
+    signal->checkAndResizeLUT(paintId);
+    setAnnotationSelection(paintId, QColor::fromRgb(signal->LUT.at(paintId)));
+}
+
+void OrthoViewer::refreshPaintSelectionColor() {
+    if (graphBase != nullptr && graphBase->pGraph != nullptr &&
+        annotationSelectionLabel == graphBase->pGraph->backgroundId) {
+        resetPaintSelection();
+        return;
+    }
+    setPaintId(annotationSelectionLabel);
+}
+
+void OrthoViewer::resetPaintSelection() {
+    const dataType::SegmentIdType neutralLabel =
+        graphBase != nullptr && graphBase->pGraph != nullptr
+            ? graphBase->pGraph->backgroundId
+            : 0;
+    setAnnotationSelection(neutralLabel, Qt::white);
+}
+
+void OrthoViewer::setAnnotationSelection(dataType::SegmentIdType label,
+                                         const QColor &color) {
+    annotationSelectionLabel = label;
+    for (auto *viewer : {xy, xz, zy}) {
+        if (viewer != nullptr) {
+            viewer->setAnnotationSelection(label, color);
+        }
+    }
+}
+
 void OrthoViewer::centerViewportsToXYZImageSpace(int x, int y, int z) {
     centerViewportsToXYViewportSpace(scrollAreaXY,
                                      static_cast<double>(x),

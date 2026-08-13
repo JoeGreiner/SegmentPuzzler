@@ -8,6 +8,11 @@
 #include "src/viewers/Segment3DViewerDialog.h"
 
 #include <functional>
+#include <QtGlobal>
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+class QEnterEvent;
+#endif
 
 class AnnotationSliceViewer : public SliceViewer {
 Q_OBJECT
@@ -33,12 +38,10 @@ public:
     bool isROISelectionModeActive() const { return ROISelectionModeIsActive; }
     void setDeleteSelectedSegmentationLabelHandler(
         DeleteSelectedSegmentationLabelHandler handler);
+    void setAnnotationSelection(dataType::SegmentIdType label, const QColor &color);
 
     itk::Image<unsigned char, 3>::Pointer pThresholdedBoundaries;
     itkSignalBase * pThresholdedBoundariesSignal;
-
-//   this is also used to process annotations in paintmode!!
-    dataType::SegmentIdType labelOfClickedSegmentation;
 
 
 public slots:
@@ -70,7 +73,6 @@ public slots:
 
     void exportDebugInformation();
 
-    void setPaintId(dataType::SegmentIdType);
     void setOpeningRadius(int radius);
     void setClosingRadius(int radius);
     void setDilationRadius(int radius);
@@ -94,13 +96,23 @@ protected:
 
     void mouseReleaseEvent(QMouseEvent *event) override;
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    void enterEvent(QEnterEvent *event) override;
+#else
+    void enterEvent(QEvent *event) override;
+#endif
+
+    void leaveEvent(QEvent *event) override;
+
     void updateFunction() override;
+
+    void refreshBrushCursor() override;
 
     void drawLineTo(QPoint endPoint);
 
     void setPenWidth(int newPenWidth);
 
-    void processAnnotationImage(QImage image);
+    void processAnnotationImage(const QImage &image);
 
     void splitWorkingNodeIntoInitialNodes(int posX, int posY);
 
@@ -122,8 +134,11 @@ private:
 
     bool paintModeIsActive;
     bool paintBoundaryModeIsActive;
+    dataType::SegmentIdType labelOfClickedSegmentation;
 
     bool scribbling, rightClicked;
+    bool brushPreviewVisible = false;
+    QPoint brushPreviewPosition;
 
     bool ROISelectionModeIsActive;
     DeleteSelectedSegmentationLabelHandler deleteSelectedSegmentationLabelHandler;
@@ -133,6 +148,7 @@ private:
     QPoint lastPoint;
 
     void drawPoint(QPoint point);
+    void drawBrushPreview(QPainter &painter) const;
 
     QRubberBand *ROISelectionRubberBand;
 

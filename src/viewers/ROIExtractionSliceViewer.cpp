@@ -19,11 +19,10 @@ ROIExtractionSliceViewer::ROIExtractionSliceViewer(std::shared_ptr<GraphBase> gr
     }
 
     cursorColor = Qt::white;
-    outerColor = QColor(0, 0, 0, 50);
 
     myPenWidth = 5;
     myPenColor = Qt::red;
-    setUpCustomCursor();
+    refreshBrushCursor();
     this->setMouseTracking(true);
 }
 
