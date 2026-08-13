@@ -12,6 +12,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFileDialog>
@@ -1842,7 +1843,7 @@ QString SegmentTableDialog::suggestedCsvExportPath(const QString &storedDefaultS
         currentTableSegmentationSignal != nullptr
             ? currentTableSegmentationSignal->name
             : QString();
-    return export_path_utils::suggestedExportPath(
+    const QString sourceBasedPath = export_path_utils::suggestedExportPath(
         storedDefaultSavePath,
         {currentTableSegmentationSignal != nullptr
              ? currentTableSegmentationSignal->sourceFilePath
@@ -1854,6 +1855,12 @@ QString SegmentTableDialog::suggestedCsvExportPath(const QString &storedDefaultS
         segmentationName,
         QStringLiteral("Segmentation"),
         QStringLiteral("_features.csv"));
+
+    if (graphBase->lastExportPathThisSession.isEmpty()) {
+        return sourceBasedPath;
+    }
+    return QDir(QFileInfo(graphBase->lastExportPathThisSession).absolutePath())
+        .filePath(QFileInfo(sourceBasedPath).fileName());
 }
 
 void SegmentTableDialog::onExportCsvClicked() {
@@ -1936,7 +1943,8 @@ void SegmentTableDialog::onExportCsvClicked() {
         return;
     }
 
+    graphBase->lastExportPathThisSession = QFileInfo(path).absoluteFilePath();
     settings.setValue(QStringLiteral("default_save_dir"),
-                      QFileInfo(path).absoluteFilePath());
+                      graphBase->lastExportPathThisSession);
     statusLabel->setText("Exported to " + path);
 }

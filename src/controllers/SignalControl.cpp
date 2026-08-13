@@ -1332,7 +1332,7 @@ QString SignalControl::suggestedSegmentationExportPath(const QString &storedDefa
         graphBase->pSelectedSegmentationSignal != nullptr
             ? graphBase->pSelectedSegmentationSignal->name
             : QString();
-    return export_path_utils::suggestedExportPath(
+    const QString sourceBasedPath = export_path_utils::suggestedExportPath(
         storedDefaultSavePath,
         {graphBase->pSelectedSegmentationSignal != nullptr
              ? graphBase->pSelectedSegmentationSignal->sourceFilePath
@@ -1344,6 +1344,12 @@ QString SignalControl::suggestedSegmentationExportPath(const QString &storedDefa
         selectedSegmentationName,
         QStringLiteral("Segmentation"),
         QStringLiteral(".nrrd"));
+
+    if (graphBase->lastExportPathThisSession.isEmpty()) {
+        return sourceBasedPath;
+    }
+    return QDir(QFileInfo(graphBase->lastExportPathThisSession).absolutePath())
+        .filePath(QFileInfo(sourceBasedPath).fileName());
 }
 
 std::optional<slice_geometry::Dimensions3D> SignalControl::expectedDimensionsForNewSignal(
@@ -2792,7 +2798,6 @@ void SignalControl::exportSelectedSegmentation() {
     SP_LOG_INFO("io", QStringLiteral("Export selected segmentation dialog returned path=%1").arg(path));
     if (!path.isEmpty()) {
         const QString absolutePath = QFileInfo(path).absoluteFilePath();
-        MySettings.setValue(DEFAULT_SAVE_DIR_KEY, absolutePath);
         try {
             {
                 auto spacing = graphBase->pSelectedSegmentation->GetSpacing();
@@ -2810,6 +2815,8 @@ void SignalControl::exportSelectedSegmentation() {
             }
             graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(graphBase->pSelectedSegmentation,
                                                                            path.toStdString());
+            graphBase->lastExportPathThisSession = absolutePath;
+            MySettings.setValue(DEFAULT_SAVE_DIR_KEY, absolutePath);
         } catch (itk::ExceptionObject &err) {
             SP_LOG_ERROR("io", QStringLiteral("Failed to export selected segmentation to %1: %2").arg(path, QString::fromStdString(err.GetDescription())));
         }

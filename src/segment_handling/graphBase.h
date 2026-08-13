@@ -48,6 +48,8 @@ public:
     itkSignal<SegmentsVoxelType> *pSelectedSegmentationSignal;
     // Shared source for consistent export filename suggestions.
     QString lastLoadedSourcePath;
+    // Last successful export in this graph session, used only for its directory.
+    QString lastExportPathThisSession;
 
 
     // Non-owning — owned by Graph (via Graph::ownedEdgesSignal)
