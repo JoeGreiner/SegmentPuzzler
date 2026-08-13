@@ -221,6 +221,7 @@ public:
     std::vector<quint32> LUT;
 
     QString name;
+    QString sourceFilePath;
 
 private:
     BlendMode blendMode = BlendMode::SourceOver;

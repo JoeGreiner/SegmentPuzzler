@@ -5,6 +5,8 @@
 #include <QFileInfo>
 #include <QString>
 
+#include <initializer_list>
+
 namespace export_path_utils {
 
 inline QString sanitizedFileNameStem(QString stem) {
@@ -44,13 +46,23 @@ inline QString directoryFromStoredPath(const QString &storedPath) {
 }
 
 inline QString suggestedExportPath(const QString &storedDefaultPath,
-                                   const QString &sourcePath,
+                                   std::initializer_list<QString> sourcePathsByPriority,
                                    const QString &fallbackStem,
                                    const QString &defaultStem,
                                    const QString &fileNameEnding) {
-    QString directoryPath = directoryFromStoredPath(storedDefaultPath);
-    if (directoryPath.isEmpty() && !sourcePath.isEmpty()) {
-        directoryPath = QFileInfo(sourcePath).absolutePath();
+    QString sourcePath;
+    for (const QString &candidate : sourcePathsByPriority) {
+        if (!candidate.isEmpty()) {
+            sourcePath = candidate;
+            break;
+        }
+    }
+
+    QString directoryPath = sourcePath.isEmpty()
+                                ? QString()
+                                : QFileInfo(sourcePath).absolutePath();
+    if (directoryPath.isEmpty()) {
+        directoryPath = directoryFromStoredPath(storedDefaultPath);
     }
 
     QString stem = sourcePath.isEmpty() ? QString() : sourceStem(sourcePath);

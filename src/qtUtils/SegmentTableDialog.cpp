@@ -1373,7 +1373,13 @@ QString SegmentTableDialog::suggestedCsvExportPath(const QString &storedDefaultS
             : QString();
     return export_path_utils::suggestedExportPath(
         storedDefaultSavePath,
-        graphBase->lastLoadedSourcePath,
+        {currentTableSegmentationSignal != nullptr
+             ? currentTableSegmentationSignal->sourceFilePath
+             : QString(),
+         graphBase->pWorkingSegments != nullptr
+             ? graphBase->pWorkingSegments->sourceFilePath
+             : QString(),
+         graphBase->lastLoadedSourcePath},
         segmentationName,
         QStringLiteral("Segmentation"),
         QStringLiteral("_features.csv"));

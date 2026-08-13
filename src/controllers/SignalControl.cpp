@@ -1227,7 +1227,13 @@ QString SignalControl::suggestedSegmentationExportPath(const QString &storedDefa
             : QString();
     return export_path_utils::suggestedExportPath(
         storedDefaultSavePath,
-        graphBase->lastLoadedSourcePath,
+        {graphBase->pSelectedSegmentationSignal != nullptr
+             ? graphBase->pSelectedSegmentationSignal->sourceFilePath
+             : QString(),
+         graphBase->pWorkingSegments != nullptr
+             ? graphBase->pWorkingSegments->sourceFilePath
+             : QString(),
+         graphBase->lastLoadedSourcePath},
         selectedSegmentationName,
         QStringLiteral("Segmentation"),
         QStringLiteral(".nrrd"));
@@ -1742,10 +1748,14 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
             bool ok = insertImageSegmenttype(result.segmentationImage, signalIndexGlobal, hadWorkingSegments);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
+                allSignalList[signalIndexGlobal]->sourceFilePath =
+                    graphBase->lastLoadedSourcePath;
                 if (result.workingSegmentsImage != nullptr) {
                     size_t segmentIndexGlobal = 0;
                     const bool insertedSegments = insertImageSegmenttype(result.workingSegmentsImage, segmentIndexGlobal, false);
                     if (insertedSegments) {
+                        allSignalList[segmentIndexGlobal]->sourceFilePath =
+                            graphBase->lastLoadedSourcePath;
                         registerSegmentsGraphSignal(segmentIndexGlobal, false);
                     }
                 }
@@ -1819,6 +1829,8 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             bool ok = insertImageSegmenttype(result.image, signalIndexGlobal, false);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
+                allSignalList[signalIndexGlobal]->sourceFilePath =
+                    graphBase->lastLoadedSourcePath;
                 registerSegmentsGraphSignal(signalIndexGlobal);
             } else {
                 QMessageBox::critical(this, tr("Error"), tr("Failed to load the supervoxels."));
