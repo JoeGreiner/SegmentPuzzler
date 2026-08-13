@@ -21,7 +21,6 @@
 #include "Segment3DViewerDialog.h"
 #include "itkImageRegionIteratorWithIndex.h"
 #include <unordered_set>
-#include <unordered_map>
 #include "src/utils/AppLogger.h"
 #include "OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
@@ -71,6 +70,48 @@ bool toolWorksWithoutWorkingSegments(SliceViewer::ToolMode tool) {
            tool == SliceViewer::ToolMode::SelectColor ||
            tool == SliceViewer::ToolMode::Fill ||
            tool == SliceViewer::ToolMode::Open;
+}
+
+std::optional<SliceViewer::ToolMode> transientToolModeForKey(int key) {
+    switch (key) {
+        case Qt::Key_Control:
+            return SliceViewer::ToolMode::Ctrl;
+        case Qt::Key_S:
+            return SliceViewer::ToolMode::Transfer;
+        case Qt::Key_P:
+            return SliceViewer::ToolMode::Refine;
+        case Qt::Key_D:
+            return SliceViewer::ToolMode::Delete;
+        case Qt::Key_X:
+            return SliceViewer::ToolMode::Split;
+        case Qt::Key_C:
+            return SliceViewer::ToolMode::Cut;
+        case Qt::Key_Q:
+            return SliceViewer::ToolMode::SelectColor;
+        case Qt::Key_F:
+            return SliceViewer::ToolMode::Fill;
+        case Qt::Key_G:
+            return SliceViewer::ToolMode::Open;
+        case Qt::Key_J:
+            return SliceViewer::ToolMode::Dilate;
+        case Qt::Key_K:
+            return SliceViewer::ToolMode::Erode;
+        case Qt::Key_H:
+            return SliceViewer::ToolMode::Insert;
+        case Qt::Key_W:
+            return SliceViewer::ToolMode::View3DSplit;
+        case Qt::Key_M:
+            return SliceViewer::ToolMode::View3D;
+        default:
+            return std::nullopt;
+    }
+}
+
+bool isOneShotViewerCommandKey(int key) {
+    return key == Qt::Key_U
+           || key == Qt::Key_V
+           || key == Qt::Key_E
+           || key == Qt::Key_N;
 }
 
 dataType::SegmentsImageType::RegionType paddedLabelRegion(
@@ -351,6 +392,14 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
                 viewer->setOverlayOnlyMode(true);
             }
         }
+        event->accept();
+        return;
+    }
+    if (event->isAutoRepeat() && transientToolModeForKey(event->key()).has_value()) {
+        event->accept();
+        return;
+    }
+    if (event->isAutoRepeat() && isOneShotViewerCommandKey(event->key())) {
         event->accept();
         return;
     }
@@ -1032,26 +1081,15 @@ void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
     }
 
 //    std::cout << "Release: " << event->key() << "\n";
-    static const std::unordered_map<int, ToolMode> keyToToolMode = {
-        {Qt::Key_Control, ToolMode::Ctrl},
-        {Qt::Key_S,       ToolMode::Transfer},
-        {Qt::Key_P,       ToolMode::Refine},
-        {Qt::Key_D,       ToolMode::Delete},
-        {Qt::Key_X,       ToolMode::Split},
-        {Qt::Key_C,       ToolMode::Cut},
-        {Qt::Key_Q,       ToolMode::SelectColor},
-        {Qt::Key_F,       ToolMode::Fill},
-        {Qt::Key_G,       ToolMode::Open},
-        {Qt::Key_J,       ToolMode::Dilate},
-        {Qt::Key_K,       ToolMode::Erode},
-        {Qt::Key_H,       ToolMode::Insert},
-        {Qt::Key_W,       ToolMode::View3DSplit},
-        {Qt::Key_M,       ToolMode::View3D},
-    };
-    auto it = keyToToolMode.find(event->key());
-    if (it != keyToToolMode.end()) {
-        clearMatchingLinkedToolMode(linkedViewerList, it->second);
+    const auto releasedToolMode = transientToolModeForKey(event->key());
+    if (releasedToolMode.has_value()) {
+        if (event->isAutoRepeat()) {
+            event->accept();
+            return;
+        }
+        clearMatchingLinkedToolMode(linkedViewerList, releasedToolMode.value());
         notifyOrthoViewerInteractionModeChanged();
+        event->accept();
     }
 }
 
@@ -1157,9 +1195,8 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
     case ToolMode::View3DSplit:
-        if (show3DSplitView(event->pos().x(), event->pos().y())) {
-            setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
-        }
+        show3DSplitView(event->pos().x(), event->pos().y());
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::None);
         break;
     }
 

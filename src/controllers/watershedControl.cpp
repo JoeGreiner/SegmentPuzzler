@@ -2184,6 +2184,7 @@ void WatershedControl::setupFinalizeWidget() {
     workflowLayout->addWidget(groupBox, 0);
 
     auto *inspectShortcut = new QShortcut(QKeySequence(Qt::Key_F8), this);
+    inspectShortcut->setAutoRepeat(false);
     connect(inspectShortcut, &QShortcut::activated, this, &WatershedControl::inspectSegmentsPressed);
     connect(inspectSegmentsButton, &QPushButton::clicked, this, &WatershedControl::inspectSegmentsPressed);
     connect(createRefinementButton, &QPushButton::clicked, this, &WatershedControl::finalizeOutputPressed);

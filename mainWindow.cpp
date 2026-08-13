@@ -309,6 +309,7 @@ MainWindow::MainWindow() {
     segmentationMenu->addSeparator();
     showSegmentTableAction = new QAction(tr("&Segment Feature Table"), this);
     showSegmentTableAction->setShortcut(Qt::Key_F8);
+    showSegmentTableAction->setAutoRepeat(false);
     segmentationMenu->addAction(showSegmentTableAction);
     connect(showSegmentTableAction, &QAction::triggered, this, [this]() {
         if (myOrthowindow != nullptr) {
@@ -426,6 +427,7 @@ MainWindow::MainWindow() {
     viewMenu->addSeparator();
     QAction *openGoToCoordinatesAction = new QAction(tr("&Go to Coordinates"), this);
     openGoToCoordinatesAction->setShortcut(Qt::Key_F9);
+    openGoToCoordinatesAction->setAutoRepeat(false);
     viewMenu->addAction(openGoToCoordinatesAction);
     connect(openGoToCoordinatesAction, &QAction::triggered, this, [this]() {
         if (myOrthowindow != nullptr) {
@@ -472,6 +474,7 @@ MainWindow::MainWindow() {
 
     QAction *openGoToLabelAction = new QAction(tr("&Go to Label ID"), this);
     openGoToLabelAction->setShortcut(Qt::Key_F10);
+    openGoToLabelAction->setAutoRepeat(false);
     viewMenu->addAction(openGoToLabelAction);
     connect(openGoToLabelAction, &QAction::triggered, this, [this]() {
         if (myOrthowindow != nullptr) {
@@ -557,6 +560,7 @@ MainWindow::MainWindow() {
     helpMenu = menuBar()->addMenu(tr("&Help"));
     openHotkeysAction = new QAction(tr("&Keyboard Shortcuts..."), this);
     openHotkeysAction->setShortcut(Qt::Key_F1);
+    openHotkeysAction->setAutoRepeat(false);
     helpMenu->addAction(openHotkeysAction);
     connect(openHotkeysAction, &QAction::triggered, this, [this]() {
         if (myOrthowindow != nullptr) {

@@ -2120,6 +2120,7 @@ void SignalControl::createMenuActions() {
     createAction(erodeSegmentationAction, tr("Erode Label One Step"), &SignalControl::activateErodeTool);
     createAction(connectedComponentSplitAction, tr("Run Connected Component Split"), &SignalControl::runConnectedComponentSplit);
     connectedComponentSplitAction->setShortcut(Qt::Key_F7);
+    connectedComponentSplitAction->setAutoRepeat(false);
     createAction(mergeSmallSegmentsAction,
                  tr("Merge Small Segments with Neighbors..."),
                  &SignalControl::mergeSmallSegmentsWithNeighbors);

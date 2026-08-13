@@ -179,6 +179,7 @@ private:
     bool removeLabelActor(dataType::SegmentIdType labelId);
     void updateSingleLabelNavigationUiState();
     void armSeedPlacement(int seedNumber);
+    bool cancelActiveSplitInput();
     void beginSplitLineDrawing();
     bool updateSplitLineSeedPreview();
     void confirmSplitLineSeeds();

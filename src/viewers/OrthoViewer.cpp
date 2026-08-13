@@ -1004,6 +1004,7 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
                 if (state != Qt::ApplicationActive) {
                     setImageOnlyMode(false);
                     setOverlayOnlyMode(false);
+                    setAnnotationToolMode(SliceViewer::ToolMode::None);
                 }
             });
     connect(qApp, &QGuiApplication::focusObjectChanged, this,
