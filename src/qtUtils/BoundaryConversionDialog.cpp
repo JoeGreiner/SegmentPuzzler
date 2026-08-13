@@ -14,8 +14,8 @@ std::optional<ConversionMode> askForBoundaryConversionMode(QWidget *parent,
     msgBox.setText(text);
     msgBox.setInformativeText(informativeText);
     QPushButton *scaleZeroToOneButton = msgBox.addButton(QObject::tr("Scale 0..1"), QMessageBox::AcceptRole);
-    QPushButton *scaleMinMaxButton = msgBox.addButton(QObject::tr("Scale Min-Max"), QMessageBox::ActionRole);
-    QPushButton *castValuesButton = msgBox.addButton(QObject::tr("Cast Values"), QMessageBox::DestructiveRole);
+    QPushButton *scaleMinMaxButton = msgBox.addButton(QObject::tr("Scale Range"), QMessageBox::ActionRole);
+    QPushButton *castValuesButton = msgBox.addButton(QObject::tr("Cast"), QMessageBox::DestructiveRole);
     msgBox.addButton(QMessageBox::Cancel);
     msgBox.exec();
 
