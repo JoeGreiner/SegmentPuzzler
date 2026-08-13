@@ -1010,14 +1010,16 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
 
     connect(qApp, &QGuiApplication::applicationStateChanged, this,
             [this](Qt::ApplicationState state) {
+                refreshViewerInputFocusIndicator();
                 if (state != Qt::ApplicationActive) {
                     setImageOnlyMode(false);
                     setOverlayOnlyMode(false);
                     setAnnotationToolMode(SliceViewer::ToolMode::None);
                 }
             });
-    connect(qApp, &QGuiApplication::focusObjectChanged, this,
-            [this](QObject *) {
+    connect(qApp, &QApplication::focusChanged, this,
+            [this](QWidget *, QWidget *) {
+                refreshViewerInputFocusIndicator();
                 if (xy == nullptr || (!xy->isImageOnlyMode() && !xy->isOverlayOnlyMode())) {
                     return;
                 }
@@ -1026,6 +1028,7 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
             });
 
     show();
+    refreshViewerInputFocusIndicator();
     refreshInteractionModeIndicators();
 
     splitterHorizontalBottom->moveSplitterExt(300, 1);
@@ -1043,6 +1046,28 @@ bool OrthoViewer::isBusy() const {
 
 TaskRunner *OrthoViewer::getTaskRunner() const {
     return taskRunner;
+}
+
+bool OrthoViewer::hasViewerInputFocus() const {
+    if (qApp->applicationState() != Qt::ApplicationActive) {
+        return false;
+    }
+
+    QWidget *focusedWidget = QApplication::focusWidget();
+    return std::any_of(viewerList.cbegin(), viewerList.cend(), [focusedWidget](const SliceViewer *viewer) {
+        return viewer != nullptr &&
+               (focusedWidget == viewer || (focusedWidget != nullptr && viewer->isAncestorOf(focusedWidget)));
+    });
+}
+
+void OrthoViewer::refreshViewerInputFocusIndicator() {
+    const bool active = hasViewerInputFocus();
+    if (viewerInputFocusActive == active) {
+        return;
+    }
+
+    viewerInputFocusActive = active;
+    emit viewerInputFocusChanged(viewerInputFocusActive);
 }
 
 void OrthoViewer::refreshZoomLayout() {
@@ -1541,10 +1566,21 @@ void OrthoViewer::applyInitialZoom() {
 }
 
 bool OrthoViewer::eventFilter(QObject *watched, QEvent *event) {
+    const QObject *xyViewport = scrollAreaXY != nullptr ? scrollAreaXY->viewport() : nullptr;
+    const QObject *xzViewport = scrollAreaXZ != nullptr ? scrollAreaXZ->viewport() : nullptr;
+    const QObject *zyViewport = scrollAreaZY != nullptr ? scrollAreaZY->viewport() : nullptr;
+
+    if (event != nullptr && event->type() == QEvent::MouseButtonPress) {
+        if (watched == xyViewport && xy != nullptr) {
+            xy->setFocus(Qt::MouseFocusReason);
+        } else if (watched == xzViewport && xz != nullptr) {
+            xz->setFocus(Qt::MouseFocusReason);
+        } else if (watched == zyViewport && zy != nullptr) {
+            zy->setFocus(Qt::MouseFocusReason);
+        }
+    }
+
     if (event != nullptr && event->type() == QEvent::Resize && initialized) {
-        const QObject *xyViewport = scrollAreaXY != nullptr ? scrollAreaXY->viewport() : nullptr;
-        const QObject *xzViewport = scrollAreaXZ != nullptr ? scrollAreaXZ->viewport() : nullptr;
-        const QObject *zyViewport = scrollAreaZY != nullptr ? scrollAreaZY->viewport() : nullptr;
         if (watched == viewXY || watched == viewXZ || watched == viewZY) {
             refreshInteractionModeIndicators();
             schedulePlaneIndicatorRefresh();

@@ -286,6 +286,7 @@ MainWindow::MainWindow() {
 //    graph.refineWithSelectedRefinementAtPosition(440, 0, 159);
 
     auto horizontalSplitter = new QSplitter();
+    horizontalSplitter->setObjectName("WorkspaceFocusFrame");
     horizontalSplitter->addWidget(mySignalControl);
     horizontalSplitter->addWidget(myOrthowindow);
     horizontalSplitter->setCollapsible(0, true);
@@ -581,6 +582,27 @@ MainWindow::MainWindow() {
     });
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
+
+    auto *viewerInputStatus = new QLabel(this);
+    viewerInputStatus->setContentsMargins(6, 0, 6, 0);
+    statusBar()->addPermanentWidget(viewerInputStatus);
+    const auto updateViewerInputStatus = [this, horizontalSplitter, viewerInputStatus](bool active) {
+        const QString color = active ? QStringLiteral("#55c26a") : QStringLiteral("#e5a84b");
+        horizontalSplitter->setStyleSheet(QStringLiteral(
+                "QSplitter#WorkspaceFocusFrame { border: 2px solid %1; }").arg(color));
+        viewerInputStatus->setText(active
+                ? tr("viewer active")
+                : tr("viewer inactive (click viewer)"));
+        viewerInputStatus->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-weight: 600; }").arg(color));
+        viewerInputStatus->setToolTip(active
+                ? tr("The orthoviews receive keyboard shortcuts.")
+                : tr("Click an orthoview to direct keyboard shortcuts to it."));
+    };
+    connect(myOrthowindow, &OrthoViewer::viewerInputFocusChanged,
+            this, updateViewerInputStatus);
+    updateViewerInputStatus(myOrthowindow->hasViewerInputFocus());
+
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, renderOrderAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this]() { update3DSegmentSplitActionState(); });

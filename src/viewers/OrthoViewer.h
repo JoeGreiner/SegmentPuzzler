@@ -88,6 +88,7 @@ public:
     void setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing);
     voxel_geometry::VoxelSpacing getVoxelSpacing() const { return voxelSpacing; }
     void setOverlayOnlyMode(bool enabled);
+    bool hasViewerInputFocus() const;
 
 
     std::shared_ptr<GraphBase> graphBase;
@@ -108,6 +109,7 @@ public:
 
 signals:
     void sendStatusMessage(QString);
+    void viewerInputFocusChanged(bool active);
 
 public slots:
     void receiveStatusMessage(QString string);
@@ -136,6 +138,7 @@ private:
     void updateExternalScrollBars();
     void updatePlaneIndicators();
     void schedulePlaneIndicatorRefresh();
+    void refreshViewerInputFocusIndicator();
     bool hasCollapsedOrthoPane() const;
 
     bool initialized;
@@ -181,6 +184,7 @@ private:
     QHash<QString, int> shortcutFlashGenerations;
     ShortcutLegendProfile shortcutLegendProfile = ShortcutLegendProfile::Default;
     bool autoAdjustingSplitters = false;
+    bool viewerInputFocusActive = false;
     voxel_geometry::VoxelSpacing voxelSpacing;
     dataType::SegmentIdType annotationSelectionLabel = 0;
 };
