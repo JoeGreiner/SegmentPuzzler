@@ -1,6 +1,6 @@
 # SegmentPuzzler
 
-Tool to manipulate (merge, unmerge, regenerate, paint, select, ...) and proofread supervoxel-based segmentations. Under construction, more to come.
+Tool to manipulate (merge, unmerge, regenerate, paint, select, ...) and proofread instance segmentations. Under construction, more to come.
 
 
 
