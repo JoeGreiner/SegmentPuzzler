@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Canonical foreground artwork for the SegmentPuzzler application icon. -->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1024"
+     height="1024"
+     viewBox="0 0 1024 1024">
+  <defs>
+    <path id="heart-shape"
+          d="M 512 799.20
+             C 457.28 761.46 200.65 615.72 189.32 416.14
+             C 181.78 289.23 287.45 223.16 391.23 238.71
+             C 445.75 247.15 480.50 279.50 498.50 324.50
+             C 504.50 337 509 345 512 348
+             C 515 345 519.50 337 525.50 324.50
+             C 543.50 279.50 578.25 247.15 632.77 238.71
+             C 736.55 223.16 842.23 289.23 834.68 416.14
+             C 823.36 615.72 566.72 761.46 512 799.20
+             Z"/>
+    <clipPath id="heart-clip">
+      <use href="#heart-shape"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#heart-clip)">
+    <g transform="translate(28.928 25.528) scale(0.9435)"
+       stroke="#010306"
+       stroke-width="20"
+       stroke-linejoin="round">
+      <path fill="#141d29"
+            stroke="none"
+            d="M 512 820
+               C 454 780 182 625 170 414
+               C 162 280 274 210 384 226
+               C 443 235 486 276 512 320
+               C 538 276 581 235 640 226
+               C 750 210 862 280 854 414
+               C 842 625 570 780 512 820
+               Z"/>
+      <path fill="#ff604f" d="M 175 200 L 405 200 L 405 370 L 260 430 L 150 390 Z"/>
+      <path fill="#c8ed55" d="M 405 180 L 512 180 L 520 420 L 405 370 Z"/>
+      <path fill="#3bd96c" d="M 512 180 L 720 180 L 650 370 L 520 420 Z"/>
+      <path fill="#2998ed" d="M 720 200 L 849 200 L 870 390 L 760 430 L 650 370 Z"/>
+      <path fill="#f33d61" d="M 150 390 L 260 430 L 300 590 L 150 540 Z"/>
+      <path fill="#7862e9" d="M 260 430 L 405 370 L 520 420 L 450 565 L 300 590 Z"/>
+      <path fill="#ff6f35" d="M 520 420 L 650 370 L 575 610 L 450 565 Z"/>
+      <path fill="#de2b8c" d="M 650 370 L 760 430 L 720 575 L 575 610 Z"/>
+      <path fill="#ffc42d" d="M 760 430 L 870 390 L 870 540 L 720 575 Z"/>
+      <path fill="#1bb9bd" d="M 150 540 L 300 590 L 450 565 L 390 730 L 200 690 Z"/>
+      <path fill="#28c7da" d="M 150 540 L 200 690 L 390 730 L 512 850 L 300 820 L 150 650 Z"/>
+      <path fill="#f33d61" d="M 450 565 L 575 610 L 635 730 L 512 850 L 390 730 Z"/>
+      <path fill="#c8ed55" d="M 575 610 L 720 575 L 820 690 L 635 730 Z"/>
+      <path fill="#2998ed" d="M 720 575 L 870 540 L 870 650 L 724 820 L 512 850 L 635 730 L 820 690 Z"/>
+    </g>
+  </g>
+
+  <use href="#heart-shape"
+       fill="none"
+       stroke="#05070a"
+       stroke-width="52"
+       stroke-linejoin="miter"
+       stroke-miterlimit="3"/>
+  <use href="#heart-shape"
+       fill="none"
+       stroke="#edf3f8"
+       stroke-width="24"
+       stroke-linejoin="miter"
+       stroke-miterlimit="3"/>
+</svg>

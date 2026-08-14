@@ -13,6 +13,8 @@
     <key>CFBundleExecutable</key>
     <string>@PROJECT_NAME@</string>
     <key>CFBundleIconFile</key>
-    <string>SegmentPuzzler.icns</string>
+    <string>@MACOSX_BUNDLE_ICON_FILE@</string>
+    <key>CFBundleIconName</key>
+    <string>@MACOSX_BUNDLE_ICON_NAME@</string>
 </dict>
 </plist>

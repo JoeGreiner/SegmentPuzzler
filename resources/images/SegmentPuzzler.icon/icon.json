@@ -1,0 +1,34 @@
+{
+  "fill" : {
+    "automatic-gradient" : "extended-srgb:0.00500,0.01200,0.02500,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name" : "SegmentPuzzler-heart.svg",
+          "name" : "SegmentPuzzler-heart",
+          "position" : {
+            "scale" : 1.2,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+    ],
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

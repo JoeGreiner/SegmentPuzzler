@@ -79,10 +79,58 @@ if (APPLE AND DEPLOY)
     set(INSTALL_CMAKE_DIR "${prefix}/Resources")
 #    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I/usr/local/include")
 
-    set(MACOSX_BUNDLE_ICON_FILE "SegmentPuzzler.icns")
-    set(APP_ICON "${CMAKE_SOURCE_DIR}/resources/images/SegmentPuzzler.icns")
-    MESSAGE(STATUS "Using APP_ICON: " ${APP_ICON})
-    set_source_files_properties(${APP_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    set(ICON_COMPOSER_NAME "SegmentPuzzler")
+    set(ICON_COMPOSER_FILE
+            "${CMAKE_SOURCE_DIR}/resources/images/${ICON_COMPOSER_NAME}.icon")
+    set(ICON_COMPOSER_INPUTS
+            "${ICON_COMPOSER_FILE}/icon.json"
+            "${ICON_COMPOSER_FILE}/Assets/SegmentPuzzler-heart.svg")
+
+    find_program(SEGMENT_PUZZLER_XCRUN_EXECUTABLE xcrun)
+    if (NOT SEGMENT_PUZZLER_XCRUN_EXECUTABLE)
+        message(FATAL_ERROR "Xcode 26 or newer is required to compile the app icon")
+    endif ()
+
+    set(ICON_COMPOSER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/icon-composer")
+    set(ICON_COMPOSER_ASSETS_CAR "${ICON_COMPOSER_OUTPUT_DIR}/Assets.car")
+    set(ICON_COMPOSER_ICNS "${ICON_COMPOSER_OUTPUT_DIR}/${ICON_COMPOSER_NAME}.icns")
+    set(ICON_COMPOSER_PARTIAL_PLIST "${ICON_COMPOSER_OUTPUT_DIR}/partial-info.plist")
+
+    add_custom_command(
+            OUTPUT
+            "${ICON_COMPOSER_ASSETS_CAR}"
+            "${ICON_COMPOSER_ICNS}"
+            "${ICON_COMPOSER_PARTIAL_PLIST}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${ICON_COMPOSER_OUTPUT_DIR}"
+            COMMAND "${SEGMENT_PUZZLER_XCRUN_EXECUTABLE}" actool
+            "${ICON_COMPOSER_FILE}"
+            --compile "${ICON_COMPOSER_OUTPUT_DIR}"
+            --output-format human-readable-text
+            --notices
+            --warnings
+            --output-partial-info-plist "${ICON_COMPOSER_PARTIAL_PLIST}"
+            --app-icon "${ICON_COMPOSER_NAME}"
+            --enable-on-demand-resources NO
+            --standalone-icon-behavior all
+            --development-region en
+            --target-device mac
+            --minimum-deployment-target "${CMAKE_OSX_DEPLOYMENT_TARGET}"
+            --platform macosx
+            --bundle-identifier "de.joegreiner.${PROJECT_NAME_LOWER}"
+            DEPENDS ${ICON_COMPOSER_INPUTS}
+            COMMENT "Compiling the SegmentPuzzler Icon Composer asset"
+            VERBATIM)
+
+    set(MACOSX_BUNDLE_ICON_FILE "${ICON_COMPOSER_NAME}")
+    set(MACOSX_BUNDLE_ICON_NAME "${ICON_COMPOSER_NAME}")
+    set(APP_ICON_RESOURCES
+            "${ICON_COMPOSER_ASSETS_CAR}"
+            "${ICON_COMPOSER_ICNS}")
+    set_source_files_properties(${APP_ICON_RESOURCES}
+            PROPERTIES
+            GENERATED TRUE
+            MACOSX_PACKAGE_LOCATION "Resources")
+    message(STATUS "Using Icon Composer asset: ${ICON_COMPOSER_FILE}")
 endif ()
 
 set(SEGMENT_PUZZLER_PERFETTO_AVAILABLE FALSE)
@@ -326,11 +374,11 @@ endif()
 
 if (APPLE)
     MESSAGE(STATUS "Using Bundle for MacOS")
-    add_executable(SegmentPuzzler MACOSX_BUNDLE main.cpp mainWindow.cpp ${SRC_CORRECT_ORDER} ${APP_ICON})
+    add_executable(SegmentPuzzler MACOSX_BUNDLE main.cpp mainWindow.cpp ${SRC_CORRECT_ORDER} ${APP_ICON_RESOURCES})
     set_target_properties(SegmentPuzzler PROPERTIES
             MACOSX_BUNDLE_ICON_FILE ${MACOSX_BUNDLE_ICON_FILE}
             MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/resources/Info.plist.in
-            RESOURCE "${APP_ICON}"
+            RESOURCE "${APP_ICON_RESOURCES}"
             )
 else ()
     add_executable(SegmentPuzzler main.cpp mainWindow.cpp ${SRC_CORRECT_ORDER})

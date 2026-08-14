@@ -98,5 +98,6 @@ install(CODE "
 ")
 
 
-set(CPACK_GENERATOR "DRAGNDROP")
+set(CPACK_GENERATOR "DragNDrop")
+set(CPACK_PACKAGE_ICON "${ICON_COMPOSER_ICNS}")
 include(CPack)
