@@ -73,8 +73,6 @@ public slots:
 
     void erodeSegmentationLabel(int posX, int posY);
 
-    void exportDebugInformation();
-
     void setOpeningRadius(int radius);
     void setClosingRadius(int radius);
     void setDilationRadius(int radius);

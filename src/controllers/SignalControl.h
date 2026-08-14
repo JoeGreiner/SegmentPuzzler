@@ -139,7 +139,7 @@ public:
     std::size_t deleteSelectedSegmentationLabels(
         dataType::SegmentsImageType::Pointer expectedSegmentation,
         const std::unordered_set<dataType::SegmentIdType> &labels);
-    void populateDataMenu(QMenu *menu, QAction *loadSampleDataAction);
+    QMenu *populateDataMenu(QMenu *menu, QAction *loadSampleDataAction);
     void populateSegmentationMenu(QMenu *menu);
     int preferredSidebarWidthHint() const;
 

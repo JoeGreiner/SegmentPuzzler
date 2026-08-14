@@ -5,6 +5,7 @@
 #include <QStatusBar>
 #include <QScreen>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDropEvent>
 #include <QFont>
 #include <QHeaderView>
@@ -301,7 +302,40 @@ MainWindow::MainWindow() {
 
     dataMenu = menuBar()->addMenu(tr("&Data"));
     loadSampleSegmentationAction = new QAction(tr("&Download Sample Dataset (100 MB)"), this);
-    mySignalControl->populateDataMenu(dataMenu, loadSampleSegmentationAction);
+    QMenu *exportMenu = mySignalControl->populateDataMenu(dataMenu, loadSampleSegmentationAction);
+    auto *exportXYViewSeriesAction = new QAction(tr("XY View Series..."), this);
+    auto *exportXZViewSeriesAction = new QAction(tr("XZ View Series..."), this);
+    auto *exportYZViewSeriesAction = new QAction(tr("YZ View Series..."), this);
+    auto *exportDebugInformationAction = new QAction(tr("Debug Information..."), this);
+    exportXYViewSeriesAction->setObjectName(QStringLiteral("exportXYViewSeriesAction"));
+    exportXZViewSeriesAction->setObjectName(QStringLiteral("exportXZViewSeriesAction"));
+    exportYZViewSeriesAction->setObjectName(QStringLiteral("exportYZViewSeriesAction"));
+    exportDebugInformationAction->setObjectName(QStringLiteral("exportDebugInformationAction"));
+    if (exportMenu != nullptr) {
+        exportMenu->addSeparator();
+        exportMenu->addAction(exportXYViewSeriesAction);
+        exportMenu->addAction(exportXZViewSeriesAction);
+        exportMenu->addAction(exportYZViewSeriesAction);
+        exportMenu->addSeparator();
+        exportMenu->addAction(exportDebugInformationAction);
+    }
+    connect(exportXYViewSeriesAction, &QAction::triggered, this, [this]() {
+        exportViewSeries(myOrthowindow != nullptr ? myOrthowindow->xy : nullptr);
+    });
+    connect(exportXZViewSeriesAction, &QAction::triggered, this, [this]() {
+        exportViewSeries(myOrthowindow != nullptr ? myOrthowindow->xz : nullptr);
+    });
+    connect(exportYZViewSeriesAction, &QAction::triggered, this, [this]() {
+        exportViewSeries(myOrthowindow != nullptr ? myOrthowindow->zy : nullptr);
+    });
+    connect(exportDebugInformationAction, &QAction::triggered,
+            this, &MainWindow::exportDebugInformation);
+    for (QAction *action : {exportXYViewSeriesAction,
+                            exportXZViewSeriesAction,
+                            exportYZViewSeriesAction,
+                            exportDebugInformationAction}) {
+        connect(taskRunner.get(), &TaskRunner::busyChanged, action, &QAction::setDisabled);
+    }
     connect(loadSampleSegmentationAction, &QAction::triggered, this, [this]() {
         QMetaObject::invokeMethod(this, "loadSegmentationSample", Qt::QueuedConnection);
     });
@@ -1287,9 +1321,7 @@ void MainWindow::showHotkeys() {
         {tr("F8"), tr("Open the Segment Feature Table.")}
     });
     addSection(tr("Export & Diagnostics"), {
-        {tr("U"), tr("Export a screenshot of the current orthogonal views.")},
-        {tr("V"), tr("Export the current view series for video generation.")},
-        {tr("E"), tr("Export debug graph and image information.")}
+        {tr("U"), tr("Export a screenshot of the current orthogonal views.")}
     });
 
     layout->addWidget(shortcutTree, 1);
@@ -1304,6 +1336,78 @@ void MainWindow::showHotkeys() {
 
 void MainWindow::receiveStatusMessage(const QString& string) {
     statusBar()->showMessage(string);
+}
+
+void MainWindow::exportViewSeries(AnnotationSliceViewer *viewer) {
+    if (viewer == nullptr) {
+        return;
+    }
+    if (!viewer->hasSignals()) {
+        QMessageBox::information(
+            this,
+            tr("View Series Export Unavailable"),
+            tr("Load at least one layer before exporting a view series."));
+        return;
+    }
+
+    const auto exportSpec = viewer->viewSeriesExportSpec();
+    if (!exportSpec.has_value()) {
+        SP_LOG_ERROR("io", QStringLiteral("Cannot export view series for invalid slice axis"));
+        return;
+    }
+
+    const QDir exportDirectory(
+        QDir::current().absoluteFilePath(SliceViewer::exportDirectoryName()));
+    int existingFileCount = 0;
+    for (int sliceIndex = 0; sliceIndex < exportSpec->sliceCount; ++sliceIndex) {
+        if (exportDirectory.exists(exportSpec->fileName(sliceIndex))) {
+            ++existingFileCount;
+        }
+    }
+
+    if (existingFileCount > 0) {
+        const auto reply = QMessageBox::question(
+            this,
+            tr("Overwrite View Series Files?"),
+            tr("%1 of %2 PNG files for the %3 view already exist in:\n%4\n\n"
+               "Do you want to overwrite them?")
+                .arg(existingFileCount)
+                .arg(exportSpec->sliceCount)
+                .arg(exportSpec->planeName)
+                .arg(exportDirectory.absolutePath()),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (reply != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    viewer->exportViewSeries();
+}
+
+void MainWindow::exportDebugInformation() {
+    if (graphBase == nullptr || graphBase->pGraph == nullptr
+        || graphBase->pEdgesInitialSegmentsImage == nullptr
+        || graphBase->pWorkingSegmentsImage == nullptr) {
+        QMessageBox::information(
+            this,
+            tr("Debug Export Unavailable"),
+            tr("Load supervoxels before exporting debug information."));
+        return;
+    }
+
+    const auto reply = QMessageBox::question(
+        this,
+        tr("Export Debug Information"),
+        tr("This can export a lot of debug information into several files. Do you want to continue?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (reply != QMessageBox::Yes) {
+        return;
+    }
+
+    SP_LOG_INFO("segmentation", QStringLiteral("Exporting graph debug information"));
+    graphBase->pGraph->exportDebugInformation();
 }
 
 void MainWindow::arm3DSegmentSplit() {

@@ -378,9 +378,6 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("u", "U", "Screenshot",
                            "Press U to export a screenshot of the current orthogonal views.",
                            isFlashed("u")),
-        createShortcutHint("v", "V", "Video Export",
-                           "Press V to export the current view series for video generation.",
-                           isFlashed("v")),
         createShortcutHint("f9", "F9", "Go To XYZ",
                            "Press F9 to jump directly to explicit x, y, z coordinates.",
                            isFlashed("f9")),
@@ -399,9 +396,6 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         createShortcutHint("f1", "F1", "Hotkeys",
                            "Press F1 to open the full hotkey reference dialog.",
                            isFlashed("f1")),
-        createShortcutHint("e", "E", "Debug",
-                           "Press E to export debug graph and image information to files.",
-                           isFlashed("e")),
         createShortcutHint("m", "M", "3D View",
                            "Hold M and click to open a 3D surface view of the clicked segment.",
                            activeTool == SliceViewer::ToolMode::View3D || isFlashed("m")),
@@ -423,8 +417,6 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
         "slice",
         "brush",
         "u",
-        "v",
-        "e",
     };
 
     std::vector<ShortcutHintPresentation> filteredHints;

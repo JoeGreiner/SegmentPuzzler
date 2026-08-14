@@ -2274,9 +2274,9 @@ void SignalControl::addImage(QString fileName, QString displayedName) {
     addImageAsync(fileName, displayedName);
 }
 
-void SignalControl::populateDataMenu(QMenu *menu, QAction *loadSampleDataAction) {
+QMenu *SignalControl::populateDataMenu(QMenu *menu, QAction *loadSampleDataAction) {
     if (menu == nullptr) {
-        return;
+        return nullptr;
     }
 
     if (loadSampleDataAction != nullptr) {
@@ -2290,7 +2290,9 @@ void SignalControl::populateDataMenu(QMenu *menu, QAction *loadSampleDataAction)
     menu->addAction(loadSegmentationAction);
     menu->addSeparator();
     menu->addAction(createEmptySegmentationAction);
-    menu->addAction(exportSegmentationAction);
+    QMenu *exportMenu = menu->addMenu(tr("Export"));
+    exportMenu->addAction(exportSegmentationAction);
+    return exportMenu;
 }
 
 void SignalControl::populateSegmentationMenu(QMenu *menu) {
@@ -2340,7 +2342,7 @@ void SignalControl::createMenuActions() {
     createAction(loadRefinementAction, tr("Load Refinement"), &SignalControl::loadRefinementPressed);
     createAction(createEmptySegmentationAction, tr("Create Empty Segmentation"), &SignalControl::createEmptySegmentation);
     createAction(loadSegmentationAction, tr("Load Segmentation"), &SignalControl::loadSegmentationVolumePressed);
-    createAction(exportSegmentationAction, tr("Export Selected Segmentation"), &SignalControl::exportSelectedSegmentation);
+    createAction(exportSegmentationAction, tr("Selected Segmentation..."), &SignalControl::exportSelectedSegmentation);
     createAction(runWatershedAction, tr("Run Watershed"), &SignalControl::runWatershed);
     createAction(mergeWithRefinementAction, tr("Merge Supervoxels that Share a Refinement Label"), &SignalControl::mergeSupervoxelsByRefinementLabel);
     createAction(setIdTransparentAction, tr("Set Transparent Label ID in Refinement"), &SignalControl::setTransparentLabelIdInRefinement);

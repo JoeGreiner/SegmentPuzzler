@@ -35,6 +35,7 @@ private slots:
     void showSegmentTable();
     void showLayerRenderOrder();
     void arm3DSegmentSplit();
+    void exportDebugInformation();
     void showLoggingSettings();
     void showVoxelSpacingSettings();
 
@@ -59,6 +60,7 @@ private:
     void installInitialFileDropHandling();
     void registerDropTarget(QWidget *widget);
     void update3DSegmentSplitActionState();
+    void exportViewSeries(AnnotationSliceViewer *viewer);
 };
 
 #endif //SEGMENTCOUPLER_MAINWINDOW_H

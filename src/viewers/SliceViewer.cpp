@@ -628,63 +628,61 @@ void SliceViewer::setLinkedSlider(QSlider *linkedSliderIn) {
     linkedSlider = linkedSliderIn;
 }
 
+QString SliceViewer::ViewSeriesExportSpec::fileName(int sliceIndex) const {
+    return QStringLiteral("%1_%2.png").arg(filePrefix).arg(sliceIndex);
+}
+
+std::optional<SliceViewer::ViewSeriesExportSpec> SliceViewer::viewSeriesExportSpec() const {
+    switch (sliceAxis) {
+        case 0:
+            return ViewSeriesExportSpec{QStringLiteral("YZ"), QStringLiteral("ZY"), dimX};
+        case 1:
+            return ViewSeriesExportSpec{QStringLiteral("XZ"), QStringLiteral("XZ"), dimY};
+        case 2:
+            return ViewSeriesExportSpec{QStringLiteral("XY"), QStringLiteral("XY"), dimZ};
+        default:
+            return std::nullopt;
+    }
+}
+
+QString SliceViewer::exportDirectoryName() {
+    return QStringLiteral("imgExport");
+}
+
 
 void SliceViewer::exportView() {
-    std::string prefix;
-    switch (sliceAxis) {
-        case 0:
-            prefix = "ZY";
-            break;
-        case 1:
-            prefix = "XZ";
-            break;
-        case 2:
-            prefix = "XY";
-            break;
-        default:
-            throw std::logic_error("SliceAxis not implemented!");
+    const auto spec = viewSeriesExportSpec();
+    if (!spec.has_value()) {
+        throw std::logic_error("SliceAxis not implemented!");
     }
-    exportCurrentImageToFile(prefix);
+    exportCurrentImageToFile(spec->filePrefix + QStringLiteral(".png"));
 }
 
 
-void SliceViewer::exportVideo() {
-    int maxSliceIndex;
-    std::string prefix;
-    switch (sliceAxis) {
-        case 0:
-            maxSliceIndex = dimX;
-            prefix = "ZY";
-            break;
-        case 1:
-            maxSliceIndex = dimY;
-            prefix = "XZ";
-            break;
-        case 2:
-            maxSliceIndex = dimZ;
-            prefix = "XY";
-            break;
-        default:
-            throw std::logic_error("SliceAxis not implemented!");
+void SliceViewer::exportViewSeries() {
+    const auto spec = viewSeriesExportSpec();
+    if (!spec.has_value()) {
+        throw std::logic_error("SliceAxis not implemented!");
     }
-    std::string tmpFileName;
-    for (int i = 0; i < maxSliceIndex; i++) {
-        tmpFileName = prefix + "_" + std::to_string(i);
+    const int originalSliceIndex = sliceIndex;
+    for (int i = 0; i < spec->sliceCount; ++i) {
         setSliceIndex(i);
-        exportCurrentImageToFile(tmpFileName);
+        exportCurrentImageToFile(spec->fileName(i));
     }
+    setSliceIndex(originalSliceIndex);
 }
 
-void SliceViewer::exportCurrentImageToFile(std::string filePrefix) {
-    filePrefix = "imgExport/" + filePrefix + ".png";
+void SliceViewer::exportCurrentImageToFile(const QString &fileName) {
+    const QString directoryName = exportDirectoryName();
+    QDir().mkpath(directoryName);
+    const QString filePath = QDir(directoryName).filePath(fileName);
 
-    SP_LOG_INFO("io", QStringLiteral("Saving current view to %1").arg(QString::fromStdString(filePrefix)));
-    QDir().mkpath(QStringLiteral("imgExport"));
-    QFile file(filePrefix.c_str());
+    SP_LOG_INFO("io", QStringLiteral("Saving current view to %1").arg(filePath));
+    QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {
         SP_LOG_WARNING("io",
                        QStringLiteral("Unable to open %1 for writing: %2")
-                               .arg(QString::fromStdString(filePrefix), file.errorString()));
+                               .arg(filePath, file.errorString()));
         return;
     }
 
@@ -696,7 +694,7 @@ void SliceViewer::exportCurrentImageToFile(std::string filePrefix) {
     drawActiveSignalLayers(painter, backGroundImage.rect());
 
     if (!newPixmap.save(&file, "PNG")) {
-        SP_LOG_WARNING("io", QStringLiteral("Unable to save PNG to %1").arg(QString::fromStdString(filePrefix)));
+        SP_LOG_WARNING("io", QStringLiteral("Unable to save PNG to %1").arg(filePath));
     }
 }
 
@@ -710,6 +708,10 @@ int SliceViewer::getDimY() const {
 
 int SliceViewer::getDimZ() const {
     return dimZ;
+}
+
+bool SliceViewer::hasSignals() const {
+    return numberSignals > 0;
 }
 
 void SliceViewer::addLinkedViewers(SliceViewer * viewer) {

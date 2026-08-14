@@ -11,6 +11,8 @@
 #include "src/segment_handling/Graph.h"
 #include "src/viewers/VoxelSpacing.h"
 
+#include <optional>
+
 class TaskRunner;
 class OrthoViewer;
 class QPainter;
@@ -22,6 +24,14 @@ public:
     static const int Dimension = dataType::Dimension;
     using CharImageType = itk::Image<unsigned char, Dimension>;
     using ShortImageType = itk::Image<short, Dimension>;
+
+    struct ViewSeriesExportSpec {
+        QString planeName;
+        QString filePrefix;
+        int sliceCount = 0;
+
+        QString fileName(int sliceIndex) const;
+    };
 
 //    ~SliceViewer() override;
 
@@ -146,10 +156,10 @@ public slots:
 
     void setSliceIndex(int proposedSliceIndex);
 
-    void exportCurrentImageToFile(std::string fileName);
+    void exportCurrentImageToFile(const QString &fileName);
 
     void exportView();
-    void exportVideo();
+    void exportViewSeries();
 
 
 protected:
@@ -192,6 +202,11 @@ public:
     int getDimY() const;
 
     int getDimZ() const;
+
+    bool hasSignals() const;
+
+    std::optional<ViewSeriesExportSpec> viewSeriesExportSpec() const;
+    static QString exportDirectoryName();
 
 protected:
 

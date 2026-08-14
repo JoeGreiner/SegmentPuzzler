@@ -154,8 +154,6 @@ std::optional<SliceViewer::ToolMode> transientToolModeForKey(int key) {
 
 bool isOneShotViewerCommandKey(int key) {
     return key == Qt::Key_U
-           || key == Qt::Key_V
-           || key == Qt::Key_E
            || key == Qt::Key_N;
 }
 
@@ -602,11 +600,6 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             orthoViewer()->flashShortcutLegendKey("u");
         }
         this->exportView();
-    } else if (event->key() == Qt::Key_V) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("v");
-        }
-        this->exportVideo();
     } else if (event->key() == Qt::Key_S) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Transfer);
     } else if (event->key() == Qt::Key_P) {
@@ -627,17 +620,6 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Erode);
     } else if (event->key() == Qt::Key_H) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Insert);
-    } else if (event->key() == Qt::Key_E) {
-        if (orthoViewer() != nullptr) {
-            orthoViewer()->flashShortcutLegendKey("e");
-        }
-        exportDebugInformation();
-//        graphBase->pGraph->printMergeTreeToFile("mergeTree.txt");
-//        graphBase->pGraph->printEdgesToFile("edges.txt");
-//        graphBase->pGraph->printEdgeIdLookupToFile("edgeIds.txt");
-//        graphBase->pGraph->writeInitialEdgesToFile("initialEdges.nrrd");
-//    } else if(event->key() == Qt::Key_F) {
-//        graphBase->pGraph->printMergeTreeToFile("mergeTree.txt");
     } else if (event->key() == Qt::Key_W) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("3dsplit");
@@ -1121,30 +1103,6 @@ void AnnotationSliceViewer::show3DAllLabelsView() {
                 openPrepared3DView(std::move(preparedScene), 2, true);
             }
         });
-}
-
-void AnnotationSliceViewer::exportDebugInformation() {
-    if (graphBase == nullptr || graphBase->pGraph == nullptr ||
-        graphBase->pEdgesInitialSegmentsImage == nullptr ||
-        graphBase->pWorkingSegmentsImage == nullptr) {
-        QMessageBox::information(this,
-                                 tr("Debug Export Unavailable"),
-                                 tr("Load supervoxels before exporting debug information."));
-        return;
-    }
-
-    const auto reply = QMessageBox::question(
-        this,
-        tr("Export Debug Information"),
-        tr("This can export a lot of debug information into several files. Do you want to continue?"),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (reply != QMessageBox::Yes) {
-        return;
-    }
-
-    SP_LOG_INFO("segmentation", QStringLiteral("Exporting graph debug information"));
-    graphBase->pGraph->exportDebugInformation();
 }
 
 void AnnotationSliceViewer::keyReleaseEvent(QKeyEvent *event) {
