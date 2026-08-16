@@ -61,9 +61,11 @@ namespace {
 
 constexpr char kSettingsGroup[] = "SegmentFeatureTable";
 using FeatureBoolMember = bool SegmentTableDialog::FeatureFlags::*;
-const std::array<std::pair<const char *, FeatureBoolMember>, 17> kFeatureBoolSettings{{
+const std::array<std::pair<const char *, FeatureBoolMember>, 19> kFeatureBoolSettings{{
     {"volume", &SegmentTableDialog::FeatureFlags::volume},
     {"isIsolated", &SegmentTableDialog::FeatureFlags::isIsolated},
+    {"backgroundExposure", &SegmentTableDialog::FeatureFlags::backgroundExposure},
+    {"foregroundExposure", &SegmentTableDialog::FeatureFlags::foregroundExposure},
     {"physicalSize", &SegmentTableDialog::FeatureFlags::physicalSize},
     {"pixelsOnBorder", &SegmentTableDialog::FeatureFlags::pixelsOnBorder},
     {"overridePixelSize", &SegmentTableDialog::FeatureFlags::overridePixelSize},
@@ -201,12 +203,22 @@ QStandardItem *makeBooleanItem(bool value) {
     return item;
 }
 
-std::unordered_map<dataType::SegmentIdType, bool> computeIsolationByLabel(
-    dataType::SegmentsImageType::Pointer segImage) {
-    std::unordered_map<dataType::SegmentIdType, bool> isolationByLabel;
+struct LabelContactFeatures {
+    bool isIsolated = true;
+    std::size_t surfaceVoxelCount = 0;
+    std::size_t backgroundTouchingVoxelCount = 0;
+    std::size_t foregroundTouchingVoxelCount = 0;
+};
+
+std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelContactFeatures(
+    const dataType::SegmentsImageType::Pointer &segImage,
+    bool computeExposureRatios,
+    std::size_t expectedLabelCount) {
+    std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> featuresByLabel;
     if (segImage == nullptr) {
-        return isolationByLabel;
+        return featuresByLabel;
     }
+    featuresByLabel.reserve(expectedLabelCount);
 
     const auto size = segImage->GetLargestPossibleRegion().GetSize();
     const size_t dimX = size[0];
@@ -224,15 +236,52 @@ std::unordered_map<dataType::SegmentIdType, bool> computeIsolationByLabel(
                     continue;
                 }
 
-                isolationByLabel.try_emplace(label, true);
+                auto &features = featuresByLabel[label];
+
+                if (computeExposureRatios) {
+                    bool isSurfaceVoxel = false;
+                    bool touchesBackground = false;
+                    bool touchesForeground = false;
+                    const auto inspectNeighbor = [&](size_t neighborIndex) {
+                        const dataType::SegmentIdType neighborLabel = buffer[neighborIndex];
+                        if (neighborLabel == label) {
+                            return;
+                        }
+                        isSurfaceVoxel = true;
+                        if (neighborLabel == 0) {
+                            touchesBackground = true;
+                        } else {
+                            touchesForeground = true;
+                            features.isIsolated = false;
+                        }
+                    };
+                    const auto inspectImageExterior = [&]() {
+                        isSurfaceVoxel = true;
+                        touchesBackground = true;
+                    };
+
+                    if (x > 0) inspectNeighbor(index - 1); else inspectImageExterior();
+                    if (x + 1 < dimX) inspectNeighbor(index + 1); else inspectImageExterior();
+                    if (y > 0) inspectNeighbor(index - dimX); else inspectImageExterior();
+                    if (y + 1 < dimY) inspectNeighbor(index + dimX); else inspectImageExterior();
+                    if (dimZ > 1) {
+                        if (z > 0) inspectNeighbor(index - planeXY); else inspectImageExterior();
+                        if (z + 1 < dimZ) inspectNeighbor(index + planeXY); else inspectImageExterior();
+                    }
+
+                    features.surfaceVoxelCount += isSurfaceVoxel ? 1 : 0;
+                    features.backgroundTouchingVoxelCount += touchesBackground ? 1 : 0;
+                    features.foregroundTouchingVoxelCount += touchesForeground ? 1 : 0;
+                    continue;
+                }
 
                 const auto markNonIsolatedPair = [&](size_t neighborIndex) {
                     const dataType::SegmentIdType neighborLabel = buffer[neighborIndex];
                     if (neighborLabel == 0 || neighborLabel == label) {
                         return;
                     }
-                    isolationByLabel[label] = false;
-                    isolationByLabel[neighborLabel] = false;
+                    featuresByLabel[label].isIsolated = false;
+                    featuresByLabel[neighborLabel].isIsolated = false;
                 };
 
                 if (x + 1 < dimX) {
@@ -248,7 +297,7 @@ std::unordered_map<dataType::SegmentIdType, bool> computeIsolationByLabel(
         }
     }
 
-    return isolationByLabel;
+    return featuresByLabel;
 }
 
 template<typename ImageType>
@@ -374,7 +423,6 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
         if (flags.perimeter) {
             row.perimeter = labelObject->GetPerimeter();
         }
-
         if (flags.orientedBBox) {
             const auto size = labelObject->GetOrientedBoundingBoxSize();
             row.obboxW = size[0];
@@ -576,6 +624,16 @@ QWidget *SegmentTableDialog::createSetupPage() {
         auto *gb = makeGroup("Basic Measurements", grid);
         cbVolume            = new QCheckBox("Pixel / voxel count");              cbVolume->setChecked(true);
         cbIsIsolated        = new QCheckBox("Is Isolated");                      cbIsIsolated->setChecked(true);
+        cbBackgroundExposure = new QCheckBox("Background Exposure");              cbBackgroundExposure->setChecked(false);
+        cbBackgroundExposure->setToolTip(
+            "Fraction of surface voxels that touch background (label 0). "
+            "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D; "
+            "the image exterior counts as background. A voxel may contribute to both exposure ratios.");
+        cbForegroundExposure = new QCheckBox("Foreground Exposure");              cbForegroundExposure->setChecked(false);
+        cbForegroundExposure->setToolTip(
+            "Fraction of surface voxels that touch another non-zero label. "
+            "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D. "
+            "A voxel may contribute to both exposure ratios.");
         cbPhysicalSize      = new QCheckBox("Physical Size");                    cbPhysicalSize->setChecked(false);
         cbPixelsOnBorder    = new QCheckBox("Pixels on Border");                 cbPixelsOnBorder->setChecked(false);
         cbPerimeterOnBorder = new QCheckBox("Perimeter on Border (physical)");   cbPerimeterOnBorder->setChecked(false);
@@ -589,11 +647,13 @@ QWidget *SegmentTableDialog::createSetupPage() {
             "N also counts pixels up to and including N pixels inward.");
         grid->addWidget(cbVolume,            0, 0);
         grid->addWidget(cbIsIsolated,        0, 1);
-        grid->addWidget(cbPhysicalSize,      1, 0);
-        grid->addWidget(borderDistanceLabel, 2, 0);
-        grid->addWidget(borderDistanceSpinBox, 2, 1);
-        grid->addWidget(cbPixelsOnBorder,    3, 0);
-        grid->addWidget(cbPerimeterOnBorder, 3, 1);
+        grid->addWidget(cbBackgroundExposure, 1, 0);
+        grid->addWidget(cbForegroundExposure, 1, 1);
+        grid->addWidget(cbPhysicalSize,      2, 0);
+        grid->addWidget(borderDistanceLabel, 3, 0);
+        grid->addWidget(borderDistanceSpinBox, 3, 1);
+        grid->addWidget(cbPixelsOnBorder,    4, 0);
+        grid->addWidget(cbPerimeterOnBorder, 4, 1);
         vContent->addWidget(gb);
     }
 
@@ -709,7 +769,8 @@ QWidget *SegmentTableDialog::createResultsPage() {
     model->setColumnCount(SegmentTableDialog::COL_COUNT);
     model->setHorizontalHeaderLabels({
         "Label",
-        "Volume", "Isolated", "Physical Size", "Px on Border", "Perim on Border",
+        "Volume", "Isolated", "Background Exposure", "Foreground Exposure",
+        "Physical Size", "Px on Border", "Perim on Border",
         "CX", "CY", "CZ",
         "BBox W", "BBox H", "BBox D",
         "Elongation", "Flatness", "Roundness",
@@ -773,6 +834,8 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     FeatureFlags f;
     f.volume            = cbVolume->isChecked();
     f.isIsolated        = cbIsIsolated->isChecked();
+    f.backgroundExposure = cbBackgroundExposure->isChecked();
+    f.foregroundExposure = cbForegroundExposure->isChecked();
     f.physicalSize      = cbPhysicalSize->isChecked();
     f.pixelsOnBorder    = cbPixelsOnBorder->isChecked();
     f.borderDistancePx  = borderDistanceSpinBox->value();
@@ -797,6 +860,8 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
 void SegmentTableDialog::applyFlagsToUi(const FeatureFlags &flags) {
     cbVolume->setChecked(flags.volume);
     cbIsIsolated->setChecked(flags.isIsolated);
+    cbBackgroundExposure->setChecked(flags.backgroundExposure);
+    cbForegroundExposure->setChecked(flags.foregroundExposure);
     cbPhysicalSize->setChecked(flags.physicalSize);
     cbPixelsOnBorder->setChecked(flags.pixelsOnBorder);
     borderDistanceSpinBox->setValue(flags.borderDistancePx);
@@ -911,7 +976,8 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
                        "flatness=%5 roundness=%6 bbox=%7 physicalSize=%8 pixelsOnBorder=%9 "
                        "borderDistancePx=%10 perimeterOnBorder=%11 equivSphRadius=%12 equivSphPerimeter=%13 "
                        "equivEllipsoid=%14 principalMoments=%15 perimeter=%16 orientedBBox=%17 "
-                       "overridePixelSize=%18 pixelSize=%19 physicalUnit=%20")
+                       "overridePixelSize=%18 pixelSize=%19 physicalUnit=%20 "
+                       "backgroundExposure=%21 foregroundExposure=%22")
             .arg(flags.volume)
             .arg(flags.isIsolated)
             .arg(flags.centroid)
@@ -931,7 +997,9 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
             .arg(flags.orientedBBox)
             .arg(flags.overridePixelSize)
             .arg(flags.pixelSize)
-            .arg(flags.physicalUnit));
+            .arg(flags.physicalUnit)
+            .arg(flags.backgroundExposure)
+            .arg(flags.foregroundExposure));
 
     // Switch to results page immediately so the user sees the computing state.
     computeButton->setEnabled(false);
@@ -1058,7 +1126,9 @@ void SegmentTableDialog::onMergeWithNeighborClicked() {
 }
 
 void SegmentTableDialog::setAllChecked(bool checked) {
-    for (QCheckBox *cb : {cbVolume, cbIsIsolated, cbPhysicalSize, cbPixelsOnBorder, cbPerimeterOnBorder,
+    for (QCheckBox *cb : {cbVolume, cbIsIsolated, cbBackgroundExposure, cbForegroundExposure,
+                          cbPhysicalSize,
+                          cbPixelsOnBorder, cbPerimeterOnBorder,
                           cbCentroid, cbBBox, cbElongation, cbFlatness, cbRoundness,
                           cbEquivSphRadius, cbEquivSphPerimeter, cbEquivEllipsoid,
                           cbPrincipalMoments, cbPerimeter, cbOrientedBBox}) {
@@ -1438,11 +1508,28 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
         result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(segImage, flags);
     }
 
-    if (flags.isIsolated) {
-        const auto isolationByLabel = computeIsolationByLabel(segImage);
+    if (flags.isIsolated || flags.backgroundExposure || flags.foregroundExposure) {
+        const auto contactFeaturesByLabel = computeLabelContactFeatures(
+            segImage, flags.backgroundExposure || flags.foregroundExposure, result.rows.size());
         for (SegmentRow &row : result.rows) {
-            const auto isolationIt = isolationByLabel.find(row.label);
-            row.isIsolated = isolationIt == isolationByLabel.end() || isolationIt->second;
+            const auto featureIt = contactFeaturesByLabel.find(row.label);
+            if (featureIt == contactFeaturesByLabel.end()) {
+                continue;
+            }
+            const LabelContactFeatures &contactFeatures = featureIt->second;
+            if (flags.isIsolated) {
+                row.isIsolated = contactFeatures.isIsolated;
+            }
+            if (flags.backgroundExposure && contactFeatures.surfaceVoxelCount > 0) {
+                row.backgroundExposure =
+                    static_cast<double>(contactFeatures.backgroundTouchingVoxelCount) /
+                    static_cast<double>(contactFeatures.surfaceVoxelCount);
+            }
+            if (flags.foregroundExposure && contactFeatures.surfaceVoxelCount > 0) {
+                row.foregroundExposure =
+                    static_cast<double>(contactFeatures.foregroundTouchingVoxelCount) /
+                    static_cast<double>(contactFeatures.surfaceVoxelCount);
+            }
         }
     }
 
@@ -1699,6 +1786,8 @@ void SegmentTableDialog::populateTable(const ComputeResult &result) {
         model->setItem(r, SegmentTableDialog::COL_LABEL,               labelItem);
         model->setItem(r, SegmentTableDialog::COL_VOLUME,              makeNumericItem(row.volume, 0));
         model->setItem(r, SegmentTableDialog::COL_IS_ISOLATED,         makeBooleanItem(row.isIsolated));
+        model->setItem(r, SegmentTableDialog::COL_BACKGROUND_EXPOSURE, makeNumericItem(row.backgroundExposure));
+        model->setItem(r, SegmentTableDialog::COL_FOREGROUND_EXPOSURE, makeNumericItem(row.foregroundExposure));
         model->setItem(r, SegmentTableDialog::COL_PHYSICAL_SIZE,        makeNumericItem(row.physicalSize, 2));
         model->setItem(r, SegmentTableDialog::COL_PIXELS_ON_BORDER,     makeNumericItem(row.pixelsOnBorder, 0));
         model->setItem(r, SegmentTableDialog::COL_PERIMETER_ON_BORDER,  makeNumericItem(row.perimeterOnBorder, 2));
@@ -1788,6 +1877,10 @@ void SegmentTableDialog::updateColumnHeaders(const FeatureFlags &flags, bool is2
 
     model->setHeaderData(SegmentTableDialog::COL_VOLUME, Qt::Horizontal,
                          is2D ? QStringLiteral("# Pixels") : QStringLiteral("# Voxels"));
+    model->setHeaderData(SegmentTableDialog::COL_BACKGROUND_EXPOSURE, Qt::Horizontal,
+                         QStringLiteral("Background Exposure"));
+    model->setHeaderData(SegmentTableDialog::COL_FOREGROUND_EXPOSURE, Qt::Horizontal,
+                         QStringLiteral("Foreground Exposure"));
     model->setHeaderData(SegmentTableDialog::COL_PHYSICAL_SIZE, Qt::Horizontal,
                          is2D ? withUnit("Physical Area", 2) : "Physical Size");
     model->setHeaderData(
@@ -1841,6 +1934,12 @@ void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f, bool is2D
 
     if (f.volume)            tableView->setColumnHidden(SegmentTableDialog::COL_VOLUME, false);
     if (f.isIsolated)        tableView->setColumnHidden(SegmentTableDialog::COL_IS_ISOLATED, false);
+    if (f.backgroundExposure) {
+        tableView->setColumnHidden(SegmentTableDialog::COL_BACKGROUND_EXPOSURE, false);
+    }
+    if (f.foregroundExposure) {
+        tableView->setColumnHidden(SegmentTableDialog::COL_FOREGROUND_EXPOSURE, false);
+    }
     if (f.physicalSize)      tableView->setColumnHidden(SegmentTableDialog::COL_PHYSICAL_SIZE, false);
     if (f.pixelsOnBorder)    tableView->setColumnHidden(SegmentTableDialog::COL_PIXELS_ON_BORDER, false);
     if (f.perimeterOnBorder) tableView->setColumnHidden(SegmentTableDialog::COL_PERIMETER_ON_BORDER, false);

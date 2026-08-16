@@ -50,6 +50,8 @@ public:
     struct FeatureFlags {
         bool volume            = true;
         bool isIsolated        = true;
+        bool backgroundExposure = false;
+        bool foregroundExposure = false;
         bool physicalSize      = false;
         bool pixelsOnBorder    = false;
         int borderDistancePx   = 0;
@@ -78,6 +80,8 @@ public:
 
         double volume = -1, physicalSize = -1;
         bool isIsolated = true;
+        double backgroundExposure = -1;
+        double foregroundExposure = -1;
         double pixelsOnBorder = -1, perimeterOnBorder = -1;
         double bboxW = -1, bboxH = -1, bboxD = -1;
         double elongation = -1, flatness = -1, roundness = -1;
@@ -100,32 +104,34 @@ public:
         COL_LABEL               = 0,
         COL_VOLUME              = 1,
         COL_IS_ISOLATED         = 2,
-        COL_PHYSICAL_SIZE       = 3,
-        COL_PIXELS_ON_BORDER    = 4,
-        COL_PERIMETER_ON_BORDER = 5,
-        COL_CX                  = 6,
-        COL_CY                  = 7,
-        COL_CZ                  = 8,
-        COL_BBOX_W              = 9,
-        COL_BBOX_H              = 10,
-        COL_BBOX_D              = 11,
-        COL_ELONGATION          = 12,
-        COL_FLATNESS            = 13,
-        COL_ROUNDNESS           = 14,
-        COL_EQUIV_SPH_RADIUS    = 15,
-        COL_EQUIV_SPH_PERIM     = 16,
-        COL_EQUIV_ELLIP_D0      = 17,
-        COL_EQUIV_ELLIP_D1      = 18,
-        COL_EQUIV_ELLIP_D2      = 19,
-        COL_PRINCIPAL_MOM0      = 20,
-        COL_PRINCIPAL_MOM1      = 21,
-        COL_PRINCIPAL_MOM2      = 22,
-        COL_PERIMETER           = 23,
-        COL_OBBOX_W             = 24,
-        COL_OBBOX_H             = 25,
-        COL_OBBOX_D             = 26,
-        COL_OBBOX_VOLUME        = 27,
-        COL_COUNT               = 28
+        COL_BACKGROUND_EXPOSURE = 3,
+        COL_FOREGROUND_EXPOSURE = 4,
+        COL_PHYSICAL_SIZE       = 5,
+        COL_PIXELS_ON_BORDER    = 6,
+        COL_PERIMETER_ON_BORDER = 7,
+        COL_CX                  = 8,
+        COL_CY                  = 9,
+        COL_CZ                  = 10,
+        COL_BBOX_W              = 11,
+        COL_BBOX_H              = 12,
+        COL_BBOX_D              = 13,
+        COL_ELONGATION          = 14,
+        COL_FLATNESS            = 15,
+        COL_ROUNDNESS           = 16,
+        COL_EQUIV_SPH_RADIUS    = 17,
+        COL_EQUIV_SPH_PERIM     = 18,
+        COL_EQUIV_ELLIP_D0      = 19,
+        COL_EQUIV_ELLIP_D1      = 20,
+        COL_EQUIV_ELLIP_D2      = 21,
+        COL_PRINCIPAL_MOM0      = 22,
+        COL_PRINCIPAL_MOM1      = 23,
+        COL_PRINCIPAL_MOM2      = 24,
+        COL_PERIMETER           = 25,
+        COL_OBBOX_W             = 26,
+        COL_OBBOX_H             = 27,
+        COL_OBBOX_D             = 28,
+        COL_OBBOX_VOLUME        = 29,
+        COL_COUNT               = 30
     };
 
     // Runs on a worker thread — must not touch QWidgets.
@@ -203,7 +209,9 @@ private:
     QStackedWidget *stack = nullptr;
 
     // ---- Setup page ----
-    QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr, *cbPhysicalSize = nullptr;
+    QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr;
+    QCheckBox *cbBackgroundExposure = nullptr, *cbForegroundExposure = nullptr;
+    QCheckBox *cbPhysicalSize = nullptr;
     QCheckBox *cbPixelsOnBorder = nullptr, *cbPerimeterOnBorder = nullptr;
     QSpinBox *borderDistanceSpinBox = nullptr;
     QCheckBox *overridePixelSizeCheckBox = nullptr;
