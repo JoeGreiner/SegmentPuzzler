@@ -321,58 +321,6 @@ void SegmentManager::removeWorkingEdge(WorkingEdge *workingEdgeToRemove) {
 }
 
 
-// === compute ===
-void SegmentManager::recomputeVoxelListAndOneSidedEdgesIfShrinked(
-        std::vector<SegmentIdType> vecOfConnectedInitialNodeIds) {
-    // Attention: Here has to be true: WorkingNode == InitialNode!!
-
-
-    for (auto id : vecOfConnectedInitialNodeIds) {
-        InitialNode *pInitialNode = pInitialNodes->at(id).get();
-
-        bool voxelListChanged = false;
-        std::vector<Voxel> updateVoxelList;
-        updateVoxelList.reserve(pInitialNode->voxels.size());
-
-        // check if one of the labeles is replaced by the refinement ws
-        for (auto voxel : (pInitialNode->voxels)) {
-            if ((*ppWorkingSegmentsImage)->GetPixel({voxel.x, voxel.y, voxel.z}) == pInitialNode->getLabel()) {
-                updateVoxelList.emplace_back(voxel.x, voxel.y, voxel.z);
-            }
-        }
-        // if size changed, update voxel list
-        if (updateVoxelList.size() != pInitialNode->voxels.size()) {
-            voxelListChanged = true;
-            pInitialNode->voxels = updateVoxelList;
-        }
-
-        if (voxelListChanged) {
-            //TODO: split all neighbors into initial nodes!
-
-            removeEdgePropertiesOnInitialNode(pInitialNode);
-
-            for (auto edge : pInitialNode->onesidedEdges) {
-                SegmentIdType connectedWorkingNode = pInitialNodes->at(edge.first)->getCurrentWorkingNodeLabel();
-                //TODO: Dont split but use edge to get coordinate and only subtract initial node at edge?
-                splitWorkingNodeIntoInitialNodes(connectedWorkingNode);
-                //                splitWorkingNodeIntoInitialNodes()
-            }
-
-
-            computeOneSidedEdgesOnInitialNode(pInitialNode);
-            for (auto &edge : pInitialNode->onesidedEdges) {
-                // TODO: this is ugly, add a function to add the initial edge!
-
-
-                auto pNewEdge = std::shared_ptr<InitialEdge>(
-                        pInitialNode->computeCorrospondingOneSidedEdge(edge.second.get()));
-                (*pInitialNodes)[edge.first]->onesidedEdges[pInitialNode->getLabel()] = pNewEdge;
-            }
-        }
-    }
-}
-
-
 void SegmentManager::removeInitialNodeFromWorkingNodeAtPosition(int x, int y, int z) {
     // as initialnodes are not saved explicitly, workaround:
     // unsplit working node into all initialnode

@@ -1,11 +1,10 @@
 #include "initialNode.h"
 #include "workingNode.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/ConnectedComponentLabelSplitter.h"
 #include "src/utils/utils.h"
 #include <QElapsedTimer>
 #include <itkConstShapedNeighborhoodIterator.h>
-#include <itkBinaryThresholdImageFunction.h>
-#include <itkFloodFilledImageFunctionConditionalIterator.h>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_set>
@@ -45,23 +44,19 @@ InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageT
         addFeature(feature);
     }
 
-    SegmentIdType labelInSegmentsImage = pSegmentsIn->GetPixel({x, y, z});
-
-    // create new Node;
-    // Do background check while adding the watershed!
-    using FunctionType = itk::BinaryThresholdImageFunction<dataType::SegmentsImageType>;
-    using IteratorType = itk::FloodFilledImageFunctionConditionalIterator<dataType::SegmentsImageType, FunctionType>;
-    FunctionType::Pointer function = FunctionType::New();
-    function->SetInputImage(pSegmentsIn);
-    function->ThresholdBetween(labelInSegmentsImage, labelInSegmentsImage);
-    IteratorType itFlood = IteratorType(pSegmentsIn, function, {x, y, z});
-    itFlood.GoToBegin();
-
-    // add voxel via flood filling
-    while (!itFlood.IsAtEnd()) {
-        const auto &index = itFlood.GetIndex();
-        addVoxel(Voxel(index[0], index[1], index[2]));
-        ++itFlood;
+    using segment_puzzler::connected_components::ConnectivityStencil;
+    using segment_puzzler::connected_components::visitLabelComponent;
+    const SegmentIdImageType::IndexType seed{{x, y, z}};
+    const auto traversal = visitLabelComponent(
+        pSegmentsIn,
+        seed,
+        ConnectivityStencil::SixConnected,
+        [this](const SegmentIdImageType::IndexType &index) {
+            addVoxel(index);
+            return true;
+        });
+    if (!traversal.completed || traversal.voxelCount == 0) {
+        throw std::logic_error("Initial-node component traversal did not complete.");
     }
 }
 

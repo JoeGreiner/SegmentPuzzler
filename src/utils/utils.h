@@ -5,6 +5,7 @@
 #include <src/file_definitions/dataTypes.h>
 #include <itkIndex.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <QString>
 
 class InitialNode;
@@ -29,6 +30,10 @@ namespace utils {
             typename dataType::SegmentsImageType::Pointer segmentationImage,
             dataType::SegmentIdType labelValue,
             itk::Index<3> &indexOut);
+
+    std::unordered_set<SegmentIdType> findPresentLabels(
+            const dataType::SegmentsImageType::Pointer &segmentationImage,
+            const std::unordered_set<SegmentIdType> &candidateLabels);
 
 
     template<typename keyType, typename targetType>

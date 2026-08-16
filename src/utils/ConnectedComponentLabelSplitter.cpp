@@ -1,8 +1,6 @@
 #include "ConnectedComponentLabelSplitter.h"
 
 #include <algorithm>
-#include <array>
-#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <stdexcept>
@@ -26,70 +24,6 @@ struct Component {
 };
 
 using ComponentsByLabel = std::unordered_map<SegmentIdType, std::vector<Component>>;
-
-struct ImageGeometry {
-    std::ptrdiff_t dimX = 0;
-    std::ptrdiff_t dimY = 0;
-    std::ptrdiff_t dimZ = 0;
-    std::ptrdiff_t planeXY = 0;
-    std::ptrdiff_t total = 0;
-};
-
-ImageGeometry geometryForImage(const dataType::SegmentsImageType::Pointer &image) {
-    if (image.IsNull()) {
-        throw std::invalid_argument("Cannot split components in a null label image.");
-    }
-
-    const auto size = image->GetLargestPossibleRegion().GetSize();
-    ImageGeometry geometry;
-    geometry.dimX = static_cast<std::ptrdiff_t>(size[0]);
-    geometry.dimY = static_cast<std::ptrdiff_t>(size[1]);
-    geometry.dimZ = static_cast<std::ptrdiff_t>(size[2]);
-    geometry.planeXY = geometry.dimX * geometry.dimY;
-    geometry.total = geometry.planeXY * geometry.dimZ;
-    return geometry;
-}
-
-bool usesNeighborOffset(ConnectivityStencil connectivity, int dx, int dy, int dz) {
-    if (dx == 0 && dy == 0 && dz == 0) {
-        return false;
-    }
-    if (connectivity == ConnectivityStencil::Full) {
-        return true;
-    }
-    return std::abs(dx) + std::abs(dy) + std::abs(dz) == 1;
-}
-
-template<typename Fn>
-void forEachNeighbor(std::ptrdiff_t index,
-                     const ImageGeometry &geometry,
-                     ConnectivityStencil connectivity,
-                     Fn &&fn) {
-    const std::ptrdiff_t z = index / geometry.planeXY;
-    const std::ptrdiff_t remainder = index % geometry.planeXY;
-    const std::ptrdiff_t y = remainder / geometry.dimX;
-    const std::ptrdiff_t x = remainder % geometry.dimX;
-
-    for (int dz = -1; dz <= 1; ++dz) {
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dx = -1; dx <= 1; ++dx) {
-                if (!usesNeighborOffset(connectivity, dx, dy, dz)) {
-                    continue;
-                }
-
-                const std::ptrdiff_t nx = x + dx;
-                const std::ptrdiff_t ny = y + dy;
-                const std::ptrdiff_t nz = z + dz;
-                if (nx < 0 || ny < 0 || nz < 0 ||
-                    nx >= geometry.dimX || ny >= geometry.dimY || nz >= geometry.dimZ) {
-                    continue;
-                }
-
-                fn(nx + ny * geometry.dimX + nz * geometry.planeXY);
-            }
-        }
-    }
-}
 
 SegmentIdType firstAvailableLabel(SegmentIdType label,
                                   const std::unordered_set<SegmentIdType> &ignoredLabels) {
@@ -118,7 +52,7 @@ ComponentsByLabel collectComponentsByLabel(
     const dataType::SegmentsImageType::Pointer &image,
     ConnectivityStencil connectivity,
     IncludeLabel &&includeLabel) {
-    const ImageGeometry geometry = geometryForImage(image);
+    const detail::ImageGeometry geometry = detail::geometryForImage(image);
     const SegmentIdType *buffer = image->GetBufferPointer();
 
     std::vector<unsigned char> visited(static_cast<std::size_t>(geometry.total), 0);
@@ -148,7 +82,7 @@ ComponentsByLabel collectComponentsByLabel(
             const std::ptrdiff_t current = open[queueIndex];
             component.voxelIndices.push_back(current);
 
-            forEachNeighbor(current, geometry, connectivity, [&](std::ptrdiff_t neighbor) {
+            detail::forEachNeighbor(current, geometry, connectivity, [&](std::ptrdiff_t neighbor) {
                 const auto neighborIndex = static_cast<std::size_t>(neighbor);
                 if (visited[neighborIndex] != 0 || buffer[neighbor] != label) {
                     return;
@@ -169,7 +103,7 @@ std::size_t countLabelComponentsInRegion(
     SegmentIdType label,
     dataType::SegmentsImageType::RegionType region,
     ConnectivityStencil connectivity) {
-    const auto imageGeometry = geometryForImage(image);
+    const auto imageGeometry = detail::geometryForImage(image);
     const auto imageRegion = image->GetLargestPossibleRegion();
     if (!region.Crop(imageRegion)) {
         return 0;
@@ -177,14 +111,7 @@ std::size_t countLabelComponentsInRegion(
 
     const auto imageStart = imageRegion.GetIndex();
     const auto regionStart = region.GetIndex();
-    const auto regionSize = region.GetSize();
-
-    ImageGeometry regionGeometry;
-    regionGeometry.dimX = static_cast<std::ptrdiff_t>(regionSize[0]);
-    regionGeometry.dimY = static_cast<std::ptrdiff_t>(regionSize[1]);
-    regionGeometry.dimZ = static_cast<std::ptrdiff_t>(regionSize[2]);
-    regionGeometry.planeXY = regionGeometry.dimX * regionGeometry.dimY;
-    regionGeometry.total = regionGeometry.planeXY * regionGeometry.dimZ;
+    const auto regionGeometry = detail::geometryForRegion(region);
     if (regionGeometry.total <= 0) {
         return 0;
     }
@@ -222,7 +149,7 @@ std::size_t countLabelComponentsInRegion(
         open.clear();
         open.push_back(seed);
         for (std::size_t queueIndex = 0; queueIndex < open.size(); ++queueIndex) {
-            forEachNeighbor(open[queueIndex], regionGeometry, connectivity, [&](std::ptrdiff_t neighbor) {
+            detail::forEachNeighbor(open[queueIndex], regionGeometry, connectivity, [&](std::ptrdiff_t neighbor) {
                 const auto neighborIndex = static_cast<std::size_t>(neighbor);
                 if (visited[neighborIndex] != 0) {
                     return;
@@ -250,7 +177,7 @@ const char *connectivityStencilName(ConnectivityStencil connectivity) {
 }
 
 SegmentIdType maxLabelInImage(const dataType::SegmentsImageType::Pointer &image) {
-    const ImageGeometry geometry = geometryForImage(image);
+    const detail::ImageGeometry geometry = detail::geometryForImage(image);
     const SegmentIdType *buffer = image->GetBufferPointer();
     SegmentIdType maxLabel = 0;
     for (std::ptrdiff_t index = 0; index < geometry.total; ++index) {

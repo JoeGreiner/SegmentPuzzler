@@ -79,8 +79,6 @@ public:
 
     void computeOneSidedEdgesOnAllInitialNodes(int threadCount);
 
-    void recomputeVoxelListAndOneSidedEdgesIfShrinked(std::vector<SegmentIdType> vecOfConnectedInitialNodeIds);
-
 //    void removeOneSidedInitialEdge();
     void addTwoSidedInitialEdge(std::unique_ptr<InitialEdge> edgeToAdd);
 

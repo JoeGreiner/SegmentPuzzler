@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <set>
 #include <unordered_set>
 #include <QElapsedTimer>
 #include <QString>
@@ -396,8 +397,18 @@ private:
 
     bool isIgnoredId(SegmentIdType idToCheck);
 
-    SegmentsImageType::RegionType getDilatedRegionFromRoi(Roi roi, SegmentsImageType::SizeType imageMax,
-                                                          int numberVxDilations = 0);
+    SegmentsImageType::RegionType getDilatedRegionFromRoi(
+        const Roi &roi,
+        const SegmentsImageType::RegionType &imageRegion,
+        int numberVxDilations = 0);
+
+    std::optional<SegmentIdType> refineFromImageAtPosition(
+        const SegmentsImageType::Pointer &sourceImage,
+        const SegmentsImageType::IndexType &seed,
+        const std::optional<SegmentsImageType::RegionType> &permittedSeedRegion = std::nullopt);
+
+    std::set<SegmentIdType> synchronizeOverwrittenInitialNodeVoxels(
+        const std::set<SegmentIdType> &overwrittenLabels);
 
 
     std::vector<SegmentIdType> *pIgnoredSegmentLabels;

@@ -4,6 +4,8 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -23,6 +25,7 @@ using segment_puzzler::connected_components::ConnectivityStencil;
 using segment_puzzler::connected_components::countConnectedComponentsByLabel;
 using segment_puzzler::connected_components::countConnectedComponentsByLabelInRegions;
 using segment_puzzler::connected_components::splitDisconnectedLabelComponentsInPlace;
+using segment_puzzler::connected_components::visitLabelComponent;
 
 int failTest(const std::string &message) {
     std::cerr << "Assertion failed: " << message << "\n";
@@ -150,6 +153,133 @@ int testUtilityConnectivityModes() {
         return failTest("Full connectivity should leave the original label unchanged.");
     }
 
+    return 0;
+}
+
+int testSeededComponentTraversal() {
+    auto image = makeImage(3, 3, 1);
+    image->SetPixel({0, 0, 0}, 7);
+    image->SetPixel({1, 0, 0}, 7);
+    image->SetPixel({2, 1, 0}, 7); // Diagonal to the first component only.
+
+    std::set<std::array<long, 3>> sixConnectedVoxels;
+    const auto sixResult = visitLabelComponent(
+        image,
+        dataType::SegmentsImageType::IndexType{{0, 0, 0}},
+        ConnectivityStencil::SixConnected,
+        [&](const dataType::SegmentsImageType::IndexType &index) {
+            sixConnectedVoxels.insert({index[0], index[1], index[2]});
+            return true;
+        });
+    if (!sixResult.completed || sixResult.voxelCount != 2 ||
+        sixConnectedVoxels != std::set<std::array<long, 3>>{{{0, 0, 0}}, {{1, 0, 0}}}) {
+        return failTest("Seed traversal should visit only the selected 6-connected component.");
+    }
+
+    const auto fullResult = visitLabelComponent(
+        image,
+        dataType::SegmentsImageType::IndexType{{0, 0, 0}},
+        ConnectivityStencil::Full,
+        [](const dataType::SegmentsImageType::IndexType &) { return true; });
+    if (!fullResult.completed || fullResult.voxelCount != 3) {
+        return failTest("Full-connectivity seed traversal should include diagonal voxels.");
+    }
+
+    const auto stoppedResult = visitLabelComponent(
+        image,
+        dataType::SegmentsImageType::IndexType{{0, 0, 0}},
+        ConnectivityStencil::SixConnected,
+        [](const dataType::SegmentsImageType::IndexType &) { return false; });
+    if (stoppedResult.completed || stoppedResult.voxelCount != 1) {
+        return failTest("Seed traversal should report an early visitor stop.");
+    }
+
+    auto offsetImage = dataType::SegmentsImageType::New();
+    dataType::SegmentsImageType::IndexType offsetStart{{5, -2, 3}};
+    dataType::SegmentsImageType::SizeType offsetSize{{2, 1, 1}};
+    dataType::SegmentsImageType::RegionType offsetRegion(offsetStart, offsetSize);
+    offsetImage->SetRegions(offsetRegion);
+    offsetImage->Allocate();
+    offsetImage->FillBuffer(4);
+    std::set<std::array<long, 3>> offsetVoxels;
+    const auto offsetResult = visitLabelComponent(
+        offsetImage,
+        offsetStart,
+        ConnectivityStencil::SixConnected,
+        [&](const dataType::SegmentsImageType::IndexType &index) {
+            offsetVoxels.insert({index[0], index[1], index[2]});
+            return true;
+        });
+    if (!offsetResult.completed || offsetResult.voxelCount != 2 ||
+        offsetVoxels.count({6, -2, 3}) != 1) {
+        return failTest("Seed traversal should preserve non-zero ITK image indices.");
+    }
+
+    bool nullImageRejected = false;
+    try {
+        ImagePointer nullImage;
+        static_cast<void>(visitLabelComponent(
+            nullImage,
+            dataType::SegmentsImageType::IndexType{{0, 0, 0}},
+            ConnectivityStencil::SixConnected,
+            [](const dataType::SegmentsImageType::IndexType &) { return true; }));
+    } catch (const std::invalid_argument &) {
+        nullImageRejected = true;
+    }
+    bool invalidSeedRejected = false;
+    try {
+        static_cast<void>(visitLabelComponent(
+            image,
+            dataType::SegmentsImageType::IndexType{{3, 0, 0}},
+            ConnectivityStencil::SixConnected,
+            [](const dataType::SegmentsImageType::IndexType &) { return true; }));
+    } catch (const std::invalid_argument &) {
+        invalidSeedRejected = true;
+    }
+    if (!nullImageRejected || !invalidSeedRejected) {
+        return failTest("Seed traversal should reject null images and out-of-region seeds.");
+    }
+
+    bool oversizedGeometryRejected = false;
+    try {
+        dataType::SegmentsImageType::IndexType start{};
+        dataType::SegmentsImageType::SizeType oversized{{
+            std::numeric_limits<dataType::SegmentsImageType::SizeType::SizeValueType>::max(),
+            2,
+            1}};
+        static_cast<void>(segment_puzzler::connected_components::detail::geometryForRegion(
+            dataType::SegmentsImageType::RegionType(start, oversized)));
+    } catch (const std::overflow_error &) {
+        oversizedGeometryRejected = true;
+    }
+    if (!oversizedGeometryRejected) {
+        return failTest("Component geometry should reject overflowing image dimensions.");
+    }
+
+    return 0;
+}
+
+int testFindPresentLabelsUsesCandidateSet() {
+    auto image = makeImage(5, 1, 1);
+    image->SetPixel({1, 0, 0}, 3);
+    image->SetPixel({4, 0, 0}, 7);
+    const auto present = utils::findPresentLabels(image, {2, 3, 7, 9});
+    if (present != std::unordered_set<SegmentIdType>{3, 7}) {
+        return failTest("Batched label presence should return only candidates found in the image.");
+    }
+    ImagePointer nullImage;
+    if (!utils::findPresentLabels(nullImage, {}).empty()) {
+        return failTest("An empty label candidate set should not require an image.");
+    }
+    bool nullImageRejected = false;
+    try {
+        static_cast<void>(utils::findPresentLabels(nullImage, {3}));
+    } catch (const std::invalid_argument &) {
+        nullImageRejected = true;
+    }
+    if (!nullImageRejected) {
+        return failTest("Batched label presence should reject a null image for non-empty candidates.");
+    }
     return 0;
 }
 
@@ -466,6 +596,167 @@ int testEnsureHandlesNoForegroundAndInconsistentWorkingNode() {
     if (result.status != Graph::WorkingSegmentResolution::Status::Failed ||
         fixture.graph->nextFreeId != nextFreeIdBefore) {
         return failTest("A non-background working label without a WorkingNode should fail without insertion.");
+    }
+    return 0;
+}
+
+int testRefinementSynchronizesOverwrittenNodeMetadata() {
+    {
+        auto workingImage = makeImage(8, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        workingImage->SetPixel({5, 0, 0}, 1);
+        workingImage->SetPixel({2, 0, 0}, 2);
+        workingImage->SetPixel({6, 0, 0}, 3);
+        auto selectedImage = makeImage(8, 1, 1);
+        selectedImage->SetPixel({1, 0, 0}, 9);
+
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        const SegmentIdType insertedLabel = fixture.graph->nextFreeId;
+        const auto inserted =
+            fixture.graph->transferSegmentationSegmentToInitialSegment(1, 0, 0);
+        const std::vector<Voxel> expectedSurvivingVoxels{Voxel(5, 0, 0)};
+        if (inserted != insertedLabel || workingImage->GetPixel({5, 0, 0}) != 1 ||
+            fixture.graph->initialNodes.count(1) != 1 ||
+            fixture.graph->workingNodes.count(1) != 1 ||
+            fixture.graph->initialNodes.at(1)->voxels != expectedSurvivingVoxels ||
+            fixture.graph->initialNodes.at(1)->roi.minX != 5 ||
+            fixture.graph->initialNodes.at(1)->roi.maxX != 5 ||
+            fixture.graph->workingNodes.at(1)->roi.minX != 5 ||
+            fixture.graph->workingNodes.at(1)->roi.maxX != 5) {
+            return failTest(
+                "A surviving overwritten node must refresh its voxels and ROIs exactly.");
+        }
+
+        const Graph::EdgePairIdType replacedLocalEdge{1, 2};
+        const Graph::EdgePairIdType survivingRemoteEdge{1, 3};
+        const Graph::EdgePairIdType newLocalEdge{2, insertedLabel};
+        const auto survivingOneSidedEdge = fixture.graph->initialNodes.at(1)->onesidedEdges.find(3);
+        const auto newOneSidedEdge =
+            fixture.graph->initialNodes.at(insertedLabel)->onesidedEdges.find(2);
+        if (fixture.graph->initialTwoSidedEdges.count(replacedLocalEdge) != 0 ||
+            fixture.graph->initialTwoSidedEdges.count(survivingRemoteEdge) != 1 ||
+            fixture.graph->initialTwoSidedEdges.count(newLocalEdge) != 1 ||
+            fixture.graph->workingEdges.count(replacedLocalEdge) != 0 ||
+            fixture.graph->workingEdges.count(survivingRemoteEdge) != 1 ||
+            fixture.graph->workingEdges.count(newLocalEdge) != 1 ||
+            fixture.graph->initialNodes.at(1)->onesidedEdges.size() != 1 ||
+            survivingOneSidedEdge == fixture.graph->initialNodes.at(1)->onesidedEdges.end() ||
+            survivingOneSidedEdge->second->voxels != std::vector<Voxel>{Voxel(5, 0, 0)} ||
+            newOneSidedEdge == fixture.graph->initialNodes.at(insertedLabel)->onesidedEdges.end() ||
+            newOneSidedEdge->second->voxels != std::vector<Voxel>{Voxel(1, 0, 0)} ||
+            fixture.graph->initialTwoSidedEdges.at(survivingRemoteEdge)->voxels.size() != 2 ||
+            fixture.graph->initialTwoSidedEdges.at(newLocalEdge)->voxels.size() != 2) {
+            return failTest(
+                "Refinement must remove the replaced edge and preserve remote and new edges.");
+        }
+    }
+
+    {
+        auto workingImage = makeImage(4, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        auto selectedImage = makeImage(4, 1, 1);
+        selectedImage->SetPixel({1, 0, 0}, 9);
+
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        const auto inserted =
+            fixture.graph->transferSegmentationSegmentToInitialSegment(1, 0, 0);
+        if (!inserted.has_value() || fixture.graph->initialNodes.count(1) != 0 ||
+            fixture.graph->workingNodes.count(1) != 0 || countLabel(workingImage, 1) != 0) {
+            return failTest("A fully replaced label should be removed after the authoritative scan.");
+        }
+    }
+    return 0;
+}
+
+int testRefinementPrevalidationAndRoiStayMutationFree() {
+    {
+        auto workingImage = makeImage(4, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        auto selectedImage = makeImage(4, 1, 1);
+        selectedImage->SetPixel({1, 0, 0}, 9);
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graph->workingNodes.at(1).reset();
+        const auto before = copyImageBuffer(workingImage);
+        const auto nextFreeIdBefore = fixture.graph->nextFreeId;
+
+        const auto inserted =
+            fixture.graph->transferSegmentationSegmentToInitialSegment(1, 0, 0);
+        if (inserted.has_value() || copyImageBuffer(workingImage) != before ||
+            fixture.graph->nextFreeId != nextFreeIdBefore ||
+            fixture.graph->initialNodes.count(nextFreeIdBefore) != 0) {
+            return failTest("Missing WorkingNode prevalidation should abort before graph mutation.");
+        }
+    }
+
+    {
+        auto workingImage = makeImage(4, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        auto refinementImage = makeImage(4, 1, 1);
+        refinementImage->SetPixel({1, 0, 0}, 9);
+        auto fixture = buildGraphFixture(workingImage);
+        itkSignal<SegmentIdType> refinementSignal(refinementImage, false);
+        refinementSignal.ROI_set = true;
+        refinementSignal.ROI_fx = 2;
+        refinementSignal.ROI_tx = 3;
+        refinementSignal.ROI_fy = refinementSignal.ROI_ty = 0;
+        refinementSignal.ROI_fz = refinementSignal.ROI_tz = 0;
+        fixture.graphBase->pSelectedRefinement = refinementImage;
+        fixture.graphBase->pSelectedRefinementSignal = &refinementSignal;
+        const auto before = copyImageBuffer(workingImage);
+        const auto nextFreeIdBefore = fixture.graph->nextFreeId;
+
+        fixture.graph->refineWithSelectedRefinementAtPosition(1, 0, 0);
+        if (copyImageBuffer(workingImage) != before ||
+            fixture.graph->nextFreeId != nextFreeIdBefore) {
+            return failTest("A seed outside the refinement ROI should not mutate the graph.");
+        }
+    }
+
+    {
+        auto workingImage = makeImage(4, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        workingImage->SetPixel({2, 0, 0}, 1);
+        auto refinementImage = makeImage(4, 1, 1);
+        refinementImage->SetPixel({1, 0, 0}, 9);
+        refinementImage->SetPixel({2, 0, 0}, 9);
+        auto fixture = buildGraphFixture(workingImage);
+        itkSignal<SegmentIdType> refinementSignal(refinementImage, false);
+        refinementSignal.ROI_set = true;
+        refinementSignal.ROI_fx = refinementSignal.ROI_tx = 1;
+        refinementSignal.ROI_fy = refinementSignal.ROI_ty = 0;
+        refinementSignal.ROI_fz = refinementSignal.ROI_tz = 0;
+        fixture.graphBase->pSelectedRefinement = refinementImage;
+        fixture.graphBase->pSelectedRefinementSignal = &refinementSignal;
+        const SegmentIdType expectedLabel = fixture.graph->nextFreeId;
+
+        fixture.graph->refineWithSelectedRefinementAtPosition(1, 0, 0);
+        if (workingImage->GetPixel({1, 0, 0}) != expectedLabel ||
+            workingImage->GetPixel({2, 0, 0}) != expectedLabel ||
+            fixture.graphBase->pSelectedRefinement != refinementImage ||
+            fixture.graphBase->pSelectedRefinementSignal != &refinementSignal) {
+            return failTest("The ROI should gate only the seed and must not clip its connected component.");
+        }
+    }
+
+    {
+        auto workingImage = makeImage(4, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        auto selectedImage = makeImage(4, 1, 1);
+        selectedImage->SetPixel({1, 0, 0}, 9);
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graph->nextFreeId = std::numeric_limits<SegmentIdType>::max();
+        const auto before = copyImageBuffer(workingImage);
+
+        const auto inserted =
+            fixture.graph->transferSegmentationSegmentToInitialSegment(1, 0, 0);
+        if (inserted.has_value() || copyImageBuffer(workingImage) != before ||
+            fixture.graph->initialNodes.count(std::numeric_limits<SegmentIdType>::max()) != 0) {
+            return failTest("Label exhaustion should abort refinement before mutation.");
+        }
     }
     return 0;
 }
@@ -967,6 +1258,12 @@ int main(int argc, char **argv) {
     if (int result = testUtilityConnectivityModes()) {
         return result;
     }
+    if (int result = testSeededComponentTraversal()) {
+        return result;
+    }
+    if (int result = testFindPresentLabelsUsesCandidateSet()) {
+        return result;
+    }
     if (int result = testUtilityLargestComponentKeepsOriginalLabel()) {
         return result;
     }
@@ -989,6 +1286,12 @@ int main(int argc, char **argv) {
         return result;
     }
     if (int result = testEnsureHandlesNoForegroundAndInconsistentWorkingNode()) {
+        return result;
+    }
+    if (int result = testRefinementSynchronizesOverwrittenNodeMetadata()) {
+        return result;
+    }
+    if (int result = testRefinementPrevalidationAndRoiStayMutationFree()) {
         return result;
     }
     if (int result = testAutomaticSixConnected3DSplitPreparation()) {

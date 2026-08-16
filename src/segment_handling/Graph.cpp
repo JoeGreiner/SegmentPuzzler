@@ -3,6 +3,7 @@
 #ifdef USE_OMP
 #include <omp.h>
 #endif
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -16,7 +17,6 @@
 #include <itkNeighborhoodIterator.h>
 #include <itkBinaryThresholdImageFunction.h>
 #include <QElapsedTimer>
-#include <QMessageBox>
 #include <chrono>
 #include <QStringList>
 #include "src/utils/AppLogger.h"
@@ -135,24 +135,14 @@ ComponentMatch selectedComponentMatchesWorkingNode(
     }
 
     const auto region = selectedSegmentation->GetLargestPossibleRegion();
-    const auto start = region.GetIndex();
-    const auto size = region.GetSize();
-    const std::size_t dimX = size[0];
-    const std::size_t dimY = size[1];
     const auto *selectedBuffer = selectedSegmentation->GetBufferPointer();
-    if (selectedBuffer == nullptr || dimX == 0 || dimY == 0 || size[2] == 0) {
+    if (selectedBuffer == nullptr || !region.IsInside(seed) ||
+        selectedSegmentation->GetPixel(seed) != selectedLabel) {
         return ComponentMatch::Invalid;
     }
-    if (dimX > std::numeric_limits<std::size_t>::max() / dimY) {
-        return ComponentMatch::Invalid;
-    }
-    const std::size_t sliceStride = dimX * dimY;
 
-    const auto linearIndex = [&](const Graph::SegmentsImageType::IndexType &index) {
-        const auto localX = static_cast<std::size_t>(index[0] - start[0]);
-        const auto localY = static_cast<std::size_t>(index[1] - start[1]);
-        const auto localZ = static_cast<std::size_t>(index[2] - start[2]);
-        return localX + localY * dimX + localZ * sliceStride;
+    const auto linearIndex = [&selectedSegmentation](const Graph::SegmentsImageType::IndexType &index) {
+        return static_cast<std::ptrdiff_t>(selectedSegmentation->ComputeOffset(index));
     };
 
     if (knownSelectedLabelVoxelCount.has_value()) {
@@ -177,61 +167,35 @@ ComponentMatch selectedComponentMatchesWorkingNode(
         return ComponentMatch::Exact;
     }
 
-    std::unordered_set<std::size_t> componentVoxels;
-    std::vector<std::size_t> openVoxels;
-    const std::size_t initialReserve = std::min<std::size_t>(workingVoxelCount, 1024);
-    componentVoxels.reserve(initialReserve);
-    openVoxels.reserve(initialReserve);
-
-    const std::size_t seedLinear = linearIndex(seed);
-    componentVoxels.insert(seedLinear);
-    openVoxels.push_back(seedLinear);
-
-    const auto visit = [&](std::size_t neighborLinear) {
-        if (selectedBuffer[neighborLinear] != selectedLabel) {
-            return true;
-        }
-        if (!componentVoxels.insert(neighborLinear).second) {
-            return true;
-        }
-        if (componentVoxels.size() > workingVoxelCount) {
-            return false;
-        }
-        openVoxels.push_back(neighborLinear);
-        return true;
-    };
-
-    for (std::size_t openIndex = 0; openIndex < openVoxels.size(); ++openIndex) {
-        const std::size_t current = openVoxels[openIndex];
-        const std::size_t localZ = current / sliceStride;
-        const std::size_t withinSlice = current - localZ * sliceStride;
-        const std::size_t localY = withinSlice / dimX;
-        const std::size_t localX = withinSlice - localY * dimX;
-
-        if ((localX > 0 && !visit(current - 1)) ||
-            (localX + 1 < dimX && !visit(current + 1)) ||
-            (localY > 0 && !visit(current - dimX)) ||
-            (localY + 1 < dimY && !visit(current + dimX)) ||
-            (localZ > 0 && !visit(current - sliceStride)) ||
-            (localZ + 1 < size[2] && !visit(current + sliceStride))) {
-            return ComponentMatch::Different;
-        }
-    }
-
-    if (componentVoxels.size() != workingVoxelCount) {
-        return ComponentMatch::Different;
-    }
-
+    std::unordered_set<std::ptrdiff_t> unmatchedWorkingVoxels;
+    unmatchedWorkingVoxels.reserve(workingVoxelCount);
     for (const auto &initialNodeEntry : workingNode.subInitialNodes) {
         for (const auto &voxel : initialNodeEntry.second->voxels) {
-            Graph::SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
+            const Graph::SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
             if (!region.IsInside(index)) {
                 return ComponentMatch::Invalid;
             }
-            if (componentVoxels.count(linearIndex(index)) == 0) {
-                return ComponentMatch::Different;
+            if (!unmatchedWorkingVoxels.insert(linearIndex(index)).second) {
+                return ComponentMatch::Invalid;
             }
         }
+    }
+
+    segment_puzzler::connected_components::ConnectedComponentVisitResult traversal;
+    try {
+        traversal = segment_puzzler::connected_components::visitLabelComponent(
+            selectedSegmentation,
+            seed,
+            segment_puzzler::connected_components::ConnectivityStencil::SixConnected,
+            [&](const Graph::SegmentsImageType::IndexType &index) {
+                return unmatchedWorkingVoxels.erase(linearIndex(index)) > 0;
+            });
+    } catch (...) {
+        return ComponentMatch::Invalid;
+    }
+    if (!traversal.completed || traversal.voxelCount != workingVoxelCount ||
+        !unmatchedWorkingVoxels.empty()) {
+        return ComponentMatch::Different;
     }
     return ComponentMatch::Exact;
 }
@@ -2489,46 +2453,43 @@ bool Graph::applyWorkingNodePartition(
 }
 
 
-Graph::SegmentsImageType::RegionType Graph::getDilatedRegionFromRoi(Roi roi, SegmentsImageType::SizeType imageMax,
-                                                                    int numberVxDilations) {
+Graph::SegmentsImageType::RegionType Graph::getDilatedRegionFromRoi(
+        const Roi &roi,
+        const SegmentsImageType::RegionType &imageRegion,
+        int numberVxDilations) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Calculating dilated ROI region"));
-    // e.g.: (inclusive ranges!)
-    // imageDimensions 100 200 300
-    // roi: 0-19, 20-39, 30-49
-    // numberVxDilations: 1
+    if (numberVxDilations < 0 ||
+        roi.minX > roi.maxX || roi.minY > roi.maxY || roi.minZ > roi.maxZ) {
+        throw std::invalid_argument("Cannot dilate an invalid refinement ROI.");
+    }
 
+    const auto imageStart = imageRegion.GetIndex();
+    const auto imageSize = imageRegion.GetSize();
+    SegmentsImageType::IndexType start;
+    SegmentsImageType::SizeType size;
+    const std::array<long long, 3> roiMinimum{{roi.minX, roi.minY, roi.minZ}};
+    const std::array<long long, 3> roiMaximum{{roi.maxX, roi.maxY, roi.maxZ}};
 
-    // region
-    // startIndex = 0, 19, 29
-    // size = 21, 22, 22
-
-
-    int startX, startY, startZ;
-    startX = std::max<int>(0, roi.minX - numberVxDilations);
-    startY = std::max<int>(0, roi.minY - numberVxDilations);
-    startZ = std::max<int>(0, roi.minZ - numberVxDilations);
-
-    int maxSizeX, maxSizeY, maxSizeZ;
-    maxSizeX = imageMax[0] - startX;
-    maxSizeY = imageMax[1] - startY;
-    maxSizeZ = imageMax[2] - startZ;
-
-    unsigned int sizeX, sizeY, sizeZ;
-    sizeX = std::min<unsigned int>(maxSizeX, roi.maxX + numberVxDilations - startX + 1);
-    sizeY = std::min<unsigned int>(maxSizeY, roi.maxY + numberVxDilations - startY + 1);
-    sizeZ = std::min<unsigned int>(maxSizeZ, roi.maxZ + numberVxDilations - startZ + 1);
-
-//    printf("roiMinX: %i roiMinY: %i roiMinZ: %i\n", roi.minX, roi.minY, roi.minZ);
-//    printf("roiMaxX: %i roiMaxY: %i roiMaxZ: %i\n", roi.maxX, roi.maxY, roi.maxZ);
-//    printf("imageSizeX: %lu imageSizeY: %lu imageSizeZ: %lu\n", imageMax[0], imageMax[1], imageMax[2]);
-//    printf("startX: %i startY: %i startZ: %i\n", startX, startY, startZ);
-//    printf("WidthX: %i WidthY: %i WidthZ: %i\n", sizeX, sizeY, sizFeZ);
-
-
-    SegmentsImageType::IndexType startIndex = {startX, startY, startZ};
-    SegmentsImageType::SizeType size = {sizeX, sizeY, sizeZ};
-    SegmentsImageType::RegionType region = {startIndex, size};
-    return region;
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        if (imageSize[axis] == 0) {
+            throw std::invalid_argument("Cannot dilate an ROI inside an empty image region.");
+        }
+        const long long minimum = static_cast<long long>(imageStart[axis]);
+        const long long maximum = minimum + static_cast<long long>(imageSize[axis]) - 1;
+        const long long dilatedMinimum = std::max(
+            minimum,
+            roiMinimum[axis] - static_cast<long long>(numberVxDilations));
+        const long long dilatedMaximum = std::min(
+            maximum,
+            roiMaximum[axis] + static_cast<long long>(numberVxDilations));
+        if (dilatedMinimum > dilatedMaximum) {
+            throw std::invalid_argument("Refinement ROI lies outside the working image.");
+        }
+        start[axis] = static_cast<SegmentsImageType::IndexType::IndexValueType>(dilatedMinimum);
+        size[axis] = static_cast<SegmentsImageType::SizeType::SizeValueType>(
+            dilatedMaximum - dilatedMinimum + 1);
+    }
+    return {start, size};
 }
 
 
@@ -3553,344 +3514,383 @@ Graph::WorkingSegmentResolution Graph::ensureSelectedSegmentationComponentInWork
     return resolution;
 }
 
-std::optional<Graph::SegmentIdType> Graph::transferSegmentationSegmentToInitialSegment(int x, int y, int z) {
-// high level workflow: create volume with just the one segment in background
-// treat that new segment as a normal refinement segmentation call
-    if (graphBase->pSelectedSegmentation == nullptr) {
+std::set<Graph::SegmentIdType> Graph::synchronizeOverwrittenInitialNodeVoxels(
+        const std::set<SegmentIdType> &overwrittenLabels) {
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Synchronizing overwritten initial nodes"));
+    std::set<SegmentIdType> absentLabels;
+    if (overwrittenLabels.empty()) {
+        return absentLabels;
+    }
+    if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr) {
+        throw std::logic_error("Cannot synchronize nodes without a working segments image.");
+    }
+
+    const auto workingImage = graphBase->pWorkingSegmentsImage;
+    const auto workingRegion = workingImage->GetLargestPossibleRegion();
+    std::unordered_set<SegmentIdType> labelsNeedingLatticeScan;
+    labelsNeedingLatticeScan.reserve(overwrittenLabels.size());
+
+    for (const SegmentIdType label : overwrittenLabels) {
+        const auto initialNodeIt = initialNodes.find(label);
+        if (initialNodeIt == initialNodes.end() || initialNodeIt->second == nullptr) {
+            throw std::logic_error("An overwritten working label has no matching initial node.");
+        }
+
+        InitialNode *initialNode = initialNodeIt->second.get();
+        std::vector<Voxel> filteredVoxels;
+        filteredVoxels.reserve(initialNode->voxels.size());
+        for (const Voxel &voxel : initialNode->voxels) {
+            const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
+            if (workingRegion.IsInside(index) && workingImage->GetPixel(index) == label) {
+                filteredVoxels.push_back(voxel);
+            }
+        }
+        initialNode->voxels = std::move(filteredVoxels);
+        if (initialNode->voxels.empty()) {
+            labelsNeedingLatticeScan.insert(label);
+        }
+    }
+
+    if (labelsNeedingLatticeScan.empty()) {
+        return absentLabels;
+    }
+
+    itk::ImageRegionConstIterator<SegmentsImageType> imageIterator(workingImage, workingRegion);
+    for (imageIterator.GoToBegin(); !imageIterator.IsAtEnd(); ++imageIterator) {
+        const SegmentIdType label = imageIterator.Get();
+        if (labelsNeedingLatticeScan.count(label) == 0) {
+            continue;
+        }
+        const auto index = imageIterator.GetIndex();
+        initialNodes.at(label)->voxels.emplace_back(
+            static_cast<int>(index[0]),
+            static_cast<int>(index[1]),
+            static_cast<int>(index[2]));
+    }
+
+    for (const SegmentIdType label : labelsNeedingLatticeScan) {
+        if (initialNodes.at(label)->voxels.empty()) {
+            absentLabels.insert(label);
+            continue;
+        }
+        logGraph(
+            LogLevel::Warning,
+            __func__,
+            QStringLiteral("Recovered label %1 from lattice after its voxel metadata became empty")
+                .arg(label));
+    }
+    return absentLabels;
+}
+
+std::optional<Graph::SegmentIdType> Graph::refineFromImageAtPosition(
+        const SegmentsImageType::Pointer &sourceImage,
+        const SegmentsImageType::IndexType &seed,
+        const std::optional<SegmentsImageType::RegionType> &permittedSeedRegion) {
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Refining working graph from image component"));
+    if (graphBase == nullptr || sourceImage == nullptr ||
+        graphBase->pWorkingSegmentsImage == nullptr || pIgnoredSegmentLabels == nullptr) {
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("Refinement and working images must be initialized"));
+        return std::nullopt;
+    }
+    if (graphBase->pWorkingSegmentsImage->GetBufferPointer() == nullptr) {
+        logGraph(LogLevel::Error, __func__, QStringLiteral("Working segments image is not allocated"));
+        return std::nullopt;
+    }
+
+    const auto sourceRegion = sourceImage->GetLargestPossibleRegion();
+    const auto workingRegion = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion();
+    if (!regionsMatch(sourceRegion, workingRegion) || !sourceRegion.IsInside(seed)) {
+        logGraph(
+            LogLevel::Error,
+            __func__,
+            QStringLiteral("Refinement and working segments use incompatible image regions or coordinates"));
+        return std::nullopt;
+    }
+    if (permittedSeedRegion.has_value() && !permittedSeedRegion->IsInside(seed)) {
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("Clicked point lies outside the selected refinement ROI"));
+        return std::nullopt;
+    }
+
+    const SegmentIdType sourceLabel = sourceImage->GetPixel(seed);
+    if (sourceLabel == backgroundId) {
+        logGraph(
+            LogLevel::Warning,
+            __func__,
+            QStringLiteral("Refinement label matches background label %1; insertion skipped")
+                .arg(backgroundId));
+        return std::nullopt;
+    }
+    if (nextFreeId == std::numeric_limits<SegmentIdType>::max()) {
+        logGraph(LogLevel::Error, __func__, QStringLiteral("No fresh segment label remains for refinement"));
+        return std::nullopt;
+    }
+
+    const SegmentIdType labelToInsert = nextFreeId;
+    if (labelToInsert == backgroundId || isIgnoredId(labelToInsert) ||
+        initialNodes.count(labelToInsert) > 0 || workingNodes.count(labelToInsert) > 0) {
+        logGraph(
+            LogLevel::Error,
+            __func__,
+            QStringLiteral("Next free label %1 is reserved or already present in the graph")
+                .arg(labelToInsert));
+        return std::nullopt;
+    }
+
+    std::unique_ptr<InitialNode> pendingInitialNode;
+    {
+        ScopedGraphTimer componentTimer(verbose, __func__, QStringLiteral("Collecting refinement component"));
+        pendingInitialNode = std::make_unique<InitialNode>(
+            graphBase,
+            sourceImage,
+            labelToInsert,
+            static_cast<int>(seed[0]),
+            static_cast<int>(seed[1]),
+            static_cast<int>(seed[2]));
+        pendingInitialNode->setSegmentPointer(graphBase->pWorkingSegmentsImage);
+        pendingInitialNode->roi.updateBoundingRoi(pendingInitialNode->voxels);
+    }
+    const SegmentsImageType::RegionType dilatedRegion = getDilatedRegionFromRoi(
+        pendingInitialNode->roi,
+        workingRegion,
+        2);
+
+    std::set<SegmentIdType> affectedWorkingLabels;
+    itk::ImageRegionConstIterator<SegmentsImageType> regionIterator(
+        graphBase->pWorkingSegmentsImage,
+        dilatedRegion);
+    for (regionIterator.GoToBegin(); !regionIterator.IsAtEnd(); ++regionIterator) {
+        const SegmentIdType label = regionIterator.Get();
+        if (!isIgnoredId(label)) {
+            affectedWorkingLabels.insert(label);
+        }
+    }
+
+    // Preserve the existing transitive neighbor expansion, but validate the
+    // entire closure before changing the graph.
+    for (auto labelIt = affectedWorkingLabels.begin();
+         labelIt != affectedWorkingLabels.end();
+         ++labelIt) {
+        const auto workingNodeIt = workingNodes.find(*labelIt);
+        if (workingNodeIt == workingNodes.end() || workingNodeIt->second == nullptr) {
+            logGraph(
+                LogLevel::Error,
+                __func__,
+                QStringLiteral("Segment %1 is missing from workingNodes during refinement")
+                    .arg(*labelIt));
+            return std::nullopt;
+        }
+        if (workingNodeIt->second->subInitialNodes.empty()) {
+            logGraph(
+                LogLevel::Error,
+                __func__,
+                QStringLiteral("Working segment %1 contains no initial nodes").arg(*labelIt));
+            return std::nullopt;
+        }
+        for (const auto &initialEntry : workingNodeIt->second->subInitialNodes) {
+            const auto initialNodeIt = initialNodes.find(initialEntry.first);
+            if (initialEntry.second == nullptr || initialNodeIt == initialNodes.end() ||
+                initialNodeIt->second == nullptr) {
+                logGraph(
+                    LogLevel::Error,
+                    __func__,
+                    QStringLiteral("Working segment %1 references missing initial node %2")
+                        .arg(*labelIt)
+                        .arg(initialEntry.first));
+                return std::nullopt;
+            }
+        }
+        for (const auto &edgeEntry : workingNodeIt->second->twosidedEdges) {
+            if (edgeEntry.second == nullptr) {
+                logGraph(
+                    LogLevel::Error,
+                    __func__,
+                    QStringLiteral("Working segment %1 has a null edge to segment %2")
+                        .arg(*labelIt)
+                        .arg(edgeEntry.first));
+                return std::nullopt;
+            }
+            if (!isIgnoredId(edgeEntry.first)) {
+                affectedWorkingLabels.insert(edgeEntry.first);
+            }
+        }
+    }
+
+    logGraph(
+        LogLevel::Info,
+        __func__,
+        QStringLiteral("Inserting refinement-derived initial node %1").arg(labelToInsert));
+    ++nextFreeId;
+    segmentManager.addInitialNode(pendingInitialNode.release());
+    InitialNode *newInitialNode = initialNodes.at(labelToInsert).get();
+
+    {
+        ScopedGraphTimer splitTimer(verbose, __func__, QStringLiteral("Splitting affected working nodes"));
+        for (const SegmentIdType label : affectedWorkingLabels) {
+            splitWorkingNodeIntoInitialNodes(label);
+        }
+    }
+
+    std::set<SegmentIdType> overwrittenInitialLabels;
+    for (const Voxel &voxel : newInitialNode->voxels) {
+        const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
+        const SegmentIdType overwrittenLabel = graphBase->pWorkingSegmentsImage->GetPixel(index);
+        if (!isIgnoredId(overwrittenLabel)) {
+            overwrittenInitialLabels.insert(overwrittenLabel);
+        }
+        graphBase->pWorkingSegmentsImage->SetPixel(index, labelToInsert);
+    }
+    const auto labelsToDelete = synchronizeOverwrittenInitialNodeVoxels(overwrittenInitialLabels);
+    logGraphDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral("Overwritten initial nodes=[%1], deleting absent nodes=[%2]")
+            .arg(joinIds(overwrittenInitialLabels))
+            .arg(joinIds(labelsToDelete)));
+
+    for (const SegmentIdType label : labelsToDelete) {
+        const auto workingNodeIt = workingNodes.find(label);
+        if (workingNodeIt != workingNodes.end() && workingNodeIt->second != nullptr) {
+            segmentManager.removeWorkingNode(workingNodeIt->second.get());
+        } else {
+            logGraph(
+                LogLevel::Warning,
+                __func__,
+                QStringLiteral("Proven-absent label %1 has no WorkingNode to remove").arg(label));
+        }
+        const auto initialNodeIt = initialNodes.find(label);
+        if (initialNodeIt != initialNodes.end() && initialNodeIt->second != nullptr) {
+            segmentManager.removeInitialNode(label);
+        } else {
+            logGraph(
+                LogLevel::Warning,
+                __func__,
+                QStringLiteral("Proven-absent label %1 has no InitialNode to remove").arg(label));
+        }
+    }
+
+    {
+        ScopedGraphTimer recomputeTimer(
+            verbose,
+            __func__,
+            QStringLiteral("Recomputing affected graph neighborhoods"));
+
+        std::vector<SegmentIdType> survivingOverwrittenLabels;
+        survivingOverwrittenLabels.reserve(overwrittenInitialLabels.size());
+        std::vector<InitialNode *> initialNodesToRecompute;
+        initialNodesToRecompute.reserve(overwrittenInitialLabels.size() + 1);
+        for (const SegmentIdType label : overwrittenInitialLabels) {
+            if (labelsToDelete.count(label) > 0) {
+                continue;
+            }
+
+            InitialNode *initialNode = initialNodes.at(label).get();
+            segmentManager.removeEdgePropertiesOnInitialNode(initialNode);
+            initialNode->roi.updateBoundingRoi(initialNode->voxels);
+            initialNode->calculateNodeFeatures();
+            workingNodes.at(label)->roi = initialNode->roi;
+            survivingOverwrittenLabels.push_back(label);
+            initialNodesToRecompute.push_back(initialNode);
+        }
+
+        newInitialNode->calculateNodeFeatures();
+        initialNodesToRecompute.push_back(newInitialNode);
+        for (InitialNode *initialNode : initialNodesToRecompute) {
+            segmentManager.computeOneSidedEdgesOnInitialNode(initialNode);
+        }
+        for (InitialNode *initialNode : initialNodesToRecompute) {
+            segmentManager.computeCorrospondingOneSidedInitialEdges(initialNode);
+        }
+        segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
+
+        auto *newWorkingNode = new WorkingNode(newInitialNode, labelToInsert, initialNodes);
+        segmentManager.addWorkingNode(newWorkingNode);
+        for (const SegmentIdType label : survivingOverwrittenLabels) {
+            segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(label).get());
+        }
+        segmentManager.recalculateEdgesOnWorkingNode(newWorkingNode);
+    }
+
+    const auto insertedNodeIt = workingNodes.find(labelToInsert);
+    if (graphBase->pWorkingSegmentsImage->GetPixel(seed) != labelToInsert ||
+        insertedNodeIt == workingNodes.end() || insertedNodeIt->second == nullptr) {
+        logGraph(
+            LogLevel::Error,
+            __func__,
+            QStringLiteral("Refinement did not create expected working label %1 at the clicked point")
+                .arg(labelToInsert));
+        return std::nullopt;
+    }
+    return labelToInsert;
+}
+
+std::optional<Graph::SegmentIdType> Graph::transferSegmentationSegmentToInitialSegment(
+        int x,
+        int y,
+        int z) {
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring segmentation component"));
+    if (graphBase == nullptr || graphBase->pSelectedSegmentation == nullptr) {
         logGraph(LogLevel::Warning, __func__, QStringLiteral("No selected segmentation is loaded"));
         return std::nullopt;
     }
-    if (graphBase->pWorkingSegmentsImage == nullptr) {
-        logGraph(LogLevel::Warning, __func__, QStringLiteral("No working segments image is loaded"));
-        return std::nullopt;
-    }
 
-    const auto selectedRegion = graphBase->pSelectedSegmentation->GetLargestPossibleRegion();
-    const auto workingRegion = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion();
-    SegmentsImageType::IndexType seed{{x, y, z}};
-    if (!regionsMatch(selectedRegion, workingRegion) || !selectedRegion.IsInside(seed)) {
-        logGraph(LogLevel::Error,
-                 __func__,
-                 QStringLiteral("Selected segmentation and working segments use incompatible image regions or coordinates"));
-        return std::nullopt;
-    }
-
-    auto label = graphBase->pSelectedSegmentation->GetPixel(seed);
-    const SegmentIdType backgroundLabel = backgroundId;
-
-    if (label == backgroundLabel) {
-        logGraph(LogLevel::Warning,
-                 __func__,
-                 QStringLiteral("Clicked segmentation label matches background label %1; transfer skipped")
-                     .arg(backgroundLabel));
-        return std::nullopt;
-    }
-
-//    create temporary refinement
-    auto temporaryRefinement = SegmentsImageType::New();
-    temporaryRefinement->CopyInformation(graphBase->pSelectedSegmentation);
-    temporaryRefinement->SetRegions(graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-    temporaryRefinement->Allocate();
-    temporaryRefinement->FillBuffer(backgroundLabel);
-
-//    just transfer the whole image and only copy if label matches
-    itk::ImageRegionConstIterator<SegmentsImageType> it(graphBase->pSelectedSegmentation,
-                                                        graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
-    itk::ImageRegionIterator<SegmentsImageType> itRefinement(temporaryRefinement,
-                                                             temporaryRefinement->GetLargestPossibleRegion());
-    logGraphDebugIf(verbose, __func__, QStringLiteral("Transferring segmentation label %1").arg(label));
-    for (it.GoToBegin(), itRefinement.GoToBegin(); !it.IsAtEnd(); ++it, ++itRefinement) {
-        if (it.Get() == label) {
-            itRefinement.Set(label);
-        }
-    }
-
-//    std::unique_ptr<itkSignal<unsigned char>> pSignal2(new itkSignal<unsigned char>(pImage));
-
-//    auto temporaryRefinementSignal = itkSignal<dataType::SegmentIdType>(temporaryRefinement);
-    auto temporaryRefinementSignal =
-        std::make_shared<itkSignal<dataType::SegmentIdType>>(temporaryRefinement);
-
-    auto previousSelectedRefinement = graphBase->pSelectedRefinement;
-    auto previousSelectedRefinementSignal = graphBase->pSelectedRefinementSignal;
-
-    struct SelectedRefinementRestorer {
-        std::shared_ptr<GraphBase> graphBase;
-        SegmentsImageType::Pointer selectedRefinement;
-        itkSignal<dataType::SegmentIdType> *selectedRefinementSignal;
-
-        ~SelectedRefinementRestorer() {
-            graphBase->pSelectedRefinement = selectedRefinement;
-            graphBase->pSelectedRefinementSignal = selectedRefinementSignal;
-        }
-    };
-
-    const SegmentIdType expectedWorkingLabel = nextFreeId;
-
-    // Reuse the normal refinement-by-position path by temporarily swapping in
-    // both selected-refinement pointers for a refinement built from the clicked
-    // segmentation label, then restore the previous selection afterwards.
+    const SegmentsImageType::IndexType seed{{x, y, z}};
     try {
-        SelectedRefinementRestorer restore{
-            graphBase,
-            previousSelectedRefinement,
-            previousSelectedRefinementSignal};
-        graphBase->pSelectedRefinement = temporaryRefinement;
-        graphBase->pSelectedRefinementSignal = temporaryRefinementSignal.get();
-        refineWithSelectedRefinementAtPosition(x, y, z);
+        return refineFromImageAtPosition(graphBase->pSelectedSegmentation, seed, std::nullopt);
     } catch (const std::exception &exception) {
-        logGraph(LogLevel::Error,
-                 __func__,
-                 QStringLiteral("Failed to insert segmentation segment: %1")
-                     .arg(QString::fromUtf8(exception.what())));
-        return std::nullopt;
+        logGraph(
+            LogLevel::Error,
+            __func__,
+            QStringLiteral("Failed to insert segmentation component: %1")
+                .arg(QString::fromUtf8(exception.what())));
     } catch (...) {
-        logGraph(LogLevel::Error, __func__, QStringLiteral("Failed to insert segmentation segment"));
-        return std::nullopt;
+        logGraph(LogLevel::Error, __func__, QStringLiteral("Failed to insert segmentation component"));
     }
-
-    const SegmentIdType insertedWorkingLabel = graphBase->pWorkingSegmentsImage->GetPixel(seed);
-    const auto insertedNodeIt = workingNodes.find(expectedWorkingLabel);
-    if (insertedWorkingLabel != expectedWorkingLabel ||
-        insertedNodeIt == workingNodes.end() ||
-        insertedNodeIt->second == nullptr) {
-        logGraph(LogLevel::Error,
-                 __func__,
-                 QStringLiteral("Refinement did not create expected working label %1 at the clicked point")
-                     .arg(expectedWorkingLabel));
-        return std::nullopt;
-    }
-    return expectedWorkingLabel;
+    return std::nullopt;
 }
 
-
-// highlevel workflow:
-// * get the background id of the refinement
-// * check if the clicked label is not background
-// * do a floodfill on the clicked pixel to get the refined segments voxels
 void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Refining working graph from selected refinement"));
-    auto &selectedRefinement = graphBase->pSelectedRefinement;
-    auto *selectedRefinementSignal = graphBase->pSelectedRefinementSignal;
-    if (selectedRefinement == nullptr || selectedRefinementSignal == nullptr) {
-        logGraph(LogLevel::Warning,
-                 __func__,
-                 QStringLiteral("Selected refinement is not initialized; load a refinement before refining"));
+    if (graphBase == nullptr || graphBase->pSelectedRefinement == nullptr ||
+        graphBase->pSelectedRefinementSignal == nullptr) {
+        logGraph(
+            LogLevel::Warning,
+            __func__,
+            QStringLiteral("Selected refinement is not initialized; load a refinement before refining"));
         return;
     }
 
-    bool coordinates_in_ROI = true;
-    if (selectedRefinementSignal->ROI_set){
-
-        if(x < selectedRefinementSignal->ROI_fx){
-            coordinates_in_ROI = false;
-        }
-        if(y < selectedRefinementSignal->ROI_fy){
-            coordinates_in_ROI = false;
-        }
-        if(z < selectedRefinementSignal->ROI_fz){
-            coordinates_in_ROI = false;
-        }
-
-        if(x > selectedRefinementSignal->ROI_tx){
-            coordinates_in_ROI = false;
-        }
-        if(y > selectedRefinementSignal->ROI_ty){
-            coordinates_in_ROI = false;
-        }
-        if(z > selectedRefinementSignal->ROI_tz){
-            coordinates_in_ROI = false;
-        }
-    }
-
-    if(coordinates_in_ROI) {
-        ScopedGraphTimer prepareTimer(verbose, __func__, QStringLiteral("Preparing refinement insertion"));
-//        SegmentIdType backgroundLabelInRefinement = getLargestIdInSegmentVolume(selectedRefinement);
-
-        const SegmentIdType backgroundLabel = backgroundId;
-        SegmentIdType labelInRefinement = selectedRefinement->GetPixel({x, y, z});
-        SegmentIdType labelToInsertTarget = nextFreeId;
-        nextFreeId++;
-
-        int msgBoxAnswer = QMessageBox::Yes;
-
-        bool hardExitIfLabelInRefinementIsBackground = true;
-        if (labelInRefinement == backgroundLabel) {
-            if (hardExitIfLabelInRefinementIsBackground){
+    std::optional<SegmentsImageType::RegionType> permittedSeedRegion;
+    const auto *signal = graphBase->pSelectedRefinementSignal;
+    if (signal->ROI_set) {
+        const std::array<long long, 3> minimum{{signal->ROI_fx, signal->ROI_fy, signal->ROI_fz}};
+        const std::array<long long, 3> maximum{{signal->ROI_tx, signal->ROI_ty, signal->ROI_tz}};
+        SegmentsImageType::IndexType start;
+        SegmentsImageType::SizeType size;
+        for (unsigned int axis = 0; axis < 3; ++axis) {
+            if (minimum[axis] > maximum[axis]) {
+                logGraph(LogLevel::Error, __func__, QStringLiteral("Selected refinement ROI is invalid"));
                 return;
             }
-            QMessageBox msgBox;
-            msgBox.setWindowTitle("Refinement");
-            msgBox.setText(QString("You're trying to refine a segment with the background label (%1) in the selected refinement. Continue?")
-                               .arg(backgroundLabel));
-            msgBox.setStandardButtons(QMessageBox::Yes);
-            msgBox.addButton(QMessageBox::No);
-            msgBox.setDefaultButton(QMessageBox::No);
-            msgBoxAnswer = msgBox.exec();
+            start[axis] = static_cast<SegmentsImageType::IndexType::IndexValueType>(minimum[axis]);
+            size[axis] = static_cast<SegmentsImageType::SizeType::SizeValueType>(
+                maximum[axis] - minimum[axis] + 1);
         }
+        permittedSeedRegion = SegmentsImageType::RegionType(start, size);
+    }
 
-        if (msgBoxAnswer == QMessageBox::Yes) {
-            // create new initial node by flood-filling the refinement
-            logGraph(LogLevel::Info,
-                     __func__,
-                     QStringLiteral("Inserting refinement-derived initial node %1").arg(labelToInsertTarget));
-            InitialNode *newInitialNode = new InitialNode(graphBase, selectedRefinement, labelToInsertTarget, x,
-                                                          y, z);
-            // reset the corrosponding segment pointer to the working segments image
-            newInitialNode->setSegmentPointer(graphBase->pWorkingSegmentsImage);
-                // insert node in initialNodes
-                segmentManager.addInitialNode(newInitialNode);
-                newInitialNode->roi.updateBoundingRoi(newInitialNode->voxels);
-
-
-                auto sizeMax = graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetSize();
-                SegmentsImageType::RegionType regionDilated = getDilatedRegionFromRoi(newInitialNode->roi, sizeMax, 2);
-
-                if (graphBase->pWorkingSegmentsImage == nullptr) {
-                    logGraph(LogLevel::Error, __func__, QStringLiteral("Working segments image is null during refinement"));
-                    return;
-                }
-
-                itk::ImageRegionConstIterator<SegmentsImageType> itAfter(graphBase->pWorkingSegmentsImage,
-                                                                         regionDilated);
-
-                // unmerge all segments inside the refined segment
-                std::set<SegmentIdType> segmentsInsideRefinedRegion;
-                SegmentIdType currentSegment;
-                itAfter.GoToBegin();
-                while (!itAfter.IsAtEnd()) {
-                    currentSegment = itAfter.Get();
-                    if (!isIgnoredId(currentSegment)) {
-                        segmentsInsideRefinedRegion.insert(currentSegment);
-                    }
-                    ++itAfter;
-                }
-
-                // add also every working node that is connected to a working node where the new initial node gets placed
-                for (auto &segment : segmentsInsideRefinedRegion) {
-                    if (workingNodes.count(segment) == 0) {
-                        logGraph(LogLevel::Error,
-                                 __func__,
-                                 QStringLiteral("Segment %1 is missing from workingNodes during refinement")
-                                     .arg(segment));
-                    }
-                    for (auto node : workingNodes[segment]->twosidedEdges) { // crash here!
-                        segmentsInsideRefinedRegion.insert(node.first);
-                    }
-                }
-
-                for (auto &segment : segmentsInsideRefinedRegion) {
-                    splitWorkingNodeIntoInitialNodes(segment);
-                }
-
-                std::set<SegmentIdType> labelsInROIAfter;
-                std::set<SegmentIdType> labelsInROIBefore;
-                labelsInROIBefore.insert(newInitialNode->getLabel());
-
-                itAfter.GoToBegin();
-                while (!itAfter.IsAtEnd()) {
-                    labelsInROIBefore.insert(itAfter.Get());
-                    ++itAfter;
-                }
-                logGraphDebugIf(verbose,
-                                __func__,
-                                QStringLiteral("ROI labels before insertion=[%1]").arg(joinIds(labelsInROIBefore)));
-
-                for (auto &voxel : newInitialNode->voxels) {
-//                printf("INSERT: %d %d %d label: %d\n", voxel.x, voxel.y, voxel.z, labelToInsertTarget);
-                    graphBase->pWorkingSegmentsImage->SetPixel({voxel.x, voxel.y, voxel.z}, labelToInsertTarget);
-                }
-
-                itAfter.GoToBegin();
-                while (!itAfter.IsAtEnd()) {
-                    labelsInROIAfter.insert(itAfter.Get());
-                    ++itAfter;
-                }
-                logGraphDebugIf(verbose,
-                                __func__,
-                                QStringLiteral("ROI labels after insertion=[%1]").arg(joinIds(labelsInROIAfter)));
-
-
-                // delete labels that are not present anymore due to the new segments
-                std::set<GraphBase::SegmentsVoxelType> labelsInROIIntersection;
-                std::set_difference(labelsInROIBefore.begin(), labelsInROIBefore.end(),
-                                    labelsInROIAfter.begin(), labelsInROIAfter.end(),
-                                    std::inserter(labelsInROIIntersection, labelsInROIIntersection.begin()));
-                logGraphDebugIf(verbose,
-                                __func__,
-                                QStringLiteral("Deleting replaced nodes=[%1]").arg(joinIds(labelsInROIIntersection)));
-
-                // TODO: cant we make that difference/bg estimation etc all in one go?
-
-
-                // double check if the labels in the intersection are really to be deleted
-                // if segments are not connected, this is necessary
-                itk::ImageRegionConstIterator<SegmentsImageType>
-                        it(graphBase->pWorkingSegmentsImage,
-                           graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
-                auto copyLabelsInROIIntersection = labelsInROIIntersection; // have a copy of the id to not invalidate iterators while erasing keys
-                for (auto &id : copyLabelsInROIIntersection) {
-                    bool labelShouldBeDeleted = true;
-                    it.GoToBegin();
-                    while (!it.IsAtEnd()) {
-                        if (it.Get() == id) {
-                            labelShouldBeDeleted = false;
-                            break;
-                        }
-                        ++it;
-                    }
-                    if (!labelShouldBeDeleted) {
-                        logGraph(LogLevel::Debug,
-                                 __func__,
-                                 QStringLiteral("Keeping label %1 because it is still present in the lattice").arg(id));
-                        labelsInROIIntersection.erase(id);
-                    }
-                }
-
-                // remove labels that get replaced by the new segment
-                // as we have unsplit the regions before, all labels are both initial nodes and working nodes!
-                for (auto label : labelsInROIIntersection) {
-                    segmentManager.removeWorkingNode(workingNodes[label].get());
-                    segmentManager.removeInitialNode(label);
-//                removeInitialNode(initialNodes[label].get());
-//                removeWorkingNode(workingNodes[label].get());
-                }
-                ScopedGraphTimer recomputeTimer(verbose, __func__, QStringLiteral("Recomputing affected graph neighborhoods"));
-
-
-                // calculate surfacevoxels and onesidededges for new node
-                segmentManager.computeOneSidedEdgesOnInitialNode(newInitialNode);
-                logGraphDebugIf(verbose, __func__, QStringLiteral("Computed one-sided edges for inserted initial node"));
-                segmentManager.computeCorrospondingOneSidedInitialEdges(newInitialNode);
-//            printInitialNodesToFile("initialNodes.txt");
-
-                // recalculate voxels for neighboring initial nodes
-                std::vector<SegmentIdType> vecOfConnectedInitialNodeIds = utils::getKeyVecOfSharedPtrMap<SegmentIdType>(
-                        newInitialNode->onesidedEdges);
-
-                // take all the neighbors of the unsplitted node
-                // attention: here workingnode == initialnode does not have to be true!
-                // TODO: EdgeCase: InitialNode --> Workingnode edges on the border!
-                //TODO: is there a edge case where actually one of the segments is not an initialNode but a workingnode?
-                //TODO: Maybe enforce it/check it computationally
-                segmentManager.recomputeVoxelListAndOneSidedEdgesIfShrinked(vecOfConnectedInitialNodeIds);
-                segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
-
-                // generate new workingnode  and working edges based of new segment
-
-                auto newWorkingNode = new WorkingNode(newInitialNode, labelToInsertTarget, initialNodes);
-                segmentManager.addWorkingNode(newWorkingNode);
-                segmentManager.recalculateEdgesOnWorkingNode(newWorkingNode);
-                //TODO: check voxelwise if refinement split a initial node into two segments
-
-        } else {
-            logGraph(LogLevel::Warning,
-                     __func__,
-                     QStringLiteral("Refinement label matches background label %1; insertion skipped")
-                         .arg(backgroundLabel));
-        }
-    } else {
-        logGraph(LogLevel::Warning, __func__, QStringLiteral("Clicked point lies outside the selected refinement ROI"));
+    try {
+        static_cast<void>(refineFromImageAtPosition(
+            graphBase->pSelectedRefinement,
+            SegmentsImageType::IndexType{{x, y, z}},
+            permittedSeedRegion));
+    } catch (const std::exception &exception) {
+        logGraph(
+            LogLevel::Error,
+            __func__,
+            QStringLiteral("Failed to refine selected component: %1")
+                .arg(QString::fromUtf8(exception.what())));
+    } catch (...) {
+        logGraph(LogLevel::Error, __func__, QStringLiteral("Failed to refine selected component"));
     }
 }
 

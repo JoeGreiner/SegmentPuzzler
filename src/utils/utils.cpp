@@ -1,6 +1,7 @@
 #include "utils.h"
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <QFile>
 #include <QString>
@@ -148,4 +149,32 @@ bool utils::findRepresentativeVoxelForLabel(
     }
 
     return found;
+}
+
+std::unordered_set<utils::SegmentIdType> utils::findPresentLabels(
+        const dataType::SegmentsImageType::Pointer &segmentationImage,
+        const std::unordered_set<SegmentIdType> &candidateLabels) {
+    if (candidateLabels.empty()) {
+        return {};
+    }
+    if (segmentationImage.IsNull() || segmentationImage->GetBufferPointer() == nullptr) {
+        throw std::invalid_argument("Cannot search labels in a null or unallocated image.");
+    }
+
+    std::unordered_set<SegmentIdType> remaining = candidateLabels;
+    std::unordered_set<SegmentIdType> present;
+    present.reserve(candidateLabels.size());
+
+    const auto numberOfPixels =
+        segmentationImage->GetLargestPossibleRegion().GetNumberOfPixels();
+    const SegmentIdType *buffer = segmentationImage->GetBufferPointer();
+    for (std::size_t index = 0; index < numberOfPixels && !remaining.empty(); ++index) {
+        const auto found = remaining.find(buffer[index]);
+        if (found == remaining.end()) {
+            continue;
+        }
+        present.insert(*found);
+        remaining.erase(found);
+    }
+    return present;
 }
