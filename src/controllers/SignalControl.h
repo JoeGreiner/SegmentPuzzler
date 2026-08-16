@@ -316,6 +316,7 @@ private:
         std::vector<dataType::SegmentIdType> labels;
         Graph::SegmentationNeighborMergeResult result;
         std::size_t initialMatchingLabelCount = 0;
+        std::size_t remainingMatchingLabelCount = 0;
         bool scannedInitialLabels = false;
     };
 

@@ -238,6 +238,11 @@ NeighborMergePlan buildNeighborMergePlan(
     const std::vector<Graph::SegmentIdType> &requestedLabels,
     Graph::SegmentationNeighborSelection neighborSelection) {
     NeighborMergePlan plan;
+    if (Graph::segmentationNeighborSelectionName(neighborSelection) == nullptr) {
+        plan.error = QStringLiteral("Unsupported neighbor-selection mode %1.")
+                         .arg(static_cast<int>(neighborSelection));
+        return plan;
+    }
     plan.selectedLabels.insert(requestedLabels.begin(), requestedLabels.end());
     plan.actualMaximumLabel = backgroundId;
     for (const Graph::SegmentIdType label : plan.selectedLabels) {
@@ -270,21 +275,36 @@ NeighborMergePlan buildNeighborMergePlan(
         return plan;
     }
 
-    std::unordered_map<Graph::SegmentIdType, std::unordered_set<Graph::SegmentIdType>> neighborsByLabel;
-    neighborsByLabel.reserve(plan.selectedLabels.size());
+    std::unordered_map<Graph::SegmentIdType,
+                       std::unordered_map<Graph::SegmentIdType, std::size_t>>
+        contactFaceCountByLabel;
+    contactFaceCountByLabel.reserve(plan.selectedLabels.size());
     for (const Graph::SegmentIdType label : plan.selectedLabels) {
-        neighborsByLabel.emplace(label, std::unordered_set<Graph::SegmentIdType>{});
+        contactFaceCountByLabel.emplace(
+            label,
+            std::unordered_map<Graph::SegmentIdType, std::size_t>{});
     }
+    const auto incrementContactFaceCount = [&](Graph::SegmentIdType selectedLabel,
+                                               Graph::SegmentIdType neighborLabel) {
+        auto &contactFaceCount = contactFaceCountByLabel[selectedLabel][neighborLabel];
+        if (contactFaceCount == std::numeric_limits<std::size_t>::max()) {
+            plan.error = QStringLiteral("The shared face count between labels %1 and %2 overflowed.")
+                             .arg(selectedLabel)
+                             .arg(neighborLabel);
+            return;
+        }
+        ++contactFaceCount;
+    };
     const auto recordAdjacency = [&](Graph::SegmentIdType firstLabel, Graph::SegmentIdType secondLabel) {
         if (firstLabel == secondLabel || ignoredLabels.count(firstLabel) > 0
             || ignoredLabels.count(secondLabel) > 0) {
             return;
         }
         if (plan.selectedLabels.count(firstLabel) > 0) {
-            neighborsByLabel[firstLabel].insert(secondLabel);
+            incrementContactFaceCount(firstLabel, secondLabel);
         }
         if (plan.selectedLabels.count(secondLabel) > 0) {
-            neighborsByLabel[secondLabel].insert(firstLabel);
+            incrementContactFaceCount(secondLabel, firstLabel);
         }
     };
 
@@ -319,6 +339,10 @@ NeighborMergePlan buildNeighborMergePlan(
         }
     }
 
+    if (!plan.valid()) {
+        return plan;
+    }
+
     plan.labelPairs.reserve(plan.selectedLabels.size());
     for (const Graph::SegmentIdType selectedLabel : plan.selectedLabels) {
         const auto selectedStats = plan.statsByLabel.find(selectedLabel);
@@ -328,25 +352,37 @@ NeighborMergePlan buildNeighborMergePlan(
             return plan;
         }
 
-        const auto &neighbors = neighborsByLabel.at(selectedLabel);
+        const auto &neighbors = contactFaceCountByLabel.at(selectedLabel);
         bool foundNeighbor = false;
         Graph::SegmentIdType selectedNeighbor = backgroundId;
         std::size_t selectedNeighborVoxelCount = 0;
-        for (const Graph::SegmentIdType neighborLabel : neighbors) {
+        std::size_t selectedNeighborContactFaceCount = 0;
+        for (const auto &[neighborLabel, contactFaceCount] : neighbors) {
             const auto neighborStats = plan.statsByLabel.find(neighborLabel);
             if (neighborStats == plan.statsByLabel.end() || neighborStats->second.voxelCount == 0) {
                 continue;
             }
-            const bool preferredBySize =
-                neighborSelection == Graph::SegmentationNeighborSelection::Smallest
-                    ? neighborStats->second.voxelCount < selectedNeighborVoxelCount
-                    : neighborStats->second.voxelCount > selectedNeighborVoxelCount;
-            if (!foundNeighbor || preferredBySize ||
-                (neighborStats->second.voxelCount == selectedNeighborVoxelCount &&
-                 neighborLabel < selectedNeighbor)) {
+            bool preferred = false;
+            bool metricTied = false;
+            switch (neighborSelection) {
+                case Graph::SegmentationNeighborSelection::Smallest:
+                    preferred = neighborStats->second.voxelCount < selectedNeighborVoxelCount;
+                    metricTied = neighborStats->second.voxelCount == selectedNeighborVoxelCount;
+                    break;
+                case Graph::SegmentationNeighborSelection::Largest:
+                    preferred = neighborStats->second.voxelCount > selectedNeighborVoxelCount;
+                    metricTied = neighborStats->second.voxelCount == selectedNeighborVoxelCount;
+                    break;
+                case Graph::SegmentationNeighborSelection::MostConnected:
+                    preferred = contactFaceCount > selectedNeighborContactFaceCount;
+                    metricTied = contactFaceCount == selectedNeighborContactFaceCount;
+                    break;
+            }
+            if (!foundNeighbor || preferred || (metricTied && neighborLabel < selectedNeighbor)) {
                 foundNeighbor = true;
                 selectedNeighbor = neighborLabel;
                 selectedNeighborVoxelCount = neighborStats->second.voxelCount;
+                selectedNeighborContactFaceCount = contactFaceCount;
             }
         }
         if (!foundNeighbor) {
@@ -394,13 +430,17 @@ const char *neighborMergeStatusName(Graph::SegmentationNeighborMergeResult::Stat
     return "unknown";
 }
 
-const char *neighborSelectionName(Graph::SegmentationNeighborSelection selection) {
-    return selection == Graph::SegmentationNeighborSelection::Largest
-               ? "largest"
-               : "smallest";
-}
-
 } // namespace
+
+const char *Graph::segmentationNeighborSelectionName(
+        SegmentationNeighborSelection selection) noexcept {
+    switch (selection) {
+        case SegmentationNeighborSelection::Smallest: return "smallest";
+        case SegmentationNeighborSelection::Largest: return "largest";
+        case SegmentationNeighborSelection::MostConnected: return "most_connected";
+    }
+    return nullptr;
+}
 
 Graph::~Graph() = default;
 
@@ -2739,10 +2779,13 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
     using MergeStatus = MergeResult::Status;
 
     const char *operationName = __func__;
+    const char *selectionName = segmentationNeighborSelectionName(options.neighborSelection);
+    const QString selectionNameForLog =
+        QString::fromLatin1(selectionName != nullptr ? selectionName : "unknown");
     ScopedGraphTimer timer(
         verbose, operationName, QStringLiteral("Merging selected segmentation labels with size-selected neighbors"));
     MergeResult result;
-    const auto finish = [this, operationName, &requestedLabels, &options, &result](
+    const auto finish = [this, operationName, &requestedLabels, &options, &result, selectionNameForLog](
                             MergeStatus status, QString message) {
         result.status = status;
         result.message = std::move(message);
@@ -2759,7 +2802,7 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
                            "consumed=%12 groups=%13 data_changed=%14 message=\"%15\"")
                 .arg(QString::fromLatin1(neighborMergeStatusName(status)))
                 .arg(joinIds(requestedLabels))
-                .arg(QString::fromLatin1(neighborSelectionName(options.neighborSelection)))
+                .arg(selectionNameForLog)
                 .arg(options.allowInsertion)
                 .arg(options.allowConnectedComponentSplit)
                 .arg(result.selectedLabelCount)
@@ -2781,7 +2824,7 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
         QStringLiteral("operation=merge_with_neighbor phase=begin requested=[%1] neighbor_selection=%2 "
                        "allow_insertion=%3 allow_component_split=%4")
             .arg(joinIds(requestedLabels))
-            .arg(QString::fromLatin1(neighborSelectionName(options.neighborSelection)))
+            .arg(selectionNameForLog)
             .arg(options.allowInsertion)
             .arg(options.allowConnectedComponentSplit));
 
@@ -3393,10 +3436,18 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
         assignedLabelByWorkingLabel.emplace(transferWorkingLabels[index], assignedLabels[index]);
     }
     for (const auto &[consumedLabel, finalWorkingLabel] : finalWorkingLabelByConsumedLabel) {
-        result.newLabelByConsumedLabel.emplace(
-            consumedLabel, assignedLabelByWorkingLabel.at(finalWorkingLabel));
-        result.voxelCountByConsumedLabel.emplace(
-            consumedLabel, statsByLabel.at(consumedLabel).voxelCount);
+        const SegmentIdType newLabel = assignedLabelByWorkingLabel.at(finalWorkingLabel);
+        const std::size_t consumedVoxelCount = statsByLabel.at(consumedLabel).voxelCount;
+        result.newLabelByConsumedLabel.emplace(consumedLabel, newLabel);
+        result.voxelCountByConsumedLabel.emplace(consumedLabel, consumedVoxelCount);
+
+        auto &newLabelVoxelCount = result.voxelCountByNewLabel[newLabel];
+        if (consumedVoxelCount >
+            std::numeric_limits<std::size_t>::max() - newLabelVoxelCount) {
+            throw std::logic_error(
+                "A merged Selected Segmentation label contains too many voxels.");
+        }
+        newLabelVoxelCount += consumedVoxelCount;
     }
 
     graphBase->pSelectedSegmentation->Modified();

@@ -135,21 +135,26 @@ public:
         std::size_t mergedGroupCount = 0;
         std::map<SegmentIdType, SegmentIdType> newLabelByConsumedLabel;
         std::map<SegmentIdType, std::size_t> voxelCountByConsumedLabel;
+        std::map<SegmentIdType, std::size_t> voxelCountByNewLabel;
         bool dataChanged = false;
         QString message;
     };
 
     enum class SegmentationNeighborSelection {
         Smallest,
-        Largest
+        Largest,
+        MostConnected
     };
+
+    static const char *segmentationNeighborSelectionName(
+        SegmentationNeighborSelection selection) noexcept;
 
     struct SegmentationNeighborMergeOptions {
         bool allowInsertion = false;
         // Requires allowInsertion.
         bool allowConnectedComponentSplit = false;
         SegmentationNeighborSelection neighborSelection =
-            SegmentationNeighborSelection::Smallest;
+            SegmentationNeighborSelection::MostConnected;
     };
 
     Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
