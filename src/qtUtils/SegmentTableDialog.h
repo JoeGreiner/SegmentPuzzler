@@ -52,6 +52,7 @@ public:
         bool isIsolated        = true;
         bool backgroundExposure = false;
         bool foregroundExposure = false;
+        bool nearBoundary      = false;
         bool physicalSize      = false;
         bool pixelsOnBorder    = false;
         int borderDistancePx   = 0;
@@ -80,6 +81,7 @@ public:
 
         double volume = -1, physicalSize = -1;
         bool isIsolated = true;
+        bool isNearBoundary = false;
         double backgroundExposure = -1;
         double foregroundExposure = -1;
         double pixelsOnBorder = -1, perimeterOnBorder = -1;
@@ -106,32 +108,33 @@ public:
         COL_IS_ISOLATED         = 2,
         COL_BACKGROUND_EXPOSURE = 3,
         COL_FOREGROUND_EXPOSURE = 4,
-        COL_PHYSICAL_SIZE       = 5,
-        COL_PIXELS_ON_BORDER    = 6,
-        COL_PERIMETER_ON_BORDER = 7,
-        COL_CX                  = 8,
-        COL_CY                  = 9,
-        COL_CZ                  = 10,
-        COL_BBOX_W              = 11,
-        COL_BBOX_H              = 12,
-        COL_BBOX_D              = 13,
-        COL_ELONGATION          = 14,
-        COL_FLATNESS            = 15,
-        COL_ROUNDNESS           = 16,
-        COL_EQUIV_SPH_RADIUS    = 17,
-        COL_EQUIV_SPH_PERIM     = 18,
-        COL_EQUIV_ELLIP_D0      = 19,
-        COL_EQUIV_ELLIP_D1      = 20,
-        COL_EQUIV_ELLIP_D2      = 21,
-        COL_PRINCIPAL_MOM0      = 22,
-        COL_PRINCIPAL_MOM1      = 23,
-        COL_PRINCIPAL_MOM2      = 24,
-        COL_PERIMETER           = 25,
-        COL_OBBOX_W             = 26,
-        COL_OBBOX_H             = 27,
-        COL_OBBOX_D             = 28,
-        COL_OBBOX_VOLUME        = 29,
-        COL_COUNT               = 30
+        COL_NEAR_BOUNDARY       = 5,
+        COL_PHYSICAL_SIZE       = 6,
+        COL_PIXELS_ON_BORDER    = 7,
+        COL_PERIMETER_ON_BORDER = 8,
+        COL_CX                  = 9,
+        COL_CY                  = 10,
+        COL_CZ                  = 11,
+        COL_BBOX_W              = 12,
+        COL_BBOX_H              = 13,
+        COL_BBOX_D              = 14,
+        COL_ELONGATION          = 15,
+        COL_FLATNESS            = 16,
+        COL_ROUNDNESS           = 17,
+        COL_EQUIV_SPH_RADIUS    = 18,
+        COL_EQUIV_SPH_PERIM     = 19,
+        COL_EQUIV_ELLIP_D0      = 20,
+        COL_EQUIV_ELLIP_D1      = 21,
+        COL_EQUIV_ELLIP_D2      = 22,
+        COL_PRINCIPAL_MOM0      = 23,
+        COL_PRINCIPAL_MOM1      = 24,
+        COL_PRINCIPAL_MOM2      = 25,
+        COL_PERIMETER           = 26,
+        COL_OBBOX_W             = 27,
+        COL_OBBOX_H             = 28,
+        COL_OBBOX_D             = 29,
+        COL_OBBOX_VOLUME        = 30,
+        COL_COUNT               = 31
     };
 
     // Runs on a worker thread — must not touch QWidgets.
@@ -211,7 +214,7 @@ private:
     // ---- Setup page ----
     QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr;
     QCheckBox *cbBackgroundExposure = nullptr, *cbForegroundExposure = nullptr;
-    QCheckBox *cbPhysicalSize = nullptr;
+    QCheckBox *cbNearBoundary = nullptr, *cbPhysicalSize = nullptr;
     QCheckBox *cbPixelsOnBorder = nullptr, *cbPerimeterOnBorder = nullptr;
     QSpinBox *borderDistanceSpinBox = nullptr;
     QCheckBox *overridePixelSizeCheckBox = nullptr;

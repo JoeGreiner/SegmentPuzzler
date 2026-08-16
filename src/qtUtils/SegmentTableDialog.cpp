@@ -61,11 +61,12 @@ namespace {
 
 constexpr char kSettingsGroup[] = "SegmentFeatureTable";
 using FeatureBoolMember = bool SegmentTableDialog::FeatureFlags::*;
-const std::array<std::pair<const char *, FeatureBoolMember>, 19> kFeatureBoolSettings{{
+const std::array<std::pair<const char *, FeatureBoolMember>, 20> kFeatureBoolSettings{{
     {"volume", &SegmentTableDialog::FeatureFlags::volume},
     {"isIsolated", &SegmentTableDialog::FeatureFlags::isIsolated},
     {"backgroundExposure", &SegmentTableDialog::FeatureFlags::backgroundExposure},
     {"foregroundExposure", &SegmentTableDialog::FeatureFlags::foregroundExposure},
+    {"nearBoundary", &SegmentTableDialog::FeatureFlags::nearBoundary},
     {"physicalSize", &SegmentTableDialog::FeatureFlags::physicalSize},
     {"pixelsOnBorder", &SegmentTableDialog::FeatureFlags::pixelsOnBorder},
     {"overridePixelSize", &SegmentTableDialog::FeatureFlags::overridePixelSize},
@@ -193,11 +194,12 @@ QStandardItem *makeNumericItem(double v, int decimals = 3) {
     return item;
 }
 
-QStandardItem *makeBooleanItem(bool value) {
+QStandardItem *makeBooleanItem(bool value, bool trueIsWarning = false) {
     auto *item = new QStandardItem(value ? "Yes" : "No");
     item->setTextAlignment(Qt::AlignCenter);
     item->setData(QVariant(value ? 1.0 : 0.0), Qt::UserRole);
-    const QColor background = colorForNormalizedValue(value ? 0.0 : 1.0);
+    const bool warningState = trueIsWarning ? value : !value;
+    const QColor background = colorForNormalizedValue(warningState ? 1.0 : 0.0);
     item->setBackground(background);
     item->setForeground(textColorForBackground(background));
     return item;
@@ -352,6 +354,24 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
         }
         if (flags.physicalSize) {
             row.physicalSize = labelObject->GetPhysicalSize();
+        }
+        if (flags.nearBoundary) {
+            const auto boundingBox = labelObject->GetBoundingBox();
+            for (unsigned int dimension = 0; dimension < ImageType::ImageDimension; ++dimension) {
+                const long long distanceFromMinimum =
+                    static_cast<long long>(boundingBox.GetIndex()[dimension]) -
+                    static_cast<long long>(regionStart[dimension]);
+                const long long distanceFromMaximum =
+                    static_cast<long long>(regionStart[dimension]) +
+                    static_cast<long long>(regionSize[dimension]) -
+                    static_cast<long long>(boundingBox.GetIndex()[dimension]) -
+                    static_cast<long long>(boundingBox.GetSize()[dimension]);
+                if (distanceFromMinimum <= borderDistance ||
+                    distanceFromMaximum <= borderDistance) {
+                    row.isNearBoundary = true;
+                    break;
+                }
+            }
         }
         if (flags.pixelsOnBorder) {
             std::size_t count = 0;
@@ -634,22 +654,27 @@ QWidget *SegmentTableDialog::createSetupPage() {
             "Fraction of surface voxels that touch another non-zero label. "
             "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D. "
             "A voxel may contribute to both exposure ratios.");
+        cbNearBoundary      = new QCheckBox("Near Boundary");                    cbNearBoundary->setChecked(false);
+        cbNearBoundary->setToolTip(
+            "Yes if at least one segment pixel or voxel is within the configured distance "
+            "of the image boundary.");
         cbPhysicalSize      = new QCheckBox("Physical Size");                    cbPhysicalSize->setChecked(false);
         cbPixelsOnBorder    = new QCheckBox("Pixels on Border");                 cbPixelsOnBorder->setChecked(false);
         cbPerimeterOnBorder = new QCheckBox("Perimeter on Border (physical)");   cbPerimeterOnBorder->setChecked(false);
-        auto *borderDistanceLabel = new QLabel("Pixels on Border distance:");
+        auto *borderDistanceLabel = new QLabel("Boundary distance:");
         borderDistanceSpinBox = new QSpinBox();
         borderDistanceSpinBox->setRange(0, 1'000'000);
         borderDistanceSpinBox->setValue(0);
         borderDistanceSpinBox->setSuffix(" px");
         borderDistanceSpinBox->setToolTip(
-            "Used by Pixels on Border. 0 counts only the outermost pixels; "
-            "N also counts pixels up to and including N pixels inward.");
+            "Used by Near Boundary and Pixels on Border. 0 includes only the outermost "
+            "image layer; N also includes pixels or voxels up to and including N layers inward.");
         grid->addWidget(cbVolume,            0, 0);
         grid->addWidget(cbIsIsolated,        0, 1);
         grid->addWidget(cbBackgroundExposure, 1, 0);
         grid->addWidget(cbForegroundExposure, 1, 1);
         grid->addWidget(cbPhysicalSize,      2, 0);
+        grid->addWidget(cbNearBoundary,      2, 1);
         grid->addWidget(borderDistanceLabel, 3, 0);
         grid->addWidget(borderDistanceSpinBox, 3, 1);
         grid->addWidget(cbPixelsOnBorder,    4, 0);
@@ -770,7 +795,7 @@ QWidget *SegmentTableDialog::createResultsPage() {
     model->setHorizontalHeaderLabels({
         "Label",
         "Volume", "Isolated", "Background Exposure", "Foreground Exposure",
-        "Physical Size", "Px on Border", "Perim on Border",
+        "Near Boundary", "Physical Size", "Px on Border", "Perim on Border",
         "CX", "CY", "CZ",
         "BBox W", "BBox H", "BBox D",
         "Elongation", "Flatness", "Roundness",
@@ -836,6 +861,7 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     f.isIsolated        = cbIsIsolated->isChecked();
     f.backgroundExposure = cbBackgroundExposure->isChecked();
     f.foregroundExposure = cbForegroundExposure->isChecked();
+    f.nearBoundary      = cbNearBoundary->isChecked();
     f.physicalSize      = cbPhysicalSize->isChecked();
     f.pixelsOnBorder    = cbPixelsOnBorder->isChecked();
     f.borderDistancePx  = borderDistanceSpinBox->value();
@@ -862,6 +888,7 @@ void SegmentTableDialog::applyFlagsToUi(const FeatureFlags &flags) {
     cbIsIsolated->setChecked(flags.isIsolated);
     cbBackgroundExposure->setChecked(flags.backgroundExposure);
     cbForegroundExposure->setChecked(flags.foregroundExposure);
+    cbNearBoundary->setChecked(flags.nearBoundary);
     cbPhysicalSize->setChecked(flags.physicalSize);
     cbPixelsOnBorder->setChecked(flags.pixelsOnBorder);
     borderDistanceSpinBox->setValue(flags.borderDistancePx);
@@ -977,7 +1004,7 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
                        "borderDistancePx=%10 perimeterOnBorder=%11 equivSphRadius=%12 equivSphPerimeter=%13 "
                        "equivEllipsoid=%14 principalMoments=%15 perimeter=%16 orientedBBox=%17 "
                        "overridePixelSize=%18 pixelSize=%19 physicalUnit=%20 "
-                       "backgroundExposure=%21 foregroundExposure=%22")
+                       "backgroundExposure=%21 foregroundExposure=%22 nearBoundary=%23")
             .arg(flags.volume)
             .arg(flags.isIsolated)
             .arg(flags.centroid)
@@ -999,7 +1026,8 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
             .arg(flags.pixelSize)
             .arg(flags.physicalUnit)
             .arg(flags.backgroundExposure)
-            .arg(flags.foregroundExposure));
+            .arg(flags.foregroundExposure)
+            .arg(flags.nearBoundary));
 
     // Switch to results page immediately so the user sees the computing state.
     computeButton->setEnabled(false);
@@ -1127,7 +1155,7 @@ void SegmentTableDialog::onMergeWithNeighborClicked() {
 
 void SegmentTableDialog::setAllChecked(bool checked) {
     for (QCheckBox *cb : {cbVolume, cbIsIsolated, cbBackgroundExposure, cbForegroundExposure,
-                          cbPhysicalSize,
+                          cbNearBoundary, cbPhysicalSize,
                           cbPixelsOnBorder, cbPerimeterOnBorder,
                           cbCentroid, cbBBox, cbElongation, cbFlatness, cbRoundness,
                           cbEquivSphRadius, cbEquivSphPerimeter, cbEquivEllipsoid,
@@ -1788,6 +1816,7 @@ void SegmentTableDialog::populateTable(const ComputeResult &result) {
         model->setItem(r, SegmentTableDialog::COL_IS_ISOLATED,         makeBooleanItem(row.isIsolated));
         model->setItem(r, SegmentTableDialog::COL_BACKGROUND_EXPOSURE, makeNumericItem(row.backgroundExposure));
         model->setItem(r, SegmentTableDialog::COL_FOREGROUND_EXPOSURE, makeNumericItem(row.foregroundExposure));
+        model->setItem(r, SegmentTableDialog::COL_NEAR_BOUNDARY,       makeBooleanItem(row.isNearBoundary, true));
         model->setItem(r, SegmentTableDialog::COL_PHYSICAL_SIZE,        makeNumericItem(row.physicalSize, 2));
         model->setItem(r, SegmentTableDialog::COL_PIXELS_ON_BORDER,     makeNumericItem(row.pixelsOnBorder, 0));
         model->setItem(r, SegmentTableDialog::COL_PERIMETER_ON_BORDER,  makeNumericItem(row.perimeterOnBorder, 2));
@@ -1829,7 +1858,8 @@ void SegmentTableDialog::applyColumnColoring() {
     if (nRows == 0) { return; }
 
     for (int col = SegmentTableDialog::COL_VOLUME; col < SegmentTableDialog::COL_COUNT; ++col) {
-        if (col == SegmentTableDialog::COL_IS_ISOLATED) {
+        if (col == SegmentTableDialog::COL_IS_ISOLATED ||
+            col == SegmentTableDialog::COL_NEAR_BOUNDARY) {
             continue;
         }
         double minVal = std::numeric_limits<double>::max();
@@ -1881,6 +1911,8 @@ void SegmentTableDialog::updateColumnHeaders(const FeatureFlags &flags, bool is2
                          QStringLiteral("Background Exposure"));
     model->setHeaderData(SegmentTableDialog::COL_FOREGROUND_EXPOSURE, Qt::Horizontal,
                          QStringLiteral("Foreground Exposure"));
+    model->setHeaderData(SegmentTableDialog::COL_NEAR_BOUNDARY, Qt::Horizontal,
+                         QStringLiteral("Near Boundary"));
     model->setHeaderData(SegmentTableDialog::COL_PHYSICAL_SIZE, Qt::Horizontal,
                          is2D ? withUnit("Physical Area", 2) : "Physical Size");
     model->setHeaderData(
@@ -1940,6 +1972,7 @@ void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f, bool is2D
     if (f.foregroundExposure) {
         tableView->setColumnHidden(SegmentTableDialog::COL_FOREGROUND_EXPOSURE, false);
     }
+    if (f.nearBoundary)      tableView->setColumnHidden(SegmentTableDialog::COL_NEAR_BOUNDARY, false);
     if (f.physicalSize)      tableView->setColumnHidden(SegmentTableDialog::COL_PHYSICAL_SIZE, false);
     if (f.pixelsOnBorder)    tableView->setColumnHidden(SegmentTableDialog::COL_PIXELS_ON_BORDER, false);
     if (f.perimeterOnBorder) tableView->setColumnHidden(SegmentTableDialog::COL_PERIMETER_ON_BORDER, false);
