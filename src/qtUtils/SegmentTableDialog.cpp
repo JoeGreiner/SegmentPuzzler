@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -82,6 +83,56 @@ const std::array<std::pair<const char *, FeatureBoolMember>, 17> kFeatureBoolSet
 
 QString physicalUnitLabel(const QString &unitId) {
     return unitId == QStringLiteral("um") ? QStringLiteral("µm") : unitId;
+}
+
+// Representative smooth-shape checks start exceeding about 5% orientation-
+// dependent error around this ratio with ITK's Crofton perimeter estimator.
+constexpr double kSurfaceAnisotropyWarningRatio = 1.5;
+
+struct SurfaceAnisotropyInfo {
+    bool valid = false;
+    double ratio = 1.0;
+};
+
+bool usesCroftonSurfaceEstimate(const SegmentTableDialog::FeatureFlags &flags) {
+    return flags.roundness || flags.perimeter;
+}
+
+SurfaceAnisotropyInfo surfaceAnisotropyInfo(
+    const dataType::SegmentsImageType::Pointer &image,
+    const SegmentTableDialog::FeatureFlags &flags) {
+    SurfaceAnisotropyInfo info;
+    if (image == nullptr) {
+        return info;
+    }
+
+    const bool is2D = image->GetLargestPossibleRegion().GetSize()[2] == 1;
+
+    std::vector<double> effectiveSpacing;
+    if (is2D && flags.overridePixelSize &&
+        std::isfinite(flags.pixelSize) && flags.pixelSize > 0.0) {
+        effectiveSpacing = {flags.pixelSize, flags.pixelSize};
+    } else {
+        const auto imageSpacing = image->GetSpacing();
+        effectiveSpacing = {imageSpacing[0], imageSpacing[1]};
+        if (!is2D) {
+            effectiveSpacing.push_back(imageSpacing[2]);
+        }
+    }
+
+    double minimumSpacing = std::numeric_limits<double>::infinity();
+    double maximumSpacing = 0.0;
+    for (const double spacing : effectiveSpacing) {
+        if (!std::isfinite(spacing) || spacing <= 0.0) {
+            return info;
+        }
+        minimumSpacing = std::min(minimumSpacing, spacing);
+        maximumSpacing = std::max(maximumSpacing, spacing);
+    }
+
+    info.valid = true;
+    info.ratio = maximumSpacing / minimumSpacing;
+    return info;
 }
 
 // t=0 → green, t=0.5 → yellow, t=1 → red (HSV hue 120°→0°)
@@ -1421,6 +1472,15 @@ void SegmentTableDialog::onComputeFinished(ComputeResult result) {
         status += QStringLiteral(" | Calibration: %1 %2/px")
                       .arg(result.flags.pixelSize, 0, 'g', 10)
                       .arg(physicalUnitLabel(result.flags.physicalUnit));
+    }
+    const SurfaceAnisotropyInfo anisotropy =
+        surfaceAnisotropyInfo(currentTableSegmentation, result.flags);
+    if (usesCroftonSurfaceEstimate(result.flags) && anisotropy.valid &&
+        anisotropy.ratio >= kSurfaceAnisotropyWarningRatio) {
+        status += QStringLiteral(
+                      " | <span style=\"color:#ff9800; font-weight:600;\">"
+                      "⚠ Warning: surface features may be biased at %1:1 anisotropy</span>")
+                      .arg(anisotropy.ratio, 0, 'f', 2);
     }
     statusLabel->setText(status);
     SP_LOG_INFO(
