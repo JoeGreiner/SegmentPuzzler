@@ -61,7 +61,7 @@ namespace {
 
 constexpr char kSettingsGroup[] = "SegmentFeatureTable";
 using FeatureBoolMember = bool SegmentTableDialog::FeatureFlags::*;
-const std::array<std::pair<const char *, FeatureBoolMember>, 20> kFeatureBoolSettings{{
+const std::array<std::pair<const char *, FeatureBoolMember>, 21> kFeatureBoolSettings{{
     {"volume", &SegmentTableDialog::FeatureFlags::volume},
     {"isIsolated", &SegmentTableDialog::FeatureFlags::isIsolated},
     {"backgroundExposure", &SegmentTableDialog::FeatureFlags::backgroundExposure},
@@ -81,6 +81,7 @@ const std::array<std::pair<const char *, FeatureBoolMember>, 20> kFeatureBoolSet
     {"equivEllipsoid", &SegmentTableDialog::FeatureFlags::equivEllipsoid},
     {"principalMoments", &SegmentTableDialog::FeatureFlags::principalMoments},
     {"perimeter", &SegmentTableDialog::FeatureFlags::perimeter},
+    {"surfaceToVolumeRatio", &SegmentTableDialog::FeatureFlags::surfaceToVolumeRatio},
     {"orientedBBox", &SegmentTableDialog::FeatureFlags::orientedBBox},
 }};
 
@@ -98,7 +99,7 @@ struct SurfaceAnisotropyInfo {
 };
 
 bool usesCroftonSurfaceEstimate(const SegmentTableDialog::FeatureFlags &flags) {
-    return flags.roundness || flags.perimeter;
+    return flags.roundness || flags.perimeter || flags.surfaceToVolumeRatio;
 }
 
 SurfaceAnisotropyInfo surfaceAnisotropyInfo(
@@ -313,7 +314,8 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
     auto filter = FilterType::New();
     filter->SetInput(image);
     // Roundness is computed inside the perimeter pass.
-    filter->SetComputePerimeter(flags.perimeter || flags.roundness);
+    filter->SetComputePerimeter(
+        flags.perimeter || flags.roundness || flags.surfaceToVolumeRatio);
     filter->SetComputeOrientedBoundingBox(flags.orientedBBox);
     const itk::ThreadIdType nThreads = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
     filter->SetNumberOfWorkUnits(nThreads);
@@ -442,6 +444,12 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
 
         if (flags.perimeter) {
             row.perimeter = labelObject->GetPerimeter();
+        }
+        if (flags.surfaceToVolumeRatio) {
+            const double physicalSize = labelObject->GetPhysicalSize();
+            if (physicalSize > 0.0) {
+                row.surfaceToVolumeRatio = labelObject->GetPerimeter() / physicalSize;
+            }
         }
         if (flags.orientedBBox) {
             const auto size = labelObject->GetOrientedBoundingBoxSize();
@@ -718,10 +726,18 @@ QWidget *SegmentTableDialog::createSetupPage() {
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Advanced (slower)", grid);
-        cbPerimeter    = new QCheckBox("Perimeter / Surface Area");                cbPerimeter->setChecked(false);
-        cbOrientedBBox = new QCheckBox("Oriented Bounding Box (size + area/volume)"); cbOrientedBBox->setChecked(false);
-        grid->addWidget(cbPerimeter,    0, 0);
-        grid->addWidget(cbOrientedBBox, 1, 0);
+        cbPerimeter = new QCheckBox("Perimeter / Surface Area");
+        cbPerimeter->setChecked(false);
+        cbSurfaceToVolumeRatio = new QCheckBox("Surface/Volume");
+        cbSurfaceToVolumeRatio->setChecked(false);
+        cbSurfaceToVolumeRatio->setToolTip(
+            "Surface area divided by physical volume in 3D; "
+            "perimeter divided by physical area in 2D.");
+        cbOrientedBBox = new QCheckBox("Oriented Bounding Box (size + area/volume)");
+        cbOrientedBBox->setChecked(false);
+        grid->addWidget(cbPerimeter,             0, 0);
+        grid->addWidget(cbSurfaceToVolumeRatio,  0, 1);
+        grid->addWidget(cbOrientedBBox,          1, 0);
         vContent->addWidget(gb);
     }
 
@@ -802,7 +818,7 @@ QWidget *SegmentTableDialog::createResultsPage() {
         "Equiv Sph R", "Equiv Sph Perim",
         "Ellip D0", "Ellip D1", "Ellip D2",
         "PrinMom 0", "PrinMom 1", "PrinMom 2",
-        "Perimeter",
+        "Perimeter", "Surface/Volume",
         "OBBox W", "OBBox H", "OBBox D", "OBBox Vol"
     });
 
@@ -879,6 +895,7 @@ SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     f.equivEllipsoid    = cbEquivEllipsoid->isChecked();
     f.principalMoments  = cbPrincipalMoments->isChecked();
     f.perimeter         = cbPerimeter->isChecked();
+    f.surfaceToVolumeRatio = cbSurfaceToVolumeRatio->isChecked();
     f.orientedBBox      = cbOrientedBBox->isChecked();
     return f;
 }
@@ -907,6 +924,7 @@ void SegmentTableDialog::applyFlagsToUi(const FeatureFlags &flags) {
     cbEquivEllipsoid->setChecked(flags.equivEllipsoid);
     cbPrincipalMoments->setChecked(flags.principalMoments);
     cbPerimeter->setChecked(flags.perimeter);
+    cbSurfaceToVolumeRatio->setChecked(flags.surfaceToVolumeRatio);
     cbOrientedBBox->setChecked(flags.orientedBBox);
     updateCalibrationControls();
 }
@@ -1002,9 +1020,9 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
         QStringLiteral("Segment table featureFlags volume=%1 isIsolated=%2 centroid=%3 elongation=%4 "
                        "flatness=%5 roundness=%6 bbox=%7 physicalSize=%8 pixelsOnBorder=%9 "
                        "borderDistancePx=%10 perimeterOnBorder=%11 equivSphRadius=%12 equivSphPerimeter=%13 "
-                       "equivEllipsoid=%14 principalMoments=%15 perimeter=%16 orientedBBox=%17 "
-                       "overridePixelSize=%18 pixelSize=%19 physicalUnit=%20 "
-                       "backgroundExposure=%21 foregroundExposure=%22 nearBoundary=%23")
+                       "equivEllipsoid=%14 principalMoments=%15 perimeter=%16 surfaceToVolumeRatio=%17 "
+                       "orientedBBox=%18 overridePixelSize=%19 pixelSize=%20 physicalUnit=%21 "
+                       "backgroundExposure=%22 foregroundExposure=%23 nearBoundary=%24")
             .arg(flags.volume)
             .arg(flags.isIsolated)
             .arg(flags.centroid)
@@ -1021,6 +1039,7 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
             .arg(flags.equivEllipsoid)
             .arg(flags.principalMoments)
             .arg(flags.perimeter)
+            .arg(flags.surfaceToVolumeRatio)
             .arg(flags.orientedBBox)
             .arg(flags.overridePixelSize)
             .arg(flags.pixelSize)
@@ -1159,7 +1178,8 @@ void SegmentTableDialog::setAllChecked(bool checked) {
                           cbPixelsOnBorder, cbPerimeterOnBorder,
                           cbCentroid, cbBBox, cbElongation, cbFlatness, cbRoundness,
                           cbEquivSphRadius, cbEquivSphPerimeter, cbEquivEllipsoid,
-                          cbPrincipalMoments, cbPerimeter, cbOrientedBBox}) {
+                          cbPrincipalMoments, cbPerimeter, cbSurfaceToVolumeRatio,
+                          cbOrientedBBox}) {
         cb->setChecked(checked);
     }
 }
@@ -1839,6 +1859,7 @@ void SegmentTableDialog::populateTable(const ComputeResult &result) {
         model->setItem(r, SegmentTableDialog::COL_PRINCIPAL_MOM1,        makeNumericItem(row.principalMom1));
         model->setItem(r, SegmentTableDialog::COL_PRINCIPAL_MOM2,        makeNumericItem(row.principalMom2));
         model->setItem(r, SegmentTableDialog::COL_PERIMETER,             makeNumericItem(row.perimeter, 1));
+        model->setItem(r, SegmentTableDialog::COL_SURFACE_VOLUME,        makeNumericItem(row.surfaceToVolumeRatio));
         model->setItem(r, SegmentTableDialog::COL_OBBOX_W,               makeNumericItem(row.obboxW));
         model->setItem(r, SegmentTableDialog::COL_OBBOX_H,               makeNumericItem(row.obboxH));
         model->setItem(r, SegmentTableDialog::COL_OBBOX_D,               makeNumericItem(row.obboxD));
@@ -1949,6 +1970,9 @@ void SegmentTableDialog::updateColumnHeaders(const FeatureFlags &flags, bool is2
     model->setHeaderData(SegmentTableDialog::COL_PRINCIPAL_MOM2, Qt::Horizontal, "PrinMom 2");
     model->setHeaderData(SegmentTableDialog::COL_PERIMETER, Qt::Horizontal,
                          is2D ? withUnit("Perimeter") : "Surface Area");
+    model->setHeaderData(SegmentTableDialog::COL_SURFACE_VOLUME, Qt::Horizontal,
+                         is2D ? QStringLiteral("Perimeter/Area")
+                              : QStringLiteral("Surface/Volume"));
     model->setHeaderData(SegmentTableDialog::COL_OBBOX_W, Qt::Horizontal,
                          is2D ? withUnit("OBBox W") : "OBBox W");
     model->setHeaderData(SegmentTableDialog::COL_OBBOX_H, Qt::Horizontal,
@@ -2010,6 +2034,9 @@ void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f, bool is2D
         }
     }
     if (f.perimeter)    tableView->setColumnHidden(SegmentTableDialog::COL_PERIMETER, false);
+    if (f.surfaceToVolumeRatio) {
+        tableView->setColumnHidden(SegmentTableDialog::COL_SURFACE_VOLUME, false);
+    }
     if (f.orientedBBox) {
         tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_W, false);
         tableView->setColumnHidden(SegmentTableDialog::COL_OBBOX_H, false);

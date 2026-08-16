@@ -70,6 +70,7 @@ public:
         bool equivEllipsoid    = false;
         bool principalMoments  = false;
         bool perimeter         = false;  // requires SetComputePerimeter
+        bool surfaceToVolumeRatio = false; // requires SetComputePerimeter
         bool orientedBBox      = false;  // requires SetComputeOrientedBoundingBox
     };
 
@@ -91,6 +92,7 @@ public:
         double equivEllipD0 = -1, equivEllipD1 = -1, equivEllipD2 = -1;
         double principalMom0 = -1, principalMom1 = -1, principalMom2 = -1;
         double perimeter = -1;
+        double surfaceToVolumeRatio = -1;
         double obboxW = -1, obboxH = -1, obboxD = -1, obboxVolume = -1;
     };
 
@@ -130,11 +132,12 @@ public:
         COL_PRINCIPAL_MOM1      = 24,
         COL_PRINCIPAL_MOM2      = 25,
         COL_PERIMETER           = 26,
-        COL_OBBOX_W             = 27,
-        COL_OBBOX_H             = 28,
-        COL_OBBOX_D             = 29,
-        COL_OBBOX_VOLUME        = 30,
-        COL_COUNT               = 31
+        COL_SURFACE_VOLUME      = 27,
+        COL_OBBOX_W             = 28,
+        COL_OBBOX_H             = 29,
+        COL_OBBOX_D             = 30,
+        COL_OBBOX_VOLUME        = 31,
+        COL_COUNT               = 32
     };
 
     // Runs on a worker thread — must not touch QWidgets.
@@ -224,7 +227,8 @@ private:
     QCheckBox *cbElongation = nullptr, *cbFlatness = nullptr, *cbRoundness = nullptr;
     QCheckBox *cbEquivSphRadius = nullptr, *cbEquivSphPerimeter = nullptr;
     QCheckBox *cbEquivEllipsoid = nullptr, *cbPrincipalMoments = nullptr;
-    QCheckBox *cbPerimeter = nullptr, *cbOrientedBBox = nullptr;
+    QCheckBox *cbPerimeter = nullptr, *cbSurfaceToVolumeRatio = nullptr;
+    QCheckBox *cbOrientedBBox = nullptr;
     QPushButton *computeButton = nullptr;
 
     // ---- Results page ----
