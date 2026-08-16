@@ -23,6 +23,7 @@
 #include "itkImageRegionIteratorWithIndex.h"
 #include <unordered_set>
 #include "src/utils/AppLogger.h"
+#include "src/utils/ConnectedComponentLabelSplitter.h"
 #include "OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
 
@@ -78,7 +79,37 @@ struct Prepared3DSplitView {
     std::shared_ptr<segment_puzzler::SeededWatershedSplitSession> session;
     Segment3DViewerDialog::PreparedScene scene;
     Graph::WorkingSegmentResolution workingResolution;
+    segment_puzzler::connected_components::ConnectedComponentSplitStats componentSplitStats;
+    dataType::SegmentIdType requestedLabel = 0;
+    dataType::SegmentIdType selectedLabel = 0;
+    QString error;
 };
+
+QString formatSegmentLabels(const std::vector<dataType::SegmentIdType> &labels) {
+    QStringList values;
+    values.reserve(static_cast<int>(labels.size()));
+    for (const auto label : labels) {
+        values << QString::number(label);
+    }
+    return QStringLiteral("[%1]").arg(values.join(QLatin1Char(',')));
+}
+
+QString workingResolutionAction(const Graph::WorkingSegmentResolution &resolution) {
+    using Status = Graph::WorkingSegmentResolution::Status;
+    switch (resolution.status) {
+    case Status::ReusedExisting:
+        return QStringLiteral("reused");
+    case Status::Inserted:
+        return QStringLiteral("inserted");
+    case Status::NeedsInsertion:
+        return QStringLiteral("insertion_failed");
+    case Status::NoForeground:
+        return QStringLiteral("no_foreground");
+    case Status::Failed:
+        return QStringLiteral("failed");
+    }
+    return QStringLiteral("failed");
+}
 
 bool hasIdentityDirection(dataType::SegmentsImageType::Pointer image, double epsilon = 1e-6) {
     if (image == nullptr) {
@@ -868,34 +899,156 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
         color = graphBase->pSelectedSegmentationSignal->LUT[selectedLabel];
     }
     Graph *const graph = graphBase->pGraph;
+    const auto graphState = graphBase;
+    std::unordered_set<dataType::SegmentIdType> reservedLabels;
+    reservedLabels.insert(graph->backgroundId);
+    reservedLabels.insert(graphBase->ignoredSegmentLabels.begin(),
+                          graphBase->ignoredSegmentLabels.end());
+    reservedLabels.erase(selectedLabel);
     const int launchSliceAxis = sliceAxis;
-    const auto prepare = [selectedImage, selectedLabel, color, graph, x, y, z]() {
+    // Intentional exception to TaskRunner's preferred read-only compute phase:
+    // repair the selected image and working graph in place to avoid allocating
+    // another full segmentation volume. TaskRunner serializes this modal task,
+    // and the repair remains applied even if the later split dialog is closed.
+    // Revisit this when a transactional repair plan can be committed without a
+    // full-volume copy.
+    const auto prepare = [selectedImage, selectedLabel, color, graph, graphState,
+                          reservedLabels = std::move(reservedLabels), x, y, z]() {
         Prepared3DSplitView prepared;
-        prepared.session = std::make_shared<segment_puzzler::SeededWatershedSplitSession>(
-            segment_puzzler::prepareSeededWatershedSplit(selectedImage, selectedLabel));
-        prepared.scene = Segment3DViewerDialog::prepareScene(
-            selectedImage, {{selectedLabel, color}}, prepared.session->sourceRoi);
-        prepared.scene.windowTitle = QStringLiteral("3D Split - Segment %1")
-                                         .arg(selectedLabel);
-        prepared.workingResolution =
-            graph->inspectSelectedSegmentationComponentInWorkingGraph(x, y, z);
+        prepared.requestedLabel = selectedLabel;
+        prepared.selectedLabel = selectedLabel;
+        try {
+            prepared.componentSplitStats.maxLabel =
+                segment_puzzler::connected_components::maxLabelInImage(
+                    selectedImage);
+            segment_puzzler::connected_components::ConnectedComponentSplitOptions options;
+            options.connectivity = segment_puzzler::connected_components::
+                ConnectivityStencil::SixConnected;
+            options.includedLabels.insert(selectedLabel);
+            options.ignoredLabels = reservedLabels;
+            options.nextFreeLabel = prepared.componentSplitStats.maxLabel;
+            prepared.componentSplitStats =
+                segment_puzzler::connected_components::
+                    splitDisconnectedLabelComponentsInPlace(selectedImage, options);
+
+            prepared.selectedLabel = selectedImage->GetPixel({x, y, z});
+            if (prepared.componentSplitStats.changed()) {
+                selectedImage->Modified();
+            }
+            graphState->selectedSegmentationMaxSegmentId =
+                prepared.componentSplitStats.maxLabel;
+
+            if (prepared.selectedLabel == graph->backgroundId) {
+                prepared.error = QStringLiteral(
+                    "The clicked component became background while preparing the 3D split.");
+                return prepared;
+            }
+
+            prepared.workingResolution =
+                graph->ensureSelectedSegmentationComponentInWorkingGraph(x, y, z);
+            using Status = Graph::WorkingSegmentResolution::Status;
+            if (prepared.workingResolution.status != Status::ReusedExisting
+                && prepared.workingResolution.status != Status::Inserted) {
+                prepared.error = QStringLiteral(
+                    "The clicked 6-connected component could not be inserted into or reused in the working graph.");
+                return prepared;
+            }
+
+            prepared.session =
+                std::make_shared<segment_puzzler::SeededWatershedSplitSession>(
+                    segment_puzzler::prepareSeededWatershedSplit(
+                        selectedImage, prepared.selectedLabel));
+            if (prepared.session->connectedComponentCount != 1) {
+                prepared.error = QStringLiteral(
+                    "Automatic 6-connected component repair did not produce one connected component.");
+                return prepared;
+            }
+
+            prepared.scene = Segment3DViewerDialog::prepareScene(
+                selectedImage,
+                {{prepared.selectedLabel, color}},
+                prepared.session->sourceRoi);
+            prepared.scene.windowTitle = QStringLiteral("3D Split - Segment %1")
+                                             .arg(prepared.selectedLabel);
+            if (prepared.scene.meshes.empty()) {
+                prepared.error = QStringLiteral(
+                    "No 3D surface could be generated for the clicked component.");
+            }
+        } catch (const std::exception &exception) {
+            prepared.error = QStringLiteral("Could not prepare the 3D split: %1")
+                                 .arg(QString::fromUtf8(exception.what()));
+        } catch (...) {
+            prepared.error = QStringLiteral(
+                "Could not prepare the 3D split because of an unknown error.");
+        }
         return prepared;
     };
 
     const auto openPrepared =
-        [this, selectedImage, selectedLabel, graph, x, y, z, launchSliceAxis](
+        [this, selectedImage, graph, x, y, z, launchSliceAxis](
             Prepared3DSplitView prepared) {
-            if (prepared.session == nullptr || prepared.scene.meshes.empty()) {
-                QMessageBox::information(
-                    this, tr("3D Split"), tr("No 3D surface could be generated."));
+            std::vector<dataType::SegmentIdType> componentLabels{
+                prepared.requestedLabel};
+            const auto labelsIt =
+                prepared.componentSplitStats.finalLabelsByOriginalLabel.find(
+                    prepared.requestedLabel);
+            if (labelsIt
+                != prepared.componentSplitStats.finalLabelsByOriginalLabel.end()) {
+                componentLabels = labelsIt->second;
+            }
+
+            if (graphBase != nullptr
+                && graphBase->pSelectedSegmentation == selectedImage) {
+                graphBase->selectedSegmentationMaxSegmentId =
+                    prepared.componentSplitStats.maxLabel;
+                if (graphBase->pSelectedSegmentationSignal != nullptr) {
+                    graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(
+                        graphBase->selectedSegmentationMaxSegmentId);
+                }
+                using Status = Graph::WorkingSegmentResolution::Status;
+                if (prepared.workingResolution.status == Status::Inserted) {
+                    refreshWorkingGraphPresentationAfterInsertion(
+                        prepared.workingResolution.workingLabel);
+                } else if (prepared.componentSplitStats.changed()
+                           && orthoViewer() != nullptr) {
+                    orthoViewer()->refreshViewers();
+                }
+            }
+
+            const QString workingAction =
+                workingResolutionAction(prepared.workingResolution);
+            const QString componentList = formatSegmentLabels(componentLabels);
+            const QString repairStatus = QStringLiteral(
+                "3D split: original label %1, components %2, clicked label %3, "
+                "relabeled voxels %4, connectivity 6-connected, working %5.")
+                                             .arg(prepared.requestedLabel)
+                                             .arg(componentList)
+                                             .arg(prepared.selectedLabel)
+                                             .arg(prepared.componentSplitStats.voxelsRelabeled)
+                                             .arg(workingAction);
+            sendStatusMessage(repairStatus);
+            SP_LOG_INFO(
+                "segmentation",
+                QStringLiteral(
+                    "operation=3d_split_component_repair original_label=%1 "
+                    "component_labels=%2 clicked_label=%3 relabeled_voxels=%4 "
+                    "connectivity=6-connected working=%5 working_label=%6")
+                    .arg(prepared.requestedLabel)
+                    .arg(componentList)
+                    .arg(prepared.selectedLabel)
+                    .arg(prepared.componentSplitStats.voxelsRelabeled)
+                    .arg(workingAction)
+                    .arg(prepared.workingResolution.workingLabel));
+
+            if (!prepared.error.isEmpty()) {
+                QMessageBox::warning(this, tr("3D Split"), prepared.error);
                 return;
             }
-            if (prepared.session->connectedComponentCount != 1) {
-                QMessageBox::information(
+            if (prepared.session == nullptr || prepared.scene.meshes.empty()) {
+                QMessageBox::warning(
                     this,
                     tr("3D Split"),
-                    tr("The selected segment is disconnected (%1 regions were found).")
-                        .arg(prepared.session->connectedComponentCount));
+                    tr("The 3D split preparation did not produce a usable component."));
                 return;
             }
 
@@ -906,7 +1059,7 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                     "components=%3 roi=[%4,%5,%6,%7,%8,%9] "
                     "global_offset=[%10,%11,%12] mask_hash=0x%13 "
                     "maximum_distance=%14 mask_ms=%15 distance_ms=%16")
-                    .arg(selectedLabel)
+                    .arg(prepared.selectedLabel)
                     .arg(prepared.session->voxelCount)
                     .arg(prepared.session->connectedComponentCount)
                     .arg(prepared.session->sourceRoi.minX)
@@ -925,26 +1078,8 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                     .arg(prepared.session->maskAndConnectivityMs, 0, 'f', 1)
                     .arg(prepared.session->distanceTransformMs, 0, 'f', 1));
 
-            using Status = Graph::WorkingSegmentResolution::Status;
-            bool allowInsertion = false;
-            if (prepared.workingResolution.status == Status::NeedsInsertion) {
-                const auto answer = QMessageBox::question(
-                    this,
-                    tr("Insert Segment?"),
-                    tr("The selected segment does not exactly match a working segment. "
-                       "Insert it into the working graph if the split is applied?"),
-                    QMessageBox::Yes | QMessageBox::No,
-                    QMessageBox::No);
-                if (answer != QMessageBox::Yes) {
-                    return;
-                }
-                allowInsertion = true;
-            } else if (prepared.workingResolution.status != Status::ReusedExisting) {
-                handleWorkingSegmentResolution(prepared.workingResolution);
-                return;
-            }
-
             const auto session = prepared.session;
+            const auto activeSelectedLabel = prepared.selectedLabel;
             Segment3DViewerDialog::SplitSessionConfig splitSession;
             splitSession.taskRunner = taskRunner;
             splitSession.session = session;
@@ -953,32 +1088,40 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
             splitSession.projectedCutProgressText = QStringLiteral(
                 "Applying projected cut and transferring results...");
             const auto applyPartition =
-                [this, selectedImage, selectedLabel, graph, session,
-                 x, y, z, allowInsertion](
+                [this, selectedImage, activeSelectedLabel, graph, session,
+                 x, y, z](
                     dataType::SegmentsImageType::Pointer partition) {
                     Segment3DViewerDialog::SplitApplyResult result;
                     if (graphBase == nullptr || graphBase->pGraph != graph
                         || graphBase->pSelectedSegmentation != selectedImage
                         || selectedImage->GetMTime() != session->sourceModifiedTime
-                        || selectedImage->GetPixel({x, y, z}) != selectedLabel) {
+                        || selectedImage->GetPixel({x, y, z})
+                               != activeSelectedLabel) {
                         result.message = QStringLiteral(
                             "The selected segmentation changed after the viewer was opened.");
                         return result;
                     }
 
+                    using Status = Graph::WorkingSegmentResolution::Status;
                     auto resolution =
                         graph->inspectSelectedSegmentationComponentInWorkingGraph(x, y, z);
-                    if (resolution.status == Status::NeedsInsertion && allowInsertion) {
+                    if (resolution.status == Status::NeedsInsertion) {
                         resolution = graph->ensureSelectedSegmentationComponentInWorkingGraph(
                             x, y, z);
                     }
+                    result.mutated = resolution.status == Status::Inserted;
+                    SP_LOG_INFO(
+                        "segmentation",
+                        QStringLiteral(
+                            "operation=3d_split_working_resolution phase=apply "
+                            "selected_label=%1 working=%2 working_label=%3")
+                            .arg(activeSelectedLabel)
+                            .arg(workingResolutionAction(resolution))
+                            .arg(resolution.workingLabel));
                     if (resolution.status != Status::ReusedExisting
                         && resolution.status != Status::Inserted) {
-                        result.message = resolution.status == Status::NeedsInsertion
-                                             ? QStringLiteral(
-                                                   "The segment now requires insertion, but it was not approved.")
-                                             : QStringLiteral(
-                                                   "The segment could not be resolved in the working graph.");
+                        result.message = QStringLiteral(
+                            "The clicked component could not be restored in the working graph.");
                         return result;
                     }
 
@@ -1004,7 +1147,7 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                     return result;
                 };
             splitSession.applySplit =
-                [selectedLabel, session, applyPartition](
+                [activeSelectedLabel, session, applyPartition](
                     const segment_puzzler::SeededWatershedSplitResult &split) {
                     auto result = applyPartition(split.partition);
                     SP_LOG_INFO(
@@ -1013,7 +1156,7 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                             "operation=seeded_watershed_split status=split source_label=%1 "
                             "source_voxels=%2 part_voxels=%3,%4 part_components=%5,%6 "
                             "allow_disconnected_parts=%7 mutated=%8")
-                            .arg(selectedLabel)
+                            .arg(activeSelectedLabel)
                             .arg(session->voxelCount)
                             .arg(split.voxelCounts[0])
                             .arg(split.voxelCounts[1])
@@ -1024,7 +1167,7 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                     return result;
                 };
             splitSession.applyProjectedCut =
-                [selectedLabel, applyPartition](const Projected3DCutResult &cut) {
+                [activeSelectedLabel, applyPartition](const Projected3DCutResult &cut) {
                     auto result = applyPartition(cut.partition);
                     SP_LOG_INFO(
                         "segmentation",
@@ -1032,7 +1175,7 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                             "operation=projected_3d_cut status=split source_label=%1 "
                             "source_voxels=%2 cut_voxels=%3 parts=%4 compute_ms=%5 "
                             "mutated=%6")
-                            .arg(selectedLabel)
+                            .arg(activeSelectedLabel)
                             .arg(cut.profile.targetVoxelCount)
                             .arg(cut.profile.provisionalCutVoxelCount)
                             .arg(cut.componentVoxelCounts.size())
@@ -1044,9 +1187,26 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
             auto *dialog = new Segment3DViewerDialog(
                 std::move(prepared.scene), std::move(splitSession), this, launchSliceAxis);
             dialog->setAttribute(Qt::WA_DeleteOnClose);
-            connect(dialog, &QDialog::finished, this, [this](int result) {
+            connect(dialog, &QDialog::finished, this, [this, graph](int result) {
                 if (result != QDialog::Accepted) {
                     return;
+                }
+                if (graphBase != nullptr && graphBase->pGraph == graph) {
+                    if (graphBase->pWorkingSegments != nullptr
+                        && graphBase->pWorkingSegmentsImage != nullptr) {
+                        graphBase->pWorkingSegments->checkAndResizeLUT(
+                            graph->getLargestIdInSegmentVolume(
+                                graphBase->pWorkingSegmentsImage));
+                    }
+                    if (graphBase->pSelectedSegmentation != nullptr) {
+                        graphBase->selectedSegmentationMaxSegmentId =
+                            graph->getLargestIdInSegmentVolume(
+                                graphBase->pSelectedSegmentation);
+                        if (graphBase->pSelectedSegmentationSignal != nullptr) {
+                            graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(
+                                graphBase->selectedSegmentationMaxSegmentId);
+                        }
+                    }
                 }
                 if (graphBase != nullptr
                     && graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {

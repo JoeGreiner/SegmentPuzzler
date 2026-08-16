@@ -2,6 +2,7 @@
 
 #include <array>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include "src/segment_handling/Graph.h"
+#include "src/segment_handling/SeededWatershedSplit.h"
 #include "src/segment_handling/graphBase.h"
 #include "src/utils/ConnectedComponentLabelSplitter.h"
 
@@ -187,6 +189,60 @@ int testUtilityIgnoresBackground() {
     const auto stats = splitDisconnectedLabelComponentsInPlace(image, options);
     if (stats.changed() || countLabel(image, 0) != 3) {
         return failTest("Ignored background labels should not be split.");
+    }
+    return 0;
+}
+
+int testUtilityLimitsSplitToIncludedLabels() {
+    auto image = makeImage(6, 2, 1);
+    image->SetPixel({0, 0, 0}, 1);
+    image->SetPixel({1, 0, 0}, 1);
+    image->SetPixel({3, 0, 0}, 1);
+    image->SetPixel({0, 1, 0}, 2);
+    image->SetPixel({3, 1, 0}, 2);
+
+    ConnectedComponentSplitOptions options;
+    options.connectivity = ConnectivityStencil::SixConnected;
+    options.includedLabels.insert(1);
+    options.ignoredLabels.insert(0);
+    options.nextFreeLabel = 3;
+    const auto stats = splitDisconnectedLabelComponentsInPlace(image, options);
+
+    if (stats.labelsVisited != 1 || stats.labelsSplit != 1
+        || stats.componentsCreated != 1
+        || stats.finalLabelsByOriginalLabel.at(1)
+               != std::vector<SegmentIdType>{1, 3}) {
+        return failTest("Targeted splitting should process only the included label.");
+    }
+    if (countLabel(image, 1) != 2 || countLabel(image, 3) != 1
+        || countLabel(image, 2) != 2) {
+        return failTest("Targeted splitting changed an unrelated disconnected label.");
+    }
+    return 0;
+}
+
+int testUtilityPreflightsLabelExhaustion() {
+    const SegmentIdType maximumLabel = std::numeric_limits<SegmentIdType>::max();
+    auto image = makeImage(7, 1, 1);
+    image->SetPixel({0, 0, 0}, 1);
+    image->SetPixel({2, 0, 0}, 1);
+    image->SetPixel({4, 0, 0}, 1);
+    image->SetPixel({6, 0, 0}, maximumLabel - 2);
+    const auto before = copyImageBuffer(image);
+
+    ConnectedComponentSplitOptions options;
+    options.connectivity = ConnectivityStencil::SixConnected;
+    options.includedLabels.insert(1);
+    options.ignoredLabels.insert(0);
+    options.nextFreeLabel = maximumLabel - 1;
+    bool threw = false;
+    try {
+        static_cast<void>(splitDisconnectedLabelComponentsInPlace(image, options));
+    } catch (const std::overflow_error &) {
+        threw = true;
+    }
+    if (!threw || copyImageBuffer(image) != before) {
+        return failTest("Label exhaustion must not partially relabel the image.");
     }
     return 0;
 }
@@ -410,6 +466,88 @@ int testEnsureHandlesNoForegroundAndInconsistentWorkingNode() {
     if (result.status != Graph::WorkingSegmentResolution::Status::Failed ||
         fixture.graph->nextFreeId != nextFreeIdBefore) {
         return failTest("A non-background working label without a WorkingNode should fail without insertion.");
+    }
+    return 0;
+}
+
+int testAutomaticSixConnected3DSplitPreparation() {
+    auto workingImage = makeImage(5, 5, 5);
+    auto selectedImage = makeImage(5, 5, 5);
+    const std::vector<std::array<int, 3>> largestComponent{
+        {1, 1, 0}, {1, 1, 1}, {1, 1, 2}};
+    const std::vector<std::array<int, 3>> clickedComponent{
+        {2, 2, 2}, {2, 2, 3}};
+    for (const auto &voxel : largestComponent) {
+        workingImage->SetPixel({voxel[0], voxel[1], voxel[2]}, 1);
+        selectedImage->SetPixel({voxel[0], voxel[1], voxel[2]}, 10);
+    }
+    for (const auto &voxel : clickedComponent) {
+        workingImage->SetPixel({voxel[0], voxel[1], voxel[2]}, 1);
+        selectedImage->SetPixel({voxel[0], voxel[1], voxel[2]}, 10);
+    }
+
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 10;
+
+    ConnectedComponentSplitOptions options;
+    options.connectivity = ConnectivityStencil::SixConnected;
+    options.includedLabels.insert(10);
+    options.ignoredLabels.insert(0);
+    options.nextFreeLabel = 11;
+    const auto stats = splitDisconnectedLabelComponentsInPlace(selectedImage, options);
+    if (stats.finalLabelsByOriginalLabel.at(10)
+            != std::vector<SegmentIdType>{10, 11}
+        || countLabel(selectedImage, 10) != largestComponent.size()
+        || countLabel(selectedImage, 11) != clickedComponent.size()
+        || selectedImage->GetPixel({2, 2, 2}) != 11) {
+        return failTest(
+            "Automatic 3D preparation should keep the largest component label and relabel the clicked smaller component.");
+    }
+    selectedImage->Modified();
+
+    auto resolution =
+        fixture.graph->inspectSelectedSegmentationComponentInWorkingGraph(2, 2, 2);
+    if (resolution.status != Graph::WorkingSegmentResolution::Status::NeedsInsertion) {
+        return failTest(
+            "A Full-connected but 6-disconnected WorkingNode should require targeted insertion.");
+    }
+    resolution = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(2, 2, 2);
+    if (resolution.status != Graph::WorkingSegmentResolution::Status::Inserted
+        || workingImage->GetPixel({2, 2, 2}) != resolution.workingLabel
+        || workingImage->GetPixel({1, 1, 2}) == resolution.workingLabel) {
+        return failTest(
+            "Automatic 3D preparation should isolate and insert only the clicked 6-connected component.");
+    }
+    const auto reused =
+        fixture.graph->inspectSelectedSegmentationComponentInWorkingGraph(2, 2, 2);
+    if (reused.status != Graph::WorkingSegmentResolution::Status::ReusedExisting
+        || reused.workingLabel != resolution.workingLabel) {
+        return failTest(
+            "The inserted clicked component should immediately be reusable as an exact WorkingNode.");
+    }
+
+    const auto session =
+        segment_puzzler::prepareSeededWatershedSplit(selectedImage, 11);
+    if (session.connectedComponentCount != 1
+        || session.voxelCount != clickedComponent.size()) {
+        return failTest(
+            "The 3D split session should contain only the clicked 6-connected component.");
+    }
+    std::array<segment_puzzler::SeededWatershedSplitSession::IndexType, 2> seeds;
+    for (std::size_t seedIndex = 0; seedIndex < seeds.size(); ++seedIndex) {
+        for (unsigned int axis = 0; axis < 3; ++axis) {
+            seeds[seedIndex][axis] =
+                clickedComponent[seedIndex][axis] - session.globalOffset[axis];
+        }
+    }
+    const auto split =
+        segment_puzzler::computeSeededWatershedSplit(session, seeds);
+    if (!split.valid()
+        || split.voxelCounts[0] + split.voxelCounts[1]
+               != clickedComponent.size()) {
+        return failTest(
+            "The prepared watershed partition should cover only the clicked component.");
     }
     return 0;
 }
@@ -835,6 +973,12 @@ int main(int argc, char **argv) {
     if (int result = testUtilityIgnoresBackground()) {
         return result;
     }
+    if (int result = testUtilityLimitsSplitToIncludedLabels()) {
+        return result;
+    }
+    if (int result = testUtilityPreflightsLabelExhaustion()) {
+        return result;
+    }
     if (int result = testGraphPreservesMergesAndSplitsWorkingOutput()) {
         return result;
     }
@@ -845,6 +989,9 @@ int main(int argc, char **argv) {
         return result;
     }
     if (int result = testEnsureHandlesNoForegroundAndInconsistentWorkingNode()) {
+        return result;
+    }
+    if (int result = testAutomaticSixConnected3DSplitPreparation()) {
         return result;
     }
     if (int result = testBulkSegmentationDeleteUsesOneGraphOperation()) {

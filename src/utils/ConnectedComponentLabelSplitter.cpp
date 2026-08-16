@@ -343,17 +343,28 @@ ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
             ? stats.maxLabel
             : static_cast<SegmentIdType>(stats.maxLabel + 1);
     stats.nextFreeLabel = std::max(options.nextFreeLabel, minFreeLabel);
-    stats.nextFreeLabel = firstAvailableLabel(stats.nextFreeLabel, options.ignoredLabels);
 
     auto componentsByLabel = collectComponentsByLabel(
         image,
         options.connectivity,
-        [&options](SegmentIdType label) { return options.ignoredLabels.count(label) == 0; });
+        [&options](SegmentIdType label) {
+            return options.ignoredLabels.count(label) == 0
+                   && (options.includedLabels.empty()
+                       || options.includedLabels.count(label) > 0);
+        });
 
     stats.labelsVisited = componentsByLabel.size();
-    for (auto &entry : componentsByLabel) {
-        const SegmentIdType originalLabel = entry.first;
-        auto &components = entry.second;
+    std::vector<SegmentIdType> originalLabels;
+    originalLabels.reserve(componentsByLabel.size());
+    for (const auto &entry : componentsByLabel) {
+        originalLabels.push_back(entry.first);
+    }
+    std::sort(originalLabels.begin(), originalLabels.end());
+
+    // Allocate every required label before changing the image. This keeps a
+    // label-space failure from leaving a partially relabelled segmentation.
+    for (const SegmentIdType originalLabel : originalLabels) {
+        auto &components = componentsByLabel.at(originalLabel);
         std::sort(components.begin(), components.end(), [](const Component &lhs, const Component &rhs) {
             if (lhs.voxelIndices.size() != rhs.voxelIndices.size()) {
                 return lhs.voxelIndices.size() > rhs.voxelIndices.size();
@@ -378,7 +389,14 @@ ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
             finalLabels.push_back(newLabel);
             stats.maxLabel = std::max(stats.maxLabel, newLabel);
             ++stats.componentsCreated;
+        }
+    }
 
+    for (const SegmentIdType originalLabel : originalLabels) {
+        const auto &components = componentsByLabel.at(originalLabel);
+        const auto &finalLabels = stats.finalLabelsByOriginalLabel.at(originalLabel);
+        for (std::size_t componentIndex = 1; componentIndex < components.size(); ++componentIndex) {
+            const SegmentIdType newLabel = finalLabels[componentIndex];
             for (const std::ptrdiff_t voxelIndex : components[componentIndex].voxelIndices) {
                 buffer[voxelIndex] = newLabel;
             }

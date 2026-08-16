@@ -17,6 +17,9 @@ enum class ConnectivityStencil {
 
 struct ConnectedComponentSplitOptions {
     ConnectivityStencil connectivity = ConnectivityStencil::Full;
+    // Empty includes every label that is not ignored. A non-empty set limits
+    // splitting to the listed labels; ignoredLabels still takes precedence.
+    std::unordered_set<dataType::SegmentIdType> includedLabels;
     std::unordered_set<dataType::SegmentIdType> ignoredLabels;
     dataType::SegmentIdType nextFreeLabel = 1;
 };
