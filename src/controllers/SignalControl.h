@@ -145,6 +145,11 @@ public:
 
 signals:
     void preferredSidebarWidthChanged();
+    void selectedSegmentationChanged();
+    void selectedSegmentationSaved(quintptr segmentationIdentity,
+                                   quintptr segmentationSignalIdentity,
+                                   quint64 savedMTime,
+                                   const QString &absolutePath);
     void selectedSegmentationNeighborMergeFinished(
         quintptr segmentationIdentity,
         quintptr segmentationSignalIdentity,

@@ -549,7 +549,10 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
-    if (taskRunner != nullptr && taskRunner->isBusy()) {
+    const bool sliceNavigationKey =
+        event->key() == Qt::Key_Up || event->key() == Qt::Key_Down;
+    if (taskRunner != nullptr && taskRunner->isBusy()
+        && !(taskRunner->allowsReadOnlyInteraction() && sliceNavigationKey)) {
         SP_LOG_WARNING("viewer.interaction", QStringLiteral("Ignoring key press because a background task is still running"));
         return;
     }
@@ -1582,6 +1585,8 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY) {
         ++it;
     }
 
+    graphBase->pSelectedSegmentation->Modified();
+
     SP_LOG_INFO("segmentation",
                 QStringLiteral("Opened segmentation label %1 in %2 ms")
                     .arg(labelAtClickPosition)
@@ -1699,6 +1704,8 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY) {
         ++it;
     }
 
+    graphBase->pSelectedSegmentation->Modified();
+
     SP_LOG_INFO("segmentation",
                 QStringLiteral("Filled segmentation label %1 in %2 ms")
                     .arg(labelAtClickPosition)
@@ -1741,6 +1748,7 @@ void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
     dilateFilter->Update();
     auto dilatedCell = dilateFilter->GetOutput();
 
+    bool changed = false;
     itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(dilatedCell, dilatedCell->GetLargestPossibleRegion());
     for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
         if (it.Get() != labelAtClickPosition) {
@@ -1754,8 +1762,14 @@ void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
 
         const auto existingLabel = graphBase->pSelectedSegmentation->GetPixel(newIndex);
         if (existingLabel == backgroundLabel || existingLabel == labelAtClickPosition) {
-            graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
+            if (existingLabel != labelAtClickPosition) {
+                graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
+                changed = true;
+            }
         }
+    }
+    if (changed) {
+        graphBase->pSelectedSegmentation->Modified();
     }
 }
 
@@ -1814,6 +1828,7 @@ void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
         newIndex[2] += roi.GetIndex()[2];
         graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
     }
+    graphBase->pSelectedSegmentation->Modified();
 }
 
 void AnnotationSliceViewer::setOpeningRadius(int radius) {
@@ -2234,6 +2249,7 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                 }
             }
         } else { // edit the segmentation modus
+            bool selectedSegmentationChanged = false;
             for (int y = 0; y < image.height(); ++y) {
                 const auto *scanLine = image.constScanLine(y);
                 for (int x = 0; x < image.width(); ++x) {
@@ -2244,12 +2260,15 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                     int worldX, worldY, worldZ;
                     getXYZfromPixmapPos(x, y, worldX, worldY, worldZ, false);
                     if (paintModeIsActive && canEditSegmentation) {
-                        if (rightClicked) {
-                            graphBase->pSelectedSegmentation->SetPixel(
-                                {worldX, worldY, worldZ}, backgroundLabel);
-                        } else if (labelOfClickedSegmentation != backgroundLabel) {
-                            graphBase->pSelectedSegmentation->SetPixel(
-                                {worldX, worldY, worldZ}, labelOfClickedSegmentation);
+                        if (rightClicked || labelOfClickedSegmentation != backgroundLabel) {
+                            const dataType::SegmentIdType targetLabel =
+                                rightClicked ? backgroundLabel : labelOfClickedSegmentation;
+                            const dataType::SegmentsImageType::IndexType index{
+                                {worldX, worldY, worldZ}};
+                            if (graphBase->pSelectedSegmentation->GetPixel(index) != targetLabel) {
+                                graphBase->pSelectedSegmentation->SetPixel(index, targetLabel);
+                                selectedSegmentationChanged = true;
+                            }
                         }
                     } else if (canEditBoundaries) {
                         pThresholdedBoundaries->SetPixel(
@@ -2257,6 +2276,9 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                             rightClicked ? 0 : labelOfClickedSegmentation);
                     }
                 }
+            }
+            if (selectedSegmentationChanged) {
+                graphBase->pSelectedSegmentation->Modified();
             }
             for (auto *viewer : linkedViewerList) {
                 viewer->recalculateQImages();

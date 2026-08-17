@@ -459,6 +459,11 @@ if (BUILD_TESTING)
     add_executable(test_ITKSignalColorLookup
             examples/viewers/test_itk_signal_color_lookup.cpp
             src/utils/AppLogger.cpp)
+    add_executable(test_SelectedSegmentationAutosave
+            examples/viewers/test_selected_segmentation_autosave.cpp
+            src/qtUtils/SelectedSegmentationAutosave.cpp
+            src/qtUtils/TaskRunner.cpp
+            src/utils/AppLogger.cpp)
     add_executable(test_OrthoViewer examples/viewers/example_orthoviewer.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_OrthoViewerZoom examples/viewers/test_ortho_viewer_zoom.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_ConnectedComponentSplit examples/viewers/test_connected_component_split.cpp ${SRC_CORRECT_ORDER})
@@ -497,6 +502,10 @@ if (BUILD_TESTING)
     target_include_directories(test_ITKSignalColorLookup PRIVATE ${CMAKE_SOURCE_DIR})
     set_target_properties(test_ITKSignalColorLookup PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
     target_link_libraries(test_ITKSignalColorLookup
+            ${SEGMENT_PUZZLER_ITK_LIBRARIES}
+            ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES})
+    target_include_directories(test_SelectedSegmentationAutosave PRIVATE ${CMAKE_SOURCE_DIR})
+    target_link_libraries(test_SelectedSegmentationAutosave
             ${SEGMENT_PUZZLER_ITK_LIBRARIES}
             ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES})
     target_link_libraries(test_OrthoViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})

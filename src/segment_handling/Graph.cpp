@@ -4056,6 +4056,7 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
         }
     }
 
+    graphBase->pSelectedSegmentation->Modified();
     graphBase->selectedSegmentationMaxSegmentId = assignedSegmentationLabels.back();
     logGraphDebugIf(
         verbose,

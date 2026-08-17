@@ -14,7 +14,8 @@ inline QString sanitizedFileNameStem(QString stem) {
     const QString invalidCharacters = QStringLiteral("<>:\"/\\|?*");
     for (int index = 0; index < stem.size(); ++index) {
         const QChar character = stem.at(index);
-        if (character.unicode() < 0x20 || invalidCharacters.contains(character)) {
+        if (character.unicode() < 0x20 || character.unicode() == 0x7f
+            || invalidCharacters.contains(character)) {
             stem[index] = QLatin1Char('_');
         }
     }

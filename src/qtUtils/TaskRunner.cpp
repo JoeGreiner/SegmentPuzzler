@@ -45,6 +45,10 @@ bool TaskRunner::isBusy() const {
     return busy_;
 }
 
+bool TaskRunner::allowsReadOnlyInteraction() const {
+    return busy_ && allowReadOnlyInteraction_;
+}
+
 void TaskRunner::setBusy(bool busy) {
     if (busy_ == busy) {
         return;

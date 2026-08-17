@@ -93,9 +93,11 @@ public:
     void runInBackground(QString labelText,
                          Compute compute,
                          Commit commit,
-                         std::function<void()> afterIdle = {});
+                         std::function<void()> afterIdle = {},
+                         bool allowReadOnlyInteraction = false);
 
     bool isBusy() const;
+    bool allowsReadOnlyInteraction() const;
 
 signals:
     void busyChanged(bool busy);
@@ -106,13 +108,15 @@ private:
                  Compute compute,
                  Commit commit,
                  std::function<void()> afterIdle,
-                 bool showProgress = true);
+                 bool showProgress = true,
+                 bool allowReadOnlyInteraction = false);
 
     QProgressDialog *createProgressDialog(const QString &labelText);
     void setBusy(bool busy);
     void handleError(std::exception_ptr error, const QString &context = {});
 
     bool busy_;
+    bool allowReadOnlyInteraction_ = false;
     QPointer<QWidget> messageParent_;
 };
 
@@ -143,13 +147,15 @@ template<typename Compute, typename Commit>
 void TaskRunner::runInBackground(QString labelText,
                                  Compute compute,
                                  Commit commit,
-                                 std::function<void()> afterIdle)
+                                 std::function<void()> afterIdle,
+                                 bool allowReadOnlyInteraction)
 {
     runImpl(std::move(labelText),
             std::move(compute),
             std::move(commit),
             std::move(afterIdle),
-            false);
+            false,
+            allowReadOnlyInteraction);
 }
 
 template<typename Compute, typename Commit>
@@ -157,7 +163,8 @@ void TaskRunner::runImpl(QString labelText,
                          Compute compute,
                          Commit commit,
                          std::function<void()> afterIdle,
-                         bool showProgress)
+                         bool showProgress,
+                         bool allowReadOnlyInteraction)
 {
     using Result = std::invoke_result_t<Compute>;
     using StoredResult = std::decay_t<Result>;
@@ -170,6 +177,7 @@ void TaskRunner::runImpl(QString labelText,
         throw std::logic_error("TaskRunner is already busy");
     }
 
+    allowReadOnlyInteraction_ = allowReadOnlyInteraction;
     setBusy(true);
 
     if (labelText.isEmpty()) {
@@ -226,6 +234,7 @@ void TaskRunner::runImpl(QString labelText,
                     progressDialog->deleteLater();
                 }
                 watcher->deleteLater();
+                allowReadOnlyInteraction_ = false;
                 setBusy(false);
                 if (taskSucceeded) {
                     SP_LOG_INFO("tasks",

@@ -1418,12 +1418,18 @@ void SignalControl::selectRefinementItem(QTreeWidgetItem *item) {
 }
 
 void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
+    const auto *previousImage = graphBase->pSelectedSegmentation.GetPointer();
+    const auto *previousSignal = graphBase->pSelectedSegmentationSignal;
     if (signal_tree::topLevelSignalItem(item) == nullptr) {
         graphBase->pSelectedSegmentation = nullptr;
         graphBase->pSelectedSegmentationSignal = nullptr;
         graphBase->selectedSegmentationMaxSegmentId = 0;
         if (orthoViewer != nullptr) {
             orthoViewer->resetPaintSelection();
+        }
+        if (previousImage != graphBase->pSelectedSegmentation.GetPointer()
+            || previousSignal != graphBase->pSelectedSegmentationSignal) {
+            emit selectedSegmentationChanged();
         }
         return;
     }
@@ -1437,6 +1443,10 @@ void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
         graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
     if (orthoViewer != nullptr) {
         orthoViewer->resetPaintSelection();
+    }
+    if (previousImage != graphBase->pSelectedSegmentation.GetPointer()
+        || previousSignal != graphBase->pSelectedSegmentationSignal) {
+        emit selectedSegmentationChanged();
     }
 }
 
@@ -3144,11 +3154,13 @@ void SignalControl::exportSelectedSegmentation() {
     SP_LOG_INFO("io", QStringLiteral("Export selected segmentation dialog returned path=%1").arg(path));
     if (!path.isEmpty()) {
         const QString absolutePath = QFileInfo(path).absoluteFilePath();
+        const auto exportedImage = graphBase->pSelectedSegmentation;
+        auto *exportedSignal = graphBase->pSelectedSegmentationSignal;
         try {
             {
-                auto spacing = graphBase->pSelectedSegmentation->GetSpacing();
-                auto origin = graphBase->pSelectedSegmentation->GetOrigin();
-                auto direction = graphBase->pSelectedSegmentation->GetDirection();
+                auto spacing = exportedImage->GetSpacing();
+                auto origin = exportedImage->GetOrigin();
+                auto direction = exportedImage->GetDirection();
                 SP_LOG_INFO("io",
                             QStringLiteral("Exporting selected segmentation to %1 spacing=[%2,%3,%4] origin=[%5,%6,%7] direction=[[ %8,%9,%10 ],[ %11,%12,%13 ],[ %14,%15,%16 ]] locale=%17")
                                 .arg(path)
@@ -3159,10 +3171,18 @@ void SignalControl::exportSelectedSegmentation() {
                                 .arg(direction[2][0]).arg(direction[2][1]).arg(direction[2][2])
                                 .arg(QString::fromUtf8(std::setlocale(LC_NUMERIC, nullptr))));
             }
-            graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(graphBase->pSelectedSegmentation,
+            graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(exportedImage,
                                                                            path.toStdString());
             graphBase->lastExportPathThisSession = absolutePath;
             MySettings.setValue(DEFAULT_SAVE_DIR_KEY, absolutePath);
+            if (exportedSignal != nullptr) {
+                exportedSignal->sourceFilePath = absolutePath;
+            }
+            emit selectedSegmentationSaved(
+                reinterpret_cast<quintptr>(exportedImage.GetPointer()),
+                reinterpret_cast<quintptr>(exportedSignal),
+                static_cast<quint64>(exportedImage->GetMTime()),
+                absolutePath);
         } catch (itk::ExceptionObject &err) {
             SP_LOG_ERROR("io", QStringLiteral("Failed to export selected segmentation to %1: %2").arg(path, QString::fromStdString(err.GetDescription())));
         }
@@ -3637,7 +3657,11 @@ void SignalControl::runConnectedComponentSplit() {
             options.connectivity = connectivity;
             options.ignoredLabels = ignoredLabels;
             options.nextFreeLabel = nextFreeLabel;
-            return splitDisconnectedLabelComponentsInPlace(selectedSegmentation, options);
+            auto stats = splitDisconnectedLabelComponentsInPlace(selectedSegmentation, options);
+            if (stats.changed()) {
+                selectedSegmentation->Modified();
+            }
+            return stats;
         },
         [this, connectivityName](ConnectedComponentSplitStats stats) {
             graphBase->selectedSegmentationMaxSegmentId =

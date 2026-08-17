@@ -13,6 +13,8 @@
 
 class TaskRunner;
 class SegmentTableDialog;
+class SelectedSegmentationAutosave;
+class QCloseEvent;
 
 class MainWindow : public QMainWindow {
 Q_OBJECT
@@ -25,6 +27,7 @@ public:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 
 public slots:
     void loadSegmentationSample();
@@ -37,9 +40,16 @@ private slots:
     void arm3DSegmentSplit();
     void exportDebugInformation();
     void showLoggingSettings();
+    void showRecoverySettings();
     void showVoxelSpacingSettings();
 
 private:
+    enum class PendingQuit {
+        None,
+        WindowClose,
+        ApplicationQuit
+    };
+
     OrthoViewer *myOrthowindow;
     QMenu *dataMenu;
     QMenu *segmentationMenu;
@@ -52,13 +62,20 @@ private:
     QAction *showSegmentTableAction = nullptr;
     QAction *splitSegment3DAction = nullptr;
     QAction *voxelSpacingAction = nullptr;
+    QAction *recoverySettingsAction = nullptr;
     std::unique_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
     std::unique_ptr<TaskRunner> taskRunner;
+    std::unique_ptr<SelectedSegmentationAutosave> selectedSegmentationAutosave;
     QPointer<SegmentTableDialog> segmentTableDialog;
+    PendingQuit pendingQuit = PendingQuit::None;
+    bool discardQuitConfirmed = false;
+    bool quitApproved = false;
 
     void installInitialFileDropHandling();
     void registerDropTarget(QWidget *widget);
+    bool confirmOrDeferQuit(PendingQuit requestedQuit);
+    void continuePendingQuit();
     void update3DSegmentSplitActionState();
     void exportViewSeries(AnnotationSliceViewer *viewer);
 };

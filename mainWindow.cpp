@@ -1,9 +1,12 @@
 #include "mainWindow.h"
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QCheckBox>
+#include <QCloseEvent>
 #include <QDialog>
 #include <QStatusBar>
 #include <QScreen>
+#include <QSpinBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDropEvent>
@@ -32,6 +35,8 @@
 #include "src/controllers/SignalControl.h"
 #include "src/viewers/OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
+#include "src/qtUtils/ApplicationQuitEventFilter.h"
+#include "src/qtUtils/SelectedSegmentationAutosave.h"
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/LoggingSettingsDialog.h"
 #include "src/qtUtils/ImageNormalizationSettingsDialog.h"
@@ -269,6 +274,22 @@ MainWindow::MainWindow() {
 //    QString fileName2 = "/mnt/work/tmp/seg_stack_2/prediction_combined/2024_11_08_WGA_Rabbit_stack_1_wga_ws.nrrd";
 
     mySignalControl = new SignalControl(graphBase, myOrthowindow, taskRunner.get());
+    selectedSegmentationAutosave = std::make_unique<SelectedSegmentationAutosave>(
+        graphBase, taskRunner.get(), this, this);
+    connect(mySignalControl,
+            &SignalControl::selectedSegmentationChanged,
+            selectedSegmentationAutosave.get(),
+            &SelectedSegmentationAutosave::selectedSegmentationChanged);
+    connect(mySignalControl,
+            &SignalControl::selectedSegmentationSaved,
+            selectedSegmentationAutosave.get(),
+            &SelectedSegmentationAutosave::recordSelectedSegmentationSave);
+    if (qApp != nullptr) {
+        auto *quitEventFilter = new ApplicationQuitEventFilter(
+            [this]() { return confirmOrDeferQuit(PendingQuit::ApplicationQuit); },
+            this);
+        qApp->installEventFilter(quitEventFilter);
+    }
 //    mySignalControl->addSegmentsGraph(fileName2);
 //    mySignalControl->loadMembraneProbability(fileName2);
 //    graphBase->ROI_fx = 0;d
@@ -466,6 +487,17 @@ MainWindow::MainWindow() {
         dialog.exec();
     });
 
+    recoverySettingsAction = new QAction(tr("Recovery..."), this);
+    settingsMenu->addAction(recoverySettingsAction);
+    connect(recoverySettingsAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::showRecoverySettings);
+    connect(taskRunner.get(),
+            &TaskRunner::busyChanged,
+            recoverySettingsAction,
+            &QAction::setDisabled);
+
     QAction *loggingSettingsAction = new QAction(tr("Logging..."), this);
     settingsMenu->addAction(loggingSettingsAction);
     connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);
@@ -640,6 +672,11 @@ MainWindow::MainWindow() {
     connect(taskRunner.get(), &TaskRunner::busyChanged, loadSampleSegmentationAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, renderOrderAction, &QAction::setDisabled);
     connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this]() { update3DSegmentSplitActionState(); });
+    connect(taskRunner.get(), &TaskRunner::busyChanged, this, [this](bool busy) {
+        if (!busy && pendingQuit != PendingQuit::None) {
+            QTimer::singleShot(0, this, [this]() { continuePendingQuit(); });
+        }
+    }, Qt::QueuedConnection);
     connect(segmentationMenu, &QMenu::aboutToShow, this, &MainWindow::update3DSegmentSplitActionState);
     installInitialFileDropHandling();
     update3DSegmentSplitActionState();
@@ -649,6 +686,87 @@ MainWindow::MainWindow() {
 
     showWindowWithinAvailableScreen(this);
     scheduleInitialSidebarSize(horizontalSplitter, mySignalControl);
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    if (!confirmOrDeferQuit(PendingQuit::WindowClose)) {
+        event->ignore();
+        return;
+    }
+
+    QMainWindow::closeEvent(event);
+}
+
+bool MainWindow::confirmOrDeferQuit(PendingQuit requestedQuit) {
+    if (!quitApproved && selectedSegmentationAutosave != nullptr
+        && selectedSegmentationAutosave->hasUnsavedSegmentations()) {
+        if (!discardQuitConfirmed) {
+            QMessageBox confirmation(this);
+            confirmation.setIcon(QMessageBox::Warning);
+            confirmation.setWindowTitle(tr("Unsaved Segmentations"));
+            confirmation.setText(
+                tr("One or more segmentations have unsaved changes."));
+            confirmation.setInformativeText(
+                selectedSegmentationAutosave->hasUnsavedRecovery()
+                    ? tr("Discarding them will also delete their recovery files.")
+                    : tr("Discarding them will permanently lose the unsaved changes."));
+            auto *discardButton = confirmation.addButton(
+                tr("Discard and Quit"), QMessageBox::DestructiveRole);
+            auto *cancelButton = confirmation.addButton(QMessageBox::Cancel);
+            confirmation.setDefaultButton(cancelButton);
+            confirmation.setEscapeButton(cancelButton);
+            confirmation.exec();
+            if (confirmation.clickedButton() != discardButton) {
+                pendingQuit = PendingQuit::None;
+                return false;
+            }
+            discardQuitConfirmed = true;
+        }
+
+        if (selectedSegmentationAutosave->isWriteInProgress()) {
+            pendingQuit = requestedQuit;
+            statusBar()->showMessage(tr("Finishing segmentation recovery save..."));
+            return false;
+        }
+        const bool recoveriesDiscarded =
+            selectedSegmentationAutosave->discardUnsavedRecoveries();
+        if (!recoveriesDiscarded) {
+            pendingQuit = PendingQuit::None;
+            discardQuitConfirmed = false;
+            QMessageBox::warning(
+                this,
+                tr("Could Not Delete Recovery"),
+                tr("At least one recovery file could not be deleted. "
+                   "The application will remain open to preserve it."));
+            return false;
+        }
+        quitApproved = true;
+    } else if (!quitApproved) {
+        quitApproved = true;
+    }
+
+    if (selectedSegmentationAutosave != nullptr
+        && selectedSegmentationAutosave->isWriteInProgress()) {
+        pendingQuit = requestedQuit;
+        statusBar()->showMessage(tr("Finishing segmentation recovery save..."));
+        return false;
+    }
+
+    pendingQuit = PendingQuit::None;
+    if (selectedSegmentationAutosave != nullptr) {
+        selectedSegmentationAutosave->cleanup();
+    }
+    return true;
+}
+
+void MainWindow::continuePendingQuit() {
+    const PendingQuit requestedQuit = pendingQuit;
+    pendingQuit = PendingQuit::None;
+    if (requestedQuit == PendingQuit::ApplicationQuit) {
+        QCoreApplication::quit();
+    } else if (requestedQuit == PendingQuit::WindowClose) {
+        close();
+    }
 }
 
 void MainWindow::installInitialFileDropHandling() {
@@ -1251,6 +1369,49 @@ void MainWindow::showLoggingSettings() {
     SP_LOG_INFO("app", QStringLiteral("Opening logging settings"));
     LoggingSettingsDialog dialog(this);
     dialog.exec();
+}
+
+void MainWindow::showRecoverySettings() {
+    if (selectedSegmentationAutosave == nullptr
+        || taskRunner == nullptr
+        || taskRunner->isBusy()) {
+        return;
+    }
+
+    const auto current = selectedSegmentationAutosave->currentSettings();
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Recovery"));
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *enabledCheckBox = new QCheckBox(
+        tr("Automatically save selected segmentation"), &dialog);
+    enabledCheckBox->setChecked(current.enabled);
+    layout->addWidget(enabledCheckBox);
+
+    auto *form = new QFormLayout();
+    auto *intervalSpinBox = new QSpinBox(&dialog);
+    intervalSpinBox->setRange(1, 120);
+    intervalSpinBox->setValue(current.intervalMinutes);
+    intervalSpinBox->setSuffix(tr(" min"));
+    intervalSpinBox->setEnabled(current.enabled);
+    form->addRow(tr("Save interval:"), intervalSpinBox);
+    layout->addLayout(form);
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(enabledCheckBox, &QCheckBox::toggled, intervalSpinBox, &QSpinBox::setEnabled);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    SelectedSegmentationAutosave::Settings requested;
+    requested.enabled = enabledCheckBox->isChecked();
+    requested.intervalMinutes = intervalSpinBox->value();
+    selectedSegmentationAutosave->applySettings(requested);
 }
 
 void MainWindow::showHotkeys() {

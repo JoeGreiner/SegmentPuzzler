@@ -288,7 +288,8 @@ void SliceViewer::prepareSliceIndex(int proposedSliceIndex) {
 
 
 void SliceViewer::wheelEvent(QWheelEvent *event) {
-    if (taskRunner != nullptr && taskRunner->isBusy()) {
+    if (taskRunner != nullptr && taskRunner->isBusy()
+        && !taskRunner->allowsReadOnlyInteraction()) {
         event->ignore();
         return;
     }
