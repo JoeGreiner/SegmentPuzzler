@@ -55,6 +55,7 @@ public:
         vtkSmartPointer<vtkPolyData> polyData;
         quint32 lutColor = 0xAAAAAA;
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
+        bool touchesImageBoundary = false;
     };
 
     struct PreparedScene {
@@ -147,6 +148,7 @@ private:
         vtkSmartPointer<vtkActor> actor;
         dataType::SegmentIdType labelId = 0;
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
+        bool touchesImageBoundary = false;
     };
 
     struct SeedRayHit {

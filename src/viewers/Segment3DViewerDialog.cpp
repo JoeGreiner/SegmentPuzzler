@@ -518,7 +518,8 @@ bool navigationModifierPressed(Qt::KeyboardModifiers modifiers) {
 }
 
 QString threeDViewHelpText(bool showExplodeControls,
-                           bool showSeededSplitControls) {
+                           bool showSeededSplitControls,
+                           bool showImageBoundaryFilter) {
 #ifdef Q_OS_MACOS
     const QString navigateShortcut = QStringLiteral("Cmd (or Ctrl)");
 #else
@@ -544,6 +545,9 @@ QString threeDViewHelpText(bool showExplodeControls,
         lines << QStringLiteral("Move the Explode slider to add up to %1% of each segment's original distance from the scene center; 0% shows the unshifted view and 100% doubles that distance.")
                      .arg(kMaximumExplodePercent);
         lines << QStringLiteral("Use the left/right arrow keys to step the explode slider.");
+    }
+    if (showImageBoundaryFilter) {
+        lines << QStringLiteral("Hide border cells hides cells that touch the volume boundary.");
     }
     if (!showSeededSplitControls) {
         lines << QStringLiteral("Press R to cycle the segment colors in this 3D view.");
@@ -641,6 +645,15 @@ void includeInBounds(BoundsScanResult &bounds, int x, int y, int z) {
     bounds.maxY = std::max(bounds.maxY, y);
     bounds.minZ = std::min(bounds.minZ, z);
     bounds.maxZ = std::max(bounds.maxZ, z);
+}
+
+bool touchesImageBoundary(const BoundsScanResult &bounds,
+                          int dimX,
+                          int dimY,
+                          int dimZ) {
+    return (dimX > 1 && (bounds.minX == 0 || bounds.maxX == dimX - 1))
+           || (dimY > 1 && (bounds.minY == 0 || bounds.maxY == dimY - 1))
+           || (dimZ > 1 && (bounds.minZ == 0 || bounds.maxZ == dimZ - 1));
 }
 
 AllLabelsScanResult scanAllLabelsAndBounds(
@@ -1702,7 +1715,18 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
     bounds.maxY = scan.bounds.maxY;
     bounds.minZ = scan.bounds.minZ;
     bounds.maxZ = scan.bounds.maxZ;
-    return prepareScene(segImage, std::move(labels), bounds, true);
+    auto preparedScene = prepareScene(segImage, std::move(labels), bounds, true);
+    for (auto &mesh : preparedScene.meshes) {
+        const auto labelBounds = scan.boundsByLabel.find(mesh.labelId);
+        if (labelBounds != scan.boundsByLabel.end()) {
+            mesh.touchesImageBoundary = touchesImageBoundary(
+                labelBounds->second,
+                static_cast<int>(size[0]),
+                static_cast<int>(size[1]),
+                static_cast<int>(size[2]));
+        }
+    }
+    return preparedScene;
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
@@ -2011,7 +2035,8 @@ Segment3DViewerDialog::Segment3DViewerDialog(
 
         auto actor = createMeshActor(mesh);
         m_renderer->AddActor(actor);
-        m_segmentActors.push_back({actor, mesh.labelId, mesh.centerWorld});
+        m_segmentActors.push_back(
+            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary});
     }
 
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
@@ -2021,6 +2046,12 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         && static_cast<bool>(m_seededSplitSession.applySplit)
         && m_targetLabelId != 0;
     const bool showExplodeControls = m_segmentActors.size() > 1 && !showSeededSplitControls;
+    const bool showImageBoundaryFilter = std::any_of(
+        m_segmentActors.begin(),
+        m_segmentActors.end(),
+        [](const SegmentActorInfo &actorInfo) {
+            return actorInfo.touchesImageBoundary;
+        });
     if (showSeededSplitControls) {
         setMinimumWidth(700);
         renWin->SetNumberOfLayers(2);
@@ -2082,7 +2113,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
     }
     layout->addWidget(vtkContainer, 1);
 
-    if (showExplodeControls || showSeededSplitControls) {
+    if (showExplodeControls || showSeededSplitControls || showImageBoundaryFilter) {
         m_controlsRow = ensureControlsRow();
 
         if (showExplodeControls) {
@@ -2123,6 +2154,35 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             m_controlsRow->addWidget(m_explodeSlider, 1);
             m_controlsRow->addSpacing(8);
             addOrbitControls(m_controlsRow);
+        }
+
+        if (showImageBoundaryFilter) {
+            auto *hideImageBoundarySegmentsCheckBox = new QCheckBox(
+                QStringLiteral("Hide border cells"), m_controlsWidget);
+            hideImageBoundarySegmentsCheckBox->setObjectName(
+                QStringLiteral("hideImageBoundarySegmentsCheckBox"));
+            hideImageBoundarySegmentsCheckBox->setToolTip(
+                QStringLiteral("Hide cells that touch the volume boundary"));
+            connect(hideImageBoundarySegmentsCheckBox, &QCheckBox::toggled,
+                    this, [this](bool hideBoundarySegments) {
+                bool haveVisibleActor = false;
+                for (const auto &actorInfo : m_segmentActors) {
+                    if (actorInfo.actor == nullptr) {
+                        continue;
+                    }
+                    const bool visible = !hideBoundarySegments
+                                         || !actorInfo.touchesImageBoundary;
+                    actorInfo.actor->SetVisibility(visible);
+                    haveVisibleActor |= visible;
+                }
+                if (haveVisibleActor && m_renderer != nullptr) {
+                    m_renderer->ResetCameraClippingRange();
+                }
+                if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+                    m_vtkWidget->renderWindow()->Render();
+                }
+            });
+            m_controlsRow->addWidget(hideImageBoundarySegmentsCheckBox);
         }
 
         if (showSeededSplitControls) {
@@ -2371,7 +2431,8 @@ Segment3DViewerDialog::Segment3DViewerDialog(
 
         if (QLabel *helpLabel = createHelpBadgeLabel(
                 threeDViewHelpText(showExplodeControls,
-                                   showSeededSplitControls),
+                                   showSeededSplitControls,
+                                   showImageBoundaryFilter),
                 m_controlsWidget)) {
             m_controlsRow->addWidget(helpLabel);
         }
@@ -2884,7 +2945,8 @@ bool Segment3DViewerDialog::replaceSegmentMeshes(const PreparedScene &preparedSc
             continue;
         }
         auto actor = createMeshActor(mesh);
-        newActors.push_back({actor, mesh.labelId, mesh.centerWorld});
+        newActors.push_back(
+            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary});
     }
 
     if (newActors.empty() || m_renderer == nullptr) {

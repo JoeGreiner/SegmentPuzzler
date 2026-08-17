@@ -282,7 +282,11 @@ dataType::SegmentsImageType::Pointer makeSmallSegmentsImage(bool includeSecondLa
         for (int y = 1; y <= 4; ++y) {
             for (int x = 1; x <= 4; ++x) {
                 dataType::SegmentsImageType::IndexType index{{x, y, z}};
-                image->SetPixel(index, includeSecondLabel && x >= 3 ? 2 : 1);
+                image->SetPixel(index, 1);
+            }
+            if (includeSecondLabel) {
+                dataType::SegmentsImageType::IndexType boundaryIndex{{0, y, z}};
+                image->SetPixel(boundaryIndex, 2);
             }
         }
     }
@@ -302,6 +306,10 @@ int testAllLabelsSceneUsesSegmentMeshes() {
     if (scene.meshes[0].labelId != 1 || scene.meshes[0].lutColor != red
         || scene.meshes[1].labelId != 2 || scene.meshes[1].lutColor != green) {
         return failTest("All-label scene did not preserve label colors.");
+    }
+    if (scene.meshes[0].touchesImageBoundary
+        || !scene.meshes[1].touchesImageBoundary) {
+        return failTest("All-label scene did not identify the volume-edge segment.");
     }
     if (scene.meshes[0].polyData->GetPoints()
         != scene.meshes[1].polyData->GetPoints()) {
