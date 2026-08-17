@@ -65,12 +65,27 @@ void appendVoxels(std::ostringstream &out, const std::vector<Voxel> &input) {
     }
 }
 
-void appendEdge(std::ostringstream &out, const InitialEdge &edge) {
+void appendEdgeMetadata(std::ostringstream &out, const BaseEdge &edge) {
     const Roi &roi = edge.getRoi();
     out << edge.numId << '|'
         << roi.minX << ',' << roi.minY << ',' << roi.minZ << ','
         << roi.maxX << ',' << roi.maxY << ',' << roi.maxZ << '|';
+}
+
+void appendOneSidedInitialEdge(std::ostringstream &out, const OneSidedInitialEdge &edge) {
+    appendEdgeMetadata(out, edge);
     appendVoxels(out, edge.voxels);
+    out << '|';
+}
+
+void appendTwoSidedInitialEdge(std::ostringstream &out, const TwoSidedInitialEdge &edge) {
+    appendEdgeMetadata(out, edge);
+    VoxelList logicalVoxels;
+    logicalVoxels.reserve(edge.getVoxelCount());
+    for (const VoxelList *voxelList : edge.getVoxelLists()) {
+        logicalVoxels.insert(logicalVoxels.end(), voxelList->begin(), voxelList->end());
+    }
+    appendVoxels(out, logicalVoxels);
     out << '|';
     for (const auto &feature : edge.edgeFeatures) {
         out << feature->filterName << ':';
@@ -106,9 +121,9 @@ std::string graphFingerprint(int threadCount) {
         out << '\n';
     }
 
-    std::vector<std::pair<EdgePairIdType, std::shared_ptr<InitialEdge>>> oneSidedEdges;
+    std::vector<std::pair<EdgePairIdType, std::shared_ptr<OneSidedInitialEdge>>> oneSidedEdges;
     for (const auto &[sourceLabel, node] : graph->initialNodes) {
-        for (const auto &[neighborLabel, edge] : node->onesidedEdges) {
+        for (const auto &[neighborLabel, edge] : node->neighborLabelToOneSidedInitialEdge) {
             oneSidedEdges.push_back({{sourceLabel, neighborLabel}, edge});
         }
     }
@@ -117,20 +132,36 @@ std::string graphFingerprint(int threadCount) {
     });
     for (const auto &entry : oneSidedEdges) {
         out << "O" << entry.first.first << ',' << entry.first.second << ':';
-        appendEdge(out, *entry.second);
+        appendOneSidedInitialEdge(out, *entry.second);
         out << '\n';
     }
-    for (const auto &entry : graph->initialTwoSidedEdges) {
+    for (const auto &entry : graph->initialLabelPairToTwoSidedInitialEdge) {
         out << "T" << entry.first.first << ',' << entry.first.second << ':';
-        appendEdge(out, *entry.second);
+        appendTwoSidedInitialEdge(out, *entry.second);
         out << '\n';
     }
+
+    std::vector<std::pair<GraphBase::MappedEdgeIdType, char>> edgeStatuses(
+        graphBase->edgeStatus.begin(), graphBase->edgeStatus.end());
+    std::sort(edgeStatuses.begin(), edgeStatuses.end());
+    for (const auto &[edgeId, status] : edgeStatuses) {
+        out << "S" << edgeId << ':' << static_cast<int>(status) << '\n';
+    }
+
+    out << "I";
+    const auto *edgeImageBuffer = graphBase->pEdgesInitialSegmentsImage->GetBufferPointer();
+    const std::size_t edgeImageVoxelCount =
+        graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels();
+    for (std::size_t voxelIndex = 0; voxelIndex < edgeImageVoxelCount; ++voxelIndex) {
+        out << edgeImageBuffer[voxelIndex] << ',';
+    }
+    out << '\n';
     return out.str();
 }
 
 // This test checks result equivalence and repeatability. Actual OpenMP thread use is
 // reported by the production scan log because the runtime may legally reduce a team.
-int testRequestedParallelBuildMatchesSerial() {
+int testParallelTwoSidedInitialEdgeBuildMatchesSerial() {
     const std::string serial = graphFingerprint(1);
 #ifdef USE_OMP
     constexpr int parallelThreadCount = 4;
@@ -141,6 +172,110 @@ int testRequestedParallelBuildMatchesSerial() {
         if (graphFingerprint(parallelThreadCount) != serial) {
             return failTest("Parallel graph construction differs from the serial result.");
         }
+    }
+    return 0;
+}
+
+int testTwoSidedInitialEdgeReferencesBothOneSidedInitialEdges() {
+    auto graphBase = std::make_shared<GraphBase>();
+    graphBase->pWorkingSegmentsImage = makeTestImage();
+    auto graph = std::make_unique<Graph>(graphBase, false);
+    graphBase->pGraph = graph.get();
+    graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+
+    std::size_t oneSidedEdgeReferenceCount = 0;
+    for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
+        const auto &smallerLabelEdge =
+            graph->initialNodes.at(labelPair.first)->neighborLabelToOneSidedInitialEdge.at(labelPair.second);
+        const auto &largerLabelEdge =
+            graph->initialNodes.at(labelPair.second)->neighborLabelToOneSidedInitialEdge.at(labelPair.first);
+        if (edge->getSmallerLabelOneSidedInitialEdge() != smallerLabelEdge ||
+            edge->getLargerLabelOneSidedInitialEdge() != largerLabelEdge) {
+            return failTest("A two-sided initial edge does not reference its registered one-sided edges.");
+        }
+        oneSidedEdgeReferenceCount += 2;
+    }
+    if (oneSidedEdgeReferenceCount != 2 * graph->initialLabelPairToTwoSidedInitialEdge.size()) {
+        return failTest("Two-sided initial-edge reference count is not exactly two per edge.");
+    }
+    return 0;
+}
+
+int testTwoSidedInitialEdgePreservesVoxelOrderAndCount() {
+    auto graphBase = std::make_shared<GraphBase>();
+    graphBase->pWorkingSegmentsImage = makeTestImage();
+    auto graph = std::make_unique<Graph>(graphBase, false);
+    graphBase->pGraph = graph.get();
+    graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+
+    for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
+        const VoxelLists voxelLists = edge->getVoxelLists();
+        const auto &smallerLabelVoxels = edge->getSmallerLabelOneSidedInitialEdge()->voxels;
+        const auto &largerLabelVoxels = edge->getLargerLabelOneSidedInitialEdge()->voxels;
+        if (voxelLists.size() != 2 || voxelLists[0] != &smallerLabelVoxels ||
+            voxelLists[1] != &largerLabelVoxels) {
+            return failTest("Two-sided initial-edge voxel views are not in label order.");
+        }
+        if (edge->getVoxelCount() != smallerLabelVoxels.size() + largerLabelVoxels.size()) {
+            return failTest("Two-sided initial-edge voxel count differs from both one-sided lists.");
+        }
+    }
+    return 0;
+}
+
+int testTwoSidedInitialEdgeFeaturesUseBothOneSidedInitialEdges() {
+    FeatureList::edgeFeaturesList.emplace_back(std::make_unique<NumberOfVoxels>());
+    auto graphBase = std::make_shared<GraphBase>();
+    graphBase->pWorkingSegmentsImage = makeTestImage();
+    auto graph = std::make_unique<Graph>(graphBase, false);
+    graphBase->pGraph = graph.get();
+    graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+
+    bool featuresAreValid = true;
+    for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
+        if (edge->edgeFeatures.size() != 1 || edge->edgeFeatures.front()->values.size() != 1 ||
+            edge->edgeFeatures.front()->values.front() != static_cast<float>(edge->getVoxelCount())) {
+            featuresAreValid = false;
+            break;
+        }
+    }
+    FeatureList::edgeFeaturesList.clear();
+    if (!featuresAreValid) {
+        return failTest("Two-sided initial-edge features did not use both one-sided voxel lists.");
+    }
+    return 0;
+}
+
+int testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges() {
+    auto graphBase = std::make_shared<GraphBase>();
+    graphBase->pWorkingSegmentsImage = makeTestImage();
+    auto graph = std::make_unique<Graph>(graphBase, false);
+    graphBase->pGraph = graph.get();
+    graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+
+    if (graph->initialLabelPairToTwoSidedInitialEdge.empty()) {
+        return failTest("The rebuild fixture contains no two-sided initial edge.");
+    }
+    const EdgePairIdType labelPair = graph->initialLabelPairToTwoSidedInitialEdge.begin()->first;
+    const auto previousEdge = graph->initialLabelPairToTwoSidedInitialEdge.begin()->second;
+    const auto previousSmallerLabelEdge = previousEdge->getSmallerLabelOneSidedInitialEdge();
+    const auto previousLargerLabelEdge = previousEdge->getLargerLabelOneSidedInitialEdge();
+
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+    const auto &rebuiltEdge = graph->initialLabelPairToTwoSidedInitialEdge.at(labelPair);
+    const auto &currentSmallerLabelEdge =
+        graph->initialNodes.at(labelPair.first)->neighborLabelToOneSidedInitialEdge.at(labelPair.second);
+    const auto &currentLargerLabelEdge =
+        graph->initialNodes.at(labelPair.second)->neighborLabelToOneSidedInitialEdge.at(labelPair.first);
+    if (rebuiltEdge->getSmallerLabelOneSidedInitialEdge() != currentSmallerLabelEdge ||
+        rebuiltEdge->getLargerLabelOneSidedInitialEdge() != currentLargerLabelEdge ||
+        currentSmallerLabelEdge == previousSmallerLabelEdge ||
+        currentLargerLabelEdge == previousLargerLabelEdge) {
+        return failTest("A rebuilt two-sided initial edge does not reference the current one-sided edges.");
     }
     return 0;
 }
@@ -160,7 +295,7 @@ int testEmptyNodeProducesNoEdges() {
     auto graphBase = std::make_shared<GraphBase>();
     InitialNode node(graphBase, makeTestImage(), 41);
     node.computeOneSidedEdges({0});
-    if (!node.onesidedEdges.empty()) {
+    if (!node.neighborLabelToOneSidedInitialEdge.empty()) {
         return failTest("An empty initial node should not produce one-sided edges.");
     }
     return 0;
@@ -213,7 +348,19 @@ int main(int argc, char **argv) {
     if (!FeatureList::edgeFeaturesList.empty()) {
         return failTest("Edge feature registry must be empty when the test starts.");
     }
-    if (int result = testRequestedParallelBuildMatchesSerial()) {
+    if (int result = testTwoSidedInitialEdgeReferencesBothOneSidedInitialEdges()) {
+        return result;
+    }
+    if (int result = testTwoSidedInitialEdgePreservesVoxelOrderAndCount()) {
+        return result;
+    }
+    if (int result = testTwoSidedInitialEdgeFeaturesUseBothOneSidedInitialEdges()) {
+        return result;
+    }
+    if (int result = testParallelTwoSidedInitialEdgeBuildMatchesSerial()) {
+        return result;
+    }
+    if (int result = testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges()) {
         return result;
     }
     if (int result = testFeatureEnabledBuildMatchesSerial()) {

@@ -87,10 +87,8 @@ void InitialNode::addVoxel(itk::Index<3> const &index) {
 }
 
 
-std::vector<std::vector<Voxel> *> InitialNode::getVoxelPointerArray() {
-    std::vector<std::vector<Voxel> *> voxelList;
-    voxelList.push_back(&voxels);
-    return voxelList;
+VoxelLists InitialNode::getVoxelLists() const {
+    return {&voxels};
 }
 
 
@@ -101,7 +99,7 @@ bool InitialNode::isIgnoredId(SegmentIdType idToCheck,
 }
 
 void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignoredSegmentIds) {
-    onesidedEdges.clear();
+    neighborLabelToOneSidedInitialEdge.clear();
 
     if (voxels.empty()) {
         return;
@@ -123,7 +121,7 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
     }
 
     constexpr unsigned int estimateNumberEdges = 30;
-    onesidedEdges.reserve(estimateNumberEdges);
+    neighborLabelToOneSidedInitialEdge.reserve(estimateNumberEdges);
 
     // Image buffer
     const SegmentIdType* buffer = pSegments->GetBufferPointer();
@@ -168,11 +166,11 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
                         SegmentIdType neighborLabel = buffer[neighborIndex];
                         if (neighborLabel != label && !isIgnoredId(neighborLabel, ignoredSegmentIds)) {
                             if (neighborLabelsAddedForVoxel.find(neighborLabel) == neighborLabelsAddedForVoxel.end()) {
-                                if (!onesidedEdges.count(neighborLabel)) {
-                                    onesidedEdges[neighborLabel] = std::make_shared<InitialEdge>(neighborLabel, label);
+                                if (!neighborLabelToOneSidedInitialEdge.count(neighborLabel)) {
+                                    neighborLabelToOneSidedInitialEdge[neighborLabel] = std::make_shared<OneSidedInitialEdge>(neighborLabel, label);
                                 }
                                 Voxel voxelToAdd(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
-                                onesidedEdges[neighborLabel]->addVoxel(voxelToAdd);
+                                neighborLabelToOneSidedInitialEdge[neighborLabel]->addVoxel(voxelToAdd);
                                 neighborLabelsAddedForVoxel.insert(neighborLabel);
                             }
                         }
@@ -186,7 +184,7 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
 
 // given a onesided edge, it will find the other, corrosponding onesided edge to form a twosided edge
 // useful function when refining
-InitialEdge *InitialNode::computeCorrospondingOneSidedEdge(InitialEdge *pInitialEdge, bool verbose) {
+OneSidedInitialEdge *InitialNode::computeCorrospondingOneSidedEdge(OneSidedInitialEdge *pInitialEdge, bool verbose) {
     QElapsedTimer timer;
     if (verbose) {
         logInitialNodeDebug(
@@ -265,7 +263,7 @@ InitialEdge *InitialNode::computeCorrospondingOneSidedEdge(InitialEdge *pInitial
     bool IsInBounds;
     Voxel voxelToAdd;
 
-    InitialEdge *pNewEdge = new InitialEdge(corrospondingNodeId, label);
+    OneSidedInitialEdge *pNewEdge = new OneSidedInitialEdge(corrospondingNodeId, label);
 
     for (auto voxel : pInitialEdge->voxels) {
         neighborhoodIt.SetLocation({voxel.x, voxel.y, voxel.z});
@@ -311,19 +309,19 @@ void InitialNode::print(int indentationLevel, std::ostream &outStream) {
     outStream << indentationString << "label: " << label << "\n";
     outStream << indentationString << "currentWorkingNodeId: " << currentWorkingNodeLabel << "\n";
     outStream << indentationString << "number of voxels: " << voxels.size() << "\n";
-    outStream << indentationString << "number of onesided edges: " << onesidedEdges.size() << "\n";
-    outStream << indentationString << "number of twosided edges: " << twosidedEdges.size() << "\n";
+    outStream << indentationString << "number of onesided edges: " << neighborLabelToOneSidedInitialEdge.size() << "\n";
+    outStream << indentationString << "number of twosided edges: " << neighborLabelToTwoSidedInitialEdge.size() << "\n";
     outStream << indentationString << "fx: " << roi.minX << " fy: " << roi.minY << " fz: " << roi.minZ << "\n";
     outStream << indentationString << "tx: " << roi.maxX << " ty: " << roi.maxY << " tz: " << roi.maxZ << "\n";
 
     outStream << indentationString << "Onesided Edges:\n";
-    for (auto &edge : onesidedEdges) {
+    for (auto &edge : neighborLabelToOneSidedInitialEdge) {
         outStream << indentationString << "\tedgeKey: " << edge.second->pairId.first << " -> "
                   << edge.second->pairId.second << "\n";
         edge.second->print(indentationLevel + 3, outStream);
     }
     outStream << indentationString << "Twosided Edges:\n";
-    for (auto &edge : twosidedEdges) {
+    for (auto &edge : neighborLabelToTwoSidedInitialEdge) {
         outStream << indentationString << "\tedgeKey: " << edge.second->pairId.first << " -> "
                   << edge.second->pairId.second << "\n";
         edge.second->print(indentationLevel + 3, outStream);
@@ -349,15 +347,18 @@ void InitialNode::setSegmentPointer(SegmentIdImageType::Pointer pSegmentsIn) {
 // TODO: Implement me!
 std::vector<BaseNode::SegmentIdType> InitialNode::getVectorOfConnectedNodeIds() {
     std::vector<BaseNode::SegmentIdType> idsOfConnectedNodes;
-    for (auto &edge : onesidedEdges) {
+    for (auto &edge : neighborLabelToOneSidedInitialEdge) {
         idsOfConnectedNodes.push_back(edge.first);
     }
     return idsOfConnectedNodes;
 }
 
-void InitialNode::addTwoSidedEdge(std::shared_ptr<InitialEdge> const &edgeToAdd) {
-    SegmentIdType otherLabel = edgeToAdd->pairId.first == label ? edgeToAdd->pairId.second : edgeToAdd->pairId.first;
-    twosidedEdges[otherLabel] = edgeToAdd;
+void InitialNode::addTwoSidedInitialEdge(
+        const std::shared_ptr<TwoSidedInitialEdge> &twoSidedInitialEdge) {
+    SegmentIdType otherLabel = twoSidedInitialEdge->pairId.first == label
+        ? twoSidedInitialEdge->pairId.second
+        : twoSidedInitialEdge->pairId.first;
+    neighborLabelToTwoSidedInitialEdge[otherLabel] = twoSidedInitialEdge;
 }
 
 BaseNode::SegmentIdType InitialNode::getCurrentWorkingNodeLabel() const {

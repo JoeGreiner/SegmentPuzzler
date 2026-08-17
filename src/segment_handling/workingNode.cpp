@@ -70,7 +70,7 @@ void WorkingNode::addNodeFeature(Feature *feature) {
 
 void WorkingNode::computeNodeFeatures() {
 //    for(auto& nodeFeature : nodeFeatures){
-//        nodeFeature->merge(getVoxelPointerArray(), )
+//        nodeFeature->merge(getVoxelLists(), )
 //    }
 }
 
@@ -98,12 +98,12 @@ void WorkingNode::print(int indentationLevel, std::ostream &outStream) {
         indentationString += "\t";
     }
     outStream << indentationString << "label: " << label << "\n";
-    outStream << indentationString << "number of twosided edges: " << twosidedEdges.size() << "\n";
+    outStream << indentationString << "number of twosided edges: " << neighborLabelToWorkingEdge.size() << "\n";
     outStream << indentationString << "fx: " << roi.minX << " fy: " << roi.minY << " fz: " << roi.minZ << "\n";
     outStream << indentationString << "tx: " << roi.maxX << " ty: " << roi.maxY << " tz: " << roi.maxZ << "\n";
 
     outStream << indentationString << "Twosided Edges:\n";
-    for (auto &edge : twosidedEdges) {
+    for (auto &edge : neighborLabelToWorkingEdge) {
         outStream << indentationString << "\tedgeKey: " << edge.second->pairId.first << " -> "
                   << edge.second->pairId.second << "\n";
         edge.second->print(indentationLevel + 3, outStream);
@@ -117,20 +117,21 @@ void WorkingNode::print(int indentationLevel, std::ostream &outStream) {
 
 std::vector<BaseNode::SegmentIdType> WorkingNode::getVectorOfConnectedNodeIds() {
     std::vector<BaseNode::SegmentIdType> vectorOfConnectedNodeIds;
-    vectorOfConnectedNodeIds.reserve(twosidedEdges.size());
-    for (auto &edge : twosidedEdges) {
+    vectorOfConnectedNodeIds.reserve(neighborLabelToWorkingEdge.size());
+    for (auto &edge : neighborLabelToWorkingEdge) {
         vectorOfConnectedNodeIds.push_back(edge.first);
     }
     return vectorOfConnectedNodeIds;
 }
 
 
-std::vector<std::vector<Voxel> *> WorkingNode::getVoxelPointerArray() {
-    std::vector<std::vector<Voxel> *> voxelList;
-    for (auto &initialNode : subInitialNodes) {
-        voxelList.push_back(&initialNode.second->voxels);
+VoxelLists WorkingNode::getVoxelLists() const {
+    VoxelLists voxelLists;
+    voxelLists.reserve(subInitialNodes.size());
+    for (const auto &initialNode : subInitialNodes) {
+        voxelLists.push_back(&initialNode.second->voxels);
     }
-    return voxelList;
+    return voxelLists;
 }
 
 std::vector<Voxel> WorkingNode::getVoxelArray() {

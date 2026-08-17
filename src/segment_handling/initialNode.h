@@ -5,9 +5,8 @@
 
 #include "src/segment_handling/baseNode.h"
 
-//FIXME: keep edge.h? replace with initialEdge or sth?
-#include "edge.h"
-#include "initialEdge.h"
+#include "oneSidedInitialEdge.h"
+#include "twoSidedInitialEdge.h"
 #include "feature.h"
 #include <unordered_map>
 
@@ -34,7 +33,7 @@ public:
     // print node properties
     void print(int indentationLevel, std::ostream &outStream) override;
 
-    std::vector<std::vector<Voxel> *> getVoxelPointerArray() override;
+    VoxelLists getVoxelLists() const override;
 
     std::vector<Voxel> getVoxelArray() override;
 
@@ -48,16 +47,16 @@ public:
 
     void computeOneSidedEdges(const std::vector<SegmentIdType> &ignoredSegmentIds);
 
-    void addTwoSidedEdge(std::shared_ptr<InitialEdge> const &edgeToAdd);
+    void addTwoSidedInitialEdge(const std::shared_ptr<TwoSidedInitialEdge> &twoSidedInitialEdge);
 
 
     void calculateNodeFeatures();
 
-    InitialEdge *computeCorrospondingOneSidedEdge(InitialEdge *pInitialEdge, bool verbose = true);
+    OneSidedInitialEdge *computeCorrospondingOneSidedEdge(OneSidedInitialEdge *pInitialEdge, bool verbose = true);
 
 
-    std::unordered_map<SegmentIdType, std::shared_ptr<InitialEdge>> onesidedEdges;
-    std::unordered_map<SegmentIdType, std::shared_ptr<InitialEdge>> twosidedEdges;
+    std::unordered_map<SegmentIdType, std::shared_ptr<OneSidedInitialEdge>> neighborLabelToOneSidedInitialEdge;
+    std::unordered_map<SegmentIdType, std::shared_ptr<TwoSidedInitialEdge>> neighborLabelToTwoSidedInitialEdge;
     std::vector<Voxel> voxels;
 
     std::shared_ptr<GraphBase> graphBase;

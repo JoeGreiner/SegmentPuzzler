@@ -11,7 +11,8 @@
 #include "src/utils/voxel.h"
 #include "Projected3DCut.h"
 
-#include "initialEdge.h"
+#include "oneSidedInitialEdge.h"
+#include "twoSidedInitialEdge.h"
 #include "workingEdge.h"
 #include "workingNode.h"
 #include "initialNode.h"
@@ -44,7 +45,7 @@ struct CenterOfMass {
         z /= initialNode->voxels.size();
     }
 
-    CenterOfMass(InitialEdge *initialEdge) {
+    CenterOfMass(OneSidedInitialEdge *initialEdge) {
         x = 0;
         y = 0;
         z = 0;
@@ -207,12 +208,12 @@ public:
     std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> initialNodes;
 
     // Canonical label-pair lookup for two-sided initial edges.
-    std::map<EdgePairIdType, std::shared_ptr<InitialEdge>> initialTwoSidedEdges;
+    std::map<EdgePairIdType, std::shared_ptr<TwoSidedInitialEdge>> initialLabelPairToTwoSidedInitialEdge;
 
     // these nodes are created by operations on the initialNodes
     // note, the edges of workingnodes are 2vx widge, i.e. the one-sided edges are merged into a 2vx edge
     std::unordered_map<SegmentIdType, std::shared_ptr<WorkingNode>> workingNodes;
-    std::map<EdgePairIdType, std::shared_ptr<WorkingEdge>> workingEdges;
+    std::map<EdgePairIdType, std::shared_ptr<WorkingEdge>> workingLabelPairToWorkingEdge;
 
     // lookup for the annotationsliceviewer that maps numId -> pairId
     std::unordered_map<EdgeNumIdType, EdgePairIdType> initialEdgeIdLookup;
@@ -229,13 +230,13 @@ public:
     // generate a landscape/path with the allowedsegmentids
     LandscapeType::Pointer
     generateLandscapePathfinding(SegmentsImageType::Pointer pSegments, SegmentIdType allowedWorkingNodeLabel,
-                                 InitialEdge &forbiddenEdge);
+                                 TwoSidedInitialEdge &forbiddenEdge);
 
 
     // calculate the shortest path between two points
     // TODO: return shortest path?
     // TODO: Dijkstra, AStar?
-    DistanceType::Pointer shortestPath(InitialEdge &initialEdge, LandscapeType::Pointer pLandscape);
+    DistanceType::Pointer shortestPath(OneSidedInitialEdge &initialEdge, LandscapeType::Pointer pLandscape);
 
     // transfer working node at a given coordinate to the segmentation image
     std::optional<SegmentIdType> transferWorkingNodeToSegmentation(int x, int y, int z);
@@ -343,7 +344,7 @@ public:
     void printWorkingEdgesToFile(const std::string &pathToOutputfile);
 
     // merge to nodes by specifying a edge that merges two nodes
-    void mergeEdge(InitialEdge *edge, bool updateSegmentImage = true);
+    void mergeEdge(TwoSidedInitialEdge *edge, bool updateSegmentImage = true);
 
     std::set<SegmentIdType> mergeEdges(const std::set<EdgeNumIdType> &edgeIdsToMerge);
 
@@ -363,7 +364,7 @@ public:
     // undo a merged edge
     void unmergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToUnMerge);
 
-    void unmergeEdge(InitialEdge *initialEdge, DistanceType::Pointer pDistanceSmaller,
+    void unmergeEdge(TwoSidedInitialEdge *initialEdge, DistanceType::Pointer pDistanceSmaller,
                      DistanceType::Pointer pDistanceBigger);
 
     void unmergeEdge(WorkingNode *workingNodeToSplit, std::vector<SegmentIdType> initialNodeIdsA,
@@ -371,7 +372,9 @@ public:
 
 
     std::pair<std::vector<SegmentIdType>, std::vector<SegmentIdType>>
-    calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn, InitialEdge *edgeToCalculateDistanceFrom);
+    calculateGraphDistancesFromEdge(
+        WorkingNode *nodeToCalculateDistanceOn,
+        TwoSidedInitialEdge *edgeToCalculateDistanceFrom);
 
 
     // set pointer to ignoredSegments vector

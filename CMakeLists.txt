@@ -350,7 +350,8 @@ set(SRC_SEGMENTHANDLERS
         src/segment_handling/Projected3DCut.cpp
         src/segment_handling/SeededWatershedSplit.cpp
         src/segment_handling/graphBase.cpp
-        src/segment_handling/initialEdge.cpp
+        src/segment_handling/oneSidedInitialEdge.cpp
+        src/segment_handling/twoSidedInitialEdge.cpp
         src/segment_handling/baseEdge.cpp
         src/segment_handling/workingEdge.cpp
         src/segment_handling/baseNode.cpp

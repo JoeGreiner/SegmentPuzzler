@@ -21,7 +21,7 @@ public:
     // print node properties
     virtual void print(int indentationLevel, std::ostream &outStream) = 0;
 
-    virtual std::vector<std::vector<Voxel> *> getVoxelPointerArray() = 0;
+    virtual VoxelLists getVoxelLists() const = 0;
 
     virtual std::vector<Voxel> getVoxelArray() = 0;
 

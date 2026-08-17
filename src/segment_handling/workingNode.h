@@ -31,7 +31,7 @@ public:
 
     ~WorkingNode() = default;
 
-    std::unordered_map<SegmentIdType, std::shared_ptr<WorkingEdge>> twosidedEdges;
+    std::unordered_map<SegmentIdType, std::shared_ptr<WorkingEdge>> neighborLabelToWorkingEdge;
     std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> subInitialNodes;
 
     //FIXME: Implement me
@@ -39,7 +39,7 @@ public:
 
     std::vector<std::shared_ptr<Feature>> nodeFeatures;
 
-    std::vector<std::vector<Voxel> *> getVoxelPointerArray() override;
+    VoxelLists getVoxelLists() const override;
 
     std::vector<Voxel> getVoxelArray() override;
 

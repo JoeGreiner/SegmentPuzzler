@@ -29,7 +29,7 @@ MeanSignal::MeanSignal(std::string signalName) {
     values.resize(1);
 }
 
-void MeanSignal::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) {
+void MeanSignal::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
     float summedSignal = 0;
 
     for (auto &voxel : voxels) {
@@ -40,10 +40,10 @@ void MeanSignal::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int)
     values[0] = (summedSignal / float(voxels.size()));
 }
 
-void MeanSignal::compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int, unsigned int) {
+void MeanSignal::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
     float summedSignal = 0;
     float numberVoxels = 0;
-    for (auto &listEntry : voxelList) {
+    for (auto &listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             summedSignal += signalList[signalName]->GetPixel(index);
@@ -79,7 +79,7 @@ LabelOverlap::LabelOverlap() {
     overlapPercentage = -1;
 }
 
-void LabelOverlap::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) {
+void LabelOverlap::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
     std::map<unsigned int, unsigned int> labelHistogram;
     unsigned int label;
     // calculate hist
@@ -108,12 +108,12 @@ void LabelOverlap::compute(std::vector<Voxel> &voxels, unsigned int, unsigned in
     values.push_back(corrospondingLabelWithMostOverlap);
 }
 
-void LabelOverlap::compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int, unsigned int) {
+void LabelOverlap::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
     std::map<unsigned int, unsigned int> labelHistogram;
     unsigned int label;
     float numberVoxels = 0;
     // calculate hist
-    for (auto &listEntry : voxelList) {
+    for (auto &listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             label = pToOtherLabelImagePointer->GetPixel(index);
@@ -172,7 +172,7 @@ GroundTruthLabel::GroundTruthLabel() {
     FeatureList::GroundTruthLabelComputed = true;
 }
 
-void GroundTruthLabel::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) {
+void GroundTruthLabel::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
     std::map<unsigned int, unsigned int> labelHistogram;
     unsigned int label;
     // calculate hist
@@ -201,12 +201,12 @@ void GroundTruthLabel::compute(std::vector<Voxel> &voxels, unsigned int, unsigne
     values.push_back(mostProminentGroundTruthLabel);
 }
 
-void GroundTruthLabel::compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int, unsigned int) {
+void GroundTruthLabel::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
     std::map<unsigned int, unsigned int> labelHistogram;
     unsigned int label;
     float numberVoxels = 0;
     // calculate hist
-    for (auto &listEntry : voxelList) {
+    for (auto &listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             label = pGroundTruth->GetPixel(index);
@@ -275,7 +275,7 @@ Feature *GeneralStatisticOnProbabilities::createNew() {
     return (new GeneralStatisticOnProbabilities(this->signalName));
 }
 
-void GeneralStatisticOnProbabilities::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) {
+void GeneralStatisticOnProbabilities::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
     // implemeted:
     // mean, sum, min, max
     // variance, skewness, kurtosis
@@ -322,7 +322,7 @@ void GeneralStatisticOnProbabilities::compute(std::vector<Voxel> &voxels, unsign
     }
 }
 
-void GeneralStatisticOnProbabilities::compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int, unsigned int) {
+void GeneralStatisticOnProbabilities::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
     // implemeted:
     // mean, sum, min, max
     // variance, skewness, kurtosis
@@ -332,14 +332,14 @@ void GeneralStatisticOnProbabilities::compute(std::vector<std::vector<Voxel> *> 
     std::vector<float> intensities;
 
 
-    for (auto &listEntry : voxelList) {
+    for (auto &listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             intensities.push_back(signalList[signalName]->GetPixel(index));
         }
     }
     float sum = 0;
-    for (auto &listEntry : voxelList) {
+    for (auto &listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             sum += signalList[signalName]->GetPixel(index);
@@ -504,13 +504,13 @@ Feature *NumberOfVoxels::createNew() {
     return (new NumberOfVoxels());
 }
 
-void NumberOfVoxels::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) {
+void NumberOfVoxels::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
     values.at(0) = voxels.size();
 }
 
-void NumberOfVoxels::compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int, unsigned int) {
+void NumberOfVoxels::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
     float numberVoxels = 0;
-    for (auto &listEntry : voxelList) {
+    for (auto &listEntry : voxelLists) {
         numberVoxels += listEntry->size();
     }
 
@@ -543,7 +543,7 @@ Feature *PCAValues::createNew() {
     return (new PCAValues());
 }
 
-void PCAValues::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) {
+void PCAValues::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
     PCA segPCA = calcPCA(voxels); // eigenvalues are sorted, sign should be unique
 
     values.push_back((float) segPCA.eigenValues[0][0]);
@@ -561,8 +561,8 @@ void PCAValues::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) 
 }
 
 
-void PCAValues::compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int, unsigned int) {
-    PCA segPCA = calcPCA(voxelList); // eigenvalues are sorted, sign should be unique
+void PCAValues::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
+    PCA segPCA = calcPCA(voxelLists); // eigenvalues are sorted, sign should be unique
 
     values.push_back((float) segPCA.eigenValues[0][0]);
     values.push_back((float) segPCA.eigenValues[1][1]);
@@ -603,7 +603,7 @@ Feature *PCARatios::createNew() {
     return (new PCARatios());
 }
 
-void PCARatios::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) {
+void PCARatios::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
     PCA segPCA = calcPCA(voxels); // eigenvalues are sorted, sign should be unique
 
     double n2, n3;
@@ -637,8 +637,8 @@ void PCARatios::compute(std::vector<Voxel> &voxels, unsigned int, unsigned int) 
 //  values.push_back(computeNorm(segPCA.eigenVectors,1,2));
 }
 
-void PCARatios::compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int, unsigned int) {
-    PCA segPCA = calcPCA(voxelList); // eigenvalues are sorted, sign should be unique
+void PCARatios::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
+    PCA segPCA = calcPCA(voxelLists); // eigenvalues are sorted, sign should be unique
 
     double n2, n3;
     float r1, r2, r3; // avoid division by 0

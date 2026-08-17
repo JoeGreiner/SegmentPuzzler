@@ -2,6 +2,7 @@
 #define voxel_h
 
 #include <iostream>
+#include <vector>
 
 struct Voxel {
     int x, y, z;
@@ -23,5 +24,8 @@ struct Voxel {
     // is equal comparison with another voxel
     bool operator==(const Voxel &b) const;
 };
+
+using VoxelList = std::vector<Voxel>;
+using VoxelLists = std::vector<const VoxelList *>;
 
 #endif /* voxel_h */

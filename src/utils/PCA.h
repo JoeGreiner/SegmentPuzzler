@@ -35,9 +35,9 @@ struct pcaMatrix {
 
 PCA calcEigenJacobi(double cov[3][3]);
 
-PCA calcPCA(std::vector<Voxel> &voxels);
+PCA calcPCA(const std::vector<Voxel> &voxels);
 
-PCA calcPCA(const std::vector<std::vector<Voxel> *> voxelList);
+PCA calcPCA(const VoxelLists &voxelLists);
 
 
 #endif //GRAPHBASEDSEGMENTATION_PCA_H

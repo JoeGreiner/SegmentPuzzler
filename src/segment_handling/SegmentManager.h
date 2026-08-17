@@ -26,14 +26,13 @@ public:
     SegmentManager(
             std::shared_ptr<GraphBase> graphBaseIn,
             std::unordered_map<dataType::SegmentIdType, std::shared_ptr<InitialNode>> *pInitialNodesIn,
-            std::map<dataType::EdgePairIdType, std::shared_ptr<InitialEdge>> *pInitialTwoSidedEdgesIn,
+            std::map<dataType::EdgePairIdType, std::shared_ptr<TwoSidedInitialEdge>> *pInitialLabelPairToTwoSidedInitialEdgeIn,
             std::unordered_map<dataType::EdgeNumIdType, dataType::EdgePairIdType> *pInitialEdgeIdLookUpIn,
-            std::unordered_map<char, std::vector<unsigned char>> *pColorLookUpEdgesStatusIn,
             std::unordered_map<dataType::MappedEdgeIdType, char> *pEdgeStatusIn,
             dataType::EdgeImageType::Pointer *ppEdgesInitialSegmentsImageIn,
             dataType::SegmentsImageType::Pointer *ppWorkingSegmentsImageIn,
             std::unordered_map<dataType::SegmentIdType, std::shared_ptr<WorkingNode>> *pWorkingNodesIn,
-            std::map<dataType::EdgePairIdType, std::shared_ptr<WorkingEdge>> *pWorkingEdgesIn,
+            std::map<dataType::EdgePairIdType, std::shared_ptr<WorkingEdge>> *pWorkingLabelPairToWorkingEdgeIn,
             std::vector<SegmentIdType> *pIgnoredSegmentLabelsIn,
             SegmentIdType *nextFreeIdIn,
             bool verboseIn = true
@@ -41,15 +40,14 @@ public:
     ) :
             graphBase(graphBaseIn),
             pInitialNodes(pInitialNodesIn),
-            pInitialTwoSidedEdges(pInitialTwoSidedEdgesIn),
+            pInitialLabelPairToTwoSidedInitialEdge(pInitialLabelPairToTwoSidedInitialEdgeIn),
             pInitialEdgeIdLookUp(pInitialEdgeIdLookUpIn),
-            pColorLookUpEdgesStatus(pColorLookUpEdgesStatusIn),
             pEdgeStatus(pEdgeStatusIn),
             ppEdgesInitialSegmentsImage(ppEdgesInitialSegmentsImageIn),
             pIgnoredSegmentLabels(pIgnoredSegmentLabelsIn),
             ppWorkingSegmentsImage(ppWorkingSegmentsImageIn),
             pWorkingNodes(pWorkingNodesIn),
-            pWorkingEdges(pWorkingEdgesIn),
+            pWorkingLabelPairToWorkingEdge(pWorkingLabelPairToWorkingEdgeIn),
             nextFreeId(nextFreeIdIn),
             verbose(verboseIn) {};
 
@@ -80,7 +78,7 @@ public:
     void computeOneSidedEdgesOnAllInitialNodes(int threadCount);
 
 //    void removeOneSidedInitialEdge();
-    void addTwoSidedInitialEdge(std::unique_ptr<InitialEdge> edgeToAdd);
+    void registerTwoSidedInitialEdge(std::unique_ptr<TwoSidedInitialEdge> edgeToRegister);
 
 //    void removeTwoSidedInitialEdge();
     void buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threadCount = 1, bool veryVerbose = false);
@@ -122,9 +120,8 @@ public:
 private:
     // initial nodes & edges
     std::unordered_map<dataType::SegmentIdType, std::shared_ptr<InitialNode>> *pInitialNodes;
-    std::map<dataType::EdgePairIdType, std::shared_ptr<InitialEdge>> *pInitialTwoSidedEdges;
+    std::map<dataType::EdgePairIdType, std::shared_ptr<TwoSidedInitialEdge>> *pInitialLabelPairToTwoSidedInitialEdge;
     std::unordered_map<dataType::EdgeNumIdType, dataType::EdgePairIdType> *pInitialEdgeIdLookUp;
-    std::unordered_map<char, std::vector<unsigned char>> *pColorLookUpEdgesStatus;
     std::unordered_map<dataType::MappedEdgeIdType, char> *pEdgeStatus;
     dataType::EdgeImageType::Pointer *ppEdgesInitialSegmentsImage;
     std::vector<SegmentIdType> *pIgnoredSegmentLabels;
@@ -132,7 +129,7 @@ private:
     // working segments & edges
     dataType::SegmentsImageType::Pointer *ppWorkingSegmentsImage;
     std::unordered_map<dataType::SegmentIdType, std::shared_ptr<WorkingNode>> *pWorkingNodes;
-    std::map<dataType::EdgePairIdType, std::shared_ptr<WorkingEdge>> *pWorkingEdges;
+    std::map<dataType::EdgePairIdType, std::shared_ptr<WorkingEdge>> *pWorkingLabelPairToWorkingEdge;
 
     SegmentIdType *nextFreeId;
     bool verbose;

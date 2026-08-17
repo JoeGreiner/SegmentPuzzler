@@ -5,25 +5,29 @@
 
 #include "src/segment_handling/baseEdge.h"
 #include "graphBase.h"
-#include "initialEdge.h"
+#include "twoSidedInitialEdge.h"
 
 class WorkingEdge : public BaseEdge {
 public:
-    WorkingEdge(const std::shared_ptr<InitialEdge> &initialEdgeToCopy);
+    explicit WorkingEdge(const std::shared_ptr<TwoSidedInitialEdge> &twoSidedInitialEdge);
 
     WorkingEdge(WorkingEdge &workingEdgeToCopy, SegmentIdType labelA, SegmentIdType labelB);
 
-    WorkingEdge(const std::shared_ptr<InitialEdge> &initialEdgeToCopy, SegmentIdType labelA, SegmentIdType labelB);
+    WorkingEdge(
+        const std::shared_ptr<TwoSidedInitialEdge> &twoSidedInitialEdge,
+        SegmentIdType labelA,
+        SegmentIdType labelB);
 
-    std::vector<std::vector<Voxel> const *> getVoxelPointerArray() override;
+    VoxelLists getVoxelLists() const override;
 
     void print(int indentationLevel, std::ostream &outStream) override;
 
 
-    std::vector<std::shared_ptr<InitialEdge>> subInitialEdges;
+    std::vector<std::shared_ptr<TwoSidedInitialEdge>> constituentTwoSidedInitialEdges;
 
     // add a vector of shared ptrs of initial edges through moving
-    void addSubInitialEdges(std::vector<std::shared_ptr<InitialEdge>> subInitialEdgesToAdd);
+    void addConstituentTwoSidedInitialEdges(
+        const std::vector<std::shared_ptr<TwoSidedInitialEdge>> &twoSidedInitialEdgesToAdd);
 };
 
 

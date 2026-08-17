@@ -171,7 +171,7 @@ PCA calcEigenJacobi(double cov[3][3]) {
 }
 
 
-PCA calcPCA(std::vector<Voxel> &voxels) {
+PCA calcPCA(const std::vector<Voxel> &voxels) {
 
     double cov[3][3];
 
@@ -219,7 +219,7 @@ PCA calcPCA(std::vector<Voxel> &voxels) {
     return myPCA;
 }
 
-PCA calcPCA(const std::vector<std::vector<Voxel> *> voxelList) {
+PCA calcPCA(const VoxelLists &voxelLists) {
 
     double cov[3][3];
 
@@ -232,12 +232,12 @@ PCA calcPCA(const std::vector<std::vector<Voxel> *> voxelList) {
 
 
     unsigned long long numberVoxels = 0;
-    for (auto &listEntry : voxelList) {
+    for (const auto *listEntry : voxelLists) {
         numberVoxels += listEntry->size();
     }
 
     double xMean = 0, yMean = 0, zMean = 0;
-    for (auto &listEntry : voxelList) {
+    for (const auto *listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             xMean += voxel.x;
             yMean += voxel.y;
@@ -248,7 +248,7 @@ PCA calcPCA(const std::vector<std::vector<Voxel> *> voxelList) {
     yMean = yMean / numberVoxels;
     zMean = zMean / numberVoxels;
 
-    for (auto &listEntry : voxelList) {
+    for (const auto *listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             cov[0][0] += (voxel.x - xMean) * (voxel.x - xMean);
             cov[0][1] += (voxel.x - xMean) * (voxel.y - yMean);
@@ -274,4 +274,3 @@ PCA calcPCA(const std::vector<std::vector<Voxel> *> voxelList) {
     PCA myPCA = calcEigenJacobi(cov);
     return myPCA;
 }
-

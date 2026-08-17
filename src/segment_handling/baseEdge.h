@@ -14,7 +14,7 @@ public:
     using EdgePairIdType = dataType::EdgePairIdType;
     using EdgeNumIdType = dataType::EdgeNumIdType;
 
-    virtual std::vector<std::vector<Voxel> const *> getVoxelPointerArray() = 0;
+    virtual VoxelLists getVoxelLists() const = 0;
 
     virtual void print(int indentationLevel, std::ostream &outStream) = 0;
 

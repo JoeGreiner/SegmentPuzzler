@@ -18,9 +18,9 @@ struct Feature {
     std::vector<std::string> featureNames;
     std::vector<float> values;
 
-    virtual void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) = 0;
+    virtual void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) = 0;
 
-    virtual void compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned labelB = 0) = 0;
+    virtual void compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned labelB = 0) = 0;
 
     virtual void merge(std::vector<Voxel> &allVoxels,
                        std::vector<float> &valuesA, unsigned long numberElementsA,
@@ -53,10 +53,10 @@ struct MeanSignal : public Feature, GraphBase {
     Feature *createNew() override;
 
     // compute the feature over a given voxel list and save it into value
-    void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
 
     void
-    compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned int labelB = 0) override;
+    compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned int labelB = 0) override;
 
 
     void merge(std::vector<Voxel> &,
@@ -73,10 +73,10 @@ struct NumberOfVoxels : public Feature, GraphBase {
     Feature *createNew() override;
 
     // compute the feature over a given voxel list and save it into value
-    void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
 
     void
-    compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned int labelB = 0) override;
+    compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned int labelB = 0) override;
 
 
     void merge(std::vector<Voxel> &,
@@ -93,9 +93,9 @@ struct PCAValues : public Feature, GraphBase {
     Feature *createNew() override;
 
     // compute the feature over a given voxel list and save it into value
-    void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
 
-    void compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned labelB = 0) override;
 
 
     void merge(std::vector<Voxel> &,
@@ -112,9 +112,9 @@ struct PCARatios : public Feature, GraphBase {
     Feature *createNew() override;
 
     // compute the feature over a given voxel list and save it into value
-    void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
 
-    void compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned labelB = 0) override;
 
 
     void merge(std::vector<Voxel> &,
@@ -131,7 +131,7 @@ struct PCARatios : public Feature, GraphBase {
 //
 //    // compute the feature over a given voxel list and save it into value
 //    void compute(std::vector<Voxel> & voxels, unsigned int labelA=0, unsigned labelB=0) override;
-//    void compute(std::vector<std::vector<Voxel>*> voxelList, unsigned int labelA=0, unsigned labelB=0) override;
+//    void compute(std::vector<std::vector<Voxel>*> voxelLists, unsigned int labelA=0, unsigned labelB=0) override;
 //
 //
 //    void merge(std::vector<Voxel> &,
@@ -162,9 +162,9 @@ struct GeneralStatisticOnProbabilities : public Feature, GraphBase {
     Feature *createNew() override;
 
     // compute the feature over a given voxel list and save it into value
-    void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
 
-    void compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned labelB = 0) override;
 
 
     void merge(std::vector<Voxel> &voxels,
@@ -196,9 +196,9 @@ struct GroundTruthLabel : public Feature, GraphBase {
     Feature *createNew() override;
 
     // compute the feature over a given voxel list and save it into value
-    void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
 
-    void compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned labelB = 0) override;
 
 
     void merge(std::vector<Voxel> &allVoxels,
@@ -223,9 +223,9 @@ struct LabelOverlap : public Feature, GraphBase {
     Feature *createNew() override;
 
     // compute the feature over a given voxel list and save it into value
-    void compute(std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const std::vector<Voxel> &voxels, unsigned int labelA = 0, unsigned labelB = 0) override;
 
-    void compute(std::vector<std::vector<Voxel> *> voxelList, unsigned int labelA = 0, unsigned labelB = 0) override;
+    void compute(const VoxelLists &voxelLists, unsigned int labelA = 0, unsigned labelB = 0) override;
 
 
     void merge(std::vector<Voxel> &allVoxels,

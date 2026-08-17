@@ -384,8 +384,8 @@ int testGraphPreservesMergesAndSplitsWorkingOutput() {
     image->SetPixel({2, 1, 0}, 2);
 
     auto fixture = buildGraphFixture(image);
-    auto edgeIt = fixture.graph->initialTwoSidedEdges.find({1, 2});
-    if (edgeIt == fixture.graph->initialTwoSidedEdges.end()) {
+    auto edgeIt = fixture.graph->initialLabelPairToTwoSidedInitialEdge.find({1, 2});
+    if (edgeIt == fixture.graph->initialLabelPairToTwoSidedInitialEdge.end()) {
         return failTest("Expected an initial edge between labels 1 and 2.");
     }
 
@@ -631,22 +631,25 @@ int testRefinementSynchronizesOverwrittenNodeMetadata() {
         const Graph::EdgePairIdType replacedLocalEdge{1, 2};
         const Graph::EdgePairIdType survivingRemoteEdge{1, 3};
         const Graph::EdgePairIdType newLocalEdge{2, insertedLabel};
-        const auto survivingOneSidedEdge = fixture.graph->initialNodes.at(1)->onesidedEdges.find(3);
+        const auto survivingOneSidedEdge =
+            fixture.graph->initialNodes.at(1)->neighborLabelToOneSidedInitialEdge.find(3);
         const auto newOneSidedEdge =
-            fixture.graph->initialNodes.at(insertedLabel)->onesidedEdges.find(2);
-        if (fixture.graph->initialTwoSidedEdges.count(replacedLocalEdge) != 0 ||
-            fixture.graph->initialTwoSidedEdges.count(survivingRemoteEdge) != 1 ||
-            fixture.graph->initialTwoSidedEdges.count(newLocalEdge) != 1 ||
-            fixture.graph->workingEdges.count(replacedLocalEdge) != 0 ||
-            fixture.graph->workingEdges.count(survivingRemoteEdge) != 1 ||
-            fixture.graph->workingEdges.count(newLocalEdge) != 1 ||
-            fixture.graph->initialNodes.at(1)->onesidedEdges.size() != 1 ||
-            survivingOneSidedEdge == fixture.graph->initialNodes.at(1)->onesidedEdges.end() ||
+            fixture.graph->initialNodes.at(insertedLabel)->neighborLabelToOneSidedInitialEdge.find(2);
+        if (fixture.graph->initialLabelPairToTwoSidedInitialEdge.count(replacedLocalEdge) != 0 ||
+            fixture.graph->initialLabelPairToTwoSidedInitialEdge.count(survivingRemoteEdge) != 1 ||
+            fixture.graph->initialLabelPairToTwoSidedInitialEdge.count(newLocalEdge) != 1 ||
+            fixture.graph->workingLabelPairToWorkingEdge.count(replacedLocalEdge) != 0 ||
+            fixture.graph->workingLabelPairToWorkingEdge.count(survivingRemoteEdge) != 1 ||
+            fixture.graph->workingLabelPairToWorkingEdge.count(newLocalEdge) != 1 ||
+            fixture.graph->initialNodes.at(1)->neighborLabelToOneSidedInitialEdge.size() != 1 ||
+            survivingOneSidedEdge ==
+                fixture.graph->initialNodes.at(1)->neighborLabelToOneSidedInitialEdge.end() ||
             survivingOneSidedEdge->second->voxels != std::vector<Voxel>{Voxel(5, 0, 0)} ||
-            newOneSidedEdge == fixture.graph->initialNodes.at(insertedLabel)->onesidedEdges.end() ||
+            newOneSidedEdge ==
+                fixture.graph->initialNodes.at(insertedLabel)->neighborLabelToOneSidedInitialEdge.end() ||
             newOneSidedEdge->second->voxels != std::vector<Voxel>{Voxel(1, 0, 0)} ||
-            fixture.graph->initialTwoSidedEdges.at(survivingRemoteEdge)->voxels.size() != 2 ||
-            fixture.graph->initialTwoSidedEdges.at(newLocalEdge)->voxels.size() != 2) {
+            fixture.graph->initialLabelPairToTwoSidedInitialEdge.at(survivingRemoteEdge)->getVoxelCount() != 2 ||
+            fixture.graph->initialLabelPairToTwoSidedInitialEdge.at(newLocalEdge)->getVoxelCount() != 2) {
             return failTest(
                 "Refinement must remove the replaced edge and preserve remote and new edges.");
         }
@@ -1143,8 +1146,8 @@ int testNeighborMergeRepairsWorkingNodeSplitByInsertion() {
     workingImage->SetPixel({5, 2, 1}, 3);
 
     auto fixture = buildGraphFixture(workingImage);
-    const auto edge = fixture.graph->initialTwoSidedEdges.find({1, 2});
-    if (edge == fixture.graph->initialTwoSidedEdges.end()) {
+    const auto edge = fixture.graph->initialLabelPairToTwoSidedInitialEdge.find({1, 2});
+    if (edge == fixture.graph->initialLabelPairToTwoSidedInitialEdge.end()) {
         return failTest("Expected an initial edge for the exact merged WorkingNode fixture.");
     }
     fixture.graph->mergeEdge(edge->second.get());
