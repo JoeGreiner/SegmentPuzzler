@@ -165,7 +165,7 @@ private:
     void show3DSegmentView(int posX, int posY);
     bool show3DSplitView(int posX, int posY);
     bool handleWorkingSegmentResolution(const Graph::WorkingSegmentResolution &resolution);
-    void refreshWorkingGraphPresentationAfterInsertion(dataType::SegmentIdType workingLabel);
+    void refreshWorkingGraphPresentationAfterInsertion();
     void show3DAllLabelsView();
     void openPrepared3DView(Segment3DViewerDialog::PreparedScene preparedScene,
                             int launchSliceAxis,

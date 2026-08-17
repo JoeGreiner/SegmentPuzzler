@@ -29,7 +29,7 @@ int main(int argc, char *argv[]) {
     itk::Image<unsigned short, 3>::Pointer pImage = ITKImageLoader<unsigned short>(fileName);
 
     std::unique_ptr<itkSignal<unsigned short>> pSignal2(new itkSignal<unsigned short>(pImage));
-    pSignal2->setLUTCategorical();
+    pSignal2->setCategoricalColorMode();
 
     orthoViewer->addSignal(pSignal2.get());
 

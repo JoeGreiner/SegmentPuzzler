@@ -1331,9 +1331,8 @@ std::vector<std::pair<dataType::SegmentIdType, quint32>> SegmentTableDialog::col
         seenLabels.insert(label);
 
         quint32 color = 0xFFAAAAAA;
-        if (currentTableSegmentationSignal != nullptr
-            && label < static_cast<dataType::SegmentIdType>(currentTableSegmentationSignal->LUT.size())) {
-            color = currentTableSegmentationSignal->LUT[label];
+        if (currentTableSegmentationSignal != nullptr) {
+            color = currentTableSegmentationSignal->colorForLabel(label);
         }
         labels.emplace_back(label, color);
     }
@@ -1385,10 +1384,8 @@ void SegmentTableDialog::requestSingleLabel3D(
     }
 
     quint32 color = 0xFFAAAAAA;
-    const auto colorIndex = static_cast<std::size_t>(labelId);
-    if (currentTableSegmentationSignal != nullptr
-        && colorIndex < currentTableSegmentationSignal->LUT.size()) {
-        color = currentTableSegmentationSignal->LUT[colorIndex];
+    if (currentTableSegmentationSignal != nullptr) {
+        color = currentTableSegmentationSignal->colorForLabel(labelId);
     }
 
     view3DUpdateDialog = dialog;

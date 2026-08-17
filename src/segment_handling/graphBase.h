@@ -6,6 +6,7 @@
 #include <src/viewers/itkSignal.h>
 #include "src/file_definitions/dataTypes.h"
 #include <QString>
+#include <set>
 #include <unordered_map>
 
 
@@ -24,6 +25,9 @@ public:
 
     using BoundaryVoxelType = dataType::BoundaryVoxelType;
     using BoundaryImageType = dataType::BoundaryImageType;
+
+    bool rebuildEdgeColorPresentation();
+    bool updateEdgeColorPresentation(const std::set<MappedEdgeIdType> &changedIds);
 
 
     std::map<std::string, FeatureImageType::Pointer> signalList;
@@ -57,7 +61,7 @@ public:
 
     EdgeImageType::Pointer pEdgesInitialSegmentsImage;
     size_t edgeCounter;
-    std::unordered_map<char, std::vector<unsigned char>> colorLookUpEdgesStatus;
+    std::unordered_map<char, QRgb> colorLookUpEdgesStatus;
 
 //  maps initial edges to their status: 0 = uninformed -2 == do not merge, 2 == do merge
     std::unordered_map<MappedEdgeIdType, char> edgeStatus;

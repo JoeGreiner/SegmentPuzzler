@@ -88,7 +88,7 @@ bool isLabelLayer(const SliceViewerITKSignal *sliceSignal) {
         return false;
     }
     const itkSignalBase *signal = sliceSignal->getSignal();
-    return signal->usesCategoricalLUT() || signal->usesEdgeStatusColors();
+    return signal->usesCategoricalColors() || signal->usesEdgeStatusColors();
 }
 
 } // namespace

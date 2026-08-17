@@ -1905,8 +1905,7 @@ void OrthoViewer::setPaintId(dataType::SegmentIdType paintId) {
     }
 
     auto *signal = graphBase->pSelectedSegmentationSignal;
-    signal->checkAndResizeLUT(paintId);
-    setAnnotationSelection(paintId, QColor::fromRgb(signal->LUT.at(paintId)));
+    setAnnotationSelection(paintId, QColor::fromRgb(signal->colorForLabel(paintId)));
 }
 
 void OrthoViewer::refreshPaintSelectionColor() {

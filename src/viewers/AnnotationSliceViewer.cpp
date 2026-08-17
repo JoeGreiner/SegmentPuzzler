@@ -564,10 +564,6 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         if (orthoViewer() != nullptr) {
             orthoViewer()->flashShortcutLegendKey("r");
         }
-        if (graphBase->pSelectedSegmentationSignal != nullptr) {
-            graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
-        }
-
         std::unordered_set<itkSignalBase *> randomizedSignals;
         for (auto *sliceSignal : signalList) {
             if (sliceSignal == nullptr) {
@@ -579,7 +575,7 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
                 continue;
             }
 
-            signal->randomizeCategoricalLUT();
+            signal->randomizeCategoricalPalette();
         }
 
         for (auto *viewer : linkedViewerList) {
@@ -589,11 +585,9 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
             if (auto *viewer = orthoViewer(); viewer != nullptr) {
                 viewer->refreshPaintSelectionColor();
             }
-        } else if (paintBoundaryModeIsActive && pThresholdedBoundariesSignal != nullptr &&
-                   labelOfClickedSegmentation < static_cast<dataType::SegmentIdType>(
-                       pThresholdedBoundariesSignal->LUT.size())) {
+        } else if (paintBoundaryModeIsActive && pThresholdedBoundariesSignal != nullptr) {
             const QColor selectedColor = QColor::fromRgb(
-                pThresholdedBoundariesSignal->LUT[labelOfClickedSegmentation]);
+                pThresholdedBoundariesSignal->colorForLabel(labelOfClickedSegmentation));
             if (auto *viewer = orthoViewer(); viewer != nullptr) {
                 viewer->setAnnotationSelection(labelOfClickedSegmentation, selectedColor);
             } else {
@@ -712,9 +706,8 @@ void AnnotationSliceViewer::requestSingleLabel3D(
     }
 
     quint32 color = 0xFFAAAAAA;
-    if (const auto *signal = active3DViewSignal(); signal != nullptr
-        && labelId < static_cast<dataType::SegmentIdType>(signal->LUT.size())) {
-        color = signal->LUT[labelId];
+    if (const auto *signal = active3DViewSignal(); signal != nullptr) {
+        color = signal->colorForLabel(labelId);
     }
 
     const QPointer<Segment3DViewerDialog> guardedDialog(dialog);
@@ -808,9 +801,8 @@ void AnnotationSliceViewer::show3DSegmentView(int posX, int posY) {
 
     quint32 lutColor = 0xFFAAAAAA;
     auto *activeSignal = active3DViewSignal();
-    if (activeSignal != nullptr &&
-        label < static_cast<dataType::SegmentIdType>(activeSignal->LUT.size())) {
-        lutColor = activeSignal->LUT[label];
+    if (activeSignal != nullptr) {
+        lutColor = activeSignal->colorForLabel(label);
     }
 
     showPrepared3DView(
@@ -819,14 +811,9 @@ void AnnotationSliceViewer::show3DSegmentView(int posX, int posY) {
         sliceAxis);
 }
 
-void AnnotationSliceViewer::refreshWorkingGraphPresentationAfterInsertion(
-    dataType::SegmentIdType workingLabel)
-{
-    if (graphBase != nullptr && graphBase->pWorkingSegments != nullptr) {
-        graphBase->pWorkingSegments->checkAndResizeLUT(workingLabel);
-    }
-    if (graphBase != nullptr && graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
-        graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+void AnnotationSliceViewer::refreshWorkingGraphPresentationAfterInsertion() {
+    if (graphBase != nullptr) {
+        graphBase->rebuildEdgeColorPresentation();
     }
     if (orthoViewer() != nullptr) {
         orthoViewer()->refreshViewers();
@@ -841,7 +828,7 @@ bool AnnotationSliceViewer::handleWorkingSegmentResolution(
     case Status::ReusedExisting:
         return true;
     case Status::Inserted:
-        refreshWorkingGraphPresentationAfterInsertion(resolution.workingLabel);
+        refreshWorkingGraphPresentationAfterInsertion();
         return true;
     case Status::NeedsInsertion:
         sendStatusMessage(QStringLiteral("The selected segment must be inserted into the working graph first."));
@@ -893,10 +880,8 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
     }
 
     quint32 color = 0xFFAAAAAA;
-    if (graphBase->pSelectedSegmentationSignal != nullptr
-        && selectedLabel < static_cast<dataType::SegmentIdType>(
-                               graphBase->pSelectedSegmentationSignal->LUT.size())) {
-        color = graphBase->pSelectedSegmentationSignal->LUT[selectedLabel];
+    if (graphBase->pSelectedSegmentationSignal != nullptr) {
+        color = graphBase->pSelectedSegmentationSignal->colorForLabel(selectedLabel);
     }
     Graph *const graph = graphBase->pGraph;
     const auto graphState = graphBase;
@@ -1001,14 +986,9 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                 && graphBase->pSelectedSegmentation == selectedImage) {
                 graphBase->selectedSegmentationMaxSegmentId =
                     prepared.componentSplitStats.maxLabel;
-                if (graphBase->pSelectedSegmentationSignal != nullptr) {
-                    graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(
-                        graphBase->selectedSegmentationMaxSegmentId);
-                }
                 using Status = Graph::WorkingSegmentResolution::Status;
                 if (prepared.workingResolution.status == Status::Inserted) {
-                    refreshWorkingGraphPresentationAfterInsertion(
-                        prepared.workingResolution.workingLabel);
+                    refreshWorkingGraphPresentationAfterInsertion();
                 } else if (prepared.componentSplitStats.changed()
                            && orthoViewer() != nullptr) {
                     orthoViewer()->refreshViewers();
@@ -1192,25 +1172,14 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                     return;
                 }
                 if (graphBase != nullptr && graphBase->pGraph == graph) {
-                    if (graphBase->pWorkingSegments != nullptr
-                        && graphBase->pWorkingSegmentsImage != nullptr) {
-                        graphBase->pWorkingSegments->checkAndResizeLUT(
-                            graph->getLargestIdInSegmentVolume(
-                                graphBase->pWorkingSegmentsImage));
-                    }
                     if (graphBase->pSelectedSegmentation != nullptr) {
                         graphBase->selectedSegmentationMaxSegmentId =
                             graph->getLargestIdInSegmentVolume(
                                 graphBase->pSelectedSegmentation);
-                        if (graphBase->pSelectedSegmentationSignal != nullptr) {
-                            graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(
-                                graphBase->selectedSegmentationMaxSegmentId);
-                        }
                     }
                 }
-                if (graphBase != nullptr
-                    && graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
-                    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+                if (graphBase != nullptr) {
+                    graphBase->rebuildEdgeColorPresentation();
                 }
                 if (orthoViewer() != nullptr) {
                     orthoViewer()->refreshViewers();
@@ -1238,9 +1207,9 @@ void AnnotationSliceViewer::show3DAllLabelsView() {
         return;
     }
 
-    std::vector<quint32> labelColors;
+    LabelColorSnapshot labelColors;
     if (const auto *activeSignal = active3DViewSignal(); activeSignal != nullptr) {
-        labelColors = activeSignal->LUT;
+        labelColors = activeSignal->labelColorSnapshot();
     }
 
     if (taskRunner == nullptr) {
@@ -1427,7 +1396,7 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
     if (taskRunner == nullptr) {
         const auto insertedLabel = graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z);
         if (insertedLabel.has_value()) {
-            refreshWorkingGraphPresentationAfterInsertion(insertedLabel.value());
+            refreshWorkingGraphPresentationAfterInsertion();
         }
         return;
     }
@@ -1437,7 +1406,7 @@ void AnnotationSliceViewer::runInsertSegmentationSegmentIntoInitialSegments(int 
         [this, x, y, z]() { return graphBase->pGraph->transferSegmentationSegmentToInitialSegment(x, y, z); },
         [this](std::optional<dataType::SegmentIdType> insertedLabel) {
             if (insertedLabel.has_value()) {
-                refreshWorkingGraphPresentationAfterInsertion(insertedLabel.value());
+                refreshWorkingGraphPresentationAfterInsertion();
             }
         });
 }
@@ -1876,7 +1845,7 @@ void AnnotationSliceViewer::refineSegmentByPosition(int posX, int posY) {
     taskRunner->run(
         [this, x, y, z]() { graphBase->pGraph->refineWithSelectedRefinementAtPosition(x, y, z); },
         [this]() {
-            graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+            graphBase->rebuildEdgeColorPresentation();
             orthoViewer()->refreshViewers();
         });
 }
@@ -1890,7 +1859,7 @@ void AnnotationSliceViewer::splitWorkingNodeIntoInitialNodes(int posX, int posY)
                     .arg(y)
                     .arg(z));
     graphBase->pGraph->splitWorkingNodeIntoInitialNodes(x, y, z);
-    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    graphBase->rebuildEdgeColorPresentation();
     orthoViewer()->refreshViewers();
 }
 
@@ -1904,7 +1873,7 @@ void AnnotationSliceViewer::removeInitialSegmentFromWorkingSegmentAtClick(int po
                     .arg(z));
     graphBase->pGraph->removeInitialNodeFromWorkingNodeAtPosition(x, y, z);
 
-    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    graphBase->rebuildEdgeColorPresentation();
     orthoViewer()->refreshViewers();
 }
 
@@ -2252,15 +2221,12 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                     graphBase->edgeStatus[annotatedEdgeId] = -2;
                 }
 
-                // Todo: Update LUT calculation for Edges
-                // only update if changes were done
                 if (!annotatedEdgeNumIdsToMerge.empty() || !annotatedEdgeNumIdsToUnmerge.empty()) {
-                    if (!annotatedEdgeNumIdsToMerge.empty()) {
-                        graphBase->pEdgesInitialSegmentsITKSignal->updateLUTEdge(annotatedEdgeNumIdsToMerge);
-                    }
-                    if (!annotatedEdgeNumIdsToUnmerge.empty()) {
-                        graphBase->pEdgesInitialSegmentsITKSignal->updateLUTEdge(annotatedEdgeNumIdsToUnmerge);
-                    }
+                    std::set<unsigned int> changedEdgeNumIds = annotatedEdgeNumIdsToMerge;
+                    changedEdgeNumIds.insert(
+                        annotatedEdgeNumIdsToUnmerge.begin(),
+                        annotatedEdgeNumIdsToUnmerge.end());
+                    graphBase->updateEdgeColorPresentation(changedEdgeNumIds);
 
                     for (auto *viewer : linkedViewerList) {
                         viewer->recalculateQImages();
@@ -2369,12 +2335,8 @@ void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
             int xWorld, yWorld, zWorld;
             getXYZfromPixmapPos(x, y, xWorld, yWorld, zWorld);
             const auto selectedLabel = graphBase->pSelectedSegmentation->GetPixel({xWorld, yWorld, zWorld});
-            if (selectedLabel >=
-                static_cast<dataType::SegmentIdType>(graphBase->pSelectedSegmentationSignal->LUT.size())) {
-                return;
-            }
             const QColor selectedColor = QColor::fromRgb(
-                graphBase->pSelectedSegmentationSignal->LUT[selectedLabel]);
+                graphBase->pSelectedSegmentationSignal->colorForLabel(selectedLabel));
             if (auto *viewer = orthoViewer(); viewer != nullptr) {
                 viewer->setAnnotationSelection(selectedLabel, selectedColor);
             } else {
@@ -2386,12 +2348,8 @@ void AnnotationSliceViewer::getSegmentationLabelIdAtCursor(int x, int y) {
             int xWorld, yWorld, zWorld;
             getXYZfromPixmapPos(x, y, xWorld, yWorld, zWorld);
             const auto selectedLabel = pThresholdedBoundaries->GetPixel({xWorld, yWorld, zWorld});
-            if (selectedLabel >=
-                static_cast<dataType::SegmentIdType>(pThresholdedBoundariesSignal->LUT.size())) {
-                return;
-            }
             const QColor selectedColor = QColor::fromRgb(
-                pThresholdedBoundariesSignal->LUT[selectedLabel]);
+                pThresholdedBoundariesSignal->colorForLabel(selectedLabel));
             if (auto *viewer = orthoViewer(); viewer != nullptr) {
                 viewer->setAnnotationSelection(selectedLabel, selectedColor);
             } else {

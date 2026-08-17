@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,6 +21,7 @@
 #include <vtkPolyDataMapper.h>
 
 #include "src/viewers/Segment3DViewerDialog.h"
+#include "src/viewers/itkSignalBase.h"
 #include "projected_3d_cut_sample_utils.h"
 
 namespace {
@@ -31,6 +33,7 @@ struct ProgramOptions {
     QString segmentsPath;
     int viewportSize = 1024;
     double strokeWidthPixels = 6.0;
+    bool sceneOnly = false;
 };
 
 int failTest(const std::string &message) {
@@ -47,9 +50,11 @@ bool parseArgs(int argc, char **argv, ProgramOptions &options) {
             options.viewportSize = std::max(128, QString::fromLocal8Bit(argv[++index]).toInt());
         } else if (arg == "--stroke-width" && index + 1 < argc) {
             options.strokeWidthPixels = std::max(1.0, QString::fromLocal8Bit(argv[++index]).toDouble());
+        } else if (arg == "--scene-only") {
+            options.sceneOnly = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0]
-                      << " [--segments PATH] [--viewport N] [--stroke-width PX]\n";
+                      << " [--segments PATH] [--viewport N] [--stroke-width PX] [--scene-only]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg.toStdString() << "\n";
@@ -296,10 +301,14 @@ dataType::SegmentsImageType::Pointer makeSmallSegmentsImage(bool includeSecondLa
 int testAllLabelsSceneUsesSegmentMeshes() {
     constexpr quint32 red = 0xFF0000;
     constexpr quint32 green = 0x00FF00;
-    const std::vector<quint32> colors{0, red, green};
+    auto overrides = std::make_shared<LabelColorSnapshot::ColorMap>();
+    overrides->emplace(1, red);
+    overrides->emplace(2, green);
+    LabelColorSnapshot labelColors;
+    labelColors.overrides = std::move(overrides);
 
     auto scene = Segment3DViewerDialog::prepareAllLabelsScene(
-        makeSmallSegmentsImage(true), colors);
+        makeSmallSegmentsImage(true), labelColors);
     if (scene.targetLabelId != 0 || scene.meshes.size() != 2) {
         return failTest("All-label scene did not produce one mesh per label.");
     }
@@ -323,7 +332,7 @@ int testAllLabelsSceneUsesSegmentMeshes() {
     }
 
     auto singleLabelScene = Segment3DViewerDialog::prepareAllLabelsScene(
-        makeSmallSegmentsImage(false), colors);
+        makeSmallSegmentsImage(false), labelColors);
     if (singleLabelScene.targetLabelId != 0
         || singleLabelScene.meshes.size() != 1
         || singleLabelScene.meshes.front().labelId != 1) {
@@ -410,6 +419,11 @@ int main(int argc, char **argv) {
     if (const int allLabelsTestResult = testAllLabelsSceneUsesSegmentMeshes();
         allLabelsTestResult != 0) {
         return allLabelsTestResult;
+    }
+
+    if (options.sceneOnly) {
+        std::cout << "Projected 3D scene tests passed\n";
+        return 0;
     }
 
     if (!QFileInfo::exists(options.segmentsPath)) {

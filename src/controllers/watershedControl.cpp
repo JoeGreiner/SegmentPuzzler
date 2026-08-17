@@ -325,7 +325,7 @@ QString layerToolTipText(itkSignalBase *signal) {
     QString toolTip = QString("Type: %1").arg(signal->getDisplayDataTypeName());
     if (signal->usesEdgeStatusColors()) {
         toolTip += "\nEdge colors are fixed: white, red, green.";
-    } else if (signal->usesCategoricalLUT()) {
+    } else if (signal->usesCategoricalColors()) {
         toolTip += "\nClick the heart to switch between filled segments and boundaries.";
     } else {
         toolTip += "\nClick the heart to change the display color.";
@@ -686,7 +686,7 @@ void WatershedControl::refreshLayerWidget(QTreeWidget *treeWidget, QTreeWidgetIt
     SignalLayerWidget::Presentation presentation;
     presentation.layerName = name;
     presentation.layerColor = QColor::fromRgba(signal->getColor());
-    presentation.usesCategoricalPalette = signal->usesCategoricalLUT();
+    presentation.usesCategoricalPalette = signal->usesCategoricalColors();
     presentation.usesEdgeStatusColors = signal->usesEdgeStatusColors();
     presentation.showsLabelBoundaries =
         signal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries;
@@ -1529,11 +1529,11 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
     raw->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     raw->setupTreeWidget(signalTreeWidget, idx);
     if (categorical) {
-        raw->setLUTCategorical();
+        raw->setCategoricalColorMode();
     } else {
         segment_puzzler::image_normalization::configureContinuousDisplay(raw);
     }
-    if (transparentZero) raw->setLUTValueToTransparent(0);
+    if (transparentZero) raw->setValueColorToTransparent(0);
     attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(raw);
     
@@ -2765,7 +2765,7 @@ void WatershedControl::treeClicked(QTreeWidgetItem *item, int) {
 void WatershedControl::setUserColor(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
     itkSignalBase *signal = allSignalList[signalIndex];
-    if (signal->usesCategoricalLUT()) {
+    if (signal->usesCategoricalColors()) {
         const auto nextMode =
             signal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Filled
                 ? itkSignalBase::LabelRenderMode::Boundaries
@@ -2940,7 +2940,7 @@ void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *
     graphBase->pWorkingSegments = itkSignalSegmentsGraph;
     graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
     if (!graphBase->ignoredSegmentLabels.empty()) {
-        segmentsSignal->setLUTValueToTransparent(graphBase->ignoredSegmentLabels.front());
+        segmentsSignal->setValueColorToTransparent(graphBase->ignoredSegmentLabels.front());
     }
 
     const size_t edgeSignalIndex = allSignalList.size();
@@ -2949,7 +2949,7 @@ void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *
     registeredEdgeSignalIndex = static_cast<int>(edgeSignalIndex);
     allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
     graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, edgeSignalIndex);
-    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    graphBase->rebuildEdgeColorPresentation();
     graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
     attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);

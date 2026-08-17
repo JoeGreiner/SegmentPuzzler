@@ -99,7 +99,6 @@ public:
     bool isOverlayOnlyMode() const { return overlayOnlyMode; }
 
 
-//    void recalculateLUT();
     virtual void recalculateQImages();
 
     virtual void resetQImages();

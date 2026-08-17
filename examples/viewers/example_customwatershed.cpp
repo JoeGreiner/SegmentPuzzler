@@ -30,7 +30,7 @@ int main(int argc, char *argv[]) {
     ImageType::Pointer pImage = ITKImageLoader<short>(fileName);
 
     std::unique_ptr<itkSignal<short>> pSignal2(new itkSignal<short>(pImage));
-    pSignal2->setLUTCategorical();
+    pSignal2->setCategoricalColorMode();
 
     orthoViewer->addSignal(pSignal2.get());
 
@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
     myMainWindow2->setCentralWidget(orthoViewer2);
 
     std::unique_ptr<itkSignal<short>> pSignal3(new itkSignal<short>(pCroppedImage));
-    pSignal3->setLUTCategorical();
+    pSignal3->setCategoricalColorMode();
 
     orthoViewer2->addSignal(pSignal3.get());
 

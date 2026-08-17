@@ -4,8 +4,13 @@
 #include <itkImage.h>
 #include <itkImageBase.h>
 #include <QRgb>
+#include <QColor>
+#include <atomic>
 #include <vector>
 #include <map>
+#include <memory>
+#include <cstdint>
+#include <set>
 #include <unordered_map>
 #include <stdexcept>
 #include <QTreeWidget>
@@ -110,6 +115,137 @@ inline RegionType makeSliceRegion(unsigned int sliceIndex,
 } // namespace slice_geometry
 
 
+class EdgeColorTable {
+public:
+    using LabelKey = std::uint64_t;
+    using ColorMap = std::unordered_map<LabelKey, QRgb>;
+
+    EdgeColorTable() = default;
+
+    explicit EdgeColorTable(ColorMap colors) {
+        atomicColors.reserve(colors.size());
+        for (const auto &[label, color] : colors) {
+            atomicColors.try_emplace(label, color);
+        }
+    }
+
+    bool contains(LabelKey label) const noexcept {
+        return atomicColors.find(label) != atomicColors.end();
+    }
+
+    bool colorForLabel(LabelKey label, QRgb &color) const noexcept {
+        const auto entry = atomicColors.find(label);
+        if (entry == atomicColors.end()) {
+            return false;
+        }
+        color = entry->second.load();
+        return true;
+    }
+
+    bool updateColor(LabelKey label, QRgb color) const noexcept {
+        const auto entry = atomicColors.find(label);
+        if (entry == atomicColors.end()) {
+            return false;
+        }
+        entry->second.store(color);
+        return true;
+    }
+
+    std::size_t size() const noexcept {
+        return atomicColors.size();
+    }
+
+private:
+    class AtomicColor {
+    public:
+        explicit AtomicColor(QRgb color) noexcept : value(color) {}
+
+        QRgb load() const noexcept {
+            return value.load(std::memory_order_relaxed);
+        }
+
+        void store(QRgb color) const noexcept {
+            value.store(color, std::memory_order_relaxed);
+        }
+
+    private:
+        mutable std::atomic<QRgb> value;
+    };
+
+    std::unordered_map<LabelKey, AtomicColor> atomicColors;
+};
+
+
+class LabelColorSnapshot {
+public:
+    enum class Mode {
+        Categorical,
+        Edge
+    };
+
+    using LabelKey = EdgeColorTable::LabelKey;
+    using ColorMap = EdgeColorTable::ColorMap;
+
+    static constexpr std::uint64_t DefaultPaletteSeed = 0x6a09e667f3bcc909ULL;
+
+    Mode mode = Mode::Categorical;
+    std::uint64_t paletteSeed = DefaultPaletteSeed;
+    unsigned char alpha = 150;
+    std::shared_ptr<const EdgeColorTable> edgeColors = std::make_shared<const EdgeColorTable>();
+    std::shared_ptr<const ColorMap> overrides = std::make_shared<const ColorMap>();
+
+    QRgb colorForLabel(LabelKey label) const noexcept {
+        if (overrides != nullptr && !overrides->empty()) {
+            const auto overrideColor = overrides->find(label);
+            if (overrideColor != overrides->end()) {
+                return overrideColor->second;
+            }
+        }
+        if (mode == Mode::Edge) {
+            QRgb edgeColor = 0;
+            if (edgeColors != nullptr && edgeColors->colorForLabel(label, edgeColor)) {
+                if (edgeColor != 0) {
+                    return qRgba(qRed(edgeColor),
+                                 qGreen(edgeColor),
+                                 qBlue(edgeColor),
+                                 alpha);
+                }
+            }
+            return qRgba(0, 0, 0, 0);
+        }
+
+        const std::uint64_t mixed = splitMix64(label ^ paletteSeed);
+        const unsigned int hue = static_cast<unsigned int>(mixed % 360ULL);
+        const unsigned int saturation = 176U + static_cast<unsigned int>((mixed >> 9U) % 80ULL);
+        const unsigned int value = 192U + static_cast<unsigned int>((mixed >> 17U) % 64ULL);
+        const unsigned int sector = hue / 60U;
+        const unsigned int fraction = ((hue % 60U) * 255U) / 60U;
+        const unsigned int low = (value * (255U - saturation)) / 255U;
+        const unsigned int falling =
+            (value * (255U - (saturation * fraction) / 255U)) / 255U;
+        const unsigned int rising =
+            (value * (255U - (saturation * (255U - fraction)) / 255U)) / 255U;
+
+        switch (sector) {
+            case 0: return qRgba(value, rising, low, alpha);
+            case 1: return qRgba(falling, value, low, alpha);
+            case 2: return qRgba(low, value, rising, alpha);
+            case 3: return qRgba(low, falling, value, alpha);
+            case 4: return qRgba(rising, low, value, alpha);
+            default: return qRgba(value, low, falling, alpha);
+        }
+    }
+
+private:
+    static std::uint64_t splitMix64(std::uint64_t value) noexcept {
+        value += 0x9e3779b97f4a7c15ULL;
+        value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+        return value ^ (value >> 31U);
+    }
+};
+
+
 // abstract class for viewers of itk signals
 class itkSignalBase {
 
@@ -142,15 +278,20 @@ public:
 
     virtual void calculateImageSize() = 0;
 
-    virtual void calculateLUT() = 0;
+    virtual QRgb colorForLabel(std::uint64_t label) const = 0;
 
-    virtual void calculateLUTContinuous(long long dTypeMax) = 0;
+    virtual LabelColorSnapshot labelColorSnapshot() const = 0;
 
-    virtual void calculateLUTCategorical(long long dTypeMax, size_t startIndex = 0) = 0;
+    virtual void setEdgeColorMode() = 0;
 
-    virtual void calculateLUTEdge(long long dTypeMax) = 0;
+    virtual void rebuildEdgeColorTable(
+        const std::unordered_map<unsigned int, char> &labelToStatus,
+        const std::unordered_map<char, QRgb> &statusToColor) = 0;
 
-    virtual void updateLUTEdge(std::set<unsigned int> labelsWithStatusUpdate) = 0;
+    virtual bool updateEdgeColorTable(
+        const std::set<unsigned int> &changedLabels,
+        const std::unordered_map<unsigned int, char> &labelToStatus,
+        const std::unordered_map<char, QRgb> &statusToColor) = 0;
 
     virtual void setNorm(double lower, double upper) = 0;
 
@@ -167,18 +308,15 @@ public:
 
     virtual void setAlpha(unsigned char alphaIn) = 0;
 
-    virtual void setLUTContinuous() = 0;
+    virtual void setContinuousColorMode() = 0;
 
-    virtual void setLUTCategorical() = 0;
+    virtual void setCategoricalColorMode() = 0;
 
-    virtual void setLUTEdgeMap(std::unordered_map<unsigned int, char> *labelToStatus,
-                               std::unordered_map<char, std::vector<unsigned char>> *statusToColor) = 0;
+    virtual void setValueColorToBlack(std::uint64_t value) = 0;
 
-    virtual void setLUTValueToBlack(unsigned int value) = 0;
+    virtual void setValueColorToTransparent(std::uint64_t value) = 0;
 
-    virtual void setLUTValueToTransparent(unsigned int value) = 0;
-
-    virtual void randomizeCategoricalLUT() = 0;
+    virtual void randomizeCategoricalPalette() = 0;
 
     virtual void setIsActive(bool isActiveIn) = 0;
 
@@ -205,7 +343,7 @@ public:
 
     virtual bool supportsNormControl() const = 0;
 
-    virtual bool usesCategoricalLUT() const = 0;
+    virtual bool usesCategoricalColors() const = 0;
 
     virtual bool usesEdgeStatusColors() const = 0;
 
@@ -226,7 +364,6 @@ public:
             return;
         }
         blendMode = blendModeIn;
-        calculateLUT();
     }
 
     LabelRenderMode getLabelRenderMode() const {
@@ -248,9 +385,6 @@ public:
 //    virtual void isContinuous() = 0;
 
     virtual void setName(QString name) = 0;
-
-    // holds LUTs for all char continuous data
-    std::vector<quint32> LUT;
 
     QString name;
     QString sourceFilePath;

@@ -1,4 +1,5 @@
 #include "Segment3DViewerDialog.h"
+#include "src/viewers/itkSignalBase.h"
 
 #include <QAbstractSlider>
 #include <QApplication>
@@ -1681,7 +1682,7 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScene(
     dataType::SegmentsImageType::Pointer segImage,
-    std::vector<quint32> labelColors)
+    LabelColorSnapshot labelColors)
 {
     if (segImage == nullptr) {
         return {};
@@ -1703,9 +1704,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
     std::vector<LabelWithColor> labels;
     labels.reserve(scan.labels.size());
     for (const auto labelId : scan.labels) {
-        const auto colorIndex = static_cast<std::size_t>(labelId);
-        const quint32 color = colorIndex < labelColors.size() ? labelColors[colorIndex] : 0xFFAAAAAA;
-        labels.emplace_back(labelId, color);
+        labels.emplace_back(labelId, labelColors.colorForLabel(labelId));
     }
 
     Roi bounds;

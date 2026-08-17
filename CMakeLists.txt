@@ -454,6 +454,9 @@ if (BUILD_TESTING)
     add_executable(profile_Projected3DCut examples/viewers/profile_projected_3d_cut.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_Projected3DCut examples/viewers/test_projected_3d_cut.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_SliceViewer examples/viewers/example_sliceviewer.cpp ${SRC_CORRECT_ORDER})
+    add_executable(test_ITKSignalColorLookup
+            examples/viewers/test_itk_signal_color_lookup.cpp
+            src/utils/AppLogger.cpp)
     add_executable(test_OrthoViewer examples/viewers/example_orthoviewer.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_OrthoViewerZoom examples/viewers/test_ortho_viewer_zoom.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_ConnectedComponentSplit examples/viewers/test_connected_component_split.cpp ${SRC_CORRECT_ORDER})
@@ -489,6 +492,11 @@ if (BUILD_TESTING)
     target_link_libraries(profile_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_Projected3DCut ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_SliceViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    target_include_directories(test_ITKSignalColorLookup PRIVATE ${CMAKE_SOURCE_DIR})
+    set_target_properties(test_ITKSignalColorLookup PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_ITKSignalColorLookup
+            ${SEGMENT_PUZZLER_ITK_LIBRARIES}
+            ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES})
     target_link_libraries(test_OrthoViewer ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_OrthoViewerZoom ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     target_link_libraries(test_ConnectedComponentSplit ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
@@ -518,6 +526,7 @@ if (BUILD_TESTING)
         target_compile_definitions(profile_Projected3DCut PRIVATE USE_OMP)
         target_compile_definitions(test_Projected3DCut PRIVATE USE_OMP)
         target_compile_definitions(test_SliceViewer PRIVATE USE_OMP)
+        target_compile_definitions(test_ITKSignalColorLookup PRIVATE USE_OMP)
         target_compile_definitions(test_OrthoViewer PRIVATE USE_OMP)
         target_compile_definitions(test_OrthoViewerZoom PRIVATE USE_OMP)
         target_compile_definitions(test_ConnectedComponentSplit PRIVATE USE_OMP)
@@ -531,6 +540,7 @@ if (BUILD_TESTING)
         target_link_libraries(profile_Projected3DCut OpenMP::OpenMP_CXX)
         target_link_libraries(test_Projected3DCut OpenMP::OpenMP_CXX)
         target_link_libraries(test_SliceViewer OpenMP::OpenMP_CXX)
+        target_link_libraries(test_ITKSignalColorLookup OpenMP::OpenMP_CXX)
         target_link_libraries(test_OrthoViewer OpenMP::OpenMP_CXX)
         target_link_libraries(test_OrthoViewerZoom OpenMP::OpenMP_CXX)
         target_link_libraries(test_ConnectedComponentSplit OpenMP::OpenMP_CXX)
@@ -572,6 +582,20 @@ if (BUILD_BENCHMARKS)
             ${SRC_WATERSHED_HELPER_DEPS})
     configure_benchmark_target(benchmark_distance_map)
     configure_perfetto_target(benchmark_distance_map)
+
+    add_executable(benchmark_ITKSignalColorLookup
+            examples/benchmarks/benchmark_itk_signal_color_lookup.cpp
+            src/utils/AppLogger.cpp)
+    target_include_directories(benchmark_ITKSignalColorLookup PRIVATE ${CMAKE_SOURCE_DIR})
+    set_target_properties(benchmark_ITKSignalColorLookup PROPERTIES
+            AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(benchmark_ITKSignalColorLookup
+            ${SEGMENT_PUZZLER_ITK_LIBRARIES}
+            ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES})
+    if (USE_OMP)
+        target_compile_definitions(benchmark_ITKSignalColorLookup PRIVATE USE_OMP)
+        target_link_libraries(benchmark_ITKSignalColorLookup OpenMP::OpenMP_CXX)
+    endif ()
 
     add_executable(cli_threshold_boundaries
             examples/benchmarks/cli_threshold_boundaries.cpp

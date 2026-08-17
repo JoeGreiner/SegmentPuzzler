@@ -605,7 +605,7 @@ QString layerToolTipText(itkSignalBase *signal) {
     QString toolTip = QString("Type: %1").arg(signal->getDisplayDataTypeName());
     if (signal->usesEdgeStatusColors()) {
         toolTip += "\nEdge colors are fixed: white, red, green.";
-    } else if (signal->usesCategoricalLUT()) {
+    } else if (signal->usesCategoricalColors()) {
         toolTip += "\nClick the heart to switch between filled segments and boundaries.";
     } else {
         toolTip += "\nClick the heart to change the display color.";
@@ -1133,7 +1133,7 @@ void SignalControl::refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item)
     SignalLayerWidget::Presentation presentation;
     presentation.layerName = name;
     presentation.layerColor = QColor::fromRgba(signal->getColor());
-    presentation.usesCategoricalPalette = signal->usesCategoricalLUT();
+    presentation.usesCategoricalPalette = signal->usesCategoricalColors();
     presentation.usesEdgeStatusColors = signal->usesEdgeStatusColors();
     presentation.showsLabelBoundaries =
         signal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries;
@@ -1935,9 +1935,9 @@ void SignalControl::registerImageSignal(
 }
 
 void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const QString &name) {
-    allSignalList[signalIndexGlobal]->setLUTCategorical();
+    allSignalList[signalIndexGlobal]->setCategoricalColorMode();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
-    allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
+    allSignalList[signalIndexGlobal]->setValueColorToTransparent(0);
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(true);
     attachLayerWidgetToLastItem(segmentationTreeWidget);
@@ -1963,7 +1963,7 @@ void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QStri
 }
 
 void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QString &name) {
-    allSignalList[signalIndexGlobal]->setLUTCategorical();
+    allSignalList[signalIndexGlobal]->setCategoricalColorMode();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(false);
@@ -1978,7 +1978,7 @@ void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QSt
 void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume) {
     segmentsGraph = allSignalList[signalIndexGlobal];
     auto *typedSegmentsSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(segmentsGraph);
-    allSignalList[signalIndexGlobal]->setLUTCategorical();
+    allSignalList[signalIndexGlobal]->setCategoricalColorMode();
     allSignalList[signalIndexGlobal]->setName(
         signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Supervoxels")));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
@@ -1987,7 +1987,7 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     graphBase->pWorkingSegments = typedSegmentsSignal;
     graphBase->pWorkingSegmentsImage = typedSegmentsSignal->pImage;
 
-    allSignalList[signalIndexGlobal]->setLUTValueToTransparent(graphBase->ignoredSegmentLabels.front());
+    allSignalList[signalIndexGlobal]->setValueColorToTransparent(graphBase->ignoredSegmentLabels.front());
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
 
     const size_t edgeSignalIndex = allSignalList.size();
@@ -1995,7 +1995,7 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
         signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Edges")));
     allSignalList.push_back(graphBase->pEdgesInitialSegmentsITKSignal);
     graphBase->pEdgesInitialSegmentsITKSignal->setupTreeWidget(signalTreeWidget, edgeSignalIndex);
-    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
+    graphBase->rebuildEdgeColorPresentation();
     graphBase->pEdgesInitialSegmentsITKSignal->setIsActive(false);
     attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(graphBase->pEdgesInitialSegmentsITKSignal);
@@ -3031,7 +3031,7 @@ void SignalControl::setTransparentLabelIdInRefinement() {
                                         0,
                                         0);
     SP_LOG_INFO("segmentation", QStringLiteral("Setting refinement label %1 to transparent").arg(inputVal));
-    graphBase->pSelectedRefinementSignal->setLUTValueToTransparent(inputVal);
+    graphBase->pSelectedRefinementSignal->setValueColorToTransparent(inputVal);
     refreshViewers();
 }
 
@@ -3045,7 +3045,7 @@ void SignalControl::segmentationClicked(QTreeWidgetItem *item, int index) {
 void SignalControl::setUserColor(QTreeWidgetItem *item) {
     const size_t signalIndex = signalIndexForItem(item);
     itkSignalBase *signal = allSignalList[signalIndex];
-    if (signal->usesCategoricalLUT()) {
+    if (signal->usesCategoricalColors()) {
         const auto nextMode =
             signal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Filled
                 ? itkSignalBase::LabelRenderMode::Boundaries
@@ -3389,9 +3389,7 @@ void SignalControl::handleNeighborMergeAttempt(NeighborMergeAttempt attempt,
     auto completedIterations = std::move(attempt.completedIterations);
     const std::size_t remainingMatchingLabelCount = attempt.remainingMatchingLabelCount;
     const auto refreshChangedSegmentation = [this]() {
-        if (graphBase->pSelectedSegmentationSignal != nullptr) {
-            graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
-        }
+        graphBase->rebuildEdgeColorPresentation();
         refreshViewers();
     };
 
@@ -3579,12 +3577,7 @@ void SignalControl::runConnectedComponentSplit() {
                 return graphBase->pGraph->splitDisconnectedInitialSegments(connectivity);
             },
             [this, connectivityName](ConnectedComponentSplitStats stats) {
-                if (graphBase->pWorkingSegments != nullptr) {
-                    graphBase->pWorkingSegments->checkAndResizeLUT(stats.maxLabel);
-                }
-                if (graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
-                    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
-                }
+                graphBase->rebuildEdgeColorPresentation();
                 SP_LOG_INFO("segmentation",
                             QStringLiteral("Connected component split on initial segments used %1 connectivity, split %2 labels into %3 new components")
                                 .arg(connectivityName)
@@ -3626,9 +3619,6 @@ void SignalControl::runConnectedComponentSplit() {
         [this, connectivityName](ConnectedComponentSplitStats stats) {
             graphBase->selectedSegmentationMaxSegmentId =
                 graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
-            if (graphBase->pSelectedSegmentationSignal != nullptr) {
-                graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
-            }
             SP_LOG_INFO("segmentation",
                         QStringLiteral("Connected component split on selected segmentation used %1 connectivity, split %2 labels into %3 new components")
                             .arg(connectivityName)
@@ -3762,12 +3752,12 @@ void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>:
     bool loadSuccessFull = insertImageSegmenttype(pImage, signalIndexGlobal);
     if (loadSuccessFull) {
         auto *typedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndexGlobal]);
-        allSignalList[signalIndexGlobal]->setLUTCategorical();
+        allSignalList[signalIndexGlobal]->setCategoricalColorMode();
         allSignalList[signalIndexGlobal]->setName(
             signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Refinement")));
         allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
         allSignalList[signalIndexGlobal]->setIsActive(false);
-        allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
+        allSignalList[signalIndexGlobal]->setValueColorToTransparent(0);
         attachLayerWidgetToLastItem(refinementTreeWidget);
         QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(refinementTreeWidget->topLevelItemCount() - 1);
         setIsActive(newItem, false);
@@ -3903,8 +3893,8 @@ void SignalControl::createEmptySegmentation() {
     allSignalList.push_back(typedSignal);
     ownedSignals.push_back(std::move(pSignal2));
 
-    allSignalList[signalIndexGlobal]->setLUTCategorical();
-    allSignalList[signalIndexGlobal]->setLUTValueToTransparent(0);
+    allSignalList[signalIndexGlobal]->setCategoricalColorMode();
+    allSignalList[signalIndexGlobal]->setValueColorToTransparent(0);
     allSignalList[signalIndexGlobal]->setName(
         signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Segmentation")));
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
@@ -3974,7 +3964,10 @@ void SignalControl::mergeSupervoxelsByRefinementLabel() {
     taskRunner->runWithLabel(
         QStringLiteral("Merging supervoxels that share a refinement label..."),
         [this]() { graphBase->pGraph->mergeSegmentsWithRefinement(); },
-        [this]() { refreshViewers(); });
+        [this]() {
+            graphBase->rebuildEdgeColorPresentation();
+            refreshViewers();
+        });
 }
 
 void SignalControl::loadRefinement(QString fileName) {

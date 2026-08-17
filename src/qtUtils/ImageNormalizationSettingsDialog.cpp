@@ -140,7 +140,7 @@ void configureContinuousDisplay(itkSignalBase *signal) {
     }
     signal->setBlendMode(itkSignalBase::BlendMode::Additive);
     signal->setAlpha(255);
-    signal->setLUTContinuous();
+    signal->setContinuousColorMode();
 }
 
 void configureLoadedImageDisplay(itkSignalBase *signal) {

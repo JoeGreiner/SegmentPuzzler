@@ -34,6 +34,7 @@ class QTimer;
 class QWidget;
 class TaskRunner;
 class StrokeOverlay;
+class LabelColorSnapshot;
 
 class Segment3DViewerDialog : public QDialog {
     Q_OBJECT
@@ -85,7 +86,7 @@ public:
         const Roi &cachedBounds);
     static PreparedScene prepareAllLabelsScene(
         dataType::SegmentsImageType::Pointer segImage,
-        std::vector<quint32> labelColors);
+        LabelColorSnapshot labelColors);
     // Expects triangulated vtkSurfaceNets3D output with BoundaryLabels.
     // Each result shares combinedPolyData's points to avoid duplicate VBOs.
     // Treat points and cells as immutable. GetBounds() covers all shared points;

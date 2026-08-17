@@ -234,7 +234,7 @@ MainWindow::MainWindow() {
     graphBase->ignoredSegmentLabels = {};
     graphBase->pWorkingSegmentsImage = nullptr;
     graphBase->pEdgesInitialSegmentsImage = nullptr;
-    graphBase->colorLookUpEdgesStatus = std::unordered_map<char, std::vector<unsigned char>>();
+    graphBase->colorLookUpEdgesStatus = std::unordered_map<char, QRgb>();
     graphBase->edgeStatus = std::unordered_map<dataType::MappedEdgeIdType, char>();
 
     graph = std::make_unique<Graph>(graphBase);

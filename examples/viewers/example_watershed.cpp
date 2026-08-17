@@ -286,7 +286,7 @@ int main(int argc, char *argv[]) {
     std::cout << "Done!\n";
 
     std::unique_ptr<itkSignal<unsigned int>> pSignal2(new itkSignal<unsigned int>(watershedImage));
-    pSignal2->setLUTCategorical();
+    pSignal2->setCategoricalColorMode();
     orthoViewer->addSignal(pSignal2.get());
     myMainWindow->show();
     return a.exec();

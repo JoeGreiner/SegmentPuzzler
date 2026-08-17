@@ -1,5 +1,6 @@
 #include <QCoreApplication>
 
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <limits>
@@ -1027,6 +1028,74 @@ int testNeighborMergeDefaultsToMostConnectedNeighbor() {
     return 0;
 }
 
+int testMostConnectedMergeRefreshesSparseColorPresentation() {
+    auto workingImage = makeImage(7, 7, 1);
+    auto selectedImage = makeImage(7, 7, 1);
+
+    workingImage->SetPixel({2, 2, 0}, 1);
+    selectedImage->SetPixel({2, 2, 0}, 10);
+    for (int y = 2; y <= 4; ++y) {
+        workingImage->SetPixel({3, y, 0}, 2);
+        selectedImage->SetPixel({3, y, 0}, 20);
+        workingImage->SetPixel({4, y, 0}, 3);
+        selectedImage->SetPixel({4, y, 0}, 30);
+    }
+    workingImage->SetPixel({5, 3, 0}, 3);
+    selectedImage->SetPixel({5, 3, 0}, 30);
+
+    auto fixture = buildGraphFixture(workingImage);
+    itkSignal<SegmentIdType> workingSignal(workingImage, false);
+    workingSignal.setCategoricalColorMode();
+    workingSignal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Boundaries);
+    itkSignal<SegmentIdType> selectedSignal(selectedImage, false);
+    selectedSignal.setCategoricalColorMode();
+    selectedSignal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Boundaries);
+    fixture.graphBase->pWorkingSegments = &workingSignal;
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentationSignal = &selectedSignal;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+
+    // Reproduce the reported presentation boundary without constructing
+    // thousands of intermediate graph edits.
+    fixture.graph->nextFreeId = 11971;
+    const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
+        {20}, Graph::SegmentationNeighborMergeOptions{});
+    if (result.status != Graph::SegmentationNeighborMergeResult::Status::Merged) {
+        return failTest("Synthetic most-connected merge should complete.");
+    }
+    const SegmentIdType mergedWorkingLabel = workingImage->GetPixel({3, 3, 0});
+    if (mergedWorkingLabel != 11971) {
+        return failTest("Synthetic merge should create the reported first out-of-range Working label.");
+    }
+
+    if (!fixture.graphBase->rebuildEdgeColorPresentation()) {
+        return failTest("GUI-side edge color presentation rebuild should succeed.");
+    }
+
+    const SegmentIdType mergedSelectedLabel = result.newLabelByConsumedLabel.at(20);
+    const std::array<unsigned int, 3> sliceIndices{{3, 3, 0}};
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        std::vector<quint32> workingBuffer;
+        const QImage workingSlice = workingSignal.calculateSliceQImage(
+            sliceIndices[axis], axis, &workingBuffer);
+        const QRgb workingColor = workingSignal.colorForLabel(mergedWorkingLabel);
+        if (workingSlice.isNull() ||
+            std::find(workingBuffer.begin(), workingBuffer.end(), workingColor) == workingBuffer.end()) {
+            return failTest("Boundary rendering should show the new sparse Working label on every axis.");
+        }
+
+        std::vector<quint32> selectedBuffer;
+        const QImage selectedSlice = selectedSignal.calculateSliceQImage(
+            sliceIndices[axis], axis, &selectedBuffer);
+        const QRgb selectedColor = selectedSignal.colorForLabel(mergedSelectedLabel);
+        if (selectedSlice.isNull() ||
+            std::find(selectedBuffer.begin(), selectedBuffer.end(), selectedColor) == selectedBuffer.end()) {
+            return failTest("Boundary rendering should show the merged Selected label on every axis.");
+        }
+    }
+    return 0;
+}
+
 int testMostConnectedNeighborUsesStableLabelTieBreak() {
     auto workingImage = makeImage(3, 3, 1);
     auto selectedImage = makeImage(3, 3, 1);
@@ -1482,6 +1551,9 @@ int main(int argc, char **argv) {
         return result;
     }
     if (int result = testNeighborMergeDefaultsToMostConnectedNeighbor()) {
+        return result;
+    }
+    if (int result = testMostConnectedMergeRefreshesSparseColorPresentation()) {
         return result;
     }
     if (int result = testMostConnectedNeighborUsesStableLabelTieBreak()) {

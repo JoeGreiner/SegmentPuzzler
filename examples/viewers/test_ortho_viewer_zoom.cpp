@@ -47,7 +47,7 @@ int main(int argc, char *argv[]) {
 
     auto graphBase = std::make_shared<GraphBase>();
     itkSignal<unsigned short> signal(image, false);
-    signal.setLUTCategorical();
+    signal.setCategoricalColorMode();
 
     QMainWindow window;
     auto *orthoViewer = new OrthoViewer(graphBase, nullptr);

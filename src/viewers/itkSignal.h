@@ -6,6 +6,7 @@
 #include <vector>
 #include <map>
 #include <QDateTime>
+#include <QRandomGenerator>
 #include <QTreeWidget>
 #include "itkSignalBase.h"
 #include "itkImageRegionConstIteratorWithIndex.h"
@@ -16,8 +17,6 @@
 #include "src/utils/utils.h"
 //#include "graphBase.h"
 
-#define LUT_SAVE_ACCESS 1
-
 #ifdef USE_OMP
 #include <omp.h>
 #endif
@@ -25,6 +24,7 @@
 #include <iostream>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <type_traits>
 
@@ -72,7 +72,6 @@ public:
         }
         calculateImageSize();
         computeExtrema();
-        calculateLUT();
     }
 
     void releaseImage() override {
@@ -85,20 +84,22 @@ public:
 
     void calculateImageSize() override;
 
-    void calculateLUT() override;
+    QRgb colorForLabel(std::uint64_t label) const override;
 
-    void calculateLUTContinuous(long long dTypeMax) override;
+    LabelColorSnapshot labelColorSnapshot() const override;
 
-    void calculateLUTCategorical(long long dTypeMax, size_t startIndex) override;
+    void setEdgeColorMode() override;
 
-    void calculateLUTEdge(long long dTypeMax) override;
+    void rebuildEdgeColorTable(
+        const std::unordered_map<unsigned int, char> &labelToStatus,
+        const std::unordered_map<char, QRgb> &statusToColor) override;
 
-    void updateLUTEdge(std::set<unsigned int> labelsWithStatusUpdate) override;
+    bool updateEdgeColorTable(
+        const std::set<unsigned int> &changedLabels,
+        const std::unordered_map<unsigned int, char> &labelToStatus,
+        const std::unordered_map<char, QRgb> &statusToColor) override;
 
-    void checkAndResizeLUT(unsigned int value);
-
-    // Re-randomizes all categorical LUT entries from scratch.
-    void randomizeCategoricalLUT() override;
+    void randomizeCategoricalPalette() override;
 
 
     virtual QImage
@@ -119,16 +120,13 @@ public:
 
     void setAlpha(unsigned char alphaIn) override;
 
-    void setLUTContinuous() override;
+    void setContinuousColorMode() override;
 
-    void setLUTCategorical() override;
+    void setCategoricalColorMode() override;
 
-    void setLUTEdgeMap(std::unordered_map<EdgeNumIdType, char> *labelToStatus,
-                       std::unordered_map<char, std::vector<unsigned char>> *statusToColor) override;
+    void setValueColorToBlack(std::uint64_t value) override;
 
-    void setLUTValueToBlack(unsigned int value) override;
-
-    void setLUTValueToTransparent(unsigned int value) override;
+    void setValueColorToTransparent(std::uint64_t value) override;
 
     void setIsActive(bool isActiveIn) override;
 
@@ -152,7 +150,7 @@ public:
 
     bool supportsNormControl() const override { return !isCategorical && !isEdge; }
 
-    bool usesCategoricalLUT() const override { return isCategorical && !isEdge; }
+    bool usesCategoricalColors() const override { return isCategorical && !isEdge; }
 
     bool usesEdgeStatusColors() const override { return isEdge; }
 
@@ -185,13 +183,6 @@ public:
 
     SignalImagePointerType pImage;
 
-    // holds LUTs for all char continuous data
-//    std::vector<quint32> LUT;
-
-    std::vector<unsigned int> blackLUTValues;
-    std::vector<unsigned int> transparentLUTValues;
-
-
     long unsigned int dimX, dimY, dimZ;
 
     // default values for initialization of LUTs
@@ -200,8 +191,7 @@ public:
     double normLower = 0.0;
     double normUpper = 0.0;
 
-    // decides if a continuous LUT (i.e., intensity of a staining)
-    // or a categorical LUT (i.e. segments) should be used
+    // Selects direct continuous rendering or categorical segment colors.
     bool isCategorical = false;
 
     // flag if signal should be drawn or not
@@ -209,13 +199,6 @@ public:
 
     // useLookUp for calculation
     bool isEdge = false;
-
-    // true once the LUT has been built as categorical at least once;
-    // false forces a full rebuild when first switching from continuous to categorical
-    bool categoricalLUTInitialized = false;
-
-    std::unordered_map<unsigned int, char> *labelToStatus = nullptr;
-    std::unordered_map<char, std::vector<unsigned char>> *statusToColor = nullptr;
 
     bool ROI_set = false;
     int ROI_fx = -1;
@@ -232,9 +215,14 @@ public:
 
 private:
     static QString displayDataTypeName();
-    void applyLUTValueOverrides();
+    template<typename ValueType>
+    static std::uint64_t labelColorKey(ValueType value);
+    void publishColorSnapshot(LabelColorSnapshot snapshot);
     double normalizeContinuousValue(double value) const;
     QRgb makeContinuousPixel(double value) const;
+
+    std::shared_ptr<const LabelColorSnapshot> colorSnapshotState =
+        std::make_shared<const LabelColorSnapshot>();
 
 };
 
@@ -387,8 +375,6 @@ itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, bool verboseI
     normLower = minimumValue;
     normUpper = maximumValue;
 
-    // calculate LUT
-    calculateLUT();
 }
 
 template<typename dType>
@@ -404,8 +390,6 @@ itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, QTreeWidget *
 
     setupTreeWidget(motherTreeWidget, signalIndex);
 
-    // calculate LUT
-    calculateLUT();
 }
 
 template<typename dType>
@@ -443,73 +427,135 @@ void itkSignal<dType>::calculateImageSize() {
 }
 
 template<typename dType>
-void itkSignal<dType>::calculateLUT() {
-    long long dTypeMax;
-//  if floating point
-    if constexpr (std::is_floating_point_v<dType>) {
-        if (verbose) {
-            SP_LOG_DEBUG("viewer.render", QStringLiteral("Read signal uses floating-point voxels"));
+template<typename ValueType>
+std::uint64_t itkSignal<dType>::labelColorKey(ValueType value) {
+    static_assert(std::is_integral_v<ValueType>, "Label colors require an integral voxel type");
+    if constexpr (std::is_signed_v<ValueType>) {
+        return static_cast<std::uint64_t>(static_cast<std::int64_t>(value));
+    }
+    return static_cast<std::uint64_t>(value);
+}
+
+template<typename dType>
+void itkSignal<dType>::publishColorSnapshot(LabelColorSnapshot snapshot) {
+    std::shared_ptr<const LabelColorSnapshot> published =
+        std::make_shared<LabelColorSnapshot>(std::move(snapshot));
+    std::atomic_store_explicit(&colorSnapshotState, std::move(published), std::memory_order_release);
+}
+
+template<typename dType>
+LabelColorSnapshot itkSignal<dType>::labelColorSnapshot() const {
+    const auto snapshot =
+        std::atomic_load_explicit(&colorSnapshotState, std::memory_order_acquire);
+    return snapshot != nullptr ? *snapshot : LabelColorSnapshot{};
+}
+
+template<typename dType>
+QRgb itkSignal<dType>::colorForLabel(std::uint64_t label) const {
+    return labelColorSnapshot().colorForLabel(label);
+}
+
+template<typename dType>
+void itkSignal<dType>::setEdgeColorMode() {
+    isCategorical = false;
+    isEdge = true;
+    auto snapshot = labelColorSnapshot();
+    snapshot.mode = LabelColorSnapshot::Mode::Edge;
+    snapshot.alpha = alpha;
+    snapshot.edgeColors = std::make_shared<const EdgeColorTable>();
+    publishColorSnapshot(std::move(snapshot));
+}
+
+template<typename dType>
+void itkSignal<dType>::rebuildEdgeColorTable(
+    const std::unordered_map<unsigned int, char> &labelToStatus,
+    const std::unordered_map<char, QRgb> &statusToColor) {
+    LabelColorSnapshot::ColorMap colors;
+    colors.reserve(labelToStatus.size());
+
+    std::size_t missingStatusCount = 0;
+    int firstMissingStatus = 0;
+    for (const auto &[label, status] : labelToStatus) {
+        const auto statusColor = statusToColor.find(status);
+        if (statusColor == statusToColor.end()) {
+            if (missingStatusCount == 0) {
+                firstMissingStatus = static_cast<int>(status);
+            }
+            ++missingStatusCount;
+            colors.emplace(static_cast<std::uint64_t>(label), QRgb{});
+        } else {
+            colors.emplace(static_cast<std::uint64_t>(label), statusColor->second);
         }
-        dTypeMax = maximumValue;
-    } else {
-//         dtype is normally chart short or int, so long long and 10* should be fine
-        long long upperLimitLUT = 10 * maximumValue; // limit number of maximum LUT values
-        dTypeMax = std::min<long long>(upperLimitLUT, std::numeric_limits<dType>::max());
-        // TODO: Automatically resize if requested LUTvalue is not in the array. This may cause errors downstream ...
     }
 
-    long long int LUTSizeWanted = dTypeMax;
-//        if max is e.g. 255, LUT size has to be 256!
-    LUTSizeWanted = dTypeMax + 1;
-
-    SP_LOG_DEBUG("viewer.render",
-                 QStringLiteral("Calculating LUT for %1 values (currentSize=%2)")
-                     .arg(LUTSizeWanted)
-                     .arg(LUT.size()));
-    size_t oldLUTSize = LUT.size();
-    if (size_t(LUTSizeWanted) > LUT.size()) {
-        SP_LOG_DEBUG("viewer.render",
-                     QStringLiteral("Resizing LUT to %1 entries")
-                         .arg(LUTSizeWanted));
-        LUT.resize(LUTSizeWanted);
+    if (missingStatusCount > 0) {
+        SP_LOG_WARNING(
+            "viewer.render",
+            QStringLiteral("Edge color rebuild made %1 label(s) transparent; first missing status=%2")
+                .arg(missingStatusCount)
+                .arg(firstMissingStatus));
     }
 
-    if (isCategorical) {
-        size_t categoricalStart = categoricalLUTInitialized ? oldLUTSize : 0;
-        calculateLUTCategorical(LUTSizeWanted, categoricalStart);
-        categoricalLUTInitialized = true;
-    } else if (isEdge) {
-        calculateLUTEdge(LUTSizeWanted);
-    } else {
-        calculateLUTContinuous(LUTSizeWanted);
-    }
+    isCategorical = false;
+    isEdge = true;
+    auto snapshot = labelColorSnapshot();
+    snapshot.mode = LabelColorSnapshot::Mode::Edge;
+    snapshot.alpha = alpha;
+    snapshot.edgeColors = std::make_shared<const EdgeColorTable>(std::move(colors));
+    publishColorSnapshot(std::move(snapshot));
 }
 
 template<typename dType>
-void itkSignal<dType>::calculateLUTContinuous(long long) {
-    //TODO: Handle negative continous luts
-    //TODO: Handle Floats
-    if (verbose) {
-        SP_LOG_DEBUG("viewer.render",
-                     QStringLiteral("Calculating continuous LUT with norm=[%1, %2]")
-                         .arg(normLower)
-                         .arg(normUpper));
+bool itkSignal<dType>::updateEdgeColorTable(
+    const std::set<unsigned int> &changedLabels,
+    const std::unordered_map<unsigned int, char> &labelToStatus,
+    const std::unordered_map<char, QRgb> &statusToColor) {
+    if (changedLabels.empty()) {
+        return true;
     }
 
-    for (size_t i = 0; i < LUT.size(); ++i) {
-        LUT.at(static_cast<unsigned long>(i)) = makeContinuousPixel(static_cast<double>(i));
+    const auto snapshot = labelColorSnapshot();
+    if (snapshot.mode != LabelColorSnapshot::Mode::Edge || snapshot.edgeColors == nullptr) {
+        return false;
     }
-    applyLUTValueOverrides();
-}
 
-template<typename dType>
-void itkSignal<dType>::applyLUTValueOverrides() {
-    for (const auto value : blackLUTValues) {
-        LUT.at(value) = qRgba(0, 0, 0, 255);
+    std::vector<std::pair<std::uint64_t, QRgb>> updates;
+    updates.reserve(changedLabels.size());
+    std::size_t missingStatusCount = 0;
+    int firstMissingStatus = 0;
+    for (const unsigned int label : changedLabels) {
+        const auto labelStatus = labelToStatus.find(label);
+        if (labelStatus == labelToStatus.end() || !snapshot.edgeColors->contains(label)) {
+            return false;
+        }
+
+        QRgb color = 0;
+        const auto statusColor = statusToColor.find(labelStatus->second);
+        if (statusColor == statusToColor.end()) {
+            if (missingStatusCount == 0) {
+                firstMissingStatus = static_cast<int>(labelStatus->second);
+            }
+            ++missingStatusCount;
+        } else {
+            color = statusColor->second;
+        }
+        updates.emplace_back(static_cast<std::uint64_t>(label), color);
     }
-    for (const auto value : transparentLUTValues) {
-        LUT.at(value) = qRgba(0, 0, 0, 0);
+
+    if (missingStatusCount > 0) {
+        SP_LOG_WARNING(
+            "viewer.render",
+            QStringLiteral("Edge color update made %1 label(s) transparent; first missing status=%2")
+                .arg(missingStatusCount)
+                .arg(firstMissingStatus));
     }
+
+    for (const auto &[label, color] : updates) {
+        if (!snapshot.edgeColors->updateColor(label, color)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 template<typename dType>
@@ -544,37 +590,13 @@ QRgb itkSignal<dType>::makeContinuousPixel(double value) const {
 }
 
 template<typename dType>
-void itkSignal<dType>::calculateLUTCategorical(long long, size_t startIndex) {
-    if (verbose) {
-        SP_LOG_DEBUG("viewer.render",
-                     QStringLiteral("Calculating categorical LUT startIndex=%1")
-                         .arg(startIndex));
-    }
-    // Generate new random colors only for entries beyond startIndex
-    for (size_t i = startIndex; i < LUT.size(); ++i) {
-        auto colorR = (std::rand() % 255);
-        auto colorG = (std::rand() % 255);
-        auto colorB = (std::rand() % 255);
-        auto colorA = alpha;
-        LUT.at(static_cast<unsigned long>(i)) = qRgba(colorR, colorG, colorB, colorA);
-    }
-    // Update alpha for existing entries, preserving their RGB colors
-    for (size_t i = 0; i < startIndex; ++i) {
-        LUT[i] = qRgba(qRed(LUT[i]), qGreen(LUT[i]), qBlue(LUT[i]), alpha);
-    }
-    applyLUTValueOverrides();
-}
-
-template<typename dType>
 void itkSignal<dType>::setMainColor(int r, int g, int b) {
     mainColor = qRgba(r, g, b, 255);
-    calculateLUT();
 }
 
 template<typename dType>
 void itkSignal<dType>::setMainColor(QColor color) {
     mainColor = color.rgba();
-    calculateLUT();
 }
 
 
@@ -582,7 +604,6 @@ template<typename dType>
 void itkSignal<dType>::setNorm(double lower, double upper) {
     normLower = lower;
     normUpper = upper;
-    calculateLUT();
 }
 
 template<typename dType>
@@ -681,80 +702,72 @@ bool itkSignal<dType>::computeQuantileContrastRange(
 template<typename dType>
 void itkSignal<dType>::setAlpha(unsigned char alphaIn) {
     alpha = alphaIn;
-    calculateLUT();
+    auto snapshot = labelColorSnapshot();
+    snapshot.alpha = alphaIn;
+    publishColorSnapshot(std::move(snapshot));
 }
 
 template<typename dType>
-void itkSignal<dType>::setLUTContinuous() {
+void itkSignal<dType>::setContinuousColorMode() {
     isCategorical = false;
-    categoricalLUTInitialized = false;
-    calculateLUT();
+    isEdge = false;
 }
 
 
 template<typename dType>
-void itkSignal<dType>::setLUTCategorical() {
+void itkSignal<dType>::setCategoricalColorMode() {
     isCategorical = true;
-    calculateLUT();
+    isEdge = false;
+    auto snapshot = labelColorSnapshot();
+    snapshot.mode = LabelColorSnapshot::Mode::Categorical;
+    snapshot.alpha = alpha;
+    snapshot.edgeColors = std::make_shared<const EdgeColorTable>();
+    publishColorSnapshot(std::move(snapshot));
 }
 
 template<typename dType>
-void itkSignal<dType>::setLUTValueToBlack(unsigned int value) {
-    checkAndResizeLUT(value);
+void itkSignal<dType>::setValueColorToBlack(std::uint64_t value) {
     SP_LOG_INFO("viewer.render",
-                QStringLiteral("Setting LUT value %1 to black")
+                QStringLiteral("Setting value %1 color to black")
                     .arg(value));
-    LUT.at(value) = qRgba(0, 0, 0, 255);
-    blackLUTValues.push_back(value);
+    auto snapshot = labelColorSnapshot();
+    auto overrides = snapshot.overrides != nullptr
+        ? std::make_shared<LabelColorSnapshot::ColorMap>(*snapshot.overrides)
+        : std::make_shared<LabelColorSnapshot::ColorMap>();
+    (*overrides)[value] = qRgba(0, 0, 0, 255);
+    snapshot.overrides = std::move(overrides);
+    publishColorSnapshot(std::move(snapshot));
 }
 
 
 template<typename dType>
-void itkSignal<dType>::checkAndResizeLUT(unsigned int value) {
-    if (value >= LUT.size()) {
-        constexpr size_t minimumCategoricalLUTSize = 256;
-        size_t oldSize = LUT.size();
-        size_t newSize = oldSize;
-        if (newSize < minimumCategoricalLUTSize) {
-            newSize = minimumCategoricalLUTSize;
-        }
-        while (newSize <= value) {
-            newSize *= 2;
-        }
-        LUT.resize(newSize);
-        SP_LOG_DEBUG("viewer.render",
-                     QStringLiteral("Resizing LUT to fit index %1 (newSize=%2)")
-                         .arg(value)
-                         .arg(newSize));
-        if (isCategorical) {
-            // Extend with new random colors; existing entries keep their colours
-            calculateLUTCategorical(newSize, oldSize);
-        } else {
-            calculateLUT();
-        }
-    }
-}
-
-
-template<typename dType>
-void itkSignal<dType>::randomizeCategoricalLUT() {
+void itkSignal<dType>::randomizeCategoricalPalette() {
     if (!isCategorical || isEdge) {
         return;
     }
 
-    categoricalLUTInitialized = false;
-    calculateLUT();
+    auto snapshot = labelColorSnapshot();
+    std::uint64_t newSeed = snapshot.paletteSeed;
+    while (newSeed == snapshot.paletteSeed) {
+        newSeed = QRandomGenerator::global()->generate64();
+    }
+    snapshot.paletteSeed = newSeed;
+    publishColorSnapshot(std::move(snapshot));
 }
 
 
 template<typename dType>
-void itkSignal<dType>::setLUTValueToTransparent(unsigned int value) {
-    checkAndResizeLUT(value);
+void itkSignal<dType>::setValueColorToTransparent(std::uint64_t value) {
     SP_LOG_INFO("viewer.render",
-                QStringLiteral("Setting LUT value %1 to transparent")
+                QStringLiteral("Setting value %1 color to transparent")
                     .arg(value));
-    LUT.at(value) = qRgba(0, 0, 0, 0);
-    transparentLUTValues.push_back(value);
+    auto snapshot = labelColorSnapshot();
+    auto overrides = snapshot.overrides != nullptr
+        ? std::make_shared<LabelColorSnapshot::ColorMap>(*snapshot.overrides)
+        : std::make_shared<LabelColorSnapshot::ColorMap>();
+    (*overrides)[value] = qRgba(0, 0, 0, 0);
+    snapshot.overrides = std::move(overrides);
+    publishColorSnapshot(std::move(snapshot));
 }
 
 
@@ -772,38 +785,6 @@ QRgb itkSignal<dType>::getColor() {
 template<typename dType>
 bool itkSignal<dType>::getIsActive() {
     return isActive;
-}
-
-template<typename dType>
-void itkSignal<dType>::calculateLUTEdge(long long) {
-    std::fill(LUT.begin(), LUT.end(), qRgba(0, 0, 0, 0));
-    for (auto &labelMapping: *labelToStatus) {
-        std::vector<unsigned char> colorVec = statusToColor->at(labelMapping.second);
-        checkAndResizeLUT(labelMapping.first);
-        LUT.at(labelMapping.first) = qRgba(colorVec.at(0), colorVec.at(1), colorVec.at(2), alpha);
-    }
-    applyLUTValueOverrides();
-}
-
-template<typename dType>
-void itkSignal<dType>::updateLUTEdge(std::set<unsigned int> labelsWithStatusUpdate) {
-    for (auto &idOfEdgeWithChangedStatus: labelsWithStatusUpdate) {
-//        std::cout << "edge id to update: " << idOfEdgeWithChangedStatus;
-//        std::cout << "LUT size: " << LUT.size();
-//        std::cout << "statusToColor size: " << statusToColor->size();
-        char newStatusOfEdgeWithChangedStatus = labelToStatus->at(idOfEdgeWithChangedStatus);
-        std::vector<unsigned char> colorVec = statusToColor->at(newStatusOfEdgeWithChangedStatus);
-        checkAndResizeLUT(idOfEdgeWithChangedStatus);
-        LUT.at(idOfEdgeWithChangedStatus) = qRgba(colorVec.at(0), colorVec.at(1), colorVec.at(2), alpha);
-    }
-}
-
-template<typename dType>
-void itkSignal<dType>::setLUTEdgeMap(std::unordered_map<unsigned int, char> *labelToStatusIn,
-                                     std::unordered_map<char, std::vector<unsigned char>> *statusToColorIn) {
-    isEdge = true;
-    labelToStatus = labelToStatusIn;
-    statusToColor = statusToColorIn;
 }
 
 template<typename dType>
@@ -826,235 +807,183 @@ unsigned int itkSignal<dType>::getAlpha() {
 template<typename dType>
 QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis,
                                               std::vector<quint32> *sliceBuffer) {
-    // attention! slicebuffer has to be valid the whole time the qimage is used, therefore it is passed into the function
-    // TODO: handle floats
-    unsigned int width, height;
+    if (pImage.IsNull() || sliceBuffer == nullptr) {
+        return {};
+    }
+
     const auto dims = slice_geometry::makeDimensions(dimX, dimY, dimZ);
-    SignalImageRegionType region = slice_geometry::makeSliceRegion<SignalImageIndexType,
-                                                                   SignalImageSizeType,
-                                                                   SignalImageRegionType>(sliceIndex,
-                                                                                          sliceAxis,
-                                                                                          dims,
-                                                                                          width,
-                                                                                          height);
+    if (sliceIndex >= slice_geometry::sliceLimit(sliceAxis, dims)) {
+        throw std::out_of_range("sliceIndex lies outside the image");
+    }
 
-//    std::fill(sliceBuffer.begin(), sliceBuffer.end(), 0);
+    const auto sliceWidth = static_cast<unsigned long>(slice_geometry::sliceWidth(sliceAxis, dims));
+    const auto sliceHeight = static_cast<unsigned long>(slice_geometry::sliceHeight(sliceAxis, dims));
+    const std::size_t requiredPixelCount =
+        static_cast<std::size_t>(sliceWidth) * static_cast<std::size_t>(sliceHeight);
+    if (sliceBuffer->size() < requiredPixelCount) {
+        sliceBuffer->resize(requiredPixelCount);
+    }
 
-    typename itk::ImageRegionConstIteratorWithIndex<SignalImageType> it(pImage, region);
-    it.GoToBegin();
-//    TODO: is checkAndResizeLut needed?
+    unsigned long baseOffset = 0;
+    unsigned long columnStride = 0;
+    unsigned long rowStride = 0;
+    switch (sliceAxis) {
+        case 0:
+            baseOffset = sliceIndex;
+            columnStride = dimX * dimY;
+            rowStride = dimX;
+            break;
+        case 1:
+            baseOffset = sliceIndex * dimX;
+            columnStride = 1;
+            rowStride = dimX * dimY;
+            break;
+        case 2:
+            baseOffset = sliceIndex * dimX * dimY;
+            columnStride = 1;
+            rowStride = dimX;
+            break;
+        default:
+            throw std::logic_error("sliceAxis not implemented!");
+    }
 
+    const dType *imageBuffer = pImage->GetBufferPointer();
+    quint32 *sliceBufferPtr = sliceBuffer->data();
+    const bool renderLabels = isCategorical || isEdge;
+    const bool renderLabelBoundaries =
+        isCategorical && !isEdge &&
+        getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries;
+    const LabelColorSnapshot colorSnapshot = labelColorSnapshot();
+    struct SliceColorPage {
+        std::array<std::uint64_t, 4096> encodedColors{};
+    };
+    constexpr std::size_t maximumSliceColorPages = 32;
+    std::unordered_map<std::uint64_t, SliceColorPage> sliceColorPages;
+    std::unordered_map<std::uint64_t, QRgb> overflowSliceColors;
+    if (renderLabels) {
+        sliceColorPages.reserve(16);
+    }
+    std::uint64_t currentColorPageKey = 0;
+    SliceColorPage *currentColorPage = nullptr;
+    bool hasLastLabelColor = false;
+    std::uint64_t lastLabelKey = 0;
+    QRgb lastLabelColor = 0;
 
-    const dType* imageBuffer = pImage->GetBufferPointer();
-    quint32* sliceBufferPtr = sliceBuffer->data();
-    if constexpr (!std::is_floating_point_v<dType>) {
-        const bool renderLabelBoundaries =
-            isCategorical && !isEdge &&
-            getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries;
-
-        if (renderLabelBoundaries) {
-            unsigned long sliceWidth = 0;
-            unsigned long sliceHeight = 0;
-            unsigned long baseOffset = 0;
-            unsigned long columnStride = 0;
-            unsigned long rowStride = 0;
-
-            switch (sliceAxis) {
-                case 0:
-                    sliceWidth = dimZ;
-                    sliceHeight = dimY;
-                    baseOffset = sliceIndex;
-                    columnStride = dimX * dimY;
-                    rowStride = dimX;
-                    break;
-                case 1:
-                    sliceWidth = dimX;
-                    sliceHeight = dimZ;
-                    baseOffset = sliceIndex * dimX;
-                    columnStride = 1;
-                    rowStride = dimX * dimY;
-                    break;
-                case 2:
-                    sliceWidth = dimX;
-                    sliceHeight = dimY;
-                    baseOffset = sliceIndex * dimX * dimY;
-                    columnStride = 1;
-                    rowStride = dimX;
-                    break;
-                default:
-                    throw std::logic_error("sliceAxis not implemented!");
+    const auto uncachedColorForLabelKey = [&](std::uint64_t key) -> QRgb {
+        const std::uint64_t pageKey = key >> 12U;
+        if (currentColorPage == nullptr || currentColorPageKey != pageKey) {
+            const auto existingPage = sliceColorPages.find(pageKey);
+            if (existingPage != sliceColorPages.end()) {
+                currentColorPage = &existingPage->second;
+            } else if (sliceColorPages.size() < maximumSliceColorPages) {
+                currentColorPage = &sliceColorPages.try_emplace(pageKey).first->second;
+            } else {
+                currentColorPage = nullptr;
             }
+            currentColorPageKey = pageKey;
+        }
 
-            const quint32 transparentPixel = qRgba(0, 0, 0, 0);
+        if (currentColorPage != nullptr) {
+            const std::size_t pageOffset = static_cast<std::size_t>(key & 0xfffU);
+            const std::uint64_t encodedColor = currentColorPage->encodedColors[pageOffset];
+            if (encodedColor != 0) {
+                return static_cast<QRgb>(encodedColor);
+            }
+            const QRgb color = colorSnapshot.colorForLabel(key);
+            currentColorPage->encodedColors[pageOffset] =
+                (std::uint64_t{1} << 32U) | static_cast<std::uint32_t>(color);
+            return color;
+        }
+
+        const auto existingColor = overflowSliceColors.find(key);
+        if (existingColor != overflowSliceColors.end()) {
+            return existingColor->second;
+        }
+        const QRgb color = colorSnapshot.colorForLabel(key);
+        overflowSliceColors.emplace(key, color);
+        return color;
+    };
+
+    const auto colorForLabelValue = [&](dType value) -> QRgb {
+        if constexpr (std::is_integral_v<dType>) {
+            const std::uint64_t key = labelColorKey(value);
+            if (hasLastLabelColor && key == lastLabelKey) {
+                return lastLabelColor;
+            }
+            const QRgb color = uncachedColorForLabelKey(key);
+            lastLabelKey = key;
+            lastLabelColor = color;
+            hasLastLabelColor = true;
+            return color;
+        } else {
+            return QRgb{};
+        }
+    };
+    const auto colorForBoundaryLabelValue = [&](dType value) -> QRgb {
+        if constexpr (std::is_integral_v<dType>) {
+            return uncachedColorForLabelKey(labelColorKey(value));
+        } else {
+            return QRgb{};
+        }
+    };
+
+    const QRgb transparentPixel = qRgba(0, 0, 0, 0);
+    if (renderLabelBoundaries) {
+        for (unsigned long row = 0; row < sliceHeight; ++row) {
+            const unsigned long imageRowOffset = baseOffset + row * rowStride;
+            const unsigned long sliceRowOffset = row * sliceWidth;
+            for (unsigned long column = 0; column < sliceWidth; ++column) {
+                const unsigned long imageOffset = imageRowOffset + column * columnStride;
+                const dType value = imageBuffer[imageOffset];
+                const bool hasFourInPlaneNeighbors =
+                    row > 0 && row + 1 < sliceHeight &&
+                    column > 0 && column + 1 < sliceWidth;
+                const bool isBoundary =
+                    !hasFourInPlaneNeighbors ||
+                    imageBuffer[imageOffset - rowStride] != value ||
+                    imageBuffer[imageOffset + rowStride] != value ||
+                    imageBuffer[imageOffset - columnStride] != value ||
+                    imageBuffer[imageOffset + columnStride] != value;
+                sliceBufferPtr[sliceRowOffset + column] =
+                    isBoundary ? colorForBoundaryLabelValue(value) : transparentPixel;
+            }
+        }
+    } else if constexpr (!std::is_floating_point_v<dType>) {
+        if (renderLabels) {
             for (unsigned long row = 0; row < sliceHeight; ++row) {
                 const unsigned long imageRowOffset = baseOffset + row * rowStride;
                 const unsigned long sliceRowOffset = row * sliceWidth;
                 for (unsigned long column = 0; column < sliceWidth; ++column) {
-                    const unsigned long imageOffset = imageRowOffset + column * columnStride;
-                    const dType value = imageBuffer[imageOffset];
-                    const bool hasFourInPlaneNeighbors =
-                        row > 0 && row + 1 < sliceHeight &&
-                        column > 0 && column + 1 < sliceWidth;
-                    const bool isBoundary =
-                        !hasFourInPlaneNeighbors ||
-                        imageBuffer[imageOffset - rowStride] != value ||
-                        imageBuffer[imageOffset + rowStride] != value ||
-                        imageBuffer[imageOffset - columnStride] != value ||
-                        imageBuffer[imageOffset + columnStride] != value;
-                    const unsigned long sliceBufferIndex = sliceRowOffset + column;
-#if LUT_SAVE_ACCESS
-                    sliceBufferPtr[sliceBufferIndex] = isBoundary ? LUT.at(value) : transparentPixel;
-#else
-                    sliceBufferPtr[sliceBufferIndex] = isBoundary ? LUT[value] : transparentPixel;
-#endif
+                    const dType value = imageBuffer[imageRowOffset + column * columnStride];
+                    sliceBufferPtr[sliceRowOffset + column] = colorForLabelValue(value);
                 }
             }
-        } else if (sliceAxis == 0) {  // x slices
-            for (unsigned long z = 0; z < dimZ; ++z) { // Loop over depth (z-axis)
-                unsigned long zOffset = z * dimX * dimY; // Start of the z-plane in the buffer
-
-                for (unsigned long y = 0; y < dimY; ++y) { // Loop over height (y-axis)
-                    unsigned long imageOffset = sliceIndex + (y * dimX) + zOffset;
-
-                    // Access the voxel at (sliceIndex, y, z)
-                    dType value = imageBuffer[imageOffset];
-
-                    // Write to the sliceBuffer at (z, y)
-                    unsigned long sliceBufferIndex = z + (y * dimZ);
-#if LUT_SAVE_ACCESS
-                    sliceBufferPtr[sliceBufferIndex] = LUT.at(value);
-#else
-                    sliceBufferPtr[sliceBufferIndex] = LUT[value];
-#endif
+        } else {
+            for (unsigned long row = 0; row < sliceHeight; ++row) {
+                const unsigned long imageRowOffset = baseOffset + row * rowStride;
+                const unsigned long sliceRowOffset = row * sliceWidth;
+                for (unsigned long column = 0; column < sliceWidth; ++column) {
+                    const dType value = imageBuffer[imageRowOffset + column * columnStride];
+                    sliceBufferPtr[sliceRowOffset + column] =
+                        makeContinuousPixel(static_cast<double>(value));
                 }
             }
-
-//            while (!it.IsAtEnd()) {
-//                const auto value = it.Get();
-//                const auto &coords = it.GetIndex();
-////                checkAndResizeLUT(value);
-//                (*sliceBuffer)[coords[2] + coords[1] * dimZ] = LUT[value];
-//                ++it;
-//            }
-        } else if (sliceAxis == 1) {
-            unsigned long sliceSize = dimX * dimZ;
-            unsigned long bufferIndex = 0;
-
-            for (unsigned long z = 0; z < dimZ; ++z) {
-                unsigned long zOffset = z * dimX * dimY;
-                unsigned long yOffset = sliceIndex * dimX;
-                for (unsigned long x = 0; x < dimX; ++x) {
-                    unsigned long imageOffset = x + yOffset + zOffset;
-                    dType value = imageBuffer[imageOffset];
-#if LUT_SAVE_ACCESS
-                    sliceBufferPtr[bufferIndex++] = LUT.at(value);
-#else
-                    sliceBufferPtr[bufferIndex++] = LUT[value];
-#endif
-                }
-            }
-//            while (!it.IsAtEnd()) {
-//                const auto value = it.Get();
-//                const auto &coords = it.GetIndex();
-////                checkAndResizeLUT(value);
-//                (*sliceBuffer)[coords[0] + coords[2] * dimX] = LUT[value];
-//                ++it;
-//            }
-        } else if (sliceAxis == 2) {
-            unsigned long sliceSize = dimX * dimY;
-            unsigned long imageOffset = sliceIndex * dimX * dimY;
-
-            const dType* sliceData = imageBuffer + imageOffset;
-            // for now, rescale manually every time and check, there is a logic error when refining the segments
-            // LUT is not increased automatically it seems, so we have to check every time
-
-            for (unsigned long idx = 0; idx < sliceSize; ++idx) {
-                dType value = sliceData[idx];
-                if (value >= LUT.size()) {
-                    checkAndResizeLUT(value);
-                }
-#if LUT_SAVE_ACCESS
-                sliceBufferPtr[idx] = LUT.at(value);
-#else
-                sliceBufferPtr[idx] = LUT[value];
-#endif
-            }
-//
-//            while (!it.IsAtEnd()) {
-//                const auto value = it.Get();
-//                const auto &coords = it.GetIndex();
-////                checkAndResizeLUT(value);
-//                (*sliceBuffer)[coords[0] + coords[1] * dimX] = LUT[value];
-//                ++it;
-//            }
         }
     } else {
-        while (!it.IsAtEnd()) {
-            const auto value = it.Get();
-            const auto &coords = it.GetIndex();
-            try {
-                sliceBuffer->at(getPixMapIndex(coords, sliceAxis)) =
+        for (unsigned long row = 0; row < sliceHeight; ++row) {
+            const unsigned long imageRowOffset = baseOffset + row * rowStride;
+            const unsigned long sliceRowOffset = row * sliceWidth;
+            for (unsigned long column = 0; column < sliceWidth; ++column) {
+                const dType value = imageBuffer[imageRowOffset + column * columnStride];
+                sliceBufferPtr[sliceRowOffset + column] =
                     makeContinuousPixel(static_cast<double>(value));
-            } catch (const std::out_of_range &e) {
-                SP_LOG_ERROR("viewer.render",
-                             QStringLiteral("Out-of-range slice buffer access index=%1 exception=%2")
-                                 .arg(getPixMapIndex(coords, sliceAxis))
-                                 .arg(QString::fromUtf8(e.what())));
             }
-            ++it;
         }
     }
 
-//    while (!it.IsAtEnd()) {
-//        const auto value = it.Get();
-//        const auto &coords = it.GetIndex();
-//        if (!isFloatingPoint) {
-//            checkAndResizeLUT(value);
-//            (*sliceBuffer)[getPixMapIndex(coords, sliceAxis)] = LUT[value];
-
-//           save method for debugging reasons below. top doesnt do rangechecks etc and is faster
-//            quint32 LUTValue = 0;
-//            try {
-//                LUTValue = LUT.at(value);
-//            } catch (const std::out_of_range &e) {
-//                std::cout << "Out of Range error. LUT access." << std::endl;
-//                std::cout << "Exception: " << e.what() << std::endl;
-//                std::cout << "Requested value in LUT: " << std::to_string(value) << std::endl;
-//            }
-//            try {
-//                sliceBuffer->at(getPixMapIndex(coords, sliceAxis)) = LUTValue;
-//            } catch (const std::out_of_range &e) {
-//                std::cout << "Out of Range error. Slicebuffer access." << std::endl;
-//                std::cout << "Exception: " << e.what() << std::endl;
-//                std::cout << "index: " << std::to_string(getPixMapIndex(coords, sliceAxis)) << std::endl;
-//                std::cout << "region size: " << std::to_string(size[0]) << " " << std::to_string(size[1]) << " "
-//                          << std::to_string(size[2]) << std::endl;
-//                std::cout << "dimX: " << dimX << std::endl;
-//                std::cout << "dimY: " << dimY << std::endl;
-//                std::cout << "dimZ: " << dimZ << std::endl;
-//            }
-//        } else {
-//            double normFactorDecimal = 255. / (normUpper - normLower);
-//            double normedValue = std::min<double>(std::max<double>(value - normLower, 0) * normFactorDecimal, 255);
-//            auto colorR = static_cast<unsigned char>(normedValue * (qRed(mainColor) / 255.));
-//            auto colorG = static_cast<unsigned char>(normedValue * (qGreen(mainColor) / 255.));
-//            auto colorB = static_cast<unsigned char>(normedValue * (qBlue(mainColor) / 255.));
-//            auto colorA = static_cast<unsigned char>(normedValue * (alpha / 255.));
-//            try {
-//                sliceBuffer->at(getPixMapIndex(coords, sliceAxis)) = qRgba(colorR, colorG, colorB, colorA);
-//            } catch (const std::out_of_range &e) {
-//                std::cout << "Out of Range error. Second access." << std::endl;
-//                std::cout << "Exception: " << e.what() << std::endl;
-//                std::cout << "index: " << std::to_string(getPixMapIndex(coords, sliceAxis)) << std::endl;
-//            }
-//        }
-////        std::cout << LUT.at(value) <<  " ";
-//        ++it;
-//    }
-
-    return QImage((const unsigned char *) sliceBuffer->data(),
-                  width,
-                  height,
+    return QImage(reinterpret_cast<const unsigned char *>(sliceBuffer->data()),
+                  static_cast<int>(sliceWidth),
+                  static_cast<int>(sliceHeight),
                   QImage::Format_ARGB32);
 }
 

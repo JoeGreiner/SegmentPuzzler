@@ -686,8 +686,6 @@ void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
         logStorageAfterGraphPhase(*this, QStringLiteral("one_sided_initial_edges"));
     }
     segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges(graphBuildThreadCount);
-    graphBase->pEdgesInitialSegmentsITKSignal->computeExtrema();
-    graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     if (logGraphStorage) {
         logStorageAfterGraphPhase(*this, QStringLiteral("two_sided_initial_edges"));
     }
@@ -829,16 +827,11 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
     graphBase->pEdgesInitialSegmentsImage->FillBuffer(0);
 
 
-    graphBase->colorLookUpEdgesStatus.insert(
-            std::pair<char, std::vector<unsigned char>>(0, {255, 255, 255, 255}));
-    graphBase->colorLookUpEdgesStatus.insert(
-            std::pair<char, std::vector<unsigned char>>(1, {0, 0, 255, 255}));
-    graphBase->colorLookUpEdgesStatus.insert(
-            std::pair<char, std::vector<unsigned char>>(-1, {255, 255, 0, 255}));
-    graphBase->colorLookUpEdgesStatus.insert(
-            std::pair<char, std::vector<unsigned char>>(-2, {255, 0, 0, 255}));
-    graphBase->colorLookUpEdgesStatus.insert(
-            std::pair<char, std::vector<unsigned char>>(2, {0, 255, 0, 255}));
+    graphBase->colorLookUpEdgesStatus.emplace(0, qRgb(255, 255, 255));
+    graphBase->colorLookUpEdgesStatus.emplace(1, qRgb(0, 0, 255));
+    graphBase->colorLookUpEdgesStatus.emplace(-1, qRgb(255, 255, 0));
+    graphBase->colorLookUpEdgesStatus.emplace(-2, qRgb(255, 0, 0));
+    graphBase->colorLookUpEdgesStatus.emplace(2, qRgb(0, 255, 0));
 
 
     if (ownedEdgesSignal == nullptr) {
@@ -848,8 +841,6 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
         ownedEdgesSignal->updateImage(graphBase->pEdgesInitialSegmentsImage);
     }
     graphBase->pEdgesInitialSegmentsITKSignal = ownedEdgesSignal.get();
-    graphBase->pEdgesInitialSegmentsITKSignal->setLUTEdgeMap(&graphBase->edgeStatus,
-                                                             &graphBase->colorLookUpEdgesStatus);
 }
 
 
@@ -1996,11 +1987,6 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
                 graphBase->edgeStatus[edgeEntry.second->numId] = 2;
             }
         }
-    }
-
-    if (graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
-        graphBase->pEdgesInitialSegmentsITKSignal->computeExtrema();
-        graphBase->pEdgesInitialSegmentsITKSignal->calculateLUT();
     }
 
     stats.nextFreeLabel = nextFreeId;
@@ -3402,9 +3388,6 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
             }())
             .arg(joinIds(edgeIdsToMerge)));
     const std::set<SegmentIdType> finalWorkingLabels = mergeEdges(edgeIdsToMerge);
-    if (graphBase->pEdgesInitialSegmentsITKSignal != nullptr) {
-        graphBase->pEdgesInitialSegmentsITKSignal->updateLUTEdge(edgeIdsToMerge);
-    }
 
     if (finalWorkingLabels.size() != plannedRoots.size()) {
         throw std::logic_error(
@@ -4074,9 +4057,6 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
     }
 
     graphBase->selectedSegmentationMaxSegmentId = assignedSegmentationLabels.back();
-    if (graphBase->pSelectedSegmentationSignal != nullptr) {
-        graphBase->pSelectedSegmentationSignal->checkAndResizeLUT(graphBase->selectedSegmentationMaxSegmentId);
-    }
     logGraphDebugIf(
         verbose,
         __func__,

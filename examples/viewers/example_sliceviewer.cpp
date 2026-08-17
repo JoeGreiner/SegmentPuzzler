@@ -39,7 +39,7 @@ int main(int argc, char *argv[]) {
     }
 
     auto pSignal2 = std::make_unique<itkSignal<unsigned short>>(pImage);
-    pSignal2->setLUTCategorical();
+    pSignal2->setCategoricalColorMode();
 
     auto pSignal3 = std::make_unique<SliceViewerITKSignal>(pSignal2.get());
     sliceViewer->addSignal(pSignal3.get());

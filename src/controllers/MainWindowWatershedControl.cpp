@@ -106,7 +106,7 @@ MainWindowWatershedControl::MainWindowWatershedControl(WatershedControl::OutputM
     graphBase->ignoredSegmentLabels = {};
     graphBase->pWorkingSegmentsImage = dataType::SegmentsImageType::Pointer();
     graphBase->pEdgesInitialSegmentsImage = dataType::EdgeImageType::Pointer();
-    graphBase->colorLookUpEdgesStatus = std::unordered_map<char, std::vector<unsigned char>>();
+    graphBase->colorLookUpEdgesStatus = std::unordered_map<char, QRgb>();
     graphBase->edgeStatus = std::unordered_map<dataType::MappedEdgeIdType, char>();
 
     ownedGraph = std::make_unique<Graph>(graphBase);
