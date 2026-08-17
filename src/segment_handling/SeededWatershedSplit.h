@@ -19,7 +19,7 @@ namespace segment_puzzler {
 using SeededSplitMaskImage = itk::Image<unsigned char, 3>;
 using SeededSplitDistanceImage = itk::Image<float, 3>;
 using SeededSplitMarkerImage = dataType::SegmentsImageType;
-inline constexpr double kDefaultSeededSplitSmoothingSigmaPixels = 0.5;
+inline constexpr double kDefaultSeededSplitSmoothingSigmaPixels = 2.0;
 inline constexpr double kDefaultSeededSplitCompactness =
     kDefaultFastMarkerWatershedCompactness;
 
