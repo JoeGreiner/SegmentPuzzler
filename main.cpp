@@ -16,7 +16,11 @@
 #include <sys/stat.h>
 #include <cstdlib>
 #include <clocale>
+#include <functional>
+#include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include <vtkSMPTools.h>
 
@@ -36,6 +40,34 @@ bool checkIfPathExists(const QString &s)
 {
     struct stat buffer{};
     return (stat (s.toStdString().c_str(), &buffer) == 0);
+}
+
+using StartupSegmentation = std::pair<QString, QString>;
+
+void loadStartupSegmentations(
+    SignalControl *signalControl,
+    const std::shared_ptr<const std::vector<StartupSegmentation>> &segmentations,
+    std::size_t index,
+    const std::function<void()> &then)
+{
+    if (index >= segmentations->size()) {
+        then();
+        return;
+    }
+
+    const auto &[path, name] = segmentations->at(index);
+    signalControl->loadSegmentationVolume(
+        path,
+        name,
+        [signalControl, segmentations, index, then, path](SignalControl::LoadResult result) {
+            if (!result) {
+                SP_LOG_WARNING(
+                    "app",
+                    QStringLiteral("Could not load startup segmentation %1; continuing")
+                        .arg(path));
+            }
+            loadStartupSegmentations(signalControl, segmentations, index + 1, then);
+        });
 }
 
 std::optional<segment_puzzler::app_logging::LogLevel> parseLogLevelOverride(const QString &rawValue) {
@@ -188,15 +220,14 @@ int main(int argc, char *argv[]) {
 
     bool loadSegment = false, segmentNameIsGiven = false;
     bool imageNameIsGiven = false;
-    bool segmentationNameIsGiven = false;
     bool boundaryNameIsGiven = false;
     bool refinementNameIsGiven = false;
 
     QString pathToSegment, segmentName;
     QString pathToImage, imageName;
-    QString pathToSegmentation, segmentationName;
     QString pathToBoundary, boundaryName;
     QString pathToRefinement, refinementName;
+    std::vector<StartupSegmentation> startupSegmentations;
 
     if (argc >= 2) {
         for (int i = 1; i < argc; ++i) {
@@ -204,7 +235,7 @@ int main(int argc, char *argv[]) {
                 std::cout << "SegmentPuzzler\n"
                              "\t\t [--segments $path_to_segments [$display_name_segments]]\n";
                 std::cout << "\t\t [--image $path_to_image [$display_name_image]]\n";
-                std::cout << "\t\t [--segmentation $path_to_segmentation [$display_name_segmentation]]\n";
+                std::cout << "\t\t [--segmentation $path_to_segmentation [$display_name_segmentation]] ...\n";
                 std::cout << "\t\t [--boundary $path_to_boundary [$display_name_boundary]]\n";
                 std::cout << "\t\t [--refinement $path_to_refinement [$display_name_refinement]]\n";
                 std::cout << "\t\t [--log-level trace|debug|info|warning|error]\n";
@@ -241,16 +272,17 @@ int main(int argc, char *argv[]) {
                     pathToImage.clear();
                 }
             } else if ((argument == "--segmentation") && (i + 1 < argc)) {
-                pathToSegmentation = QString(argv[i+1]);
-                SP_LOG_INFO("app", QStringLiteral("Startup segmentation path=%1").arg(pathToSegmentation));
-                segmentationNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                if (segmentationNameIsGiven) {
+                const QString segmentationPath = QString(argv[i+1]);
+                QString segmentationName;
+                SP_LOG_INFO("app", QStringLiteral("Startup segmentation path=%1").arg(segmentationPath));
+                if (return_string_if_valid_option(argc, argv, i+2)) {
                     segmentationName = argv[i+2];
                     SP_LOG_INFO("app", QStringLiteral("Startup segmentation displayName=%1").arg(segmentationName));
                 }
-                if (!checkIfPathExists(pathToSegmentation)) {
-                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segmentation path=%1, skipping").arg(pathToSegmentation));
-                    pathToSegmentation.clear();
+                if (!checkIfPathExists(segmentationPath)) {
+                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segmentation path=%1, skipping").arg(segmentationPath));
+                } else {
+                    startupSegmentations.emplace_back(segmentationPath, segmentationName);
                 }
             } else if ((argument == "--boundary") && (i + 1 < argc)) {
                 pathToBoundary = QString(argv[i+1]);
@@ -280,78 +312,77 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    auto loadData = [myMainWindow,
+                     pathToImage,
+                     imageName,
+                     startupSegmentations,
+                     pathToBoundary,
+                     boundaryName,
+                     pathToRefinement,
+                     refinementName]() {
+        auto loadRefinement = [myMainWindow, pathToRefinement, refinementName]() {
+            if (!pathToRefinement.isEmpty()) {
+                myMainWindow->mySignalControl->loadRefinement(pathToRefinement, refinementName);
+            }
+        };
+
+        auto loadBoundary = [myMainWindow, pathToBoundary, boundaryName, loadRefinement]() {
+            if (!pathToBoundary.isEmpty()) {
+                myMainWindow->mySignalControl->loadMembraneProbabilityAsync(
+                    pathToBoundary,
+                    boundaryName,
+                    SignalControl::BoundaryLoadMode::BoundaryOnly,
+                    SignalControl::FloatBoundaryConversionMode::CastValues,
+                    [loadRefinement, pathToBoundary](SignalControl::LoadResult boundaryIndex) {
+                        if (!boundaryIndex) {
+                            SP_LOG_WARNING(
+                                "app",
+                                QStringLiteral("Could not load startup boundary %1; continuing")
+                                    .arg(pathToBoundary));
+                        }
+                        loadRefinement();
+                    });
+            } else {
+                loadRefinement();
+            }
+        };
+
+        const auto segmentations =
+            std::make_shared<const std::vector<StartupSegmentation>>(startupSegmentations);
+        auto loadSegmentations = [myMainWindow, segmentations, loadBoundary]() {
+            loadStartupSegmentations(
+                myMainWindow->mySignalControl, segmentations, 0, loadBoundary);
+        };
+
+        if (!pathToImage.isEmpty()) {
+            myMainWindow->mySignalControl->addImageAsync(
+                pathToImage,
+                imageName,
+                [loadSegmentations](SignalControl::LoadResult imageIndex) {
+                    if (!imageIndex) {
+                        return;
+                    }
+                    loadSegmentations();
+                });
+        } else {
+            loadSegmentations();
+        }
+    };
+
     if (loadSegment && !pathToSegment.isEmpty()) {
         myMainWindow->mySignalControl->addSegmentsGraphAsync(
             pathToSegment,
-            [myMainWindow,
-             pathToImage,
-             imageName,
-             pathToSegmentation,
-             segmentationName,
-             pathToBoundary,
-             boundaryName,
-             pathToRefinement,
-             refinementName](SignalControl::LoadResult segmentsIndex) {
+            [loadData, pathToSegment](SignalControl::LoadResult segmentsIndex) {
                 if (!segmentsIndex) {
-                    return;
+                    SP_LOG_WARNING(
+                        "app",
+                        QStringLiteral("Could not load startup supervoxels %1; continuing")
+                            .arg(pathToSegment));
                 }
-
-                auto loadRefinement = [myMainWindow, pathToRefinement, refinementName]() {
-                    if (!pathToRefinement.isEmpty()) {
-                        myMainWindow->mySignalControl->loadRefinement(pathToRefinement, refinementName);
-                    }
-                };
-
-                auto loadBoundary = [myMainWindow, pathToBoundary, boundaryName, loadRefinement]() {
-                    if (!pathToBoundary.isEmpty()) {
-                        myMainWindow->mySignalControl->loadMembraneProbabilityAsync(
-                            pathToBoundary,
-                            boundaryName,
-                            SignalControl::BoundaryLoadMode::BoundaryOnly,
-                            SignalControl::FloatBoundaryConversionMode::CastValues,
-                            [loadRefinement](SignalControl::LoadResult boundaryIndex) {
-                                if (!boundaryIndex) {
-                                    return;
-                                }
-                                loadRefinement();
-                            });
-                    } else {
-                        loadRefinement();
-                    }
-                };
-
-                auto loadSegmentation = [myMainWindow, pathToSegmentation, segmentationName, loadBoundary]() {
-                    if (!pathToSegmentation.isEmpty()) {
-                        myMainWindow->mySignalControl->loadSegmentationVolume(
-                            pathToSegmentation,
-                            segmentationName,
-                            [loadBoundary](SignalControl::LoadResult segmentationIndex) {
-                                if (!segmentationIndex) {
-                                    return;
-                                }
-                                loadBoundary();
-                            });
-                    } else {
-                        loadBoundary();
-                    }
-                };
-
-                if (!pathToImage.isEmpty()) {
-                    myMainWindow->mySignalControl->addImageAsync(
-                        pathToImage,
-                        imageName,
-                        [loadSegmentation](SignalControl::LoadResult imageIndex) {
-                            if (!imageIndex) {
-                                return;
-                            }
-                            loadSegmentation();
-                        });
-                } else {
-                    loadSegmentation();
-                }
+                loadData();
             });
-    } else if (!pathToImage.isEmpty()) {
-        myMainWindow->mySignalControl->addImageAsync(pathToImage, imageName);
+    } else {
+        loadData();
     }
 
     int val = 0;

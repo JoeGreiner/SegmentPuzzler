@@ -187,7 +187,7 @@ In some cases, calling SegmentPuzzler from commandline can be useful. We often u
 SegmentPuzzler
     [--segments $path_to_segments [$display_name_segments]]
     [--image $path_to_image [$display_name_image]]
-    [--segmentation $path_to_segmentation [$display_name_segmentation]]
+    [--segmentation $path_to_segmentation [$display_name_segmentation]] ...
     [--boundary $path_to_boundary [$display_name_boundary]]
     [--refinement $path_to_refinement [$display_name_refinement]]
 ```
