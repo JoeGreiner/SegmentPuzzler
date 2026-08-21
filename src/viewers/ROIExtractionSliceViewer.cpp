@@ -55,36 +55,47 @@ void ROIExtractionSliceViewer::paintEvent(QPaintEvent *event) {
     for (auto *viewer : linkedViewerList) {
         drawOtherViewerSliceIndicator(viewer->getSliceAxis(), viewer->getSliceIndex());
     }
-    painter.drawImage(0, 0, sliceIndicatorImage);
+    clearSliceIndicatorCrossingGap();
+    const bool sliceIndicatorsVisible = !isImageOnlyMode() && !isOverlayOnlyMode();
+    if (sliceIndicatorsVisible) {
+        painter.drawImage(0, 0, sliceIndicatorImage);
+    }
 
-    int dotRadius = 5;
-    int dotAlpha = 255;
+    constexpr qreal displayDotRadius = 4.0;
+    constexpr qreal dotPenWidth = 1.0;
+    constexpr int dotAlpha = 180;
+    const qreal dotRadius = zoomFactor > 0.0 ? displayDotRadius / zoomFactor : displayDotRadius;
 
     QColor xColor = QColor(255, 0, 0, dotAlpha);
     QColor yColor = QColor(0, 255, 0, dotAlpha);
     QColor zColor = QColor(255, 255, 0, dotAlpha);
 
-    switch (sliceAxis) {
-        case 0:
-            painter.setBrush(QBrush(yColor));
-            painter.drawEllipse(QPoint(indexVerticalIndicator, lastMouseY), dotRadius, dotRadius);
-            painter.setBrush(QBrush(zColor));
-            painter.drawEllipse(QPoint(lastMouseZ, indexHorizontalIndicator), dotRadius, dotRadius);
-            break;
-        case 1:
-            painter.setBrush(QBrush(zColor));
-            painter.drawEllipse(QPoint(indexVerticalIndicator, lastMouseZ), dotRadius, dotRadius);
-            painter.setBrush(QBrush(xColor));
-            painter.drawEllipse(QPoint(lastMouseX, indexHorizontalIndicator), dotRadius, dotRadius);
-            break;
-        case 2:
-            painter.setBrush(QBrush(yColor));
-            painter.drawEllipse(QPoint(indexVerticalIndicator, lastMouseY), dotRadius, dotRadius);
-            painter.setBrush(QBrush(xColor));
-            painter.drawEllipse(QPoint(lastMouseX, indexHorizontalIndicator), dotRadius, dotRadius);
-            break;
-        default:
-            throw (std::logic_error("SliceAxis not implemented!"));
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const auto drawIndicatorRing = [&painter, dotRadius](const QPointF &center, const QColor &color) {
+        QPen pen(color, dotPenWidth);
+        pen.setCosmetic(true);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(center, dotRadius, dotRadius);
+    };
+
+    if (sliceIndicatorsVisible) {
+        switch (sliceAxis) {
+            case 0:
+                drawIndicatorRing(QPointF(indexVerticalIndicator, lastMouseY), yColor);
+                drawIndicatorRing(QPointF(lastMouseZ, indexHorizontalIndicator), zColor);
+                break;
+            case 1:
+                drawIndicatorRing(QPointF(indexVerticalIndicator, lastMouseZ), zColor);
+                drawIndicatorRing(QPointF(lastMouseX, indexHorizontalIndicator), xColor);
+                break;
+            case 2:
+                drawIndicatorRing(QPointF(indexVerticalIndicator, lastMouseY), yColor);
+                drawIndicatorRing(QPointF(lastMouseX, indexHorizontalIndicator), xColor);
+                break;
+            default:
+                throw (std::logic_error("SliceAxis not implemented!"));
+        }
     }
 
     double toc = omp_get_wtime();

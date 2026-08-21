@@ -26,6 +26,10 @@
 
 namespace {
 
+constexpr int kSliceIndicatorLineAlpha = 96;
+constexpr double kSliceIndicatorDisplayPenWidth = 1.0;
+constexpr double kSliceIndicatorCrossingGapSize = 12.0;
+
 QString planeNameForSliceAxis(int sliceAxis) {
     switch (sliceAxis) {
         case 0:
@@ -52,9 +56,9 @@ int boundedWidgetExtent(double extent) {
 
 QColor sliceIndicatorColor(int sliceAxis) {
     switch (sliceAxis) {
-        case 0: return {255, 255, 0};
-        case 1: return {0, 255, 0};
-        case 2: return {255, 0, 0};
+        case 0: return {255, 255, 0, kSliceIndicatorLineAlpha};
+        case 1: return {0, 255, 0, kSliceIndicatorLineAlpha};
+        case 2: return {255, 0, 0, kSliceIndicatorLineAlpha};
         default: throw std::out_of_range("Slice axis must be 0, 1, or 2");
     }
 }
@@ -439,7 +443,9 @@ void SliceViewer::paintEvent(QPaintEvent *event) {
     }
     painter.drawImage(targetRect, backGroundImage, backGroundImage.rect());
     drawActiveSignalLayers(painter, targetRect);
-    painter.drawImage(targetRect, sliceIndicatorImage, sliceIndicatorImage.rect());
+    if (!isImageOnlyMode() && !isOverlayOnlyMode()) {
+        painter.drawImage(targetRect, sliceIndicatorImage, sliceIndicatorImage.rect());
+    }
 
     const QString planeName = planeNameForSliceAxis(sliceAxis);
     const QString logKey = QString("SliceViewerPaint_%1").arg(planeName);
@@ -570,7 +576,34 @@ int SliceViewer::sliceIndicatorSourcePenWidth(bool verticalLine) const {
         return 1;
     }
     const double displayScale = static_cast<double>(targetExtent) / sourceExtent;
-    return std::max(1, static_cast<int>(std::ceil(2.0 / displayScale)));
+    return std::max(1, static_cast<int>(std::ceil(kSliceIndicatorDisplayPenWidth / displayScale)));
+}
+
+void SliceViewer::clearSliceIndicatorCrossingGap() {
+    if (sliceIndicatorImage.isNull() || width() <= 0 || height() <= 0) {
+        return;
+    }
+
+    const double scaleX = static_cast<double>(width()) / sliceIndicatorImage.width();
+    const double scaleY = static_cast<double>(height()) / sliceIndicatorImage.height();
+    if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0) {
+        return;
+    }
+
+    const double sourceGapWidth = std::max(1.0, kSliceIndicatorCrossingGapSize / scaleX);
+    const double sourceGapHeight = std::max(1.0, kSliceIndicatorCrossingGapSize / scaleY);
+    const QRectF requestedGap(indexVerticalIndicator - sourceGapWidth / 2.0,
+                              indexHorizontalIndicator - sourceGapHeight / 2.0,
+                              sourceGapWidth,
+                              sourceGapHeight);
+    const QRectF visibleGap = requestedGap.intersected(QRectF(sliceIndicatorImage.rect()));
+    if (visibleGap.isEmpty()) {
+        return;
+    }
+
+    QPainter painter(&sliceIndicatorImage);
+    painter.setCompositionMode(QPainter::CompositionMode_Clear);
+    painter.fillRect(visibleGap, Qt::transparent);
 }
 
 QRect SliceViewer::sliceIndicatorRepaintRect(int otherSliceAxis, int otherSliceIndex) const {

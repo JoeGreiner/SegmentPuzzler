@@ -167,6 +167,7 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
 
     void drawActiveSignalLayers(QPainter &painter, const QRect &targetRect);
+    void clearSliceIndicatorCrossingGap();
 
     QImage backGroundImage;
     QImage sliceIndicatorImage;
