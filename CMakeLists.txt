@@ -445,6 +445,8 @@ endif()
 #configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${SAMPLE_SEGMENTATION_FILE} ${CMAKE_CURRENT_BINARY_DIR}/${SAMPLE_SEGMENTATION_FILE} COPYONLY)
 
 if (BUILD_TESTING)
+    enable_testing()
+
     add_executable(test_SeededWatershedSplit
             examples/viewers/test_seeded_watershed_split.cpp
             src/segment_handling/SeededWatershedSplit.cpp
@@ -562,6 +564,15 @@ if (BUILD_TESTING)
         target_link_libraries(test_BoundaryComponentRelabel OpenMP::OpenMP_CXX)
         target_link_libraries(test_RagRegionMerger OpenMP::OpenMP_CXX)
     endif ()
+
+    add_test(NAME ConnectedComponentSplit
+            COMMAND $<TARGET_FILE:test_ConnectedComponentSplit>)
+    add_test(NAME ITKSignalColorLookup
+            COMMAND $<TARGET_FILE:test_ITKSignalColorLookup>)
+    add_test(NAME SelectedSegmentationAutosave
+            COMMAND $<TARGET_FILE:test_SelectedSegmentationAutosave>)
+    add_test(NAME Projected3DScene
+            COMMAND $<TARGET_FILE:test_Projected3DCut> --scene-only)
 #    target_link_libraries(test_customwatershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershedControl ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
