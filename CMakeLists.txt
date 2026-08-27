@@ -174,11 +174,13 @@ endif ()
 
 if (RUN_WITH_ASAN)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g -O1)
+    string(APPEND CMAKE_EXE_LINKER_FLAGS " -fsanitize=address")
     MESSAGE(STATUS "Running with Address Sanitizer")
 endif ()
 
 if (RUN_WITH_TSAN)
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g -O1)
+    string(APPEND CMAKE_EXE_LINKER_FLAGS " -fsanitize=thread")
     MESSAGE(STATUS "Running with Thread Sanitizer")
 endif ()
 
