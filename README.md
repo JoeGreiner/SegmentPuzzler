@@ -186,12 +186,12 @@ In some cases, calling SegmentPuzzler from commandline can be useful. We often u
 ```bash
 SegmentPuzzler
     [--segments $path_to_segments [$display_name_segments]]
-    [--image $path_to_image [$display_name_image]]
+    [--image $path_to_image [$display_name_image]] ...
     [--segmentation $path_to_segmentation [$display_name_segmentation]] ...
     [--boundary $path_to_boundary [$display_name_boundary]]
     [--refinement $path_to_refinement [$display_name_refinement]]
 ```
-`--image` can be used on its own to open a 3D volume as an XY/XZ/YZ image viewer.
+`--image` and `--segmentation` can both be repeated to load multiple 3D volumes.
 </details>
 
 <details>

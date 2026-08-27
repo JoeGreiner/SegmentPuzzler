@@ -42,31 +42,46 @@ bool checkIfPathExists(const QString &s)
     return (stat (s.toStdString().c_str(), &buffer) == 0);
 }
 
-using StartupSegmentation = std::pair<QString, QString>;
+struct StartupVolume {
+    QString path;
+    QString name;
+};
 
-void loadStartupSegmentations(
-    SignalControl *signalControl,
-    const std::shared_ptr<const std::vector<StartupSegmentation>> &segmentations,
+using StartupVolumeLoader =
+    std::function<void(const StartupVolume &, SignalControl::LoadCallback)>;
+
+void loadStartupVolumesSequentially(
+    const std::shared_ptr<const std::vector<StartupVolume>> &volumes,
     std::size_t index,
-    const std::function<void()> &then)
+    StartupVolumeLoader load,
+    std::function<void()> then)
 {
-    if (index >= segmentations->size()) {
-        then();
+    if (index >= volumes->size()) {
+        if (then) {
+            then();
+        }
         return;
     }
 
-    const auto &[path, name] = segmentations->at(index);
-    signalControl->loadSegmentationVolume(
-        path,
-        name,
-        [signalControl, segmentations, index, then, path](SignalControl::LoadResult result) {
+    const StartupVolume &volume = volumes->at(index);
+    const QString path = volume.path;
+    StartupVolumeLoader nextLoader = load;
+    std::function<void()> remainingStages = std::move(then);
+    load(
+        volume,
+        [volumes,
+         index,
+         load = std::move(nextLoader),
+         then = std::move(remainingStages),
+         path](SignalControl::LoadResult result) mutable {
             if (!result) {
                 SP_LOG_WARNING(
                     "app",
-                    QStringLiteral("Could not load startup segmentation %1; continuing")
+                    QStringLiteral("Could not load startup volume %1; continuing")
                         .arg(path));
             }
-            loadStartupSegmentations(signalControl, segmentations, index + 1, then);
+            loadStartupVolumesSequentially(
+                volumes, index + 1, std::move(load), std::move(then));
         });
 }
 
@@ -219,22 +234,21 @@ int main(int argc, char *argv[]) {
     myMainWindow->show();
 
     bool loadSegment = false, segmentNameIsGiven = false;
-    bool imageNameIsGiven = false;
     bool boundaryNameIsGiven = false;
     bool refinementNameIsGiven = false;
 
     QString pathToSegment, segmentName;
-    QString pathToImage, imageName;
     QString pathToBoundary, boundaryName;
     QString pathToRefinement, refinementName;
-    std::vector<StartupSegmentation> startupSegmentations;
+    std::vector<StartupVolume> startupImages;
+    std::vector<StartupVolume> startupSegmentations;
 
     if (argc >= 2) {
         for (int i = 1; i < argc; ++i) {
             if (std::string(argv[i]) == "--help") {
                 std::cout << "SegmentPuzzler\n"
                              "\t\t [--segments $path_to_segments [$display_name_segments]]\n";
-                std::cout << "\t\t [--image $path_to_image [$display_name_image]]\n";
+                std::cout << "\t\t [--image $path_to_image [$display_name_image]] ...\n";
                 std::cout << "\t\t [--segmentation $path_to_segmentation [$display_name_segmentation]] ...\n";
                 std::cout << "\t\t [--boundary $path_to_boundary [$display_name_boundary]]\n";
                 std::cout << "\t\t [--refinement $path_to_refinement [$display_name_refinement]]\n";
@@ -260,16 +274,17 @@ int main(int argc, char *argv[]) {
                     pathToSegment.clear();
                 }
             } else if ((argument == "--image") && (i + 1 < argc)) {
-                pathToImage = QString(argv[i+1]);
-                SP_LOG_INFO("app", QStringLiteral("Startup image path=%1").arg(pathToImage));
-                imageNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                if (imageNameIsGiven) {
+                const QString imagePath = QString(argv[i+1]);
+                QString imageName;
+                SP_LOG_INFO("app", QStringLiteral("Startup image path=%1").arg(imagePath));
+                if (return_string_if_valid_option(argc, argv, i+2)) {
                     imageName = argv[i+2];
                     SP_LOG_INFO("app", QStringLiteral("Startup image displayName=%1").arg(imageName));
                 }
-                if (!checkIfPathExists(pathToImage)) {
-                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup image path=%1, skipping").arg(pathToImage));
-                    pathToImage.clear();
+                if (!checkIfPathExists(imagePath)) {
+                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup image path=%1, skipping").arg(imagePath));
+                } else {
+                    startupImages.push_back({imagePath, imageName});
                 }
             } else if ((argument == "--segmentation") && (i + 1 < argc)) {
                 const QString segmentationPath = QString(argv[i+1]);
@@ -282,7 +297,7 @@ int main(int argc, char *argv[]) {
                 if (!checkIfPathExists(segmentationPath)) {
                     SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segmentation path=%1, skipping").arg(segmentationPath));
                 } else {
-                    startupSegmentations.emplace_back(segmentationPath, segmentationName);
+                    startupSegmentations.push_back({segmentationPath, segmentationName});
                 }
             } else if ((argument == "--boundary") && (i + 1 < argc)) {
                 pathToBoundary = QString(argv[i+1]);
@@ -313,8 +328,7 @@ int main(int argc, char *argv[]) {
     }
 
     auto loadData = [myMainWindow,
-                     pathToImage,
-                     imageName,
+                     startupImages,
                      startupSegmentations,
                      pathToBoundary,
                      boundaryName,
@@ -348,25 +362,27 @@ int main(int argc, char *argv[]) {
         };
 
         const auto segmentations =
-            std::make_shared<const std::vector<StartupSegmentation>>(startupSegmentations);
+            std::make_shared<const std::vector<StartupVolume>>(startupSegmentations);
         auto loadSegmentations = [myMainWindow, segmentations, loadBoundary]() {
-            loadStartupSegmentations(
-                myMainWindow->mySignalControl, segmentations, 0, loadBoundary);
+            auto loadSegmentation = [signalControl = myMainWindow->mySignalControl](
+                                        const StartupVolume &volume,
+                                        SignalControl::LoadCallback then) {
+                signalControl->loadSegmentationVolume(
+                    volume.path, volume.name, std::move(then));
+            };
+            loadStartupVolumesSequentially(
+                segmentations, 0, std::move(loadSegmentation), loadBoundary);
         };
 
-        if (!pathToImage.isEmpty()) {
-            myMainWindow->mySignalControl->addImageAsync(
-                pathToImage,
-                imageName,
-                [loadSegmentations](SignalControl::LoadResult imageIndex) {
-                    if (!imageIndex) {
-                        return;
-                    }
-                    loadSegmentations();
-                });
-        } else {
-            loadSegmentations();
-        }
+        const auto images =
+            std::make_shared<const std::vector<StartupVolume>>(startupImages);
+        auto loadImage = [signalControl = myMainWindow->mySignalControl](
+                             const StartupVolume &volume,
+                             SignalControl::LoadCallback then) {
+            signalControl->addImageAsync(volume.path, volume.name, std::move(then));
+        };
+        loadStartupVolumesSequentially(
+            images, 0, std::move(loadImage), loadSegmentations);
     };
 
     if (loadSegment && !pathToSegment.isEmpty()) {
