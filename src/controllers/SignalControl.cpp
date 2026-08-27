@@ -1694,6 +1694,19 @@ void SignalControl::invokeLoadCallbackLater(LoadCallback then, LoadResult result
     });
 }
 
+void SignalControl::invokeLoadCallbackOnce(
+    const std::shared_ptr<LoadCallback> &then,
+    LoadResult result)
+{
+    if (then == nullptr || !*then) {
+        return;
+    }
+
+    LoadCallback callback = std::move(*then);
+    *then = {};
+    invokeLoadCallbackLater(std::move(callback), std::move(result));
+}
+
 SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
                                                             bool forceSegmentDataTypeUInt,
                                                             itk::ImageIOBase::IOComponentType forcedDataType) {
@@ -2019,6 +2032,7 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
         return;
     }
 
+    const auto completion = std::make_shared<LoadCallback>(std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading image..."),
         [this, fileName, spacingOverride = spacingDecision.spacingOverride]() {
@@ -2030,22 +2044,22 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
             }
             return loadedImage;
         },
-        [this, fileName, displayedName, then = std::move(then)](LoadedImageData loadedImage) mutable {
+        [this, fileName, displayedName, completion](LoadedImageData loadedImage) {
             if (loadedImage.layers.empty()) {
-                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                invokeLoadCallbackOnce(completion, std::nullopt);
                 return;
             }
 
             const itk::ImageBase<3> *image = asImageBase(loadedImage.layers.front().image);
             if (image == nullptr) {
-                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                invokeLoadCallbackOnce(completion, std::nullopt);
                 return;
             }
 
             const auto dimensions = image->GetLargestPossibleRegion().GetSize();
             if (!dimensionsMatchExpectedDimensions(dimensions[0], dimensions[1], dimensions[2], true)) {
                 reportDimensionMismatch(dimensions[0], dimensions[1], dimensions[2], true);
-                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                invokeLoadCallbackOnce(completion, std::nullopt);
                 return;
             }
 
@@ -2076,10 +2090,11 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
             if (insertedAllLayers) {
                 rememberLoadedSourceFile(fileName);
             }
-            invokeLoadCallbackLater(
-                std::move(then),
+            invokeLoadCallbackOnce(
+                completion,
                 insertedAllLayers ? firstSignalIndex : std::nullopt);
-        });
+        },
+        [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
 SignalControl::GraphSegmentImageType::Pointer SignalControl::duplicateSegmentationAndBuildWorkingSegments(
@@ -2126,6 +2141,7 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
 
     const bool hadWorkingSegments = hasWorkingSegments();
     const auto expectedDimensions = expectedDimensionsForNewSignal(hadWorkingSegments);
+    const auto completion = std::make_shared<LoadCallback>(std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading segmentation..."),
         [this,
@@ -2149,11 +2165,11 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
             }
             return result;
         },
-        [this, fileName, displayedName, hadWorkingSegments, then = std::move(then)](SegmentationLoadResultData result) mutable {
+        [this, fileName, displayedName, hadWorkingSegments, completion](SegmentationLoadResultData result) {
             if (result.dimensionMismatch && result.segmentationImage != nullptr) {
                 const auto dimensions = imageDimensions(result.segmentationImage);
                 reportDimensionMismatch(dimensions.x, dimensions.y, dimensions.z, hadWorkingSegments);
-                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                invokeLoadCallbackOnce(completion, std::nullopt);
                 return;
             }
 
@@ -2174,8 +2190,9 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
                 }
                 registerSegmentationSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
             }
-            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
-        });
+            invokeLoadCallbackOnce(completion, ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        },
+        [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
 void SignalControl::loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then) {
@@ -2190,6 +2207,7 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
         return;
     }
 
+    const auto completion = std::make_shared<LoadCallback>(std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading refinement..."),
         [fileName, spacingOverride = spacingDecision.spacingOverride]() mutable {
@@ -2197,15 +2215,16 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
             applyVoxelSpacingOverride(image.GetPointer(), spacingOverride);
             return image;
         },
-        [this, fileName, displayedName, then = std::move(then)](GraphSegmentImageType::Pointer pImage) mutable {
+        [this, fileName, displayedName, completion](GraphSegmentImageType::Pointer pImage) {
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, true);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
                 registerRefinementSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
             }
-            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
-        });
+            invokeLoadCallbackOnce(completion, ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        },
+        [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
 void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
@@ -2226,6 +2245,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
     };
 
     const auto expectedDimensions = expectedDimensionsForNewSignal(false);
+    const auto completion = std::make_shared<LoadCallback>(std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading supervoxels and building graph..."),
         [this,
@@ -2250,11 +2270,11 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             graphBase->pGraph->constructFromVolume(pImage);
             return result;
         },
-        [this, fileName, then = std::move(then)](SegmentsGraphLoadResult result) mutable {
+        [this, fileName, completion](SegmentsGraphLoadResult result) {
             if (result.dimensionMismatch && result.image != nullptr) {
                 const auto dimensions = imageDimensions(result.image);
                 reportDimensionMismatch(dimensions.x, dimensions.y, dimensions.z, false);
-                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                invokeLoadCallbackOnce(completion, std::nullopt);
                 return;
             }
 
@@ -2268,8 +2288,9 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             } else {
                 QMessageBox::critical(this, tr("Error"), tr("Failed to load the supervoxels."));
             }
-            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
-        });
+            invokeLoadCallbackOnce(completion, ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        },
+        [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
 void SignalControl::loadMembraneProbabilityAsync(QString fileName,
@@ -2290,6 +2311,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
 
     const bool createEmptySegments = loadMode == BoundaryLoadMode::CreateEmptySegments;
     const auto expectedDimensions = expectedDimensionsForNewSignal(false);
+    const auto completion = std::make_shared<LoadCallback>(std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading boundaries..."),
         [this,
@@ -2337,7 +2359,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
             }
             return result;
         },
-        [this, fileName, displayedName, createEmptySegments, then = std::move(then)](BoundaryLoadResult result) mutable {
+        [this, fileName, displayedName, createEmptySegments, completion](BoundaryLoadResult result) {
             size_t signalIndexGlobal = 0;
             bool ok = insertTypedImage<dataType::BoundaryVoxelType>(
                 result.boundaryImage,
@@ -2354,8 +2376,9 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                 }
                 registerBoundarySignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
             }
-            invokeLoadCallbackLater(std::move(then), ok ? LoadResult{signalIndexGlobal} : std::nullopt);
-        });
+            invokeLoadCallbackOnce(completion, ok ? LoadResult{signalIndexGlobal} : std::nullopt);
+        },
+        [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
 void SignalControl::addImage(QString fileName, QString displayedName) {

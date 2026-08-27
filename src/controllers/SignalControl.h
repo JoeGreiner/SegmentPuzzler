@@ -429,6 +429,8 @@ private:
     void rememberLoadedSourceFile(const QString &fileName);
     QString suggestedSegmentationExportPath(const QString &storedDefaultSavePath) const;
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
+    void invokeLoadCallbackOnce(const std::shared_ptr<LoadCallback> &then,
+                                LoadResult result);
     GraphSegmentImageType::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage);
     std::optional<slice_geometry::Dimensions3D> expectedDimensionsForNewSignal(bool forceShapeOfSegments) const;
     bool dimensionsMatchExpectedDimensions(unsigned long dimX,
