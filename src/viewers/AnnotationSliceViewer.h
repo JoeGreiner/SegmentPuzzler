@@ -41,6 +41,10 @@ public:
     void setDeleteSelectedSegmentationLabelHandler(
         DeleteSelectedSegmentationLabelHandler handler);
     void setAnnotationSelection(dataType::SegmentIdType label, const QColor &color);
+    bool show3DSplitViewForLabel(dataType::SegmentIdType labelId,
+                                 int launchSliceAxis = -1,
+                                 const Roi &cachedBounds = {},
+                                 std::uint64_t boundsModifiedTime = 0);
 
     itk::Image<unsigned char, 3>::Pointer pThresholdedBoundaries;
     itkSignalBase * pThresholdedBoundariesSignal;
@@ -164,6 +168,9 @@ private:
                               const Roi &bounds);
     void show3DSegmentView(int posX, int posY);
     bool show3DSplitView(int posX, int posY);
+    bool show3DSplitViewAtIndex(
+        const dataType::SegmentsImageType::IndexType &selectedIndex,
+        int launchSliceAxis);
     bool handleWorkingSegmentResolution(const Graph::WorkingSegmentResolution &resolution);
     void refreshWorkingGraphPresentationAfterInsertion();
     void show3DAllLabelsView();

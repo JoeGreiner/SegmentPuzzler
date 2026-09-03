@@ -92,14 +92,27 @@ std::tuple<long, long, long, long, long, long> utils::calculateBoundingBoxForLab
 bool utils::findRepresentativeVoxelForLabel(
         typename dataType::SegmentsImageType::Pointer segmentationImage,
         dataType::SegmentIdType labelValue,
-        itk::Index<3> &indexOut
+        itk::Index<3> &indexOut,
+        const Roi &cachedBounds,
+        std::uint64_t boundsModifiedTime
 ) {
     if (segmentationImage == nullptr || labelValue == 0) {
         return false;
     }
 
-    const auto &fullRegion = segmentationImage->GetLargestPossibleRegion();
-    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(segmentationImage, fullRegion);
+    auto searchRegion = segmentationImage->GetLargestPossibleRegion();
+    if (boundsModifiedTime == segmentationImage->GetMTime()
+        && cachedBounds.minX <= cachedBounds.maxX
+        && cachedBounds.minY <= cachedBounds.maxY
+        && cachedBounds.minZ <= cachedBounds.maxZ) {
+        const itk::Index<3> first{{cachedBounds.minX, cachedBounds.minY, cachedBounds.minZ}};
+        const itk::Index<3> last{{cachedBounds.maxX, cachedBounds.maxY, cachedBounds.maxZ}};
+        if (searchRegion.IsInside(first) && searchRegion.IsInside(last)) {
+            searchRegion.SetIndex(first);
+            searchRegion.SetUpperIndex(last);
+        }
+    }
+    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(segmentationImage, searchRegion);
 
     double sumX = 0.0;
     double sumY = 0.0;

@@ -44,6 +44,8 @@ public:
     using LabelWithColor = std::pair<dataType::SegmentIdType, quint32>;
     using NavigateToLabelHandler = std::function<void(dataType::SegmentIdType)>;
     using DeleteLabelHandler = std::function<bool(dataType::SegmentIdType)>;
+    using OpenSplitHandler =
+        std::function<bool(dataType::SegmentIdType, const Roi &, std::uint64_t)>;
     using RequestLabelHandler = std::function<void(dataType::SegmentIdType, const Roi &)>;
     using LabelActivatedHandler = std::function<void(dataType::SegmentIdType)>;
 
@@ -66,6 +68,7 @@ public:
         std::vector<PreparedMesh> meshes;
         std::vector<dataType::SegmentIdType> navigationLabels;
         std::map<dataType::SegmentIdType, Roi> navigationBounds;
+        std::uint64_t navigationBoundsModifiedTime = 0;
         bool navigationCatalogComplete = false;
         std::array<double, 3> sceneCenterWorld{0.0, 0.0, 0.0};
         double sceneExtent = 1.0;
@@ -101,6 +104,7 @@ public:
         std::vector<dataType::SegmentIdType> labels;
         RequestLabelHandler requestLabel;
         DeleteLabelHandler deleteLabel;
+        OpenSplitHandler openSplit;
         LabelActivatedHandler labelActivated;
     };
 
@@ -184,6 +188,7 @@ private:
     void setOrbitEnabled(bool enabled);
     void advanceOrbit();
     bool deleteCurrentLabel();
+    bool openCurrentLabelInSplitView();
     bool removeLabelActor(dataType::SegmentIdType labelId);
     void updateSingleLabelNavigationUiState();
     void armSeedPlacement(int seedNumber);
@@ -276,10 +281,12 @@ private:
     std::array<std::vector<vtkSmartPointer<vtkActor>>, 2> m_seedActors;
     NavigateToLabelHandler m_navigateToLabelHandler;
     DeleteLabelHandler m_deleteLabelHandler;
+    OpenSplitHandler m_openSplitHandler;
     RequestLabelHandler m_requestLabelHandler;
     LabelActivatedHandler m_labelActivatedHandler;
     std::vector<dataType::SegmentIdType> m_navigationLabels;
     std::map<dataType::SegmentIdType, Roi> m_navigationBounds;
+    std::uint64_t m_navigationBoundsModifiedTime = 0;
     std::map<dataType::SegmentIdType, PreparedScene> m_preparedSceneCache;
     std::set<dataType::SegmentIdType> m_unavailableSceneLabels;
     dataType::SegmentIdType m_pendingSceneLabel = 0;

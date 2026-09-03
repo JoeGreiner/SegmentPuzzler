@@ -4,6 +4,8 @@
 #include <iostream>
 #include <src/file_definitions/dataTypes.h>
 #include <itkIndex.h>
+#include "roi.h"
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include <QString>
@@ -29,7 +31,9 @@ namespace utils {
     bool findRepresentativeVoxelForLabel(
             typename dataType::SegmentsImageType::Pointer segmentationImage,
             dataType::SegmentIdType labelValue,
-            itk::Index<3> &indexOut);
+            itk::Index<3> &indexOut,
+            const Roi &cachedBounds = {},
+            std::uint64_t boundsModifiedTime = 0);
 
     std::unordered_set<SegmentIdType> findPresentLabels(
             const dataType::SegmentsImageType::Pointer &segmentationImage,

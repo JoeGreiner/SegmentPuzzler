@@ -1649,6 +1649,7 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
 
     const auto &size = segImage->GetLargestPossibleRegion().GetSize();
     const std::vector<LabelWithColor> requestedLabels{label};
+    const auto boundsModifiedTime = segImage->GetMTime();
     const auto scanStartedAt = QDateTime::currentMSecsSinceEpoch();
     auto scan = scanAllLabelsAndBounds(
         segImage->GetBufferPointer(),
@@ -1671,6 +1672,7 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
     }
 
     preparedScene.navigationCatalogComplete = true;
+    preparedScene.navigationBoundsModifiedTime = boundsModifiedTime;
     preparedScene.navigationLabels = std::move(scan.labels);
     for (const auto &[labelId, labelBounds] : scan.boundsByLabel) {
         preparedScene.navigationBounds.emplace(labelId, roiFromBounds(labelBounds));
@@ -2025,6 +2027,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
     , m_originalSeededSplitScene(
           m_seededSplitSession.session != nullptr ? preparedScene : PreparedScene{})
     , m_navigationBounds(std::move(preparedScene.navigationBounds))
+    , m_navigationBoundsModifiedTime(preparedScene.navigationBoundsModifiedTime)
     , m_launchSliceAxis(launchSliceAxis)
 {
     setWindowTitle(preparedScene.windowTitle);
@@ -2685,7 +2688,19 @@ void Segment3DViewerDialog::setSingleLabelSession(SingleLabelSessionConfig sessi
     m_navigationLabels = std::move(session.labels);
     m_requestLabelHandler = std::move(session.requestLabel);
     m_labelActivatedHandler = std::move(session.labelActivated);
+    m_openSplitHandler = std::move(session.openSplit);
     setDeleteLabelHandler(std::move(session.deleteLabel));
+
+    if (m_openSplitHandler) {
+        if (auto *helpLabel = findChild<QLabel *>(
+                QStringLiteral("threeDViewHelpBadge"));
+            helpLabel != nullptr) {
+            helpLabel->setToolTip(
+                helpLabel->toolTip()
+                + QStringLiteral(
+                    "\nPress W to open the current segment in the 3D split view."));
+        }
+    }
 
     QHBoxLayout *controlsRow = ensureControlsRow();
     if (controlsRow == nullptr) {
@@ -2955,6 +2970,27 @@ bool Segment3DViewerDialog::deleteCurrentLabel() {
     return true;
 }
 
+bool Segment3DViewerDialog::openCurrentLabelInSplitView() {
+    if (m_targetLabelId == 0 || m_segmentActors.size() != 1
+        || !m_requestLabelHandler || !m_openSplitHandler) {
+        return false;
+    }
+    // Consume W while a neighboring segment is being prepared so that the
+    // split always receives the segment that is visibly active.
+    if (m_singleLabelNavigationBusy || m_pendingSceneLabel != 0) {
+        return true;
+    }
+
+    const auto bounds = m_navigationBounds.find(m_targetLabelId);
+    if (m_openSplitHandler(
+            m_targetLabelId,
+            bounds == m_navigationBounds.end() ? Roi{} : bounds->second,
+            m_navigationBoundsModifiedTime)) {
+        close();
+    }
+    return true;
+}
+
 void Segment3DViewerDialog::setSingleLabelNavigationBusy(
     bool busy,
     dataType::SegmentIdType pendingLabelId)
@@ -3088,6 +3124,7 @@ bool Segment3DViewerDialog::acceptPreparedScene(PreparedScene preparedScene) {
             rebuiltLabels.end());
         m_navigationLabels = std::move(rebuiltLabels);
         m_navigationBounds = std::move(preparedScene.navigationBounds);
+        m_navigationBoundsModifiedTime = preparedScene.navigationBoundsModifiedTime;
         m_preparedSceneCache.clear();
         m_unavailableSceneLabels.clear();
         SP_LOG_INFO(
@@ -3295,6 +3332,11 @@ bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
                     event->accept();
                     return true;
                 }
+            }
+            if (keyEvent->key() == Qt::Key_W && !keyEvent->isAutoRepeat()
+                && openCurrentLabelInSplitView()) {
+                event->accept();
+                return true;
             }
             if (keyEvent->key() == Qt::Key_D && !keyEvent->isAutoRepeat()) {
                 if (deleteCurrentLabel()) {

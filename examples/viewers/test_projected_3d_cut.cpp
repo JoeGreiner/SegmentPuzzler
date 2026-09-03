@@ -22,6 +22,7 @@
 
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/viewers/itkSignalBase.h"
+#include "src/utils/utils.h"
 #include "projected_3d_cut_sample_utils.h"
 
 namespace {
@@ -152,6 +153,38 @@ bool labelIsConnectedInImage(const dataType::SegmentsImageType::Pointer &image, 
     }
 
     return visitedLabelCount == totalLabelCount;
+}
+
+int testRepresentativeVoxelBounds() {
+    auto image = dataType::SegmentsImageType::New();
+    image->SetRegions({{0, 0, 0}, {10, 3, 3}});
+    image->Allocate();
+    image->FillBuffer(0);
+    image->SetPixel({2, 1, 1}, 1);
+    image->SetPixel({4, 1, 1}, 1);
+    Roi bounds(Voxel(2, 1, 1));
+    bounds.updateBoundingRoi(Voxel(4, 1, 1));
+    const auto boundsModifiedTime = image->GetMTime();
+    itk::Index<3> fullIndex, boundedIndex;
+    if (!utils::findRepresentativeVoxelForLabel(image, 1, fullIndex)
+        || !utils::findRepresentativeVoxelForLabel(
+            image, 1, boundedIndex, bounds, boundsModifiedTime)
+        || fullIndex != boundedIndex || boundedIndex != itk::Index<3>{{2, 1, 1}}
+        || !utils::findRepresentativeVoxelForLabel(
+            image, 1, boundedIndex, {}, boundsModifiedTime)
+        || fullIndex != boundedIndex) {
+        return failTest("Cached bounds must preserve the centroid search and tie order.");
+    }
+
+    image->SetPixel({6, 1, 1}, 1);
+    image->Modified();
+    if (!utils::findRepresentativeVoxelForLabel(image, 1, fullIndex)
+        || !utils::findRepresentativeVoxelForLabel(
+            image, 1, boundedIndex, bounds, boundsModifiedTime)
+        || fullIndex != boundedIndex || boundedIndex != itk::Index<3>{{4, 1, 1}}) {
+        return failTest("Stale bounds must fall back to the full image.");
+    }
+    return 0;
 }
 
 int testExplodedMeshSplit() {
@@ -413,6 +446,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (const int boundsTestResult = testRepresentativeVoxelBounds(); boundsTestResult != 0) {
+        return boundsTestResult;
+    }
     if (const int explodeTestResult = testExplodedMeshSplit(); explodeTestResult != 0) {
         return explodeTestResult;
     }

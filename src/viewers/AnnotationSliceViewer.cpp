@@ -794,6 +794,22 @@ void AnnotationSliceViewer::openPrepared3DView(Segment3DViewerDialog::PreparedSc
                 }
             };
         session.deleteLabel = std::move(deleteLabel);
+        if (graphBase != nullptr
+            && navigationImage == graphBase->pSelectedSegmentation) {
+            session.openSplit =
+                [this, navigationImage, launchSliceAxis](
+                    dataType::SegmentIdType labelId, const Roi &bounds,
+                    std::uint64_t boundsModifiedTime) {
+                    if (graphBase == nullptr
+                        || graphBase->pSelectedSegmentation != navigationImage) {
+                        sendStatusMessage(QStringLiteral(
+                            "Select the segmentation shown in the 3D view before using 3D split."));
+                        return false;
+                    }
+                    return show3DSplitViewForLabel(
+                        labelId, launchSliceAxis, bounds, boundsModifiedTime);
+                };
+        }
         dialog->setSingleLabelSession(std::move(session));
     } else {
         dialog->setDeleteLabelHandler(std::move(deleteLabel));
@@ -858,6 +874,40 @@ bool AnnotationSliceViewer::handleWorkingSegmentResolution(
 }
 
 bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    return show3DSplitViewAtIndex({{x, y, z}}, sliceAxis);
+}
+
+bool AnnotationSliceViewer::show3DSplitViewForLabel(
+    dataType::SegmentIdType labelId,
+    int launchSliceAxis,
+    const Roi &cachedBounds,
+    std::uint64_t boundsModifiedTime)
+{
+    if (labelId == 0 || graphBase == nullptr
+        || graphBase->pSelectedSegmentation == nullptr) {
+        sendStatusMessage(QStringLiteral(
+            "Load working segments and select a segmentation before using 3D split."));
+        return false;
+    }
+
+    dataType::SegmentsImageType::IndexType selectedIndex;
+    if (!utils::findRepresentativeVoxelForLabel(
+            graphBase->pSelectedSegmentation, labelId, selectedIndex,
+            cachedBounds, boundsModifiedTime)) {
+        sendStatusMessage(
+            QStringLiteral("3D split: segment %1 is no longer present.").arg(labelId));
+        return false;
+    }
+
+    return show3DSplitViewAtIndex(selectedIndex, launchSliceAxis);
+}
+
+bool AnnotationSliceViewer::show3DSplitViewAtIndex(
+    const dataType::SegmentsImageType::IndexType &selectedIndex,
+    int launchSliceAxis)
+{
     if (graphBase == nullptr || graphBase->pGraph == nullptr
         || graphBase->pWorkingSegmentsImage == nullptr
         || graphBase->pSelectedSegmentation == nullptr) {
@@ -879,12 +929,12 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
         return false;
     }
 
-    int x, y, z;
-    getXYZfromPixmapPos(posX, posY, x, y, z);
-    dataType::SegmentsImageType::IndexType selectedIndex{{x, y, z}};
     if (!selectedImage->GetLargestPossibleRegion().IsInside(selectedIndex)) {
         return false;
     }
+    const auto x = selectedIndex[0];
+    const auto y = selectedIndex[1];
+    const auto z = selectedIndex[2];
     const auto selectedLabel = selectedImage->GetPixel(selectedIndex);
     if (selectedLabel == graphBase->pGraph->backgroundId) {
         sendStatusMessage(QStringLiteral("3D split: clicked background."));
@@ -902,7 +952,6 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
     reservedLabels.insert(graphBase->ignoredSegmentLabels.begin(),
                           graphBase->ignoredSegmentLabels.end());
     reservedLabels.erase(selectedLabel);
-    const int launchSliceAxis = sliceAxis;
     // Intentional exception to TaskRunner's preferred read-only compute phase:
     // repair the selected image and working graph in place to avoid allocating
     // another full segmentation volume. TaskRunner serializes this modal task,

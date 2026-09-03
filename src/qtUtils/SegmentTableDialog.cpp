@@ -1702,6 +1702,25 @@ void SegmentTableDialog::onView3DPreparationFinished(
                 session.deleteLabel = [this](dataType::SegmentIdType labelId) {
                     return deleteLabelFrom3DViewer(labelId);
                 };
+                if (graphBase != nullptr
+                    && segmentationSelectionMatchesCurrent(
+                        graphBase.get(), segImage, currentTableSegmentationSignal)) {
+                    const QPointer<AnnotationSliceViewer> splitViewer =
+                        orthoViewer != nullptr ? orthoViewer->xy : nullptr;
+                    session.openSplit =
+                        [this, splitViewer, segImage](
+                            dataType::SegmentIdType labelId, const Roi &bounds,
+                            std::uint64_t boundsModifiedTime) {
+                            if (splitViewer == nullptr || isBusy()
+                                || graphBase == nullptr
+                                || currentTableSegmentation != segImage
+                                || graphBase->pSelectedSegmentation != segImage) {
+                                return false;
+                            }
+                            return splitViewer->show3DSplitViewForLabel(
+                                labelId, -1, bounds, boundsModifiedTime);
+                        };
+                }
                 dialog->setSingleLabelSession(std::move(session));
             }
             dialog->setAttribute(Qt::WA_DeleteOnClose);
