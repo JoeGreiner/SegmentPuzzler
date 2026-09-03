@@ -565,6 +565,7 @@ if (BUILD_TESTING)
         target_link_libraries(test_RagRegionMerger OpenMP::OpenMP_CXX)
     endif ()
 
+    add_test(NAME SeededWatershedSplit COMMAND $<TARGET_FILE:test_SeededWatershedSplit>)
     add_test(NAME ConnectedComponentSplit
             COMMAND $<TARGET_FILE:test_ConnectedComponentSplit>)
     add_test(NAME ITKSignalColorLookup

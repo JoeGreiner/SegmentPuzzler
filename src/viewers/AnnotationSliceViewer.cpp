@@ -1079,6 +1079,8 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                 "Applying seeded split and transferring results...");
             splitSession.projectedCutProgressText = QStringLiteral(
                 "Applying projected cut and transferring results...");
+            splitSession.erosionSplitProgressText = QStringLiteral(
+                "Applying erosion split and transferring results...");
             const auto applyPartition =
                 [this, selectedImage, activeSelectedLabel, graph, session,
                  x, y, z](
@@ -1172,6 +1174,24 @@ bool AnnotationSliceViewer::show3DSplitView(int posX, int posY) {
                             .arg(cut.profile.provisionalCutVoxelCount)
                             .arg(cut.componentVoxelCounts.size())
                             .arg(cut.profile.totalMs, 0, 'f', 1)
+                            .arg(result.mutated));
+                    return result;
+                };
+            splitSession.applyErosionSplit =
+                [activeSelectedLabel, applyPartition](
+                    const segment_puzzler::ErosionWatershedSplitResult &split) {
+                    auto result = applyPartition(split.partition);
+                    SP_LOG_INFO(
+                        "segmentation",
+                        QStringLiteral(
+                            "operation=erosion_watershed_split status=split source_label=%1 "
+                            "output_parts=%2 erosion_radius_voxels=%3 marker_components=%4 "
+                            "minimum_marker_voxels=%5 mutated=%6")
+                            .arg(activeSelectedLabel)
+                            .arg(split.voxelCounts.size())
+                            .arg(split.erosionRadiusVoxels)
+                            .arg(split.eligibleComponentCount)
+                            .arg(split.minimumMarkerVoxelCount)
                             .arg(result.mutated));
                     return result;
                 };

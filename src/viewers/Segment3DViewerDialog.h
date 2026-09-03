@@ -30,6 +30,7 @@ class QLabel;
 class QPushButton;
 class QShowEvent;
 class QSlider;
+class QSpinBox;
 class QTimer;
 class QWidget;
 class TaskRunner;
@@ -115,8 +116,11 @@ public:
             const segment_puzzler::SeededWatershedSplitResult &)> applySplit;
         std::function<SplitApplyResult(
             const Projected3DCutResult &)> applyProjectedCut;
+        std::function<SplitApplyResult(
+            const segment_puzzler::ErosionWatershedSplitResult &)> applyErosionSplit;
         QString progressText = QStringLiteral("Applying seeded split...");
         QString projectedCutProgressText = QStringLiteral("Applying projected cut...");
+        QString erosionSplitProgressText = QStringLiteral("Applying erosion split...");
     };
 
     explicit Segment3DViewerDialog(PreparedScene preparedScene,
@@ -159,7 +163,8 @@ private:
 
     enum class SplitMethod {
         SeededWatershed,
-        ProjectedCut
+        ProjectedCut,
+        ErosionWatershed
     };
 
     void cycleSegmentColors();
@@ -194,7 +199,14 @@ private:
     void previewSeededSplitIfReady();
     void previewSeededSplit();
     void applyActiveSplit();
+    void applySplitPreview(std::function<SplitApplyResult()> applySplit,
+                           const QString &progressText,
+                           const QString &title,
+                           const QString &failureMessage);
     void applySeededSplit();
+    void previewErosionSplit();
+    void applyErosionSplit();
+    void clearErosionSplitPreview();
     void beginProjectedCutDrawing();
     void previewProjectedCut();
     void applyProjectedCutPreview();
@@ -202,7 +214,7 @@ private:
     void exportSeededSplitDebugBundle();
     void setSeededSplitStatus(const QString &text, bool warning = false);
     void updateSeededSplitUiState();
-    void restoreSeededSplitFocus();
+    void finishSplitTask();
     Projected3DCutRequest buildProjectedStrokeRequest() const;
     bool tryHandlePickedLabelInteraction(int pickX,
                                          int pickY,
@@ -241,6 +253,9 @@ private:
     QSlider *m_smoothingSlider = nullptr;
     QLabel *m_smoothingLabel = nullptr;
     QTimer *m_smoothingUpdateTimer = nullptr;
+    QSpinBox *m_minimumErosionPartCountSpinBox = nullptr;
+    QSpinBox *m_minimumErosionMarkerSizeSpinBox = nullptr;
+    QPushButton *m_erosionSplitButton = nullptr;
     QPushButton *m_applySplitButton = nullptr;
     QPushButton *m_projectedCutButton = nullptr;
     QLabel *m_seedStatusLabel = nullptr;
@@ -253,6 +268,7 @@ private:
     PreparedScene m_originalSeededSplitScene;
     std::optional<segment_puzzler::SeededWatershedSplitResult> m_seededSplitPreview;
     std::optional<Projected3DCutResult> m_projectedCutPreview;
+    std::optional<segment_puzzler::ErosionWatershedSplitResult> m_erosionSplitPreview;
     std::optional<segment_puzzler::SeededWatershedSplitResult> m_lastSeededSplitResult;
     std::optional<segment_puzzler::SeededSplitSeedGroups> m_lastSeededSplitSeeds;
     segment_puzzler::SeededSplitSeedGroups m_seedIndices;

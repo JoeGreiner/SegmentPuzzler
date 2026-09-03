@@ -86,6 +86,19 @@ int main(int argc, char **argv) {
         return fail("restoring the default smoothing should reproduce the landscape");
     }
 
+    segment_puzzler::ErosionWatershedSplitOptions erosionOptions;
+    erosionOptions.minimumMarkerVoxelCount = 1;
+    const auto erosionResult = segment_puzzler::computeErosionWatershedSplit(
+        session, erosionOptions);
+    if (!erosionResult.valid() || erosionResult.erosionRadiusVoxels != 1
+        || erosionResult.voxelCounts.size() != 2
+        || erosionResult.voxelCounts[0] == 0 || erosionResult.voxelCounts[1] == 0
+        || erosionResult.voxelCounts[0] + erosionResult.voxelCounts[1] != session.voxelCount
+        || erosionResult.floodMetrics.finalizedVoxelCount != session.voxelCount
+        || erosionResult.connectedComponentCounts != std::vector<std::size_t>{1, 1}) {
+        return fail("erosion should split the dumbbell into two exhaustive, connected parts");
+    }
+
     const auto leftSeed = segment_puzzler::seededSplitMaximumAlongWorldRay(
         session, {10.0, 11.0, -10.0}, {10.0, 11.0, 30.0});
     const auto rightSeed = segment_puzzler::seededSplitMaximumAlongWorldRay(

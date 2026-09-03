@@ -7,6 +7,7 @@
 
 #include <itkImage.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -80,6 +81,44 @@ struct SeededWatershedSplitResult {
     }
 };
 
+struct ErosionWatershedSplitOptions {
+    std::size_t minimumPartCount = 2;
+    std::size_t minimumMarkerVoxelCount = 1000;
+    double compactness = 0.0;
+    bool allowDisconnectedParts = false;
+};
+
+struct ErosionWatershedSplitResult {
+    dataType::SegmentsImageType::Pointer partition;
+    FastMarkerWatershedMetrics floodMetrics;
+    std::uint64_t markerHash = 0;
+    std::uint64_t partitionHash = 0;
+    std::vector<std::size_t> markerVoxelCounts;
+    std::vector<std::size_t> voxelCounts;
+    std::vector<std::size_t> connectedComponentCounts;
+    std::size_t minimumPartCount = 0;
+    std::size_t minimumMarkerVoxelCount = 0;
+    std::size_t erosionRadiusVoxels = 0;
+    std::size_t erodedComponentCount = 0;
+    std::size_t eligibleComponentCount = 0;
+    double compactness = 0.0;
+    bool disconnectedPartsAllowed = false;
+    double erosionSearchMs = 0.0;
+    double watershedMs = 0.0;
+    double totalMs = 0.0;
+    std::string error;
+
+    bool valid() const {
+        return partition.IsNotNull() && error.empty();
+    }
+
+    bool hasDisconnectedParts() const {
+        return std::any_of(
+            connectedComponentCounts.begin(), connectedComponentCounts.end(),
+            [](std::size_t count) { return count > 1; });
+    }
+};
+
 SeededWatershedSplitSession prepareSeededWatershedSplit(
     dataType::SegmentsImageType::Pointer segments,
     dataType::SegmentIdType label);
@@ -106,6 +145,10 @@ SeededWatershedSplitResult computeSeededWatershedSplit(
     const SeededWatershedSplitSession &session,
     const std::array<SeededWatershedSplitSession::IndexType, 2> &seedIndices,
     const SeededWatershedSplitOptions &options = {});
+
+ErosionWatershedSplitResult computeErosionWatershedSplit(
+    const SeededWatershedSplitSession &session,
+    const ErosionWatershedSplitOptions &options = {});
 
 } // namespace segment_puzzler
 

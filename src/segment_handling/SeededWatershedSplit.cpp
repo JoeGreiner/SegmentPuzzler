@@ -11,8 +11,10 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <queue>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -553,18 +555,33 @@ std::array<double, 3> seededSplitSeedWorldPoint(
 
 namespace {
 
-SeededWatershedSplitResult computeFromMarkers(
+struct MarkerWatershedResult {
+    SeededSplitMarkerImage::Pointer markers;
+    dataType::SegmentsImageType::Pointer partition;
+    FastMarkerWatershedMetrics floodMetrics;
+    std::uint64_t markerHash = 0;
+    std::uint64_t partitionHash = 0;
+    std::vector<std::size_t> markerVoxelCounts;
+    std::vector<std::size_t> voxelCounts;
+    std::vector<std::size_t> connectedComponentCounts;
+    double watershedMs = 0.0;
+    std::string error;
+
+    bool hasDisconnectedParts() const {
+        return std::any_of(
+            connectedComponentCounts.begin(), connectedComponentCounts.end(),
+            [](std::size_t count) { return count > 1; });
+    }
+};
+
+MarkerWatershedResult computeMarkerWatershed(
     const SeededWatershedSplitSession &session,
     SeededSplitMarkerImage::Pointer markers,
-    const SeededWatershedSplitOptions &splitOptions,
-    const MarkerBuildResult &markerBuild)
+    std::size_t markerCount,
+    double compactness,
+    bool allowDisconnectedParts)
 {
-    SeededWatershedSplitResult result;
-    result.compactness = splitOptions.compactness;
-    result.connectSeeds = splitOptions.connectSeeds;
-    result.disconnectedPartsAllowed = splitOptions.allowDisconnectedParts;
-    result.connectionVoxelCounts = markerBuild.connectionVoxelCounts;
-    result.markerConnectionMs = markerBuild.connectionMs;
+    MarkerWatershedResult result;
     const auto startedAt = Clock::now();
     if (session.mask.IsNull() || session.landscape.IsNull() || markers.IsNull()) {
         result.error = "The seeded split session is incomplete.";
@@ -575,7 +592,13 @@ SeededWatershedSplitResult computeFromMarkers(
         result.error = "The selected segment is disconnected.";
         return result;
     }
-    if (!std::isfinite(splitOptions.compactness) || splitOptions.compactness < 0.0) {
+    if (markerCount < 2
+        || markerCount > static_cast<std::size_t>(
+                              std::numeric_limits<dataType::SegmentIdType>::max())) {
+        result.error = "At least two valid watershed marker classes are required.";
+        return result;
+    }
+    if (!std::isfinite(compactness) || compactness < 0.0) {
         result.error = "Watershed compactness must be finite and non-negative.";
         return result;
     }
@@ -584,12 +607,14 @@ SeededWatershedSplitResult computeFromMarkers(
         result.error = "The marker image does not match the selected segment.";
         return result;
     }
+    result.markerVoxelCounts.assign(markerCount, 0);
     itk::ImageRegionConstIterator<SeededSplitMaskImage> markerMaskIt(session.mask, region);
     itk::ImageRegionConstIterator<SeededSplitMarkerImage> markerIt(markers, region);
     for (markerMaskIt.GoToBegin(), markerIt.GoToBegin();
          !markerMaskIt.IsAtEnd(); ++markerMaskIt, ++markerIt) {
         const auto markerLabel = markerIt.Get();
-        if (markerLabel > 2 || (markerLabel != 0 && markerMaskIt.Get() == 0)) {
+        if (markerLabel > markerCount
+            || (markerLabel != 0 && markerMaskIt.Get() == 0)) {
             result.error = "The marker image contains an invalid seed voxel.";
             return result;
         }
@@ -597,21 +622,24 @@ SeededWatershedSplitResult computeFromMarkers(
             ++result.markerVoxelCounts[markerLabel - 1];
         }
     }
-    if (result.markerVoxelCounts[0] == 0 || result.markerVoxelCounts[1] == 0) {
-        result.error = "Both watershed markers must contain segment voxels.";
+    if (std::any_of(
+            result.markerVoxelCounts.begin(), result.markerVoxelCounts.end(),
+            [](std::size_t count) { return count == 0; })) {
+        result.error = "Every watershed marker must contain segment voxels.";
         return result;
     }
     result.markerHash = imageValueHash(markers.GetPointer());
 
     FastMarkerWatershedOptions options;
     options.fullyConnected = false;
-    options.compactness = splitOptions.compactness;
-    if (splitOptions.compactness == 0.0) {
+    options.compactness = compactness;
+    if (compactness == 0.0) {
         options.tieBreak = FastMarkerWatershedTieBreak::GeodesicDistance;
     }
     options.domainMask = session.mask;
     result.partition = runFastMarkerWatershed3D(
         session.landscape, markers, options, &result.floodMetrics);
+    result.voxelCounts.assign(markerCount, 0);
     itk::ImageRegionConstIterator<SeededSplitMaskImage> maskIt(
         session.mask, session.mask->GetLargestPossibleRegion());
     itk::ImageRegionConstIterator<dataType::SegmentsImageType> partitionIt(
@@ -622,7 +650,7 @@ SeededWatershedSplitResult computeFromMarkers(
             continue;
         }
         const auto splitLabel = partitionIt.Get();
-        if (splitLabel < 1 || splitLabel > 2) {
+        if (splitLabel < 1 || splitLabel > markerCount) {
             result.error = "Watershed left selected voxels unassigned.";
             result.watershedMs = elapsedMilliseconds(startedAt);
             return result;
@@ -630,27 +658,82 @@ SeededWatershedSplitResult computeFromMarkers(
         ++result.voxelCounts[splitLabel - 1];
     }
 
-    if (result.voxelCounts[0] == 0 || result.voxelCounts[1] == 0 ||
-        result.voxelCounts[0] + result.voxelCounts[1] != session.voxelCount) {
-        result.error = "Watershed did not produce two non-empty, exhaustive parts.";
+    const std::size_t assignedVoxelCount = std::accumulate(
+        result.voxelCounts.begin(), result.voxelCounts.end(), std::size_t{0});
+    if (std::any_of(
+            result.voxelCounts.begin(), result.voxelCounts.end(),
+            [](std::size_t count) { return count == 0; })
+        || assignedVoxelCount != session.voxelCount) {
+        result.error = "Watershed did not produce non-empty, exhaustive parts.";
         result.watershedMs = elapsedMilliseconds(startedAt);
         return result;
     }
     result.partitionHash = imageValueHash(result.partition.GetPointer());
+    std::unordered_set<dataType::SegmentIdType> partitionLabels;
+    partitionLabels.reserve(markerCount);
+    for (std::size_t markerIndex = 0; markerIndex < markerCount; ++markerIndex) {
+        partitionLabels.insert(
+            static_cast<dataType::SegmentIdType>(markerIndex + 1));
+    }
     const auto componentCounts = connected_components::countConnectedComponentsByLabel(
         result.partition,
-        {1, 2},
+        partitionLabels,
         connected_components::ConnectivityStencil::SixConnected);
-    for (dataType::SegmentIdType label = 1; label <= 2; ++label) {
-        result.connectedComponentCounts[label - 1] = componentCounts.at(label);
+    result.connectedComponentCounts.assign(markerCount, 0);
+    for (std::size_t markerIndex = 0; markerIndex < markerCount; ++markerIndex) {
+        const auto label = static_cast<dataType::SegmentIdType>(markerIndex + 1);
+        result.connectedComponentCounts[markerIndex] = componentCounts.at(label);
     }
-    if (result.hasDisconnectedParts() && !splitOptions.allowDisconnectedParts) {
+    if (result.hasDisconnectedParts() && !allowDisconnectedParts) {
         result.error = "Watershed produced disconnected split parts.";
         result.watershedMs = elapsedMilliseconds(startedAt);
         return result;
     }
     result.watershedMs = elapsedMilliseconds(startedAt);
     return result;
+}
+
+struct ErodedComponent {
+    dataType::SegmentIdType label = 0;
+    std::size_t voxelCount = 0;
+    std::size_t firstOffset = std::numeric_limits<std::size_t>::max();
+};
+
+std::vector<ErodedComponent> collectErodedComponents(
+    const dataType::SegmentsImageType::Pointer &componentImage,
+    const std::vector<dataType::SegmentIdType> &componentLabels)
+{
+    std::unordered_map<dataType::SegmentIdType, std::size_t> componentIndexByLabel;
+    componentIndexByLabel.reserve(componentLabels.size());
+    std::vector<ErodedComponent> components;
+    components.reserve(componentLabels.size());
+    for (const auto label : componentLabels) {
+        componentIndexByLabel.emplace(label, components.size());
+        components.push_back({label});
+    }
+
+    itk::ImageRegionConstIterator<dataType::SegmentsImageType> componentIt(
+        componentImage, componentImage->GetLargestPossibleRegion());
+    std::size_t offset = 0;
+    for (componentIt.GoToBegin(); !componentIt.IsAtEnd(); ++componentIt, ++offset) {
+        const auto componentIndexIt =
+            componentIndexByLabel.find(componentIt.Get());
+        if (componentIndexIt == componentIndexByLabel.end()) {
+            continue;
+        }
+        ErodedComponent &component = components[componentIndexIt->second];
+        ++component.voxelCount;
+        component.firstOffset = std::min(component.firstOffset, offset);
+    }
+    std::sort(
+        components.begin(), components.end(),
+        [](const ErodedComponent &left, const ErodedComponent &right) {
+            if (left.voxelCount != right.voxelCount) {
+                return left.voxelCount > right.voxelCount;
+            }
+            return left.firstOffset < right.firstOffset;
+        });
+    return components;
 }
 
 } // namespace
@@ -686,7 +769,32 @@ SeededWatershedSplitResult computeSeededWatershedSplit(
                            : markerBuild.error;
         return result;
     }
-    return computeFromMarkers(session, markerBuild.markers, options, markerBuild);
+    result.connectionVoxelCounts = markerBuild.connectionVoxelCounts;
+    result.markerConnectionMs = markerBuild.connectionMs;
+    const MarkerWatershedResult watershed = computeMarkerWatershed(
+        session, markerBuild.markers, 2, options.compactness,
+        options.allowDisconnectedParts);
+    result.markers = watershed.markers;
+    result.partition = watershed.partition;
+    result.floodMetrics = watershed.floodMetrics;
+    result.markerHash = watershed.markerHash;
+    result.partitionHash = watershed.partitionHash;
+    result.watershedMs = watershed.watershedMs;
+    result.error = watershed.error;
+    if (watershed.markerVoxelCounts.size() == 2) {
+        std::copy(watershed.markerVoxelCounts.begin(), watershed.markerVoxelCounts.end(),
+                  result.markerVoxelCounts.begin());
+    }
+    if (watershed.voxelCounts.size() == 2) {
+        std::copy(watershed.voxelCounts.begin(), watershed.voxelCounts.end(),
+                  result.voxelCounts.begin());
+    }
+    if (watershed.connectedComponentCounts.size() == 2) {
+        std::copy(watershed.connectedComponentCounts.begin(),
+                  watershed.connectedComponentCounts.end(),
+                  result.connectedComponentCounts.begin());
+    }
+    return result;
 }
 
 SeededWatershedSplitResult computeSeededWatershedSplit(
@@ -698,6 +806,173 @@ SeededWatershedSplitResult computeSeededWatershedSplit(
     seedGroups[0].push_back(seedIndices[0]);
     seedGroups[1].push_back(seedIndices[1]);
     return computeSeededWatershedSplit(session, seedGroups, options);
+}
+
+ErosionWatershedSplitResult computeErosionWatershedSplit(
+    const SeededWatershedSplitSession &session,
+    const ErosionWatershedSplitOptions &options)
+{
+    ErosionWatershedSplitResult result;
+    result.minimumPartCount = options.minimumPartCount;
+    result.minimumMarkerVoxelCount = options.minimumMarkerVoxelCount;
+    result.compactness = options.compactness;
+    result.disconnectedPartsAllowed = options.allowDisconnectedParts;
+    const auto totalStartedAt = Clock::now();
+    if (session.mask.IsNull() || session.landscape.IsNull()) {
+        result.error = "The seeded split session is incomplete.";
+        return result;
+    }
+    if (session.connectedComponentCount != 1) {
+        result.error = "The selected segment is disconnected.";
+        return result;
+    }
+    if (options.minimumPartCount < 2
+        || options.minimumPartCount > static_cast<std::size_t>(
+                                         std::numeric_limits<dataType::SegmentIdType>::max())
+        || options.minimumPartCount > session.voxelCount) {
+        result.error = "The minimum erosion split part count is invalid.";
+        return result;
+    }
+    if (options.minimumMarkerVoxelCount == 0) {
+        result.error = "The minimum erosion marker size must be at least one voxel.";
+        return result;
+    }
+    if (options.minimumMarkerVoxelCount
+        > session.voxelCount / options.minimumPartCount) {
+        result.error =
+            "The segment is too small for the requested number and minimum marker size.";
+        return result;
+    }
+    if (!std::isfinite(options.compactness) || options.compactness < 0.0) {
+        result.error = "Watershed compactness must be finite and non-negative.";
+        return result;
+    }
+
+    const auto region = session.mask->GetLargestPossibleRegion();
+    const auto regionSize = region.GetSize();
+    std::size_t maximumRadius = std::numeric_limits<std::size_t>::max();
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        maximumRadius = std::min(
+            maximumRadius, static_cast<std::size_t>(regionSize[axis]));
+    }
+    const std::size_t minimumRequiredMarkerVoxels =
+        options.minimumPartCount * options.minimumMarkerVoxelCount;
+
+    SeededSplitMarkerImage::Pointer markers;
+    const auto erosionStartedAt = Clock::now();
+    using DistanceFilter =
+        itk::SignedMaurerDistanceMapImageFilter<
+            SeededSplitMaskImage, SeededSplitDistanceImage>;
+    auto distanceFilter = DistanceFilter::New();
+    distanceFilter->SetInput(session.mask);
+    distanceFilter->SetBackgroundValue(1);
+    distanceFilter->SetInsideIsPositive(false);
+    distanceFilter->SetUseImageSpacing(false);
+    distanceFilter->SquaredDistanceOn();
+    distanceFilter->Update();
+    SeededSplitDistanceImage::Pointer erosionDistance = distanceFilter->GetOutput();
+    erosionDistance->DisconnectPipeline();
+
+    auto componentImage = allocateLike<dataType::SegmentsImageType>(session.mask);
+    for (std::size_t radius = 1; radius <= maximumRadius; ++radius) {
+        // BinaryBall's default non-parametric radius extends half a voxel
+        // beyond the requested integer radius.
+        const double effectiveRadius = static_cast<double>(radius) + 0.5;
+        const double squaredRadius = effectiveRadius * effectiveRadius;
+        itk::ImageRegionConstIterator<SeededSplitDistanceImage> distanceIt(
+            erosionDistance, region);
+        itk::ImageRegionIterator<dataType::SegmentsImageType> componentIt(
+            componentImage, region);
+        std::size_t erodedVoxelCount = 0;
+        for (distanceIt.GoToBegin(), componentIt.GoToBegin();
+             !distanceIt.IsAtEnd(); ++distanceIt, ++componentIt) {
+            const bool retained = distanceIt.Get() > squaredRadius;
+            componentIt.Set(retained ? 1 : 0);
+            erodedVoxelCount += retained;
+        }
+        if (erodedVoxelCount < minimumRequiredMarkerVoxels) {
+            break;
+        }
+
+        connected_components::ConnectedComponentSplitOptions componentOptions;
+        componentOptions.connectivity =
+            connected_components::ConnectivityStencil::SixConnected;
+        componentOptions.includedLabels.insert(1);
+        componentOptions.ignoredLabels.insert(0);
+        componentOptions.nextFreeLabel = 2;
+        const auto componentStats =
+            connected_components::splitDisconnectedLabelComponentsInPlace(
+                componentImage, componentOptions);
+        const auto labelsIt = componentStats.finalLabelsByOriginalLabel.find(1);
+        if (labelsIt == componentStats.finalLabelsByOriginalLabel.end()) {
+            continue;
+        }
+        auto components = collectErodedComponents(componentImage, labelsIt->second);
+        result.erodedComponentCount = components.size();
+        components.erase(
+            std::remove_if(
+                components.begin(), components.end(),
+                [&options](const ErodedComponent &component) {
+                    return component.voxelCount < options.minimumMarkerVoxelCount;
+                }),
+            components.end());
+        result.eligibleComponentCount = components.size();
+        if (components.size() < options.minimumPartCount) {
+            continue;
+        }
+
+        result.erosionRadiusVoxels = radius;
+        std::unordered_map<dataType::SegmentIdType, dataType::SegmentIdType>
+            componentLabelToMarkerLabel;
+        componentLabelToMarkerLabel.reserve(components.size());
+        markers = allocateLike<SeededSplitMarkerImage>(session.mask);
+        markers->FillBuffer(0);
+        for (std::size_t componentIndex = 0;
+             componentIndex < components.size(); ++componentIndex) {
+            componentLabelToMarkerLabel.emplace(
+                components[componentIndex].label,
+                static_cast<dataType::SegmentIdType>(componentIndex + 1));
+        }
+        itk::ImageRegionConstIterator<dataType::SegmentsImageType> selectedIt(
+            componentImage, region);
+        itk::ImageRegionIterator<SeededSplitMarkerImage> markerIt(
+            markers, region);
+        for (selectedIt.GoToBegin(), markerIt.GoToBegin();
+             !selectedIt.IsAtEnd(); ++selectedIt, ++markerIt) {
+            const auto markerLabelIt =
+                componentLabelToMarkerLabel.find(selectedIt.Get());
+            if (markerLabelIt != componentLabelToMarkerLabel.end()) {
+                markerIt.Set(markerLabelIt->second);
+            }
+        }
+        break;
+    }
+    distanceFilter = nullptr;
+    erosionDistance = nullptr;
+    componentImage = nullptr;
+    result.erosionSearchMs = elapsedMilliseconds(erosionStartedAt);
+    if (markers.IsNull()) {
+        result.error =
+            "The segment eroded away before enough eligible regions were found.";
+        result.totalMs = elapsedMilliseconds(totalStartedAt);
+        return result;
+    }
+
+    const MarkerWatershedResult watershed = computeMarkerWatershed(
+        session, markers, result.eligibleComponentCount,
+        options.compactness,
+        options.allowDisconnectedParts);
+    result.partition = watershed.partition;
+    result.floodMetrics = watershed.floodMetrics;
+    result.markerHash = watershed.markerHash;
+    result.partitionHash = watershed.partitionHash;
+    result.markerVoxelCounts = watershed.markerVoxelCounts;
+    result.voxelCounts = watershed.voxelCounts;
+    result.connectedComponentCounts = watershed.connectedComponentCounts;
+    result.watershedMs = watershed.watershedMs;
+    result.error = watershed.error;
+    result.totalMs = elapsedMilliseconds(totalStartedAt);
+    return result;
 }
 
 } // namespace segment_puzzler

@@ -31,6 +31,7 @@
 #include <QShowEvent>
 #include <QSaveFile>
 #include <QSlider>
+#include <QSpinBox>
 #include <QStyle>
 #include <QStyleOptionSpinBox>
 #include <QStringList>
@@ -84,7 +85,6 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -480,6 +480,23 @@ quint32 randomCycleColor(dataType::SegmentIdType labelId, quint32 seed) {
     return QColor::fromHsv(hue, saturation, value).rgb();
 }
 
+std::vector<Segment3DViewerDialog::LabelWithColor> splitPreviewLabels(
+    std::size_t partCount)
+{
+    std::vector<Segment3DViewerDialog::LabelWithColor> labels;
+    labels.reserve(partCount);
+    for (std::size_t partIndex = 0; partIndex < partCount; ++partIndex) {
+        const auto label = static_cast<dataType::SegmentIdType>(partIndex + 1);
+        const quint32 color = partIndex == 0
+                                  ? 0xF2483D
+                              : partIndex == 1
+                                  ? 0x26A6FF
+                                  : randomCycleColor(label, 0x3D5A17U);
+        labels.emplace_back(label, color);
+    }
+    return labels;
+}
+
 void setActorColor(vtkActor *actor, quint32 color) {
     if (actor == nullptr) {
         return;
@@ -539,6 +556,7 @@ QString threeDViewHelpText(bool showExplodeControls,
         lines << QStringLiteral("Connect Seeds joins markers of each color through the segment interior before watershed.");
         lines << QStringLiteral("Compact Watershed adds seed-distance regularization. Allow disconnected parts accepts such results but keeps a warning visible.");
         lines << QStringLiteral("Distance-map Smoothing controls Gaussian smoothing in pixels.");
+        lines << QStringLiteral("Erosion Split grows a voxel erosion radius until at least the requested number of sufficiently large marker regions is found, then uses all qualifying regions for the same marker-controlled watershed.");
         lines << QStringLiteral("Reset clears the current method; Apply Split commits its automatic preview.");
         lines << QStringLiteral("Press E to export the latest split input and result for debugging.");
     }
@@ -2187,6 +2205,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         if (showSeededSplitControls) {
             m_controlsRow->setContentsMargins(10, 6, 10, 0);
             auto *watershedWidget = new QWidget(this);
+            auto *erosionWidget = new QWidget(this);
             auto *lineOptionsWidget = new QWidget(this);
             auto *optionsWidget = new QWidget(this);
             auto *statusWidget = new QWidget(this);
@@ -2204,8 +2223,41 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             m_applySplitButton = new QPushButton(
                 QStringLiteral("Apply Split"), m_controlsWidget);
             m_applySplitButton->setToolTip(
-                QStringLiteral("Apply the current Projected Cut or Seeded Watershed preview."));
+                QStringLiteral(
+                    "Apply the current Projected Cut, Seeded Watershed, or Erosion Split preview."));
             m_applySplitButton->setDefault(true);
+
+            const int maximumObjectVoxelCount = static_cast<int>(std::min<std::size_t>(
+                m_seededSplitSession.session->voxelCount,
+                static_cast<std::size_t>(std::numeric_limits<int>::max())));
+            m_minimumErosionPartCountSpinBox = new QSpinBox(erosionWidget);
+            m_minimumErosionPartCountSpinBox->setObjectName(
+                QStringLiteral("minimumErosionPartCountSpinBox"));
+            m_minimumErosionPartCountSpinBox->setRange(
+                2, std::max(2, maximumObjectVoxelCount));
+            m_minimumErosionPartCountSpinBox->setValue(2);
+            m_minimumErosionPartCountSpinBox->setToolTip(
+                QStringLiteral(
+                    "Minimum number of output parts. Additional eroded regions that meet "
+                    "the marker-size threshold become additional parts."));
+            m_minimumErosionMarkerSizeSpinBox = new QSpinBox(erosionWidget);
+            m_minimumErosionMarkerSizeSpinBox->setObjectName(
+                QStringLiteral("minimumErosionMarkerSizeSpinBox"));
+            m_minimumErosionMarkerSizeSpinBox->setRange(
+                1, std::max(1, maximumObjectVoxelCount));
+            m_minimumErosionMarkerSizeSpinBox->setValue(
+                std::min(1000, std::max(1, maximumObjectVoxelCount)));
+            m_minimumErosionMarkerSizeSpinBox->setSuffix(QStringLiteral(" voxels"));
+            m_minimumErosionMarkerSizeSpinBox->setToolTip(
+                QStringLiteral(
+                    "Ignore eroded connected regions smaller than this marker size."));
+            m_erosionSplitButton = new QPushButton(
+                QStringLiteral("Run Erosion Split"), erosionWidget);
+            m_erosionSplitButton->setObjectName(QStringLiteral("erosionSplitButton"));
+            m_erosionSplitButton->setToolTip(
+                QStringLiteral(
+                    "Increase a voxel erosion radius until enough separate marker regions exist, "
+                    "then run a marker-controlled watershed and show the resulting partition."));
 
             m_seedButtons[0] = new QPushButton(
                 QStringLiteral("(1) Red Seed"), watershedWidget);
@@ -2257,7 +2309,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                     "Use the currently displayed line seeds for the watershed."));
             m_seedStatusLabel = new QLabel(
                 QStringLiteral(
-                    "Choose Projected Cut or add red and blue seeds for Seeded Watershed."),
+                    "Choose Projected Cut, add watershed seeds, or run Erosion Split."),
                 statusWidget);
             m_seedStatusLabel->setWordWrap(true);
             m_seedStatusLabel->setSizePolicy(
@@ -2274,7 +2326,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                 QStringLiteral("Compact Watershed"), optionsWidget);
             m_compactWatershedCheckBox->setObjectName(
                 QStringLiteral("compactWatershedCheckBox"));
-            m_compactWatershedCheckBox->setChecked(true);
+            m_compactWatershedCheckBox->setChecked(false);
             m_compactWatershedCheckBox->setToolTip(
                 QStringLiteral(
                     "Regularize the watershed by distance to the seeds while retaining "
@@ -2286,7 +2338,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             m_allowDisconnectedCheckBox->setChecked(false);
             m_allowDisconnectedCheckBox->setToolTip(
                 QStringLiteral(
-                    "Allow applying a result whose red or blue part contains multiple "
+                    "Allow applying a result whose output part contains multiple "
                     "disconnected regions. A warning remains visible in the preview."));
             m_smoothingSlider = new QSlider(Qt::Horizontal, lineOptionsWidget);
             m_smoothingSlider->setObjectName(QStringLiteral("smoothingSlider"));
@@ -2316,6 +2368,23 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                     this, &Segment3DViewerDialog::beginSplitLineDrawing);
             connect(m_confirmLineSeedsButton, &QPushButton::clicked,
                     this, &Segment3DViewerDialog::confirmSplitLineSeeds);
+            connect(m_erosionSplitButton, &QPushButton::clicked,
+                    this, &Segment3DViewerDialog::previewErosionSplit);
+            const auto erosionInputChanged = [this]() {
+                if (m_activeSplitMethod != SplitMethod::ErosionWatershed) {
+                    return;
+                }
+                clearErosionSplitPreview();
+                setSeededSplitStatus(
+                    QStringLiteral("Erosion settings changed. Run Erosion Split again."));
+                updateSeededSplitUiState();
+            };
+            connect(m_minimumErosionPartCountSpinBox,
+                    qOverload<int>(&QSpinBox::valueChanged),
+                    this, erosionInputChanged);
+            connect(m_minimumErosionMarkerSizeSpinBox,
+                    qOverload<int>(&QSpinBox::valueChanged),
+                    this, erosionInputChanged);
             connect(m_seedDistanceSlider, &QSlider::valueChanged, this, [this](int value) {
                 m_seedDistanceLabel->setText(QStringLiteral("Offset: %1 px").arg(value));
                 if (!m_splitLineDrawModeActive || m_strokeOverlay == nullptr) {
@@ -2335,6 +2404,14 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             });
             const auto watershedOptionChanged = [this]() {
                 m_lastSeededSplitResult.reset();
+                if (m_activeSplitMethod == SplitMethod::ErosionWatershed) {
+                    clearErosionSplitPreview();
+                    setSeededSplitStatus(
+                        QStringLiteral(
+                            "Watershed settings changed. Run Erosion Split again."));
+                    updateSeededSplitUiState();
+                    return;
+                }
                 if (m_seededSplitPreview.has_value()) {
                     replaceSegmentMeshes(m_originalSeededSplitScene, false);
                     m_seededSplitPreview.reset();
@@ -2364,6 +2441,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                 }
                 m_seededSplitSmoothingPending = true;
                 m_lastSeededSplitResult.reset();
+                clearErosionSplitPreview();
                 if (m_seededSplitPreview.has_value()) {
                     replaceSegmentMeshes(m_originalSeededSplitScene, false);
                     m_seededSplitPreview.reset();
@@ -2397,6 +2475,22 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             watershedRow->addWidget(m_splitLineButton);
             watershedRow->addWidget(m_confirmLineSeedsButton);
             watershedRow->addStretch(1);
+
+            auto *erosionRow = new QHBoxLayout(erosionWidget);
+            erosionRow->setContentsMargins(10, 4, 10, 0);
+            erosionRow->setSpacing(8);
+            erosionRow->addWidget(new QLabel(
+                QStringLiteral("Erosion Split:"), erosionWidget));
+            erosionRow->addWidget(new QLabel(
+                QStringLiteral("Min. parts:"), erosionWidget));
+            erosionRow->addWidget(m_minimumErosionPartCountSpinBox);
+            erosionRow->addSpacing(8);
+            erosionRow->addWidget(new QLabel(
+                QStringLiteral("Min. marker size:"), erosionWidget));
+            erosionRow->addWidget(m_minimumErosionMarkerSizeSpinBox);
+            erosionRow->addWidget(m_erosionSplitButton);
+            erosionRow->addStretch(1);
+            layout->addWidget(erosionWidget, 0);
             layout->addWidget(watershedWidget, 0);
 
             auto *lineOptionsRow = new QHBoxLayout(lineOptionsWidget);
@@ -3356,6 +3450,14 @@ void Segment3DViewerDialog::discardProjectedCut() {
     }
 }
 
+void Segment3DViewerDialog::clearErosionSplitPreview() {
+    if (!m_erosionSplitPreview.has_value()) {
+        return;
+    }
+    replaceSegmentMeshes(m_originalSeededSplitScene, false);
+    m_erosionSplitPreview.reset();
+}
+
 void Segment3DViewerDialog::beginProjectedCutDrawing() {
     if (m_seededSplitBusy || m_strokeOverlay == nullptr
         || m_seededSplitSession.session == nullptr
@@ -3398,20 +3500,9 @@ void Segment3DViewerDialog::previewProjectedCut() {
         auto result = computeProjected3DCut(mask, request);
         PreparedScene scene;
         if (result.valid()) {
-            std::vector<LabelWithColor> labels;
-            labels.reserve(result.componentVoxelCounts.size());
-            for (std::size_t component = 0;
-                 component < result.componentVoxelCounts.size(); ++component) {
-                const auto label = static_cast<dataType::SegmentIdType>(component + 1);
-                const quint32 color = component == 0
-                                          ? 0xF2483D
-                                      : component == 1
-                                          ? 0x26A6FF
-                                          : randomCycleColor(label, 0x3D5A17U);
-                labels.emplace_back(label, color);
-            }
             scene = Segment3DViewerDialog::prepareScene(
-                result.partition, std::move(labels));
+                result.partition,
+                splitPreviewLabels(result.componentVoxelCounts.size()));
         }
         return std::make_pair(std::move(result), std::move(scene));
     };
@@ -3443,68 +3534,16 @@ void Segment3DViewerDialog::previewProjectedCut() {
 }
 
 void Segment3DViewerDialog::applyProjectedCutPreview() {
-    if (m_seededSplitBusy || !m_projectedCutPreview.has_value()
-        || !m_seededSplitSession.applyProjectedCut
-        || (m_seededSplitSession.taskRunner != nullptr
-            && m_seededSplitSession.taskRunner->isBusy())) {
+    if (!m_projectedCutPreview.has_value() || !m_seededSplitSession.applyProjectedCut) {
         return;
     }
 
-    m_seededSplitBusy = true;
-    updateSeededSplitUiState();
-    const auto applyCut = m_seededSplitSession.applyProjectedCut;
-    const auto preview = m_projectedCutPreview.value();
-    const QPointer<Segment3DViewerDialog> dialog(this);
-    const auto finishApply = [dialog](SplitApplyResult result) {
-        if (dialog.isNull()) {
-            return;
-        }
-        if (result.mutated) {
-            if (dialog->m_strokeOverlay != nullptr) {
-                dialog->m_strokeOverlay->setDrawingEnabled(false);
-                dialog->m_strokeOverlay->clearStroke();
-            }
-            if (!result.message.isEmpty()) {
-                QMessageBox::warning(dialog, tr("Projected Cut"), result.message);
-            }
-            dialog->accept();
-            return;
-        }
-        dialog->m_seededSplitBusy = false;
-        dialog->updateSeededSplitUiState();
-        QMessageBox::information(
-            dialog,
-            tr("Projected Cut"),
-            result.message.isEmpty()
-                ? tr("The projected cut could not be applied.")
-                : result.message);
-    };
-
-    if (m_seededSplitSession.taskRunner != nullptr) {
-        const auto committed = std::make_shared<bool>(false);
-        m_seededSplitSession.taskRunner->runWithLabel(
-            m_seededSplitSession.projectedCutProgressText,
-            [applyCut, preview]() { return applyCut(preview); },
-            [finishApply, committed](SplitApplyResult result) {
-                finishApply(std::move(result));
-                *committed = true;
-            },
-            [dialog, committed]() {
-                if (dialog.isNull()) {
-                    return;
-                }
-                if (!*committed) {
-                    dialog->m_seededSplitBusy = false;
-                    dialog->updateSeededSplitUiState();
-                }
-                dialog->restoreSeededSplitFocus();
-            });
-    } else {
-        finishApply(applyCut(preview));
-        if (!dialog.isNull()) {
-            dialog->restoreSeededSplitFocus();
-        }
-    }
+    applySplitPreview(
+        [applyCut = m_seededSplitSession.applyProjectedCut,
+         preview = m_projectedCutPreview.value()]() { return applyCut(preview); },
+        m_seededSplitSession.projectedCutProgressText,
+        tr("Projected Cut"),
+        tr("The projected cut could not be applied."));
 }
 
 void Segment3DViewerDialog::armSeedPlacement(int seedNumber) {
@@ -3513,6 +3552,8 @@ void Segment3DViewerDialog::armSeedPlacement(int seedNumber) {
         return;
     }
     discardProjectedCut();
+    clearErosionSplitPreview();
+    m_activeSplitMethod = SplitMethod::SeededWatershed;
     if (m_seededSplitPreview.has_value()) {
         replaceSegmentMeshes(m_originalSeededSplitScene, false);
         m_seededSplitPreview.reset();
@@ -3580,6 +3621,8 @@ void Segment3DViewerDialog::beginSplitLineDrawing() {
         return;
     }
     discardProjectedCut();
+    clearErosionSplitPreview();
+    m_activeSplitMethod = SplitMethod::SeededWatershed;
     if (m_seededSplitPreview.has_value()) {
         replaceSegmentMeshes(m_originalSeededSplitScene, false);
         m_seededSplitPreview.reset();
@@ -3923,6 +3966,8 @@ void Segment3DViewerDialog::resetSplit() {
         return;
     }
     discardProjectedCut();
+    clearErosionSplitPreview();
+    m_activeSplitMethod = SplitMethod::SeededWatershed;
     m_activeSeed = -1;
     m_splitLineDrawModeActive = false;
     m_seedIndices = {};
@@ -3942,7 +3987,7 @@ void Segment3DViewerDialog::resetSplit() {
         m_seededSplitPreview.reset();
     }
     setSeededSplitStatus(QStringLiteral(
-        "Choose Projected Cut or add red and blue seeds for Seeded Watershed."));
+        "Choose Projected Cut, add watershed seeds, or run Erosion Split."));
     updateSeededSplitUiState();
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
@@ -3992,9 +4037,15 @@ void Segment3DViewerDialog::updateSeededSplitSmoothing() {
         }
     }
 
-    setSeededSplitStatus(QStringLiteral("Smoothing updated."));
-    updateSeededSplitUiState();
-    previewSeededSplitIfReady();
+    if (m_activeSplitMethod == SplitMethod::ErosionWatershed) {
+        setSeededSplitStatus(
+            QStringLiteral("Smoothing updated. Run Erosion Split again."));
+        updateSeededSplitUiState();
+    } else {
+        setSeededSplitStatus(QStringLiteral("Smoothing updated."));
+        updateSeededSplitUiState();
+        previewSeededSplitIfReady();
+    }
 }
 
 void Segment3DViewerDialog::previewSeededSplitIfReady() {
@@ -4013,6 +4064,7 @@ void Segment3DViewerDialog::previewSeededSplit() {
         || m_seededSplitSession.session == nullptr || !haveSeeds) {
         return;
     }
+    m_activeSplitMethod = SplitMethod::SeededWatershed;
 
     const auto session = m_seededSplitSession.session;
     const auto seeds = m_seedIndices;
@@ -4474,23 +4526,184 @@ void Segment3DViewerDialog::applyActiveSplit() {
         applyProjectedCutPreview();
         return;
     }
+    if (m_activeSplitMethod == SplitMethod::ErosionWatershed) {
+        applyErosionSplit();
+        return;
+    }
     applySeededSplit();
 }
 
-void Segment3DViewerDialog::applySeededSplit() {
-    if (m_seededSplitBusy || !m_seededSplitPreview.has_value()
-        || !m_seededSplitSession.applySplit
+void Segment3DViewerDialog::previewErosionSplit() {
+    if (m_seededSplitBusy || m_seededSplitSmoothingPending
+        || m_seededSplitSession.session == nullptr
+        || !m_seededSplitSession.applyErosionSplit
+        || m_minimumErosionPartCountSpinBox == nullptr
+        || m_minimumErosionMarkerSizeSpinBox == nullptr
         || (m_seededSplitSession.taskRunner != nullptr
+            && m_seededSplitSession.taskRunner->isBusy())) {
+        return;
+    }
+
+    resetSplit();
+    m_activeSplitMethod = SplitMethod::ErosionWatershed;
+    segment_puzzler::ErosionWatershedSplitOptions options;
+    options.minimumPartCount = static_cast<std::size_t>(
+        m_minimumErosionPartCountSpinBox->value());
+    options.minimumMarkerVoxelCount = static_cast<std::size_t>(
+        m_minimumErosionMarkerSizeSpinBox->value());
+    options.compactness = m_compactWatershedCheckBox != nullptr
+                                  && m_compactWatershedCheckBox->isChecked()
+                              ? segment_puzzler::kDefaultSeededSplitCompactness
+                              : 0.0;
+    options.allowDisconnectedParts = m_allowDisconnectedCheckBox != nullptr
+                                     && m_allowDisconnectedCheckBox->isChecked();
+    const auto session = m_seededSplitSession.session;
+    m_seededSplitBusy = true;
+    setSeededSplitStatus(QStringLiteral("Searching for erosion markers..."));
+    updateSeededSplitUiState();
+
+    const auto computePreview = [session, options]() {
+        auto result = segment_puzzler::computeErosionWatershedSplit(
+            *session, options);
+        PreparedScene partitionScene;
+        if (result.valid()) {
+            const auto labels = splitPreviewLabels(result.voxelCounts.size());
+            partitionScene = Segment3DViewerDialog::prepareScene(
+                result.partition, labels);
+        }
+        return std::make_pair(std::move(result), std::move(partitionScene));
+    };
+    const QPointer<Segment3DViewerDialog> dialog(this);
+    const auto finishPreview = [dialog](auto preview) {
+        if (dialog.isNull()) {
+            return;
+        }
+        dialog->m_seededSplitBusy = false;
+        auto &[result, partitionScene] = preview;
+        const bool havePartitionPreview =
+            result.valid()
+            && dialog->replaceSegmentMeshes(partitionScene, false);
+        if (!havePartitionPreview) {
+            const bool disconnectedRejected =
+                !result.valid() && result.hasDisconnectedParts()
+                && !result.disconnectedPartsAllowed;
+            const QString message = disconnectedRejected
+                ? QStringLiteral(
+                      "Erosion watershed produced disconnected parts. Enable Allow disconnected parts and run it again to accept them.")
+                : result.error.empty()
+                    ? QStringLiteral("Could not create the erosion split preview surfaces.")
+                    : QString::fromStdString(result.error);
+            SP_LOG_WARNING(
+                "segmentation",
+                QStringLiteral(
+                    "operation=erosion_watershed_split status=preview_failed "
+                    "source_label=%1 minimum_parts=%2 minimum_marker_voxels=%3 "
+                    "erosion_radius_voxels=%4 components=%5 eligible_components=%6 "
+                    "erosion_ms=%7 watershed_ms=%8 message=\"%9\"")
+                    .arg(dialog->m_seededSplitSession.session->sourceLabel)
+                    .arg(result.minimumPartCount)
+                    .arg(result.minimumMarkerVoxelCount)
+                    .arg(result.erosionRadiusVoxels)
+                    .arg(result.erodedComponentCount)
+                    .arg(result.eligibleComponentCount)
+                    .arg(result.erosionSearchMs, 0, 'f', 1)
+                    .arg(result.watershedMs, 0, 'f', 1)
+                    .arg(message));
+            dialog->setSeededSplitStatus(message, true);
+            dialog->updateSeededSplitUiState();
+            return;
+        }
+
+        dialog->m_erosionSplitPreview = std::move(result);
+        const auto &storedResult = dialog->m_erosionSplitPreview.value();
+        SP_LOG_INFO(
+            "segmentation",
+            QStringLiteral(
+                "operation=erosion_watershed_split phase=preview source_label=%1 "
+                "parts=%2 minimum_marker_voxels=%3 erosion_radius_voxels=%4 "
+                "components=%5 eligible_components=%6 marker_hash=%7 "
+                "partition_hash=%8 erosion_ms=%9 watershed_ms=%10 total_ms=%11")
+                .arg(dialog->m_seededSplitSession.session->sourceLabel)
+                .arg(storedResult.voxelCounts.size())
+                .arg(storedResult.minimumMarkerVoxelCount)
+                .arg(storedResult.erosionRadiusVoxels)
+                .arg(storedResult.erodedComponentCount)
+                .arg(storedResult.eligibleComponentCount)
+                .arg(formatHash(storedResult.markerHash))
+                .arg(formatHash(storedResult.partitionHash))
+                .arg(storedResult.erosionSearchMs, 0, 'f', 1)
+                .arg(storedResult.watershedMs, 0, 'f', 1)
+                .arg(storedResult.totalMs, 0, 'f', 1));
+        dialog->setSeededSplitStatus(
+            QStringLiteral(
+                "Erosion preview: %1 parts at voxel radius %2 (%3 eligible regions, %4 ms).")
+                .arg(storedResult.voxelCounts.size())
+                .arg(storedResult.erosionRadiusVoxels)
+                .arg(storedResult.eligibleComponentCount)
+                .arg(storedResult.totalMs, 0, 'f', 1),
+            storedResult.hasDisconnectedParts());
+        dialog->updateSeededSplitUiState();
+    };
+
+    if (m_seededSplitSession.taskRunner != nullptr) {
+        m_seededSplitSession.taskRunner->runInBackground(
+            QStringLiteral("Computing erosion split preview..."),
+            computePreview,
+            finishPreview,
+            [dialog]() {
+                if (!dialog.isNull()) {
+                    dialog->finishSplitTask();
+                }
+            });
+    } else {
+        finishPreview(computePreview());
+        if (!dialog.isNull()) {
+            dialog->finishSplitTask();
+        }
+    }
+}
+
+void Segment3DViewerDialog::applyErosionSplit() {
+    if (!m_erosionSplitPreview.has_value() || !m_seededSplitSession.applyErosionSplit) {
+        return;
+    }
+
+    applySplitPreview(
+        [applySplit = m_seededSplitSession.applyErosionSplit,
+         preview = m_erosionSplitPreview.value()]() { return applySplit(preview); },
+        m_seededSplitSession.erosionSplitProgressText,
+        tr("Erosion Split"),
+        tr("The erosion split could not be applied."));
+}
+
+void Segment3DViewerDialog::applySeededSplit() {
+    if (!m_seededSplitPreview.has_value() || !m_seededSplitSession.applySplit) {
+        return;
+    }
+
+    applySplitPreview(
+        [applySplit = m_seededSplitSession.applySplit,
+         preview = m_seededSplitPreview.value()]() { return applySplit(preview); },
+        m_seededSplitSession.progressText,
+        tr("Seeded Split"),
+        tr("The segment could not be split."));
+}
+
+void Segment3DViewerDialog::applySplitPreview(
+    std::function<SplitApplyResult()> applySplit,
+    const QString &progressText,
+    const QString &title,
+    const QString &failureMessage)
+{
+    if (m_seededSplitBusy || (m_seededSplitSession.taskRunner != nullptr
             && m_seededSplitSession.taskRunner->isBusy())) {
         return;
     }
 
     m_seededSplitBusy = true;
     updateSeededSplitUiState();
-    const auto applySplit = m_seededSplitSession.applySplit;
-    const auto preview = m_seededSplitPreview.value();
     const QPointer<Segment3DViewerDialog> dialog(this);
-    const auto finishApply = [dialog](SplitApplyResult result) {
+    const auto finishApply = [dialog, title, failureMessage](SplitApplyResult result) {
         if (dialog.isNull()) {
             return;
         }
@@ -4500,7 +4713,7 @@ void Segment3DViewerDialog::applySeededSplit() {
                 dialog->m_strokeOverlay->clearStroke();
             }
             if (!result.message.isEmpty()) {
-                QMessageBox::warning(dialog, tr("Seeded Split"), result.message);
+                QMessageBox::warning(dialog, title, result.message);
             }
             dialog->accept();
             return;
@@ -4509,33 +4722,24 @@ void Segment3DViewerDialog::applySeededSplit() {
         dialog->updateSeededSplitUiState();
         QMessageBox::information(
             dialog,
-            tr("Seeded Split"),
-            result.message.isEmpty() ? tr("The segment could not be split.") : result.message);
+            title,
+            result.message.isEmpty() ? failureMessage : result.message);
     };
 
     if (m_seededSplitSession.taskRunner != nullptr) {
-        const auto committed = std::make_shared<bool>(false);
         m_seededSplitSession.taskRunner->runWithLabel(
-            m_seededSplitSession.progressText,
-            [applySplit, preview]() { return applySplit(preview); },
-            [finishApply, committed](SplitApplyResult result) {
-                finishApply(std::move(result));
-                *committed = true;
-            },
-            [dialog, committed]() {
-                if (dialog.isNull()) {
-                    return;
+            progressText,
+            std::move(applySplit),
+            finishApply,
+            [dialog]() {
+                if (!dialog.isNull()) {
+                    dialog->finishSplitTask();
                 }
-                if (!*committed) {
-                    dialog->m_seededSplitBusy = false;
-                    dialog->updateSeededSplitUiState();
-                }
-                dialog->restoreSeededSplitFocus();
             });
     } else {
-        finishApply(applySplit(preview));
+        finishApply(applySplit());
         if (!dialog.isNull()) {
-            dialog->restoreSeededSplitFocus();
+            dialog->finishSplitTask();
         }
     }
 }
@@ -4557,8 +4761,12 @@ void Segment3DViewerDialog::updateSeededSplitUiState() {
     if (m_seedButtons[0] == nullptr) {
         return;
     }
-    const bool watershedActive =
+    const bool seededWatershedActive =
         m_activeSplitMethod == SplitMethod::SeededWatershed;
+    const bool erosionWatershedActive =
+        m_activeSplitMethod == SplitMethod::ErosionWatershed;
+    const bool watershedOptionsActive =
+        seededWatershedActive || erosionWatershedActive;
     const bool haveProjectedStroke =
         m_strokeOverlay != nullptr && m_strokeOverlay->hasValidStroke();
     for (int seedNumber = 0; seedNumber < static_cast<int>(m_seedButtons.size()); ++seedNumber) {
@@ -4608,19 +4816,35 @@ void Segment3DViewerDialog::updateSeededSplitUiState() {
             && m_havePendingLineSeeds && m_pendingLineSeedsValid);
     }
     if (m_connectSeedsCheckBox != nullptr) {
-        m_connectSeedsCheckBox->setEnabled(watershedActive && !m_seededSplitBusy);
+        m_connectSeedsCheckBox->setEnabled(
+            seededWatershedActive && !m_seededSplitBusy);
     }
     if (m_compactWatershedCheckBox != nullptr) {
-        m_compactWatershedCheckBox->setEnabled(watershedActive && !m_seededSplitBusy);
+        m_compactWatershedCheckBox->setEnabled(
+            watershedOptionsActive && !m_seededSplitBusy);
     }
     if (m_allowDisconnectedCheckBox != nullptr) {
-        m_allowDisconnectedCheckBox->setEnabled(watershedActive && !m_seededSplitBusy);
+        m_allowDisconnectedCheckBox->setEnabled(
+            watershedOptionsActive && !m_seededSplitBusy);
     }
     if (m_smoothingSlider != nullptr) {
-        m_smoothingSlider->setEnabled(watershedActive && !m_seededSplitBusy);
+        m_smoothingSlider->setEnabled(
+            watershedOptionsActive && !m_seededSplitBusy);
     }
     if (m_smoothingLabel != nullptr) {
-        m_smoothingLabel->setEnabled(watershedActive && !m_seededSplitBusy);
+        m_smoothingLabel->setEnabled(
+            watershedOptionsActive && !m_seededSplitBusy);
+    }
+    if (m_minimumErosionPartCountSpinBox != nullptr) {
+        m_minimumErosionPartCountSpinBox->setEnabled(!m_seededSplitBusy);
+    }
+    if (m_minimumErosionMarkerSizeSpinBox != nullptr) {
+        m_minimumErosionMarkerSizeSpinBox->setEnabled(!m_seededSplitBusy);
+    }
+    if (m_erosionSplitButton != nullptr) {
+        m_erosionSplitButton->setEnabled(
+            !m_seededSplitBusy && !m_seededSplitSmoothingPending
+            && static_cast<bool>(m_seededSplitSession.applyErosionSplit));
     }
     m_resetSplitButton->setEnabled(!m_seededSplitBusy
                                    && (!m_seedIndices[0].empty()
@@ -4630,13 +4854,17 @@ void Segment3DViewerDialog::updateSeededSplitUiState() {
                                        || m_seededSplitPreview.has_value()
                                        || m_projectedCutDrawModeActive
                                        || m_projectedCutPreview.has_value()
+                                       || erosionWatershedActive
+                                       || m_erosionSplitPreview.has_value()
                                        || haveProjectedStroke));
-    const bool haveActivePreview = watershedActive
+    const bool haveActivePreview = seededWatershedActive
                                        ? m_seededSplitPreview.has_value()
+                                   : erosionWatershedActive
+                                       ? m_erosionSplitPreview.has_value()
                                        : m_projectedCutPreview.has_value();
     m_applySplitButton->setEnabled(
         !m_seededSplitBusy
-        && (!watershedActive || !m_seededSplitSmoothingPending)
+        && (!watershedOptionsActive || !m_seededSplitSmoothingPending)
         && haveActivePreview);
     if (m_projectedCutButton != nullptr) {
         m_projectedCutButton->setEnabled(
@@ -4647,18 +4875,9 @@ void Segment3DViewerDialog::updateSeededSplitUiState() {
     }
 }
 
-void Segment3DViewerDialog::restoreSeededSplitFocus() {
+void Segment3DViewerDialog::finishSplitTask() {
     m_seededSplitBusy = false;
     updateSeededSplitUiState();
-    QTimer::singleShot(0, this, [this]() {
-        if (!isVisible()) {
-            return;
-        }
-        raiseAndRequestActivation();
-        if (m_vtkWidget != nullptr) {
-            m_vtkWidget->setFocus(Qt::OtherFocusReason);
-        }
-    });
 }
 
 bool Segment3DViewerDialog::tryHandlePickedLabelInteraction(
