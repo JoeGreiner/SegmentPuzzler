@@ -5,6 +5,7 @@
 #include "MainWindowWatershedControl.h"
 #include "src/viewers/OrthoViewer.h"
 #include "src/qtUtils/SignalLayerWidget.h"
+#include "src/qtUtils/LabelBoundaryWidthControl.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/qtUtils/ImageNormalizationSettingsDialog.h"
@@ -615,6 +616,10 @@ QString layerToolTipText(itkSignalBase *signal) {
         toolTip += "\nClick Add/Over to change the blend mode.";
     }
     toolTip += "\nClick opacity to adjust the overlay strength.";
+    if (signal->usesCategoricalColors() &&
+        signal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries) {
+        toolTip += "\nClick line width to adjust the segment outlines.";
+    }
     return toolTip;
 }
 
@@ -1142,6 +1147,7 @@ void SignalControl::refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item)
     presentation.contrastText = contrastChipText(signal);
     presentation.blendModeText = blendModeChipText(signal);
     presentation.opacityText = opacityChipText(signal);
+    presentation.boundaryWidthText = QStringLiteral("%1 px").arg(signal->getLabelBoundaryWidth());
     presentation.toolTip = layerToolTipText(signal);
     presentation.contrastAvailable = signal->supportsNormControl();
     presentation.blendModeAvailable = signal->supportsNormControl();
@@ -1369,6 +1375,11 @@ void SignalControl::openOpacityPopup(QTreeWidgetItem *item, QWidget *anchor) {
 
     connect(slider, &QSlider::valueChanged, this, applyOpacity);
     connect(spinBox, qOverload<int>(&QSpinBox::valueChanged), this, applyOpacity);
+
+    addLabelBoundaryWidthControl(layout, signal, [this, tree, item]() {
+        refreshLayerWidget(tree, item);
+        refreshViewers();
+    });
 
     action->setDefaultWidget(container);
     menu->addAction(action);

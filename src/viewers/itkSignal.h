@@ -929,6 +929,11 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
 
     const QRgb transparentPixel = qRgba(0, 0, 0, 0);
     if (renderLabelBoundaries) {
+        const int boundaryWidth = getLabelBoundaryWidth();
+        std::vector<int> boundaryDistances;
+        if (boundaryWidth > 1) {
+            boundaryDistances.resize(requiredPixelCount, boundaryWidth);
+        }
         for (unsigned long row = 0; row < sliceHeight; ++row) {
             const unsigned long imageRowOffset = baseOffset + row * rowStride;
             const unsigned long sliceRowOffset = row * sliceWidth;
@@ -946,6 +951,41 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
                     imageBuffer[imageOffset + columnStride] != value;
                 sliceBufferPtr[sliceRowOffset + column] =
                     isBoundary ? colorForBoundaryLabelValue(value) : transparentPixel;
+                if (boundaryWidth > 1 && isBoundary) {
+                    boundaryDistances[sliceRowOffset + column] = 0;
+                }
+            }
+        }
+        if (boundaryWidth > 1) {
+            // Distance to the existing four-neighbor contour, capped at the requested width.
+            // Two passes expand it inward in linear time, retaining each pixel's own label color.
+            for (unsigned long row = 0; row < sliceHeight; ++row) {
+                for (unsigned long column = 0; column < sliceWidth; ++column) {
+                    const unsigned long offset = row * sliceWidth + column;
+                    int &distance = boundaryDistances[offset];
+                    if (row > 0) {
+                        distance = std::min(distance, boundaryDistances[offset - sliceWidth] + 1);
+                    }
+                    if (column > 0) {
+                        distance = std::min(distance, boundaryDistances[offset - 1] + 1);
+                    }
+                }
+            }
+            for (unsigned long row = sliceHeight; row-- > 0;) {
+                for (unsigned long column = sliceWidth; column-- > 0;) {
+                    const unsigned long offset = row * sliceWidth + column;
+                    int &distance = boundaryDistances[offset];
+                    if (row + 1 < sliceHeight) {
+                        distance = std::min(distance, boundaryDistances[offset + sliceWidth] + 1);
+                    }
+                    if (column + 1 < sliceWidth) {
+                        distance = std::min(distance, boundaryDistances[offset + 1] + 1);
+                    }
+                    if (distance > 0 && distance < boundaryWidth) {
+                        const dType value = imageBuffer[baseOffset + row * rowStride + column * columnStride];
+                        sliceBufferPtr[offset] = colorForBoundaryLabelValue(value);
+                    }
+                }
             }
         }
     } else if constexpr (!std::is_floating_point_v<dType>) {

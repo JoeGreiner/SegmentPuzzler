@@ -5,6 +5,7 @@
 #include <itkImageBase.h>
 #include <QRgb>
 #include <QColor>
+#include <algorithm>
 #include <atomic>
 #include <vector>
 #include <map>
@@ -260,6 +261,8 @@ public:
         Boundaries
     };
 
+    static constexpr int MaximumLabelBoundaryWidth = 10;
+
     enum class LayerRole {
         Overlay,
         SourceImage
@@ -374,6 +377,14 @@ public:
         labelRenderMode = labelRenderModeIn;
     }
 
+    int getLabelBoundaryWidth() const {
+        return labelBoundaryWidth;
+    }
+
+    void setLabelBoundaryWidth(int width) {
+        labelBoundaryWidth = std::clamp(width, 1, MaximumLabelBoundaryWidth);
+    }
+
     LayerRole getLayerRole() const {
         return layerRole;
     }
@@ -392,6 +403,7 @@ public:
 private:
     BlendMode blendMode = BlendMode::SourceOver;
     LabelRenderMode labelRenderMode = LabelRenderMode::Filled;
+    int labelBoundaryWidth = 1;
     LayerRole layerRole = LayerRole::Overlay;
 };
 

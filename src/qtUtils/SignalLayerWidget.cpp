@@ -321,8 +321,12 @@ int leftZoneWidth() {
 int minimumTextColumnWidth(const QFontMetrics &metrics,
                            const QString &contrastText,
                            const QString &blendModeText,
-                           const QString &opacityText) {
-    const int titleWidth = textWidth(metrics, QString::fromLatin1(kMinimumTitleSample));
+                           const QString &opacityText,
+                           const QString &boundaryWidthText) {
+    int titleWidth = textWidth(metrics, QString::fromLatin1(kMinimumTitleSample));
+    if (!boundaryWidthText.isEmpty()) {
+        titleWidth += kMetadataSpacing + textWidth(metrics, boundaryWidthText);
+    }
     const std::array<QString, 3> metadataTexts = {contrastText, blendModeText, opacityText};
     int metadataWidth = 0;
     int visibleChipCount = 0;
@@ -569,7 +573,25 @@ SignalLayerWidget::SignalLayerWidget(QWidget *parent) : QFrame(parent) {
     nameLabel->setCursor(Qt::PointingHandCursor);
     nameLabel->setTextFormat(Qt::PlainText);
     nameLabel->installEventFilter(this);
-    textLayout->addWidget(nameLabel);
+
+    boundaryWidthButton = new QToolButton(textZone);
+    boundaryWidthButton->setAutoRaise(true);
+    boundaryWidthButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    boundaryWidthButton->setCursor(Qt::PointingHandCursor);
+    boundaryWidthButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    boundaryWidthButton->setToolTip("Adjust outline width (image pixels; scales with zoom)");
+    boundaryWidthButton->setAccessibleName("Outline width");
+    boundaryWidthButton->setIconSize(QSize(0, 0));
+    connect(boundaryWidthButton, &QToolButton::clicked, this, [this]() {
+        emit opacityRequested(boundaryWidthButton);
+    });
+
+    auto *titleLayout = new QHBoxLayout();
+    titleLayout->setContentsMargins(0, 0, 0, 0);
+    titleLayout->setSpacing(kMetadataSpacing);
+    titleLayout->addWidget(nameLabel, 1);
+    titleLayout->addWidget(boundaryWidthButton, 0, Qt::AlignRight | Qt::AlignVCenter);
+    textLayout->addLayout(titleLayout);
 
     metadataRow = new QWidget(textZone);
     metadataRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -639,6 +661,7 @@ void SignalLayerWidget::applyPresentation(const Presentation &presentation) {
     setContrastText(presentation.contrastText);
     setBlendModeText(presentation.blendModeText);
     setOpacityText(presentation.opacityText);
+    setBoundaryWidthText(presentation.boundaryWidthText);
     setContrastAvailable(presentation.contrastAvailable);
     setBlendModeAvailable(presentation.blendModeAvailable);
     setLayerToolTip(presentation.toolTip);
@@ -654,7 +677,8 @@ QSize SignalLayerWidget::minimumSizeHint() const {
     const int textWidth = minimumTextColumnWidth(metrics,
                                                  hasSemanticContrastChip() ? contrastButton->text() : QString(),
                                                  hasSemanticBlendModeChip() ? blendModeButton->text() : QString(),
-                                                 hasSemanticOpacityChip() ? opacityButton->text() : QString());
+                                                 hasSemanticOpacityChip() ? opacityButton->text() : QString(),
+                                                 hasSemanticBoundaryWidthChip() ? boundaryWidthButton->text() : QString());
     const int width = kRowMargins.left() + leftZoneWidth() + kOuterSpacing + textWidth + kRowMargins.right();
     return QSize(width, rowFixedHeightForFont(metrics));
 }
@@ -733,6 +757,13 @@ void SignalLayerWidget::setOpacityText(const QString &text) {
     requestLayoutRefresh();
 }
 
+void SignalLayerWidget::setBoundaryWidthText(const QString &text) {
+    boundaryWidthButton->setText(text);
+    boundaryWidthButton->setAccessibleDescription(QStringLiteral("Current outline width: %1").arg(text));
+    updateChipVisibilityState();
+    requestLayoutRefresh();
+}
+
 void SignalLayerWidget::setContrastAvailable(bool available) {
     contrastButton->setVisible(available);
     updateChipVisibilityState();
@@ -761,6 +792,9 @@ void SignalLayerWidget::setLayerToolTip(const QString &toolTip) {
 
 bool SignalLayerWidget::eventFilter(QObject *watched, QEvent *event) {
     if (watched == nameLabel && event != nullptr) {
+        if (event->type() == QEvent::Resize) {
+            updateDisplayedLayerName();
+        }
         if (event->type() == QEvent::MouseButtonDblClick) {
             suppressNextNameRelease = true;
             emit renameRequested();
@@ -831,6 +865,10 @@ void SignalLayerWidget::updateChipVisibilityState() {
     const bool semanticHasBlendModeChip = hasSemanticBlendModeChip();
     const bool semanticHasOpacityChip = hasSemanticOpacityChip();
 
+    if (boundaryWidthButton != nullptr) {
+        boundaryWidthButton->setVisible(hasSemanticBoundaryWidthChip());
+    }
+
     if (contrastButton != nullptr && contrastButton->isVisible() != semanticHasContrastChip) {
         contrastButton->setVisible(semanticHasContrastChip);
     }
@@ -846,6 +884,9 @@ void SignalLayerWidget::updateChipVisibilityState() {
 }
 
 void SignalLayerWidget::updateToolTips() {
+    opacityButton->setToolTip(usesCategoricalPalette && showsLabelBoundaries
+                                  ? "Adjust opacity and outline width"
+                                  : "Adjust opacity");
     QString tooltipText = fullLayerName;
     if (!currentLayerToolTip.isEmpty() && currentLayerToolTip != fullLayerName) {
         tooltipText += QStringLiteral("\n\n") + currentLayerToolTip;
@@ -923,6 +964,7 @@ void SignalLayerWidget::updateStyle() {
     contrastButton->setFont(textFont);
     blendModeButton->setFont(textFont);
     opacityButton->setFont(textFont);
+    boundaryWidthButton->setFont(textFont);
 
     const QFontMetrics metrics(textFont);
     const int rowHeight = rowFixedHeightForFont(metrics);
@@ -949,6 +991,7 @@ void SignalLayerWidget::updateStyle() {
     contrastButton->setStyleSheet(metadataStyle);
     blendModeButton->setStyleSheet(metadataStyle);
     opacityButton->setStyleSheet(metadataStyle);
+    boundaryWidthButton->setStyleSheet(metadataStyle);
 
     updateDisplayedLayerName();
     updateColorButtonAppearance();
@@ -968,6 +1011,12 @@ bool SignalLayerWidget::hasSemanticContrastChip() const {
 bool SignalLayerWidget::hasSemanticOpacityChip() const {
     return opacityButton != nullptr
            && !opacityButton->text().isEmpty();
+}
+
+bool SignalLayerWidget::hasSemanticBoundaryWidthChip() const {
+    return boundaryWidthButton != nullptr
+           && usesCategoricalPalette && !usesEdgeStatusColors && showsLabelBoundaries
+           && !boundaryWidthButton->text().isEmpty();
 }
 
 bool SignalLayerWidget::hasSemanticBlendModeChip() const {

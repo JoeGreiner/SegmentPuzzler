@@ -78,6 +78,95 @@ int testReportedBoundaryFailureAndFilledAxes() {
     return 0;
 }
 
+int testLabelBoundaryWidths() {
+    using Image = itk::Image<unsigned int, 3>;
+    auto image = Image::New();
+    const Image::SizeType size{{17, 15, 13}};
+    image->SetRegions(Image::RegionType(Image::IndexType{{0, 0, 0}}, size));
+    image->Allocate();
+    for (int z = 0; z < 13; ++z) {
+        for (int y = 0; y < 15; ++y) {
+            for (int x = 0; x < 17; ++x) {
+                unsigned int label = x >= 9 ? 2 : 1;
+                if (std::abs(x - 5) + std::abs(y - 6) + std::abs(z - 5) <= 3) label = 3;
+                if (x == 4 && y == 7) label = 0;
+                image->SetPixel({x, y, z}, label);
+            }
+        }
+    }
+
+    itkSignal<unsigned int> signal(image, false);
+    signal.setCategoricalColorMode();
+    signal.setValueColorToTransparent(0);
+    signal.setAlpha(83);
+    if (signal.getLabelBoundaryWidth() != 1) return fail("default outline width should stay at one pixel");
+    signal.setLabelBoundaryWidth(-3);
+    if (signal.getLabelBoundaryWidth() != 1) return fail("outline width should have a lower bound");
+    signal.setLabelBoundaryWidth(100);
+    if (signal.getLabelBoundaryWidth() != itkSignalBase::MaximumLabelBoundaryWidth) {
+        return fail("outline width should have an upper bound");
+    }
+
+    signal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Boundaries);
+    const int horizontalAxes[] = {2, 0, 0};
+    const int verticalAxes[] = {1, 2, 1};
+    std::vector<quint32> buffer;
+    for (int axis = 0; axis < 3; ++axis) {
+        const int horizontalAxis = horizontalAxes[axis];
+        const int verticalAxis = verticalAxes[axis];
+        for (int slice : {0, static_cast<int>(size[axis] / 2), static_cast<int>(size[axis] - 1)}) {
+            for (int width : {1, 2, 4, itkSignalBase::MaximumLabelBoundaryWidth}) {
+                signal.setLabelBoundaryWidth(width);
+                const QImage rendered = signal.calculateSliceQImage(slice, axis, &buffer);
+                for (int y = 0; y < rendered.height(); ++y) {
+                    for (int x = 0; x < rendered.width(); ++x) {
+                        Image::IndexType index;
+                        index[axis] = slice;
+                        index[horizontalAxis] = x;
+                        index[verticalAxis] = y;
+                        const unsigned int label = image->GetPixel(index);
+                        bool isOutline = false;
+                        // Independent reference: a thick outline contains pixels within the
+                        // requested in-plane Manhattan distance of another label or the exterior.
+                        for (int dy = -width; dy <= width && !isOutline; ++dy) {
+                            for (int dx = -width; dx <= width && !isOutline; ++dx) {
+                                if (std::abs(dx) + std::abs(dy) > width) continue;
+                                auto neighbor = index;
+                                neighbor[horizontalAxis] += dx;
+                                neighbor[verticalAxis] += dy;
+                                isOutline = !image->GetLargestPossibleRegion().IsInside(neighbor) ||
+                                            image->GetPixel(neighbor) != label;
+                            }
+                        }
+                        const QRgb expected = isOutline ? signal.colorForLabel(label) : qRgba(0, 0, 0, 0);
+                        if (rendered.pixel(x, y) != expected) {
+                            return fail("outline mismatch on axis " + std::to_string(axis) +
+                                        " at width " + std::to_string(width));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    signal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Filled);
+    const QImage filledWide = signal.calculateSliceQImage(6, 2, &buffer).copy();
+    signal.setLabelBoundaryWidth(1);
+    if (signal.calculateSliceQImage(6, 2, &buffer) != filledWide) {
+        return fail("outline width should not affect filled segments");
+    }
+    signal.setLabelBoundaryWidth(4);
+    signal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Boundaries);
+    if (signal.getLabelBoundaryWidth() != 4) return fail("outline width should survive render mode changes");
+
+    auto tinyImage = makeImage<unsigned int>(7);
+    itkSignal<unsigned int> tinySignal(tinyImage, false);
+    tinySignal.setCategoricalColorMode();
+    tinySignal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Boundaries);
+    tinySignal.setLabelBoundaryWidth(itkSignalBase::MaximumLabelBoundaryWidth);
+    return expectCenterColorOnAllAxes(tinySignal, tinySignal.colorForLabel(7), "outline wider than segment");
+}
+
 int testMaximumUnsignedLabels() {
     auto image32 = makeImage<unsigned int>(0U);
     itkSignal<unsigned int> signal32(image32, false);
@@ -294,6 +383,7 @@ int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
 
     if (int result = testReportedBoundaryFailureAndFilledAxes()) return result;
+    if (int result = testLabelBoundaryWidths()) return result;
     if (int result = testMaximumUnsignedLabels()) return result;
     if (int result = testSignedIntegerRendering()) return result;
     if (int result = testPaletteStabilityOverridesAndSnapshots()) return result;

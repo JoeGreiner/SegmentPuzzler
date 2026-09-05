@@ -25,6 +25,7 @@ public:
         QString contrastText;
         QString blendModeText;
         QString opacityText;
+        QString boundaryWidthText;
         QString toolTip;
         bool usesCategoricalPalette = false;
         bool usesEdgeStatusColors = false;
@@ -58,6 +59,7 @@ public:
     void setContrastText(const QString &text);
     void setBlendModeText(const QString &text);
     void setOpacityText(const QString &text);
+    void setBoundaryWidthText(const QString &text);
     void setContrastAvailable(bool available);
     void setBlendModeAvailable(bool available);
     void setLayerToolTip(const QString &toolTip);
@@ -93,6 +95,7 @@ private:
     bool hasSemanticContrastChip() const;
     bool hasSemanticBlendModeChip() const;
     bool hasSemanticOpacityChip() const;
+    bool hasSemanticBoundaryWidthChip() const;
 
     QWidget *leftZone = nullptr;
     QWidget *textZone = nullptr;
@@ -103,6 +106,7 @@ private:
     QToolButton *contrastButton = nullptr;
     QToolButton *blendModeButton = nullptr;
     QToolButton *opacityButton = nullptr;
+    QToolButton *boundaryWidthButton = nullptr;
 
     QString fullLayerName;
     QString currentLayerToolTip;
