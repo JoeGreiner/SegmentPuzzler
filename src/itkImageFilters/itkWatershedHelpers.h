@@ -37,8 +37,8 @@ struct WatershedRunOptions {
 struct BoundaryConsistentPartitionResult {
     using SplitComponentMap = std::unordered_map<dataType::SegmentIdType, std::vector<dataType::SegmentIdType>>;
 
-    dataType::SegmentsImageType::Pointer canonicalLabels;
-    dataType::SegmentsImageType::Pointer displayLabels;
+    dataType::SegmentsImageType::Pointer boundaryFilledLabels;
+    dataType::SegmentsImageType::Pointer boundaryMaskedLabels;
     SplitComponentMap splitComponentIds;
 };
 
@@ -78,7 +78,7 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
     dataType::SegmentsImageType::Pointer labels,
     itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
     const WatershedRunOptions &repairOptions = WatershedRunOptions(),
-    bool repairCanonicalLabels = true,
+    bool fillBoundaries = true,
     DistanceMapAlgorithm distanceMapAlgorithm = DistanceMapAlgorithm::Maurer,
     int threadCount = 1);
 

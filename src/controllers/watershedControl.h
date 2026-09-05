@@ -159,8 +159,8 @@ private:
 
     struct GeneratedStageOutput {
         SignalStage stage = SignalStage::None;
-        dataType::SegmentsImageType::Pointer canonicalLabels;
-        dataType::SegmentsImageType::Pointer displayLabels;
+        dataType::SegmentsImageType::Pointer boundaryFilledLabels;
+        dataType::SegmentsImageType::Pointer boundaryMaskedLabels;
         BoundaryConsistentPartitionResult::SplitComponentMap splitComponentIds;
     };
 

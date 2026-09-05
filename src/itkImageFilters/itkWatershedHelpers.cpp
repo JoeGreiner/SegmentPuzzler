@@ -134,7 +134,7 @@ private:
 };
 
 std::vector<BoundaryComponentRecord> labelBoundaryComponentSlab(
-    const SegmentIdType *displayBuffer,
+    const SegmentIdType *boundaryMaskedBuffer,
     SegmentIdType *componentBuffer,
     std::size_t dimX,
     std::size_t dimY,
@@ -151,7 +151,7 @@ std::vector<BoundaryComponentRecord> labelBoundaryComponentSlab(
     stack.reserve(1024);
 
     for (std::size_t seed = firstIndex; seed < endIndex; ++seed) {
-        const SegmentIdType originalLabel = displayBuffer[seed];
+        const SegmentIdType originalLabel = boundaryMaskedBuffer[seed];
         if (originalLabel == 0 || componentBuffer[seed] != 0) {
             continue;
         }
@@ -176,7 +176,7 @@ std::vector<BoundaryComponentRecord> labelBoundaryComponentSlab(
             const std::size_t x = remainder % dimX;
 
             const auto addNeighbor = [&](std::size_t neighbor) {
-                if (componentBuffer[neighbor] == 0 && displayBuffer[neighbor] == originalLabel) {
+                if (componentBuffer[neighbor] == 0 && boundaryMaskedBuffer[neighbor] == originalLabel) {
                     componentBuffer[neighbor] = componentId;
                     stack.push_back(neighbor);
                 }
@@ -197,12 +197,12 @@ std::vector<BoundaryComponentRecord> labelBoundaryComponentSlab(
 void relabelInjectedBoundaryComponents(
     SegmentsImageType::Pointer labels,
     itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
-    SegmentsImageType::Pointer &displayLabels,
+    SegmentsImageType::Pointer &boundaryMaskedLabels,
     BoundaryConsistentPartitionResult::SplitComponentMap &splitComponentIds,
     int threadCount) {
     const auto totalStarted = std::chrono::steady_clock::now();
     auto stageStarted = totalStarted;
-    displayLabels = copySegmentsImage(labels);
+    boundaryMaskedLabels = copySegmentsImage(labels);
     splitComponentIds.clear();
     emitWatershedLog("Boundary relabel: label copy_ms=" + std::to_string(elapsedMilliseconds(stageStarted)));
 
@@ -229,7 +229,7 @@ void relabelInjectedBoundaryComponents(
     executionThreadCount = std::min(requestedThreadCount, std::max(1, omp_get_max_threads()));
 #endif
 
-    SegmentIdType *displayBuffer = displayLabels->GetBufferPointer();
+    SegmentIdType *boundaryMaskedBuffer = boundaryMaskedLabels->GetBufferPointer();
     const unsigned char *thresholdBuffer = thresholdedBoundaries->GetBufferPointer();
     stageStarted = std::chrono::steady_clock::now();
 #ifdef USE_OMP
@@ -237,7 +237,7 @@ void relabelInjectedBoundaryComponents(
 #endif
     for (long long index = 0; index < static_cast<long long>(total); ++index) {
         if (thresholdBuffer[index] != 0) {
-            displayBuffer[index] = 0;
+            boundaryMaskedBuffer[index] = 0;
         }
     }
     emitWatershedLog("Boundary relabel: inject boundaries_ms=" +
@@ -276,7 +276,7 @@ void relabelInjectedBoundaryComponents(
             const std::size_t zEnd = dimZ * static_cast<std::size_t>(slabIndex + 1) /
                                      static_cast<std::size_t>(slabCount);
             recordsBySlab[static_cast<std::size_t>(slabIndex)] = labelBoundaryComponentSlab(
-                displayBuffer, componentBuffer, dimX, dimY, zBegin, zEnd, nextComponentId);
+                boundaryMaskedBuffer, componentBuffer, dimX, dimY, zBegin, zEnd, nextComponentId);
         } catch (...) {
             std::lock_guard<std::mutex> guard(exceptionMutex);
             if (!firstException) {
@@ -320,8 +320,8 @@ void relabelInjectedBoundaryComponents(
         const std::size_t lowerOffset = (z - 1) * planeXY;
         const std::size_t upperOffset = z * planeXY;
         for (std::size_t offset = 0; offset < planeXY; ++offset) {
-            const SegmentIdType label = displayBuffer[lowerOffset + offset];
-            if (label != 0 && label == displayBuffer[upperOffset + offset]) {
+            const SegmentIdType label = boundaryMaskedBuffer[lowerOffset + offset];
+            if (label != 0 && label == boundaryMaskedBuffer[upperOffset + offset]) {
                 componentSets.unite(
                     componentBuffer[lowerOffset + offset],
                     componentBuffer[upperOffset + offset]);
@@ -388,7 +388,7 @@ void relabelInjectedBoundaryComponents(
 #endif
     for (long long index = 0; index < static_cast<long long>(total); ++index) {
         const SegmentIdType componentId = componentBuffer[index];
-        displayBuffer[index] = componentId == 0
+        boundaryMaskedBuffer[index] = componentId == 0
             ? 0
             : rootToFinalLabel[componentSets.representative(componentId)];
     }
@@ -400,27 +400,27 @@ void relabelInjectedBoundaryComponents(
 SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
     SegmentsImageType::Pointer labels,
     itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
-    SegmentsImageType::Pointer displayLabels,
+    SegmentsImageType::Pointer boundaryMaskedLabels,
     const BoundaryConsistentPartitionResult::SplitComponentMap &splitComponentIds,
     const WatershedRunOptions &repairOptions,
     DistanceMapAlgorithm distanceMapAlgorithm,
     int threadCount) {
     const auto totalStarted = std::chrono::steady_clock::now();
     auto stageStarted = totalStarted;
-    auto canonicalLabels = copySegmentsImage(labels);
-    emitWatershedLog("Boundary repair: canonical copy_ms=" +
+    auto boundaryFilledLabels = copySegmentsImage(labels);
+    emitWatershedLog("Boundary repair: boundary-filled copy_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)));
     if (thresholdedBoundaries.IsNull() || splitComponentIds.empty()) {
         emitWatershedLog("Boundary repair: skipped watershed, total_ms=" +
                          std::to_string(elapsedMilliseconds(totalStarted)));
-        return canonicalLabels;
+        return boundaryFilledLabels;
     }
 
     stageStarted = std::chrono::steady_clock::now();
     auto seeds = cloneSegmentsImageMetadata(labels);
     SegmentIdType *seedBuffer = seeds->GetBufferPointer();
     const SegmentIdType *labelBuffer = labels->GetBufferPointer();
-    const SegmentIdType *displayBuffer = displayLabels->GetBufferPointer();
+    const SegmentIdType *boundaryMaskedBuffer = boundaryMaskedLabels->GetBufferPointer();
     const size_t voxelCount = labels->GetLargestPossibleRegion().GetNumberOfPixels();
 
     std::unordered_set<SegmentIdType> splitLabelSet;
@@ -439,7 +439,7 @@ SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
             seedBuffer[index] = originalLabel;
             continue;
         }
-        seedBuffer[index] = displayBuffer[index];
+        seedBuffer[index] = boundaryMaskedBuffer[index];
     }
     emitWatershedLog("Boundary repair: seed preparation_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)) +
@@ -462,11 +462,11 @@ SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
     WatershedRunOptions options = repairOptions;
     options.showWatershedLines = false;
     options.threadCount = threadCount;
-    runWatershed(invertedDistanceMap, seeds, canonicalLabels, options);
+    runWatershed(invertedDistanceMap, seeds, boundaryFilledLabels, options);
     emitWatershedLog("Boundary repair: watershed_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)) +
                      ", total_ms=" + std::to_string(elapsedMilliseconds(totalStarted)));
-    return canonicalLabels;
+    return boundaryFilledLabels;
 }
 
 } // namespace
@@ -756,7 +756,7 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
     dataType::SegmentsImageType::Pointer labels,
     itk::Image<unsigned char, 3>::Pointer thresholdedBoundaries,
     const WatershedRunOptions &repairOptions,
-    bool repairCanonicalLabels,
+    bool fillBoundaries,
     DistanceMapAlgorithm distanceMapAlgorithm,
     int threadCount) {
     const auto totalStarted = std::chrono::steady_clock::now();
@@ -767,15 +767,15 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
 
     auto stageStarted = std::chrono::steady_clock::now();
     relabelInjectedBoundaryComponents(
-        labels, thresholdedBoundaries, result.displayLabels, result.splitComponentIds, threadCount);
+        labels, thresholdedBoundaries, result.boundaryMaskedLabels, result.splitComponentIds, threadCount);
     emitWatershedLog("Boundary-consistent partition: relabel_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)));
-    if (repairCanonicalLabels) {
+    if (fillBoundaries) {
         stageStarted = std::chrono::steady_clock::now();
-        result.canonicalLabels = repairSplitLabelsWithWatershed(
+        result.boundaryFilledLabels = repairSplitLabelsWithWatershed(
             labels,
             thresholdedBoundaries,
-            result.displayLabels,
+            result.boundaryMaskedLabels,
             result.splitComponentIds,
             repairOptions,
             distanceMapAlgorithm,
@@ -783,7 +783,7 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
         emitWatershedLog("Boundary-consistent partition: repair_ms=" +
                          std::to_string(elapsedMilliseconds(stageStarted)));
     } else {
-        result.canonicalLabels = labels;
+        result.boundaryFilledLabels = labels;
     }
     emitWatershedLog("Boundary-consistent partition: total_ms=" +
                      std::to_string(elapsedMilliseconds(totalStarted)));

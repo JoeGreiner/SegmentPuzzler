@@ -1308,26 +1308,26 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
                 watershedFragments,
                 thresholdInput,
                 makeBoundaryRepairOptions(watershedAlgorithm, watershedCompactness),
-                /*repairCanonicalLabels=*/true,
+                /*fillBoundaries=*/true,
                 distanceMapAlgorithm,
                 threadCount);
             SP_LOG_INFO("watershed",
                         QStringLiteral("Boundary-consistent watershed labels finished in %1 ms")
                             .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
 
-            rebuildGraphFromSegmentsImage(derivedPartition.displayLabels);
+            rebuildGraphFromSegmentsImage(derivedPartition.boundaryMaskedLabels);
             return derivedPartition;
         },
         [this, signalName](const BoundaryConsistentPartitionResult &watershedOutputs) {
-            pWatershedFragments = watershedOutputs.canonicalLabels;
-            pWatershed = watershedOutputs.displayLabels;
+            pWatershedFragments = watershedOutputs.boundaryFilledLabels;
+            pWatershed = watershedOutputs.boundaryMaskedLabels;
             auto pSignal2 = std::make_unique<itkSignal<unsigned int>>(pWatershed);
             auto *watershedSignal = pSignal2.get();
             const size_t signalIndex = registerSignal(std::move(pSignal2), SignalStage::Watershed, signalName, /*categorical=*/true);
             generatedStageOutputs[signalIndex] = GeneratedStageOutput{
                 SignalStage::Watershed,
-                watershedOutputs.canonicalLabels,
-                watershedOutputs.displayLabels,
+                watershedOutputs.boundaryFilledLabels,
+                watershedOutputs.boundaryMaskedLabels,
                 watershedOutputs.splitComponentIds};
             attachSegmentsSignalToGraph(watershedSignal);
             updateStepEnablement();
@@ -1400,28 +1400,28 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
                 thresholdMask,
                 options);
 
-            auto canonicalAgglomertionLabels = projectClusterLabelsOntoReference(
+            auto boundaryFilledAgglomertionLabels = projectClusterLabelsOntoReference(
                 watershedInput,
                 agglomerationResult.agglomeratedLabels,
                 options.threadCount);
 
             auto derivedPartition = deriveBoundaryConsistentPartition(
-                canonicalAgglomertionLabels,
+                boundaryFilledAgglomertionLabels,
                 thresholdInput,
                 makeBoundaryRepairOptions(watershedAlgorithm, watershedCompactness),
-                /*repairCanonicalLabels=*/false,
+                /*fillBoundaries=*/false,
                 distanceMapAlgorithm,
                 workerThreadCount);
 
-            rebuildGraphFromSegmentsImage(derivedPartition.displayLabels);
+            rebuildGraphFromSegmentsImage(derivedPartition.boundaryMaskedLabels);
             return BoundaryConsistentPartitionResult{
-                canonicalAgglomertionLabels,
-                derivedPartition.displayLabels,
+                boundaryFilledAgglomertionLabels,
+                derivedPartition.boundaryMaskedLabels,
                 std::move(derivedPartition.splitComponentIds)};
         },
         [this, signalName, replaceTargetSignalIndex](const BoundaryConsistentPartitionResult &agglomertionOutputs) {
-            pAgglomertionFragments = agglomertionOutputs.canonicalLabels;
-            pAgglomertion = agglomertionOutputs.displayLabels;
+            pAgglomertionFragments = agglomertionOutputs.boundaryFilledLabels;
+            pAgglomertion = agglomertionOutputs.boundaryMaskedLabels;
             auto previousWatershedIndices = watershedOutputSignalIndices;
             if (replaceTargetSignalIndex != kInvalidSignalIndex) {
                 previousWatershedIndices.erase(
@@ -1445,8 +1445,8 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
             }
             generatedStageOutputs[signalIndex] = GeneratedStageOutput{
                 SignalStage::Agglomertion,
-                agglomertionOutputs.canonicalLabels,
-                agglomertionOutputs.displayLabels,
+                agglomertionOutputs.boundaryFilledLabels,
+                agglomertionOutputs.boundaryMaskedLabels,
                 agglomertionOutputs.splitComponentIds};
             setSignalActive(signalIndex, true);
             attachSegmentsSignalToGraph(agglomertionSignal);
@@ -2451,7 +2451,7 @@ dataType::SegmentsImageType::Pointer WatershedControl::selectedFinalOutputInput(
     }
     const size_t signalIndex = selectedSignalIndex(finalOutputInputComboBox);
     if (const auto *stageOutput = generatedStageOutput(signalIndex)) {
-        return stageOutput->displayLabels;
+        return stageOutput->boundaryMaskedLabels;
     }
     auto *signal = dynamic_cast<itkSignal<GraphSegmentType> *>(allSignalList[signalIndex]);
     return signal ? signal->pImage : nullptr;
@@ -2481,7 +2481,7 @@ bool WatershedControl::tryResolveInspectSegmentsTarget(dataType::SegmentsImageTy
                                                        itkSignal<GraphSegmentType> *&segmentsSignal,
                                                        QString &errorMessage) const {
     if (const auto *stageOutput = selectedFinalAgglomertionStageOutput()) {
-        segmentsImage = stageOutput->displayLabels;
+        segmentsImage = stageOutput->boundaryMaskedLabels;
         segmentsSignal = selectedFinalAgglomertionSignal();
         return segmentsImage != nullptr && segmentsSignal != nullptr;
     }
@@ -2518,7 +2518,7 @@ void WatershedControl::updateRegisteredSignalName(size_t signalIndex, const QStr
 
 dataType::SegmentsImageType::Pointer WatershedControl::selectedAgglomertionInput() const {
     const auto *stageOutput = selectedAgglomertionStageOutput();
-    return stageOutput != nullptr ? stageOutput->canonicalLabels : nullptr;
+    return stageOutput != nullptr ? stageOutput->boundaryFilledLabels : nullptr;
 }
 
 itk::Image<unsigned char, 3>::Pointer WatershedControl::selectedAgglomertionThresholdMask() const {

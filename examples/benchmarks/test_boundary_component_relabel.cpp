@@ -69,8 +69,8 @@ bool splitMapsEqual(const BoundaryConsistentPartitionResult::SplitComponentMap &
 void requireSameResult(const BoundaryConsistentPartitionResult &reference,
                        const BoundaryConsistentPartitionResult &candidate,
                        const std::string &context) {
-    require(imagesEqual(reference.displayLabels, candidate.displayLabels),
-            context + ": display labels differ");
+    require(imagesEqual(reference.boundaryMaskedLabels, candidate.boundaryMaskedLabels),
+            context + ": boundary-masked labels differ");
     require(splitMapsEqual(reference.splitComponentIds, candidate.splitComponentIds),
             context + ": split-component maps differ");
 }
@@ -96,7 +96,7 @@ void requireValidPartition(LabelImage::Pointer labels,
     referenceFilter->Update();
 
     const Label *componentBuffer = referenceFilter->GetOutput()->GetBufferPointer();
-    const Label *displayBuffer = partition.displayLabels->GetBufferPointer();
+    const Label *boundaryMaskedBuffer = partition.boundaryMaskedLabels->GetBufferPointer();
     std::unordered_map<Label, Label> componentToDisplayLabel;
     std::unordered_map<Label, Label> displayLabelToComponent;
     std::unordered_map<Label, std::vector<Label>> componentsByOriginalLabel;
@@ -105,17 +105,17 @@ void requireValidPartition(LabelImage::Pointer labels,
     for (std::size_t index = 0; index < voxelCount; ++index) {
         maximumOriginalLabel = std::max(maximumOriginalLabel, labelBuffer[index]);
         if (maskBuffer[index] == 0) {
-            require(displayBuffer[index] == 0, "inactive voxel is nonzero in the display partition");
+            require(boundaryMaskedBuffer[index] == 0, "inactive voxel is nonzero in the boundary-masked partition");
             continue;
         }
 
         const Label component = componentBuffer[index];
-        const Label displayLabel = displayBuffer[index];
+        const Label displayLabel = boundaryMaskedBuffer[index];
         require(component != 0 && displayLabel != 0, "active voxel is missing a component label");
 
         const auto componentInsertion = componentToDisplayLabel.emplace(component, displayLabel);
         require(componentInsertion.second || componentInsertion.first->second == displayLabel,
-                "one reference component received multiple display labels");
+                "one reference component received multiple boundary-masked labels");
         const auto displayInsertion = displayLabelToComponent.emplace(displayLabel, component);
         require(displayInsertion.second || displayInsertion.first->second == component,
                 "disconnected reference components share one display label");
@@ -177,7 +177,7 @@ void testKnownSplitAcrossSlabs() {
     requireSameResult(serial, parallel, "known split");
     requireValidPartition(labels, boundaries, parallel);
 
-    const Label *display = parallel.displayLabels->GetBufferPointer();
+    const Label *display = parallel.boundaryMaskedLabels->GetBufferPointer();
     for (int z = 0; z < 7; ++z) {
         require(display[linearIndex(size, 0, 0, z)] == 1,
                 "component crossing slab boundaries changed label");
@@ -236,7 +236,7 @@ void testRepeatedParallelEquivalence() {
         requireSameResult(serial, parallel, "parallel repetition " + std::to_string(repetition));
     }
     require(std::equal(originalLabels.begin(), originalLabels.end(), labels->GetBufferPointer()),
-            "boundary relabeling modified the canonical input labels");
+            "boundary relabeling modified the input labels before boundary masking");
 }
 
 void testMissingAndMismatchedBoundaryImages() {
@@ -246,8 +246,8 @@ void testMissingAndMismatchedBoundaryImages() {
     BoundaryImage::Pointer noBoundaries;
     const auto unchanged = deriveBoundaryConsistentPartition(
         labels, noBoundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer, 8);
-    require(imagesEqual(labels, unchanged.displayLabels),
-            "missing boundary image changed display labels");
+    require(imagesEqual(labels, unchanged.boundaryMaskedLabels),
+            "missing boundary image changed boundary-masked labels");
     require(unchanged.splitComponentIds.empty(),
             "missing boundary image produced split labels");
 
@@ -264,6 +264,31 @@ void testMissingAndMismatchedBoundaryImages() {
     require(threw, "mismatched boundary shape was accepted");
 }
 
+void testOptionalBoundaryFilling() {
+    itk::Size<3> size;
+    size.Fill(9);
+    auto labels = makeImage<LabelImage>(size, 1);
+    auto boundaries = makeImage<BoundaryImage>(size);
+    for (int z = 0; z < 9; ++z) {
+        for (int y = 0; y < 9; ++y) {
+            boundaries->GetBufferPointer()[linearIndex(size, 4, y, z)] = 1;
+        }
+    }
+    WatershedRunOptions options;
+    options.algorithm = WatershedAlgorithm::FastMarkerWatershed;
+    const auto masked = deriveBoundaryConsistentPartition(
+        labels, boundaries, options, false, DistanceMapAlgorithm::Maurer, 2);
+    const auto filled = deriveBoundaryConsistentPartition(
+        labels, boundaries, options, true, DistanceMapAlgorithm::Maurer, 2);
+    requireSameResult(masked, filled, "optional boundary filling");
+    require(imagesEqual(masked.boundaryFilledLabels, labels),
+            "disabled filling must return the original unmasked labels");
+    require(filled.boundaryMaskedLabels->GetBufferPointer()[linearIndex(size, 4, 4, 4)] == 0,
+            "masked boundary was unexpectedly filled");
+    require(filled.boundaryFilledLabels->GetBufferPointer()[linearIndex(size, 4, 4, 4)] != 0,
+            "enabled boundary filling left the boundary empty");
+}
+
 } // namespace
 
 int main() {
@@ -272,6 +297,7 @@ int main() {
         testKnownSplitAcrossSlabs();
         testRepeatedParallelEquivalence();
         testMissingAndMismatchedBoundaryImages();
+        testOptionalBoundaryFilling();
         setWatershedLogSink({});
         std::cout << "Boundary component relabel tests passed.\n";
         return 0;

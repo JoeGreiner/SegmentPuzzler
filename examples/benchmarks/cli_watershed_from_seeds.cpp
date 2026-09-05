@@ -28,6 +28,7 @@ struct Options {
     int threadCount = defaultThreadCount();
     bool showWatershedLines = false;
     bool fullyConnected = false;
+    bool fillBoundaries = false;
     WatershedAlgorithm algorithm = WatershedAlgorithm::BlockwiseFastMarkerWatershed;
 };
 
@@ -42,7 +43,8 @@ void printUsage() {
               << "  --threads N                      Worker threads (default: available CPUs)\n"
               << "  --filter-small-seeds N           Remove fragments smaller than N voxels\n"
               << "  --show-watershed-lines {0,1}     Default: 0\n"
-              << "  --fully-connected {0,1}          Default: 0\n";
+              << "  --fully-connected {0,1}          Default: 0\n"
+              << "  --fill-boundaries {0,1}          Assign masked boundary voxels to instances; default: 0\n";
 }
 
 Options parseArguments(int argc, char **argv) {
@@ -75,6 +77,8 @@ Options parseArguments(int argc, char **argv) {
             options.showWatershedLines = std::stoi(requireValue("--show-watershed-lines")) != 0;
         } else if (argument == "--fully-connected") {
             options.fullyConnected = std::stoi(requireValue("--fully-connected")) != 0;
+        } else if (argument == "--fill-boundaries") {
+            options.fillBoundaries = std::stoi(requireValue("--fill-boundaries")) != 0;
         } else if (argument == "--algorithm") {
             const std::string value = requireValue("--algorithm");
             if (value == "itk") {
@@ -144,10 +148,10 @@ int main(int argc, char **argv) {
             watershedImage,
             thresholdedBoundaries,
             repairOptions,
-            true,
+            options.fillBoundaries,
             DistanceMapAlgorithm::Maurer,
             options.threadCount);
-        watershedImage = partition.displayLabels;
+        watershedImage = options.fillBoundaries ? partition.boundaryFilledLabels : partition.boundaryMaskedLabels;
 
         distance_map_benchmark::printImageSummary<distance_map_benchmark::SeedImageType>("watershed", watershedImage);
         distance_map_benchmark::writeImage<distance_map_benchmark::SeedImageType>(watershedImage, options.outputPath);

@@ -391,16 +391,16 @@ void runSyntheticSizeBiasChecks() {
     }
 }
 
-std::ptrdiff_t findDisplayOnlyBoundaryVoxel(dataType::SegmentsImageType::Pointer displayLabels,
-                                            dataType::SegmentsImageType::Pointer canonicalLabels) {
-    if (displayLabels.IsNull() || canonicalLabels.IsNull()) {
+std::ptrdiff_t findMaskedBoundaryVoxel(dataType::SegmentsImageType::Pointer boundaryMaskedLabels,
+                                            dataType::SegmentsImageType::Pointer boundaryFilledLabels) {
+    if (boundaryMaskedLabels.IsNull() || boundaryFilledLabels.IsNull()) {
         return -1;
     }
-    const auto voxelCount = displayLabels->GetLargestPossibleRegion().GetNumberOfPixels();
-    const auto *displayBuffer = displayLabels->GetBufferPointer();
-    const auto *canonicalBuffer = canonicalLabels->GetBufferPointer();
+    const auto voxelCount = boundaryMaskedLabels->GetLargestPossibleRegion().GetNumberOfPixels();
+    const auto *boundaryMaskedBuffer = boundaryMaskedLabels->GetBufferPointer();
+    const auto *boundaryFilledBuffer = boundaryFilledLabels->GetBufferPointer();
     for (size_t index = 0; index < voxelCount; ++index) {
-        if (displayBuffer[index] == 0 && canonicalBuffer[index] != 0) {
+        if (boundaryMaskedBuffer[index] == 0 && boundaryFilledBuffer[index] != 0) {
             return static_cast<std::ptrdiff_t>(index);
         }
     }
@@ -516,16 +516,16 @@ int main(int argc, char *argv[]) {
                         }
                         dataType::SegmentIdType badLabel = 0;
                         if (!nonZeroLabelsAreConnected(ws->pWatershed, &badLabel)) {
-                            failTest("watershed display label is disconnected: " + std::to_string(badLabel));
+                            failTest("watershed boundary-masked label is disconnected: " + std::to_string(badLabel));
                             return;
                         }
                         if (!imagesEqual(ws->pWatershed, ws->graphBase->pWorkingSegmentsImage)) {
-                            failTest("graph working image does not match watershed display labels");
+                            failTest("graph working image does not match watershed boundary-masked labels");
                             return;
                         }
-                        const std::ptrdiff_t cutVoxelIndex = findDisplayOnlyBoundaryVoxel(ws->pWatershed, ws->pWatershedFragments);
+                        const std::ptrdiff_t cutVoxelIndex = findMaskedBoundaryVoxel(ws->pWatershed, ws->pWatershedFragments);
                         if (cutVoxelIndex < 0) {
-                            failTest("no watershed voxel was preserved in canonical labels while zero-cut in display labels");
+                            failTest("no watershed voxel was preserved in boundary-filled labels while zero-cut in boundary-masked labels");
                             return;
                         }
 
@@ -691,21 +691,21 @@ int main(int argc, char *argv[]) {
                             }
                             dataType::SegmentIdType badLabel = 0;
                             if (!nonZeroLabelsAreConnected(ws->pAgglomertion, &badLabel)) {
-                                failTest("agglomeration display label is disconnected: " + std::to_string(badLabel));
+                                failTest("agglomeration boundary-masked label is disconnected: " + std::to_string(badLabel));
                                 return;
                             }
                             if (!imagesEqual(ws->pAgglomertion, ws->graphBase->pWorkingSegmentsImage)) {
-                                failTest("graph working image does not match agglomeration display labels");
+                                failTest("graph working image does not match agglomeration boundary-masked labels");
                                 return;
                             }
-                            const auto *agglomCanonical = ws->pAgglomertionFragments->GetBufferPointer();
-                            const auto *agglomDisplay = ws->pAgglomertion->GetBufferPointer();
-                            if (agglomCanonical[cutVoxelIndex] == 0) {
-                                failTest("agglomeration canonical labels kept a zero-cut watershed voxel inactive");
+                            const auto *agglomBoundaryFilled = ws->pAgglomertionFragments->GetBufferPointer();
+                            const auto *agglomBoundaryMasked = ws->pAgglomertion->GetBufferPointer();
+                            if (agglomBoundaryFilled[cutVoxelIndex] == 0) {
+                                failTest("agglomeration boundary-filled labels kept a zero-cut watershed voxel inactive");
                                 return;
                             }
-                            if (agglomDisplay[cutVoxelIndex] != 0) {
-                                failTest("agglomeration display labels failed to keep the injected boundary cut");
+                            if (agglomBoundaryMasked[cutVoxelIndex] != 0) {
+                                failTest("agglomeration boundary-masked labels failed to keep the injected boundary cut");
                                 return;
                             }
 

@@ -269,7 +269,7 @@ SegmentsImageType::Pointer deriveDisplayView(SegmentsImageType::Pointer labels,
         return labels;
     }
     auto partition = deriveBoundaryConsistentPartition(labels, displayMask, WatershedRunOptions{}, false);
-    return partition.displayLabels;
+    return partition.boundaryMaskedLabels;
 }
 
 } // namespace
