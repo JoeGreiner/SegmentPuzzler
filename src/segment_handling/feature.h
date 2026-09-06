@@ -210,8 +210,11 @@ struct GroundTruthLabel : public Feature, GraphBase {
 
 struct LabelOverlap : public Feature, GraphBase {
     //TODO implement featurenames
-    long int corrospondingLabelWithMostOverlap;
-    double overlapPercentage;
+    long int labelWithLargestOverlap;
+    double largestOverlapFraction;
+    double largestNonZeroOverlapFraction;
+    long int labelWithSecondLargestNonZeroOverlap;
+    double secondLargestNonZeroOverlapFraction;
     dataType::SegmentsImageType::Pointer pToOtherLabelImagePointer;
 
     void setPToOtherLabelImagePointer(dataType::SegmentsImageType::Pointer pToOtherLabelImagePointer);

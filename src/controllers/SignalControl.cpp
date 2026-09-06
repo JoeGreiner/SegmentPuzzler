@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -28,6 +29,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPointer>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -2941,9 +2943,43 @@ void SignalControl::transferSupervoxelsByRefinementOverlap() {
         return;
     }
 
+    QDialog optionsDialog(this);
+    optionsDialog.setWindowTitle(tr("Transfer by overlap"));
+    auto *form = new QFormLayout(&optionsDialog);
+
+    auto *overlapHint = new QLabel(
+        tr("Transfer each working supervoxel if more than"),
+        &optionsDialog);
+    overlapHint->setWordWrap(true);
+    form->addRow(overlapHint);
+
+    auto *overlapPercentageSpinBox = new QDoubleSpinBox(&optionsDialog);
+    overlapPercentageSpinBox->setRange(0.0, 100.0);
+    overlapPercentageSpinBox->setDecimals(1);
+    overlapPercentageSpinBox->setSingleStep(5.0);
+    overlapPercentageSpinBox->setSuffix(tr(" %"));
+    overlapPercentageSpinBox->setValue(100.0 * Graph::kDefaultRefinementOverlapThreshold);
+    form->addRow(overlapPercentageSpinBox,
+                 new QLabel(tr("of its voxels lie in one refinement segment."), &optionsDialog));
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+        &optionsDialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Transfer"));
+    connect(buttons, &QDialogButtonBox::accepted, &optionsDialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &optionsDialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (optionsDialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const double overlapThreshold = overlapPercentageSpinBox->value() / 100.0;
+
     taskRunner->runWithLabel(
         QStringLiteral("Transferring supervoxels by refinement overlap..."),
-        [this]() { graphBase->pGraph->transferSegmentsWithRefinementOverlap(); },
+        [this, overlapThreshold]() {
+            graphBase->pGraph->transferSegmentsWithRefinementOverlap(overlapThreshold);
+        },
         [this]() { refreshViewers(); });
 }
 

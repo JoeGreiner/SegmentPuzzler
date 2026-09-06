@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <limits>
 #include <queue>
+#include <stdexcept>
 #include <unordered_set>
 #include <vector>
 #include <itkNeighborhoodIterator.h>
@@ -2541,8 +2542,8 @@ void Graph::mergeSegmentsWithRefinement() {
             overlapMap[node.first] = LabelOverlap();
             overlapMap[node.first].setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
             overlapMap[node.first].compute(node.second->voxels);
-//            std::cout << "label: " << overlapMap[node.first].corrospondingLabelWithMostOverlap << " " <<
-//                      overlapMap[node.first].overlapPercentage << "\n";
+//            std::cout << "label: " << overlapMap[node.first].labelWithLargestOverlap << " " <<
+//                      overlapMap[node.first].largestOverlapFraction << "\n";
         }
 
         ScopedGraphTimer mergeTimer(verbose, __func__, QStringLiteral("Collecting refinement-driven edge merges"));
@@ -2551,12 +2552,12 @@ void Graph::mergeSegmentsWithRefinement() {
         for (auto &edge : initialLabelPairToTwoSidedInitialEdge) {
             dataType::SegmentIdType labelA = edge.first.first;
             dataType::SegmentIdType labelB = edge.first.second;
-            double overlapLabelA = overlapMap[labelA].overlapPercentage;
-            double overlapLabelB = overlapMap[labelB].overlapPercentage;
-            long int corrospondingLabelA = overlapMap[labelA].corrospondingLabelWithMostOverlap;
-            long int corrospondingLabelB = overlapMap[labelB].corrospondingLabelWithMostOverlap;
+            double overlapLabelA = overlapMap[labelA].largestOverlapFraction;
+            double overlapLabelB = overlapMap[labelB].largestOverlapFraction;
+            long int labelWithLargestOverlapA = overlapMap[labelA].labelWithLargestOverlap;
+            long int labelWithLargestOverlapB = overlapMap[labelB].labelWithLargestOverlap;
 
-            bool bothPointToSameLabel = corrospondingLabelA == corrospondingLabelB;
+            bool bothPointToSameLabel = labelWithLargestOverlapA == labelWithLargestOverlapB;
             bool thresholdReached = (overlapLabelA > mergeThreshold) && (overlapLabelB > mergeThreshold);
 
             if (bothPointToSameLabel && thresholdReached) {
@@ -2575,29 +2576,87 @@ void Graph::mergeSegmentsWithRefinement() {
     }
 }
 
-void Graph::transferSegmentsWithRefinementOverlap() {
+void Graph::transferSegmentsWithRefinementOverlap(double overlapThreshold) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring segments by refinement overlap"));
 
-    if (graphBase->pSelectedSegmentation != nullptr) {
-        if (graphBase->pSelectedRefinement != nullptr) {
-            double overlapThreshold = 0.7;
-            for (auto &node : workingNodes) {
-                LabelOverlap overlapFeature = LabelOverlap();
-                overlapFeature.setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
-                overlapFeature.compute(node.second->getVoxelLists());
-                logGraphDebugIf(verbose,
-                                __func__,
-                                QStringLiteral("Working node %1 overlap=%2")
-                                    .arg(node.first)
-                                    .arg(QString::number(overlapFeature.values[0], 'g', 6)));
-                if (overlapFeature.values[0] > overlapThreshold) {
-                    if (overlapFeature.corrospondingLabelWithMostOverlap != backgroundId) {
-                        transferWorkingNodeToSegmentation(node.first);
-                    }
-                }
-            }
+    if (!std::isfinite(overlapThreshold) || overlapThreshold < 0.0 || overlapThreshold > 1.0) {
+        throw std::invalid_argument("Refinement overlap threshold must be between 0 and 1.");
+    }
+    if (graphBase == nullptr || graphBase->pSelectedSegmentation == nullptr) {
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("No selected segmentation is loaded"));
+        return;
+    }
+    if (graphBase->pSelectedRefinement == nullptr || graphBase->pWorkingSegmentsImage == nullptr) {
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("No selected refinement or working segments are loaded"));
+        return;
+    }
+    if (!regionsMatch(graphBase->pSelectedRefinement->GetLargestPossibleRegion(),
+                      graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion())) {
+        logGraph(LogLevel::Warning,
+                 __func__,
+                 QStringLiteral("Selected refinement and working segments use incompatible image regions"));
+        return;
+    }
+
+    std::vector<SegmentIdType> workingLabelsToTransfer;
+    std::size_t evaluatedWorkingNodeCount = 0;
+    std::size_t possibleMergeCount = 0;
+    const bool logOverlaps = isGraphDebugLoggingEnabled(verbose);
+    for (const auto &[workingLabel, node] : workingNodes) {
+        if (node == nullptr) {
+            continue;
+        }
+        ++evaluatedWorkingNodeCount;
+        LabelOverlap overlapFeature;
+        overlapFeature.setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
+        overlapFeature.compute(node->getVoxelLists());
+
+        const bool selectedByOverlap =
+            overlapFeature.largestNonZeroOverlapFraction > overlapThreshold;
+        const bool possibleMerge =
+            selectedByOverlap &&
+            overlapFeature.secondLargestNonZeroOverlapFraction >=
+                kPossibleMergeSecondOverlapThreshold;
+
+        if (possibleMerge || logOverlaps) {
+            logGraph(
+                possibleMerge ? LogLevel::Info : LogLevel::Debug,
+                __func__,
+                QStringLiteral(
+                    "Working node %1 label_with_largest_overlap=%2 largest_overlap_fraction=%3 "
+                    "largest_nonzero_overlap_fraction=%4 label_with_second_largest_nonzero_overlap=%5 "
+                    "second_largest_nonzero_overlap_fraction=%6 selected=%7 possible_merge=%8")
+                    .arg(workingLabel)
+                    .arg(overlapFeature.labelWithLargestOverlap)
+                    .arg(QString::number(overlapFeature.largestOverlapFraction, 'g', 6))
+                    .arg(QString::number(overlapFeature.largestNonZeroOverlapFraction, 'g', 6))
+                    .arg(overlapFeature.labelWithSecondLargestNonZeroOverlap)
+                    .arg(QString::number(overlapFeature.secondLargestNonZeroOverlapFraction, 'g', 6))
+                    .arg(selectedByOverlap)
+                    .arg(possibleMerge));
+        }
+        if (possibleMerge) {
+            ++possibleMergeCount;
+        }
+        if (selectedByOverlap) {
+            workingLabelsToTransfer.push_back(workingLabel);
         }
     }
+
+    std::sort(workingLabelsToTransfer.begin(), workingLabelsToTransfer.end());
+    const auto assignedSegmentationLabels = transferWorkingNodesToSegmentation(workingLabelsToTransfer);
+
+    logGraph(
+        LogLevel::Info,
+        __func__,
+        QStringLiteral(
+            "Refinement-overlap transfer threshold=%1 evaluated=%2 selected=%3 transferred=%4 "
+            "possible_merges=%5")
+            .arg(QString::number(overlapThreshold, 'g', 6))
+            .arg(static_cast<qulonglong>(evaluatedWorkingNodeCount))
+            .arg(static_cast<qulonglong>(workingLabelsToTransfer.size()))
+            .arg(static_cast<qulonglong>(assignedSegmentationLabels.size()))
+            .arg(static_cast<qulonglong>(possibleMergeCount)));
 }
 
 void Graph::transferSegmentsWithVolumeCriterion(double volumeThreshold) {

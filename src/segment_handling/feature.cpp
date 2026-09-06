@@ -75,71 +75,99 @@ LabelOverlap::LabelOverlap() {
     filterName = "labelOverlap";
     signalName = "otherLabel";
     this->featureNames = {"LabelOverlap"};
-    corrospondingLabelWithMostOverlap = -1;
-    overlapPercentage = -1;
+    labelWithLargestOverlap = -1;
+    largestOverlapFraction = 0.0;
+    largestNonZeroOverlapFraction = 0.0;
+    labelWithSecondLargestNonZeroOverlap = -1;
+    secondLargestNonZeroOverlapFraction = 0.0;
 }
 
-void LabelOverlap::compute(const std::vector<Voxel> &voxels, unsigned int, unsigned int) {
-    std::map<unsigned int, unsigned int> labelHistogram;
-    unsigned int label;
-    // calculate hist
-    for (auto &voxel : voxels) {
-        GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
-        label = pToOtherLabelImagePointer->GetPixel(index);
-        if (labelHistogram.count(label)) {
-            labelHistogram[label]++;
-        } else {
-            labelHistogram[label] = 1;
-        }
+namespace {
+
+void updateLabelOverlapFromHistogram(
+        LabelOverlap &overlap,
+        const std::map<unsigned int, unsigned int> &labelHistogram,
+        std::size_t numberVoxels) {
+    overlap.labelWithLargestOverlap = -1;
+    overlap.largestOverlapFraction = 0.0;
+    overlap.largestNonZeroOverlapFraction = 0.0;
+    overlap.labelWithSecondLargestNonZeroOverlap = -1;
+    overlap.secondLargestNonZeroOverlapFraction = 0.0;
+    overlap.values.clear();
+
+    if (numberVoxels == 0 || labelHistogram.empty()) {
+        overlap.values.push_back(-1.0F);
+        return;
     }
-    // get largest bin
-    unsigned int maxLabel = 0;
-    unsigned int maxLabelCount = 0;
-    for (auto &bin : labelHistogram) {
-        if (bin.second > maxLabelCount) {
-            maxLabelCount = bin.second;
-            maxLabel = bin.first;
+
+    unsigned int labelWithLargestOverlap = 0;
+    unsigned int largestOverlapVoxelCount = 0;
+    for (const auto &bin : labelHistogram) {
+        if (bin.second > largestOverlapVoxelCount) {
+            largestOverlapVoxelCount = bin.second;
+            labelWithLargestOverlap = bin.first;
         }
     }
 
-    // caclulate mean/percentage of voxels that are maxLabel
-    corrospondingLabelWithMostOverlap = maxLabel;
-    overlapPercentage = (float) maxLabelCount / (float) voxels.size();
-    values.push_back(corrospondingLabelWithMostOverlap);
+    unsigned int largestNonZeroLabel = 0;
+    unsigned int largestNonZeroLabelCount = 0;
+    unsigned int secondNonZeroLabel = 0;
+    unsigned int secondNonZeroLabelCount = 0;
+    bool foundLargestNonZeroLabel = false;
+    bool foundSecondNonZeroLabel = false;
+    for (const auto &bin : labelHistogram) {
+        if (bin.first == 0) {
+            continue;
+        }
+        if (!foundLargestNonZeroLabel || bin.second > largestNonZeroLabelCount) {
+            if (foundLargestNonZeroLabel) {
+                secondNonZeroLabelCount = largestNonZeroLabelCount;
+                secondNonZeroLabel = largestNonZeroLabel;
+                foundSecondNonZeroLabel = true;
+            }
+            largestNonZeroLabelCount = bin.second;
+            largestNonZeroLabel = bin.first;
+            foundLargestNonZeroLabel = true;
+        } else if (!foundSecondNonZeroLabel || bin.second > secondNonZeroLabelCount) {
+            secondNonZeroLabelCount = bin.second;
+            secondNonZeroLabel = bin.first;
+            foundSecondNonZeroLabel = true;
+        }
+    }
+
+    overlap.labelWithLargestOverlap = labelWithLargestOverlap;
+    overlap.largestOverlapFraction =
+        static_cast<double>(largestOverlapVoxelCount) / static_cast<double>(numberVoxels);
+    overlap.largestNonZeroOverlapFraction =
+        static_cast<double>(largestNonZeroLabelCount) / static_cast<double>(numberVoxels);
+    if (foundSecondNonZeroLabel) {
+        overlap.labelWithSecondLargestNonZeroOverlap = secondNonZeroLabel;
+        overlap.secondLargestNonZeroOverlapFraction =
+            static_cast<double>(secondNonZeroLabelCount) / static_cast<double>(numberVoxels);
+    }
+    // Kept for compatibility with generic feature consumers. This value is a
+    // label ID, not an overlap percentage.
+    overlap.values.push_back(static_cast<float>(labelWithLargestOverlap));
+}
+
+} // namespace
+
+void LabelOverlap::compute(const std::vector<Voxel> &voxels, unsigned int labelA, unsigned int labelB) {
+    compute(VoxelLists{&voxels}, labelA, labelB);
 }
 
 void LabelOverlap::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
     std::map<unsigned int, unsigned int> labelHistogram;
-    unsigned int label;
-    float numberVoxels = 0;
-    // calculate hist
+    std::size_t numberVoxels = 0;
     for (auto &listEntry : voxelLists) {
         for (auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
-            label = pToOtherLabelImagePointer->GetPixel(index);
-            if (labelHistogram.count(label)) {
-                labelHistogram[label]++;
-            } else {
-                labelHistogram[label] = 1;
-            }
+            const unsigned int label = pToOtherLabelImagePointer->GetPixel(index);
+            ++labelHistogram[label];
         }
         numberVoxels += listEntry->size();
     }
-    std::cout << "Number Voxels in Compute Labeloverlap: " << numberVoxels << std::endl;
-    // get largest bin
-    unsigned int maxLabel = 0;
-    unsigned int maxLabelCount = 0;
-    for (auto &bin : labelHistogram) {
-        if (bin.second > maxLabelCount) {
-            maxLabelCount = bin.second;
-            maxLabel = bin.first;
-        }
-    }
-
-    // caclulate mean/percentage of voxels that are maxLabel
-    corrospondingLabelWithMostOverlap = maxLabel;
-    overlapPercentage = (float) maxLabelCount / numberVoxels;
-    values.push_back(corrospondingLabelWithMostOverlap);
+    updateLabelOverlapFromHistogram(*this, labelHistogram, numberVoxels);
 }
 
 

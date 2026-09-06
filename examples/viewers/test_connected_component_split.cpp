@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -1491,6 +1492,149 @@ int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
     return 0;
 }
 
+int testLabelOverlapReportsLargestAndSecondNonZeroOverlap() {
+    auto refinementImage = makeImage(10, 1, 1);
+    for (int x = 2; x < 7; ++x) {
+        refinementImage->SetPixel({x, 0, 0}, 10);
+    }
+    for (int x = 7; x < 10; ++x) {
+        refinementImage->SetPixel({x, 0, 0}, 20);
+    }
+
+    std::vector<Voxel> voxels;
+    for (int x = 0; x < 10; ++x) {
+        voxels.emplace_back(x, 0, 0);
+    }
+
+    LabelOverlap overlap;
+    overlap.setPToOtherLabelImagePointer(refinementImage);
+    overlap.compute(voxels);
+    overlap.compute(voxels);
+
+    if (overlap.labelWithLargestOverlap != 10 ||
+        std::abs(overlap.largestOverlapFraction - 0.5) > 1e-12 ||
+        std::abs(overlap.largestNonZeroOverlapFraction - 0.5) > 1e-12 ||
+        overlap.labelWithSecondLargestNonZeroOverlap != 20 ||
+        std::abs(overlap.secondLargestNonZeroOverlapFraction - 0.3) > 1e-12 ||
+        overlap.values.size() != 1 || overlap.values.front() != 10.0F) {
+        return failTest(
+            "Label overlap should report the largest fraction and the second-largest non-zero-label fraction.");
+    }
+
+    refinementImage->FillBuffer(0);
+    for (int x = 0; x < 4; ++x) {
+        refinementImage->SetPixel({x, 0, 0}, 30);
+    }
+    overlap.compute(voxels);
+    if (overlap.labelWithLargestOverlap != 0 ||
+        std::abs(overlap.largestNonZeroOverlapFraction - 0.4) > 1e-12 ||
+        overlap.labelWithSecondLargestNonZeroOverlap != -1 ||
+        overlap.secondLargestNonZeroOverlapFraction != 0.0) {
+        return failTest(
+            "One non-zero label below dominant background should not be reported as a second label.");
+    }
+    refinementImage->FillBuffer(0);
+    overlap.compute(voxels);
+    if (overlap.largestNonZeroOverlapFraction != 0.0) {
+        return failTest("Background-only overlap should reset the largest non-zero fraction to zero.");
+    }
+    return 0;
+}
+
+int testRefinementOverlapTransferTransfersAllAboveThreshold() {
+    auto workingImage = makeImage(32, 1, 1);
+    for (int x = 0; x < 10; ++x) workingImage->SetPixel({x, 0, 0}, 1);
+    for (int x = 11; x < 21; ++x) workingImage->SetPixel({x, 0, 0}, 2);
+    for (int x = 22; x < 32; ++x) workingImage->SetPixel({x, 0, 0}, 3);
+
+    auto refinementImage = makeImage(32, 1, 1);
+    for (int x = 0; x < 8; ++x) refinementImage->SetPixel({x, 0, 0}, 100);
+    for (int x = 8; x < 10; ++x) refinementImage->SetPixel({x, 0, 0}, 200);
+    for (int x = 11; x < 17; ++x) refinementImage->SetPixel({x, 0, 0}, 100);
+    for (int x = 22; x < 26; ++x) refinementImage->SetPixel({x, 0, 0}, 400);
+    for (int x = 26; x < 29; ++x) refinementImage->SetPixel({x, 0, 0}, 500);
+
+    auto selectedImage = makeImage(32, 1, 1);
+    auto fixture = buildGraphFixture(workingImage);
+    fixture.graphBase->pSelectedRefinement = refinementImage;
+    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 0;
+
+    fixture.graph->transferSegmentsWithRefinementOverlap();
+    if (countLabel(selectedImage, 0) != 12 ||
+        countLabel(selectedImage, 1) != 10 ||
+        countLabel(selectedImage, 2) != 10 ||
+        fixture.graphBase->selectedSegmentationMaxSegmentId != 2 ||
+        selectedImage->GetPixel({0, 0, 0}) != 1 ||
+        selectedImage->GetPixel({11, 0, 0}) != 2 ||
+        selectedImage->GetPixel({22, 0, 0}) != 0) {
+        return failTest(
+            "All working supervoxels above the threshold should transfer, even when they match the same "
+            "refinement label or overlap a second label. Summed overlaps must not satisfy the threshold.");
+    }
+
+    selectedImage->FillBuffer(0);
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 0;
+    fixture.graph->transferSegmentsWithRefinementOverlap(0.6);
+    if (countLabel(selectedImage, 0) != 22 || countLabel(selectedImage, 1) != 10 ||
+        fixture.graphBase->selectedSegmentationMaxSegmentId != 1 ||
+        selectedImage->GetPixel({0, 0, 0}) != 1 ||
+        selectedImage->GetPixel({11, 0, 0}) != 0) {
+        return failTest("An 80% overlap should pass a 60% threshold, but an exact 60% overlap should not.");
+    }
+
+    fixture.graph->transferSegmentsWithRefinementOverlap(0.8);
+    if (countLabel(selectedImage, 0) != 22 || countLabel(selectedImage, 1) != 10 ||
+        fixture.graphBase->selectedSegmentationMaxSegmentId != 1) {
+        return failTest("A transfer with no matches should leave the selected segmentation unchanged.");
+    }
+
+    refinementImage->FillBuffer(0);
+    for (int x = 0; x < 4; ++x) refinementImage->SetPixel({x, 0, 0}, 100);
+    selectedImage->FillBuffer(0);
+    fixture.graphBase->selectedSegmentationMaxSegmentId = 0;
+    fixture.graph->transferSegmentsWithRefinementOverlap(0.4);
+    if (countLabel(selectedImage, 0) != 32 ||
+        fixture.graphBase->selectedSegmentationMaxSegmentId != 0) {
+        return failTest("40% refinement overlap plus 60% background must not exceed a 40% threshold.");
+    }
+    fixture.graph->transferSegmentsWithRefinementOverlap(0.3);
+    if (countLabel(selectedImage, 0) != 22 || countLabel(selectedImage, 1) != 10 ||
+        fixture.graphBase->selectedSegmentationMaxSegmentId != 1 ||
+        selectedImage->GetPixel({9, 0, 0}) != 1) {
+        return failTest("40% refinement overlap plus 60% background should transfer the full supervoxel "
+                        "at a 30% threshold, while background-only supervoxels remain excluded.");
+    }
+
+    auto highestBackgroundWorkingImage = makeImage(6, 1, 1);
+    highestBackgroundWorkingImage->FillBuffer(9);
+    for (int x = 0; x < 3; ++x) {
+        highestBackgroundWorkingImage->SetPixel({x, 0, 0}, 1);
+    }
+    auto highestBackgroundRefinementImage = makeImage(6, 1, 1);
+    auto highestBackgroundSelectedImage = makeImage(6, 1, 1);
+    GraphFixture highestBackgroundFixture;
+    highestBackgroundFixture.graphBase = std::make_shared<GraphBase>();
+    highestBackgroundFixture.graphBase->pWorkingSegmentsImage = highestBackgroundWorkingImage;
+    highestBackgroundFixture.graph =
+        std::make_unique<Graph>(highestBackgroundFixture.graphBase, false);
+    highestBackgroundFixture.graphBase->pGraph = highestBackgroundFixture.graph.get();
+    highestBackgroundFixture.graph->setPointerToIgnoredSegmentLabels(
+        &highestBackgroundFixture.graphBase->ignoredSegmentLabels);
+    highestBackgroundFixture.graph->setBackgroundIdStrategy("backgroundIsHighestId");
+    highestBackgroundFixture.graph->constructFromVolume(highestBackgroundWorkingImage);
+    highestBackgroundFixture.graphBase->pSelectedRefinement = highestBackgroundRefinementImage;
+    highestBackgroundFixture.graphBase->pSelectedSegmentation = highestBackgroundSelectedImage;
+
+    highestBackgroundFixture.graph->transferSegmentsWithRefinementOverlap(0.0);
+    if (highestBackgroundFixture.graph->backgroundId != 9 ||
+        countLabel(highestBackgroundSelectedImage, 0) != 6) {
+        return failTest(
+            "Refinement label zero should remain background independently of the working background label.");
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1581,6 +1725,12 @@ int main(int argc, char **argv) {
         return result;
     }
     if (int result = testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels()) {
+        return result;
+    }
+    if (int result = testLabelOverlapReportsLargestAndSecondNonZeroOverlap()) {
+        return result;
+    }
+    if (int result = testRefinementOverlapTransferTransfersAllAboveThreshold()) {
         return result;
     }
 

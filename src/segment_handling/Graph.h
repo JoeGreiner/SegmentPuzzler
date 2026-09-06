@@ -6,6 +6,7 @@
 #include <optional>
 #include <set>
 #include <unordered_set>
+#include <vector>
 #include <QElapsedTimer>
 #include <QString>
 #include "src/utils/voxel.h"
@@ -158,6 +159,9 @@ public:
             SegmentationNeighborSelection::MostConnected;
     };
 
+    static constexpr double kDefaultRefinementOverlapThreshold = 0.5;
+    static constexpr double kPossibleMergeSecondOverlapThreshold = 0.05;
+
     Graph(std::shared_ptr<GraphBase> graphBaseIn, bool verboseIn = true);
     ~Graph();  // defined in Graph.cpp (needed for unique_ptr<itkSignal<...>> with forward decl)
 
@@ -262,7 +266,11 @@ public:
 
     void transferSegmentsWithVolumeCriterion(double volumeThreshold=50000);
 
-    void transferSegmentsWithRefinementOverlap();
+    // Transfers every WorkingNode whose largest non-zero refinement overlap
+    // fraction is > overlapThreshold.
+    // Fractions use the WorkingNode's full voxel count as the denominator.
+    void transferSegmentsWithRefinementOverlap(
+        double overlapThreshold = kDefaultRefinementOverlapThreshold);
 
     void exportDebugInformation();
 
