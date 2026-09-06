@@ -902,6 +902,7 @@ void configureSurfaceNet(vtkSurfaceNets3D *surfaceNet) {
     surfaceNet->SetTriangulationStrategyToGreedy();
     surfaceNet->SmoothingOn();
     surfaceNet->SetNumberOfIterations(3);
+    surfaceNet->DataCachingOff();
 }
 
 void setSurfaceNetLabels(vtkSurfaceNets3D *surfaceNet,
@@ -999,55 +1000,29 @@ vtkSmartPointer<vtkSurfaceNets3D> createSurfaceNet(
     auto surfaceNet = vtkSmartPointer<vtkSurfaceNets3D>::New();
     surfaceNet->SetInputData(inputData);
     configureSurfaceNet(surfaceNet);
-    // VTK 9.6 smoothing uses this cache as working storage during the same Update().
-    surfaceNet->DataCachingOn();
     setSurfaceNetLabels(surfaceNet, surfaceNetLabels);
     return surfaceNet;
-}
-
-vtkSmartPointer<vtkPolyData> extractSelectedSurfaceNetOutput(
-    vtkSurfaceNets3D *surfaceNet,
-    const std::vector<dataType::SegmentIdType> &selectedLabels)
-{
-    auto polyData = vtkSmartPointer<vtkPolyData>::New();
-    if (surfaceNet == nullptr || selectedLabels.empty()) {
-        return polyData;
-    }
-
-    surfaceNet->InitializeSelectedLabelsList();
-    for (const auto labelId : selectedLabels) {
-        surfaceNet->AddSelectedLabel(labelId);
-    }
-    surfaceNet->Update();
-
-    polyData = detachPolyData(surfaceNet->GetOutput());
-    return polyData;
 }
 
 Segment3DViewerDialog::PreparedMesh extractSelectedLabelMesh(
     vtkImageData *inputData,
     dataType::SegmentIdType selectedLabel,
     quint32 lutColor,
-    const std::vector<dataType::SegmentIdType> &surfaceNetLabels,
-    bool logMesh)
+    const std::vector<dataType::SegmentIdType> &surfaceNetLabels)
 {
     auto surfaceNet = createSurfaceNet(inputData, surfaceNetLabels);
-    if (surfaceNet != nullptr) {
-        surfaceNet->SetOutputStyleToSelected();
+    if (surfaceNet == nullptr) {
+        return {};
     }
-    auto polyData = extractSelectedSurfaceNetOutput(surfaceNet, {selectedLabel});
+    surfaceNet->Update();
+    auto polyData = detachPolyData(surfaceNet->GetOutput());
     surfaceNet = nullptr;
-    // Single-label extraction has no fallback that needs the input image.
-    if (inputData != nullptr) {
-        inputData->ReleaseData();
-    }
-    if (logMesh) {
-        SP_LOG_DEBUG("viewer.three_d",
-                     QStringLiteral("[3DView] single-label selected mesh labelsInVOI=%1 points=%2 cells=%3")
-                         .arg(surfaceNetLabels.size())
-                         .arg(polyData->GetNumberOfPoints())
-                         .arg(polyData->GetNumberOfCells()));
-    }
+    inputData->ReleaseData();
+    SP_LOG_DEBUG("viewer.three_d",
+                 QStringLiteral("[3DView] single-label source mesh labelsInVOI=%1 points=%2 cells=%3")
+                     .arg(surfaceNetLabels.size())
+                     .arg(polyData->GetNumberOfPoints())
+                     .arg(polyData->GetNumberOfCells()));
 
     auto meshes = Segment3DViewerDialog::prepareExplodedMeshes(
         polyData, {{selectedLabel, lutColor}});
@@ -1963,7 +1938,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
         SP_LOG_INFO("viewer.three_d", QStringLiteral("[3DView] using vtkSurfaceNets3D selected-label extraction"));
 
         auto mesh = extractSelectedLabelMesh(
-            paddedImage, labels.front().first, labels.front().second, surfaceNetLabels, true);
+            paddedImage, labels.front().first, labels.front().second, surfaceNetLabels);
         if (mesh.polyData != nullptr && mesh.polyData->GetNumberOfPoints() > 0 && mesh.polyData->GetNumberOfCells() > 0) {
             preparedScene.meshes.push_back(std::move(mesh));
         }
@@ -1976,15 +1951,8 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
 
         const qint64 t_extraction = kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
         auto surfaceNet = createSurfaceNet(paddedImage, surfaceNetLabels);
-        vtkSmartPointer<vtkPolyData> combinedPolyData;
-        if (allLabelsInImage) {
-            surfaceNet->SetOutputStyleToDefault();
-            surfaceNet->Update();
-            combinedPolyData = detachPolyData(surfaceNet->GetOutput());
-        } else {
-            surfaceNet->SetOutputStyleToSelected();
-            combinedPolyData = extractSelectedSurfaceNetOutput(surfaceNet, requestedLabels);
-        }
+        surfaceNet->Update();
+        auto combinedPolyData = detachPolyData(surfaceNet->GetOutput());
         surfaceNet = nullptr;
         if (allLabelsInImage) {
             paddedImage->ReleaseData();
@@ -2022,8 +1990,6 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
             auto fallbackSurfaceNet = vtkSmartPointer<vtkSurfaceNets3D>::New();
             fallbackSurfaceNet->SetInputData(paddedImage);
             configureSurfaceNet(fallbackSurfaceNet);
-            fallbackSurfaceNet->DataCachingOn();
-            fallbackSurfaceNet->SetOutputStyleToDefault();
             setSurfaceNetLabels(fallbackSurfaceNet, requestedLabels);
             const qint64 t_legacyExtraction = kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
             fallbackSurfaceNet->Update();

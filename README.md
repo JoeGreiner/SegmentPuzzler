@@ -39,7 +39,7 @@ AppImages should be compatible across different Linux distributions, as long as 
 
 * CMake
 * ITK 6
-* VTK 9.6 or newer
+* VTK 9.7 or newer
 * Qt 6
 * Optional: OpenSSL (matching to the version Qt was built against). Only needed to download sample volumes.
 

@@ -211,7 +211,7 @@ set(SEGMENT_PUZZLER_ITK_LIBRARIES
         ${ITK_INTERFACE_LIBRARIES}
         ITK::ITKImageIO)
 
-find_package(VTK 9.6 REQUIRED COMPONENTS
+find_package(VTK 9.7 REQUIRED COMPONENTS
         CommonCore CommonDataModel
         FiltersCore FiltersGeneral FiltersSources
         ImagingCore ImagingGeneral

@@ -483,6 +483,16 @@ int testAllLabelsSceneUsesSegmentMeshes() {
         return failTest("Selected-label mesh retained unused points.");
     }
 
+    auto selectedLabelsScene = Segment3DViewerDialog::prepareScene(image, {{1, red}, {2, green}});
+    if (selectedLabelsScene.meshes.size() != 2
+        || selectedLabelsScene.meshes[0].polyData->GetNumberOfCells() != reference->GetNumberOfCells()
+        || selectedLabelsScene.meshes[1].polyData->GetNumberOfCells()
+            != scene.meshes[1].polyData->GetNumberOfCells()
+        || selectedLabelsScene.meshes[0].polyData->GetPoints()
+            != selectedLabelsScene.meshes[1].polyData->GetPoints()) {
+        return failTest("Selected multi-label scene changed cell counts or stopped sharing points.");
+    }
+
     for (const SegmentIdType neighborLabel : {65535u, 65536u}) {
         auto boundaryImage = makeSmallSegmentsImage(true);
         auto *pixels = boundaryImage->GetBufferPointer();
