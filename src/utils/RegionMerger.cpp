@@ -317,7 +317,7 @@ void RegionMerger::applySelectedMerges(const std::vector<SelectedRegionMerge> &s
 
     const double scoreUpdateStart = currentTimeSeconds();
 #ifdef USE_OMP
-#pragma omp parallel for num_threads(threadCount_) if (changedEdgeIds.size() >= 4096) schedule(static)
+#pragma omp parallel for num_threads(threadCount_) schedule(static)
 #endif
     for (long long index = 0; index < static_cast<long long>(changedEdgeIds.size()); ++index) {
         recalculateMergeScore(changedEdgeIds[static_cast<std::size_t>(index)]);

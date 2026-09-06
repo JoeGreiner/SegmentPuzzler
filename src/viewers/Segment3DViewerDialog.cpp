@@ -463,7 +463,6 @@ vtkStandardNewMacro(SharedPointsPolyData);
 
 constexpr bool kProfile3DViewExtraction = false;
 constexpr dataType::SegmentIdType kDenseLabelLookupLimit = 1'000'000;
-constexpr vtkIdType kParallelScanVoxelThreshold = 1'000'000;
 constexpr int kMaximumExplodePercent = 1000;
 constexpr auto kUnmappedPointId = std::numeric_limits<std::uint32_t>::max();
 
@@ -702,21 +701,14 @@ AllLabelsScanResult scanAllLabelsAndBounds(
     const BoundsScanResult emptyBounds{dimX, -1, dimY, -1, dimZ, -1};
     std::vector<LocalResult> localResults;
 
-#ifdef USE_OMP
-    const auto totalVoxelCount = static_cast<std::size_t>(dimX) * dimY * dimZ;
-    const int threadCount = totalVoxelCount >= static_cast<std::size_t>(kParallelScanVoxelThreshold)
-                            ? segment_puzzler::workerThreadCount()
-                            : 1;
-#else
-    const int threadCount = 1;
-#endif
+    const int threadCount = segment_puzzler::workerThreadCount();
     localResults.resize(static_cast<std::size_t>(threadCount));
     for (auto &local : localResults) {
         local.bounds = emptyBounds;
     }
 
 #ifdef USE_OMP
-#pragma omp parallel if(threadCount > 1) num_threads(threadCount)
+#pragma omp parallel num_threads(threadCount)
 #endif
     {
 #ifdef USE_OMP
@@ -813,66 +805,35 @@ BoundsScanResult scanBoundsForRequestedLabels(
     const LabelMembershipLookup &lookup)
 {
     BoundsScanResult result{dimX, -1, dimY, -1, dimZ, -1};
-    const auto totalVoxelCount = static_cast<vtkIdType>(dimX) * dimY * dimZ;
-
+    const int threadCount = segment_puzzler::workerThreadCount();
 #ifdef USE_OMP
-    if (totalVoxelCount >= kParallelScanVoxelThreshold) {
-        const int threadCount = segment_puzzler::workerThreadCount();
 #pragma omp parallel num_threads(threadCount)
-        {
-            BoundsScanResult local{dimX, -1, dimY, -1, dimZ, -1};
+#endif
+    {
+        BoundsScanResult local{dimX, -1, dimY, -1, dimZ, -1};
+#ifdef USE_OMP
 #pragma omp for nowait
-            for (int z = 0; z < dimZ; ++z) {
-                for (int y = 0; y < dimY; ++y) {
-                    const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
-                    for (int x = 0; x < dimX; ++x) {
-                        if (!lookup.contains(row[x])) {
-                            continue;
-                        }
-                        if (x < local.minX) local.minX = x;
-                        if (x > local.maxX) local.maxX = x;
-                        if (y < local.minY) local.minY = y;
-                        if (y > local.maxY) local.maxY = y;
-                        if (z < local.minZ) local.minZ = z;
-                        if (z > local.maxZ) local.maxZ = z;
+#endif
+        for (int z = 0; z < dimZ; ++z) {
+            for (int y = 0; y < dimY; ++y) {
+                const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
+                for (int x = 0; x < dimX; ++x) {
+                    if (lookup.contains(row[x])) {
+                        includeInBounds(local, x, y, z);
                     }
                 }
             }
-
-            if (local.maxX >= 0) {
+        }
+        if (local.maxX >= 0) {
+#ifdef USE_OMP
 #pragma omp critical
-                {
-                    result.minX = std::min(result.minX, local.minX);
-                    result.maxX = std::max(result.maxX, local.maxX);
-                    result.minY = std::min(result.minY, local.minY);
-                    result.maxY = std::max(result.maxY, local.maxY);
-                    result.minZ = std::min(result.minZ, local.minZ);
-                    result.maxZ = std::max(result.maxZ, local.maxZ);
-                }
-            }
-        }
-
-        return result;
-    }
 #endif
-
-    for (int z = 0; z < dimZ; ++z) {
-        for (int y = 0; y < dimY; ++y) {
-            const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
-            for (int x = 0; x < dimX; ++x) {
-                if (!lookup.contains(row[x])) {
-                    continue;
-                }
-                if (x < result.minX) result.minX = x;
-                if (x > result.maxX) result.maxX = x;
-                if (y < result.minY) result.minY = y;
-                if (y > result.maxY) result.maxY = y;
-                if (z < result.minZ) result.minZ = z;
-                if (z > result.maxZ) result.maxZ = z;
+            {
+                includeInBounds(result, local.minX, local.minY, local.minZ);
+                includeInBounds(result, local.maxX, local.maxY, local.maxZ);
             }
         }
     }
-
     return result;
 }
 
@@ -939,51 +900,38 @@ std::vector<dataType::SegmentIdType> collectLabelsInExtent(
     int maxZ)
 {
     std::unordered_set<dataType::SegmentIdType> labelSet;
-    const auto totalVoxelCount =
-        static_cast<vtkIdType>(maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
-
+    const int threadCount = segment_puzzler::workerThreadCount();
+    std::vector<std::unordered_set<dataType::SegmentIdType>> localSets(static_cast<std::size_t>(threadCount));
 #ifdef USE_OMP
-    if (totalVoxelCount >= kParallelScanVoxelThreshold) {
-        const int maxThreads = segment_puzzler::workerThreadCount();
-        std::vector<std::unordered_set<dataType::SegmentIdType>> localSets(static_cast<std::size_t>(maxThreads));
-
-#pragma omp parallel num_threads(maxThreads)
-        {
-            auto &localSet = localSets[static_cast<std::size_t>(omp_get_thread_num())];
-#pragma omp for nowait
-            for (int z = minZ; z <= maxZ; ++z) {
-                for (int y = minY; y <= maxY; ++y) {
-                    const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
-                    for (int x = minX; x <= maxX; ++x) {
-                        if (const auto labelId = row[x]; labelId != 0) {
-                            localSet.insert(labelId);
-                        }
-                    }
-                }
-            }
-        }
-
-        std::size_t reserveCount = 0;
-        for (const auto &localSet : localSets) {
-            reserveCount += localSet.size();
-        }
-        labelSet.reserve(reserveCount);
-        for (auto &localSet : localSets) {
-            labelSet.insert(localSet.begin(), localSet.end());
-        }
-    } else
+#pragma omp parallel num_threads(threadCount)
 #endif
     {
+#ifdef USE_OMP
+        auto &localSet = localSets[static_cast<std::size_t>(omp_get_thread_num())];
+#else
+        auto &localSet = localSets.front();
+#endif
+#ifdef USE_OMP
+#pragma omp for nowait
+#endif
         for (int z = minZ; z <= maxZ; ++z) {
             for (int y = minY; y <= maxY; ++y) {
                 const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
                 for (int x = minX; x <= maxX; ++x) {
                     if (const auto labelId = row[x]; labelId != 0) {
-                        labelSet.insert(labelId);
+                        localSet.insert(labelId);
                     }
                 }
             }
         }
+    }
+    std::size_t reserveCount = 0;
+    for (const auto &localSet : localSets) {
+        reserveCount += localSet.size();
+    }
+    labelSet.reserve(reserveCount);
+    for (const auto &localSet : localSets) {
+        labelSet.insert(localSet.begin(), localSet.end());
     }
 
     std::vector<dataType::SegmentIdType> labelIds(labelSet.begin(), labelSet.end());

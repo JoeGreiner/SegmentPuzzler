@@ -187,7 +187,7 @@ PassResult runPass(const std::vector<Block> &blocks,
     std::vector<int> blockThreadIds(blocks.size(), 0);
 
 #ifdef USE_OMP
-#pragma omp parallel for schedule(dynamic, 1) num_threads(threadCount) if(blocks.size() > 1)
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threadCount)
 #endif
     for (long long i = 0; i < static_cast<long long>(blocks.size()); ++i) {
         const auto blockStarted = std::chrono::steady_clock::now();

@@ -576,63 +576,39 @@ void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(int threadCount) {
 
     const std::vector<SegmentIdType> ignoredSegmentLabels = *pIgnoredSegmentLabels;
     const int requestedThreadCount = segment_puzzler::workerThreadCount(threadCount);
-#ifdef USE_OMP
-    const bool runParallel = requestedThreadCount > 1 && initialNodes.size() > 1;
-#else
-    const bool runParallel = false;
-#endif
-#ifndef USE_OMP
-    if (requestedThreadCount > 1) {
-        logSegmentManagerDebugIf(
-            verbose,
-            __func__,
-            QStringLiteral("Using the serial one-sided edge scan because OpenMP is disabled"));
-    }
-#endif
-
     QElapsedTimer scanTimer;
     scanTimer.start();
     int usedThreadCount = 1;
-
+    std::exception_ptr firstException;
+    std::mutex exceptionMutex;
+    std::atomic<bool> stopRequested{false};
 #ifdef USE_OMP
-    if (runParallel) {
-        std::exception_ptr firstException;
-        std::mutex exceptionMutex;
-        std::atomic<bool> stopRequested{false};
-
 #pragma omp parallel num_threads(requestedThreadCount) default(none) \
     shared(initialNodes, ignoredSegmentLabels, firstException, exceptionMutex, stopRequested, usedThreadCount)
-        {
-#pragma omp single
-            usedThreadCount = omp_get_num_threads();
-
-#pragma omp for schedule(dynamic, 1)
-            for (long long i = 0; i < static_cast<long long>(initialNodes.size()); ++i) {
-                if (stopRequested.load(std::memory_order_relaxed)) {
-                    continue;
-                }
-                try {
-                    initialNodes[static_cast<std::size_t>(i)]->computeOneSidedEdges(
-                        ignoredSegmentLabels);
-                } catch (...) {
-                    std::lock_guard<std::mutex> guard(exceptionMutex);
-                    if (!firstException) {
-                        firstException = std::current_exception();
-                    }
-                    stopRequested.store(true, std::memory_order_relaxed);
-                }
-            }
-        }
-
-        if (firstException) {
-            std::rethrow_exception(firstException);
-        }
-    } else
 #endif
     {
-        for (const auto &initialNode : initialNodes) {
-            initialNode->computeOneSidedEdges(ignoredSegmentLabels);
+#ifdef USE_OMP
+#pragma omp single
+        usedThreadCount = omp_get_num_threads();
+#pragma omp for schedule(dynamic, 1)
+#endif
+        for (long long i = 0; i < static_cast<long long>(initialNodes.size()); ++i) {
+            if (stopRequested.load(std::memory_order_relaxed)) {
+                continue;
+            }
+            try {
+                initialNodes[static_cast<std::size_t>(i)]->computeOneSidedEdges(ignoredSegmentLabels);
+            } catch (...) {
+                std::lock_guard<std::mutex> guard(exceptionMutex);
+                if (!firstException) {
+                    firstException = std::current_exception();
+                }
+                stopRequested.store(true, std::memory_order_relaxed);
+            }
         }
+    }
+    if (firstException) {
+        std::rethrow_exception(firstException);
     }
     const double scanMs = static_cast<double>(scanTimer.nsecsElapsed()) / 1000000.0;
 
@@ -653,7 +629,7 @@ void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(int threadCount) {
             .arg(static_cast<qulonglong>(initialNodes.size()))
             .arg(requestedThreadCount)
             .arg(usedThreadCount)
-            .arg(runParallel ? QStringLiteral("yes") : QStringLiteral("no"))
+            .arg(usedThreadCount > 1 ? QStringLiteral("yes") : QStringLiteral("no"))
             .arg(static_cast<double>(totalRoiVoxels), 0, 'g', 12)
             .arg(static_cast<double>(maxNodeRoiVoxels), 0, 'g', 12)
             .arg(static_cast<qulonglong>(oneSidedEdgeCount))
@@ -725,12 +701,7 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threa
 
     const int requestedThreadCount = segment_puzzler::workerThreadCount(threadCount);
     const bool edgeFeaturesEnabled = !FeatureList::edgeFeaturesList.empty();
-    bool buildInParallel = false;
-#ifdef USE_OMP
-    buildInParallel = requestedThreadCount > 1 &&
-                      twoSidedInitialEdgeSources.size() > 1 &&
-                      !edgeFeaturesEnabled;
-#endif
+    const int executionThreadCount = edgeFeaturesEnabled ? 1 : requestedThreadCount;
 
     if (requestedThreadCount > 1 && edgeFeaturesEnabled) {
         logSegmentManager(
@@ -738,63 +709,43 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threa
             __func__,
             QStringLiteral("Using serial two-sided initial-edge construction because edge feature prototypes are active"));
     }
-#ifndef USE_OMP
-    if (requestedThreadCount > 1) {
-        logSegmentManagerDebugIf(
-            logTiming,
-            __func__,
-            QStringLiteral("Using serial two-sided initial-edge construction because OpenMP is disabled"));
-    }
-#endif
-
     std::vector<std::unique_ptr<TwoSidedInitialEdge>> twoSidedInitialEdgesToRegister(
         twoSidedInitialEdgeSources.size());
     phaseTimer.restart();
     int usedThreadCount = 1;
+    std::exception_ptr firstException;
+    std::mutex exceptionMutex;
+    std::atomic<bool> stopRequested{false};
 #ifdef USE_OMP
-    if (buildInParallel) {
-        std::exception_ptr firstException;
-        std::mutex exceptionMutex;
-        std::atomic<bool> stopRequested{false};
-
-#pragma omp parallel num_threads(requestedThreadCount) default(none) \
+#pragma omp parallel num_threads(executionThreadCount) default(none) \
     shared(twoSidedInitialEdgeSources, twoSidedInitialEdgesToRegister, firstException, \
            exceptionMutex, stopRequested, usedThreadCount)
-        {
-#pragma omp single
-            usedThreadCount = omp_get_num_threads();
-
-#pragma omp for schedule(guided)
-            for (long long index = 0;
-                 index < static_cast<long long>(twoSidedInitialEdgeSources.size());
-                 ++index) {
-                if (stopRequested.load(std::memory_order_relaxed)) {
-                    continue;
-                }
-                try {
-                    twoSidedInitialEdgesToRegister[static_cast<std::size_t>(index)] =
-                        buildTwoSidedInitialEdge(
-                            twoSidedInitialEdgeSources[static_cast<std::size_t>(index)]);
-                } catch (...) {
-                    std::lock_guard<std::mutex> guard(exceptionMutex);
-                    if (!firstException) {
-                        firstException = std::current_exception();
-                    }
-                    stopRequested.store(true, std::memory_order_relaxed);
-                }
-            }
-        }
-
-        if (firstException) {
-            std::rethrow_exception(firstException);
-        }
-    } else
 #endif
     {
-        for (std::size_t index = 0; index < twoSidedInitialEdgeSources.size(); ++index) {
-            twoSidedInitialEdgesToRegister[index] =
-                buildTwoSidedInitialEdge(twoSidedInitialEdgeSources[index]);
+#ifdef USE_OMP
+#pragma omp single
+        usedThreadCount = omp_get_num_threads();
+#pragma omp for schedule(guided)
+#endif
+        for (long long index = 0;
+             index < static_cast<long long>(twoSidedInitialEdgeSources.size()); ++index) {
+            if (stopRequested.load(std::memory_order_relaxed)) {
+                continue;
+            }
+            try {
+                twoSidedInitialEdgesToRegister[static_cast<std::size_t>(index)] =
+                    buildTwoSidedInitialEdge(twoSidedInitialEdgeSources[static_cast<std::size_t>(index)]);
+            } catch (...) {
+                std::lock_guard<std::mutex> guard(exceptionMutex);
+                if (!firstException) {
+                    firstException = std::current_exception();
+                }
+                stopRequested.store(true, std::memory_order_relaxed);
+            }
         }
+    }
+    if (firstException) {
+        std::rethrow_exception(firstException);
     }
     const double createTwoSidedEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
@@ -824,7 +775,7 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threa
             .arg(static_cast<qulonglong>(twoSidedInitialEdgeSources.size()))
             .arg(requestedThreadCount)
             .arg(usedThreadCount)
-            .arg(buildInParallel ? QStringLiteral("yes") : QStringLiteral("no"))
+            .arg(usedThreadCount > 1 ? QStringLiteral("yes") : QStringLiteral("no"))
             .arg(edgeFeaturesEnabled ? QStringLiteral("yes") : QStringLiteral("no"))
             .arg(collectEdgePairsMs, 0, 'f', 3)
             .arg(sortEdgePairsMs, 0, 'f', 3)

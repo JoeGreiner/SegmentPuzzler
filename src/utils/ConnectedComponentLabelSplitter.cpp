@@ -14,9 +14,6 @@ namespace {
 
 using SegmentIdType = dataType::SegmentIdType;
 
-#ifdef USE_OMP
-constexpr std::size_t kMaxRegionComponentThreads = 8;
-#endif
 
 struct Component {
     SegmentIdType originalLabel = 0;
@@ -232,11 +229,8 @@ std::unordered_map<SegmentIdType, std::size_t> countConnectedComponentsByLabelIn
     std::vector<std::size_t> counts(labelRegions.size(), 0);
     std::vector<std::exception_ptr> failures(labelRegions.size());
 #ifdef USE_OMP
-    const std::size_t availableThreads =
-        static_cast<std::size_t>(std::max(1, workerThreadCount()));
-    const int threadCount = static_cast<int>(std::min(
-        {labelRegions.size(), availableThreads, kMaxRegionComponentThreads}));
-#pragma omp parallel for schedule(dynamic, 1) num_threads(threadCount) if(threadCount > 1)
+    const int threadCount = workerThreadCount();
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threadCount)
 #endif
     for (std::ptrdiff_t index = 0;
          index < static_cast<std::ptrdiff_t>(labelRegions.size());

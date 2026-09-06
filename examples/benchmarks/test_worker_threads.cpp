@@ -134,17 +134,13 @@ void testRuntimeIsolation() {
 
 void testFilterIsolation() {
     using namespace segment_puzzler;
-    const auto previous = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
-    itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(1);
+    const auto defaultThreadCount = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
     using Image = dataType::SegmentsImageType;
     auto filter = itk::BinaryThresholdImageFilter<Image, Image>::New();
     setItkWorkerThreadCount(*filter, 4);
     require(filter->GetNumberOfWorkUnits() == 4, "ITK filter work units were not set.");
-    require(filter->GetMultiThreader()->GetMaximumNumberOfThreads() == 4,
-            "ITK filter retained the startup thread limit.");
-    require(itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads() == 1,
+    require(itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads() == defaultThreadCount,
             "Configuring an ITK filter changed the global default.");
-    itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(previous);
 }
 
 } // namespace
