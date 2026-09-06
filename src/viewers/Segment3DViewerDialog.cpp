@@ -54,6 +54,7 @@
 #include <vtkImageData.h>
 #include <vtkExtractVOI.h>
 #include <vtkImageBinaryThreshold.h>
+#include <vtkImageCast.h>
 #include <vtkImageConstantPad.h>
 #include <vtkCellArray.h>
 #include <vtkPoints.h>
@@ -447,9 +448,7 @@ public:
     vtkTypeMacro(SharedPointsPolyData, vtkPolyData);
 
     void SetPrecomputedCellsBounds(const std::array<double, 6> &bounds) {
-        // Explode meshes share the source points and, with OpenGL2, their VBO.
-        // Seed the cell-bounds cache so every mapper does not rescan all points.
-        // Points and cells must stay immutable after this call.
+        // Reuse each segment's bounds. Points and triangles must stay unchanged.
         std::copy(bounds.begin(), bounds.end(), this->CellsBounds);
         this->CellsBoundsTime.Modified();
     }
@@ -465,6 +464,19 @@ constexpr bool kProfile3DViewExtraction = false;
 constexpr dataType::SegmentIdType kDenseLabelLookupLimit = 1'000'000;
 constexpr vtkIdType kParallelScanVoxelThreshold = 1'000'000;
 constexpr int kMaximumExplodePercent = 1000;
+constexpr auto kUnmappedPointId = std::numeric_limits<std::uint32_t>::max();
+
+void checkMeshBufferSize(vtkIdType count,
+                         std::uint64_t bytesPerItem,
+                         std::uint64_t maximumBufferBytes,
+                         dataType::SegmentIdType labelId) {
+    if (static_cast<std::uint64_t>(count) > maximumBufferBytes / bytesPerItem) {
+        throw std::runtime_error(
+            QStringLiteral("Segment %1 is too large for the 3D view's graphics buffers. "
+                           "Please use a smaller region or a lower-resolution volume.")
+                .arg(labelId).toStdString());
+    }
+}
 
 quint32 randomCycleColor(dataType::SegmentIdType labelId, quint32 seed) {
     std::uint64_t mixed = static_cast<std::uint64_t>(labelId)
@@ -810,7 +822,7 @@ BoundsScanResult scanBoundsForRequestedLabels(
 #pragma omp for nowait
             for (int z = 0; z < dimZ; ++z) {
                 for (int y = 0; y < dimY; ++y) {
-                    const auto *row = buf + z * dimX * dimY + y * dimX;
+                    const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
                     for (int x = 0; x < dimX; ++x) {
                         if (!lookup.contains(row[x])) {
                             continue;
@@ -844,7 +856,7 @@ BoundsScanResult scanBoundsForRequestedLabels(
 
     for (int z = 0; z < dimZ; ++z) {
         for (int y = 0; y < dimY; ++y) {
-            const auto *row = buf + z * dimX * dimY + y * dimX;
+            const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
             for (int x = 0; x < dimX; ++x) {
                 if (!lookup.contains(row[x])) {
                     continue;
@@ -938,7 +950,7 @@ std::vector<dataType::SegmentIdType> collectLabelsInExtent(
 #pragma omp for nowait
             for (int z = minZ; z <= maxZ; ++z) {
                 for (int y = minY; y <= maxY; ++y) {
-                    const auto *row = buf + z * dimX * dimY + y * dimX;
+                    const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
                     for (int x = minX; x <= maxX; ++x) {
                         if (const auto labelId = row[x]; labelId != 0) {
                             localSet.insert(labelId);
@@ -961,7 +973,7 @@ std::vector<dataType::SegmentIdType> collectLabelsInExtent(
     {
         for (int z = minZ; z <= maxZ; ++z) {
             for (int y = minY; y <= maxY; ++y) {
-                const auto *row = buf + z * dimX * dimY + y * dimX;
+                const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
                 for (int x = minX; x <= maxX; ++x) {
                     if (const auto labelId = row[x]; labelId != 0) {
                         labelSet.insert(labelId);
@@ -1012,23 +1024,6 @@ vtkSmartPointer<vtkPolyData> extractSelectedSurfaceNetOutput(
     return polyData;
 }
 
-Segment3DViewerDialog::PreparedMesh makePreparedMesh(
-    dataType::SegmentIdType labelId,
-    quint32 lutColor,
-    vtkPolyData *polyData)
-{
-    Segment3DViewerDialog::PreparedMesh mesh;
-    if (polyData == nullptr || polyData->GetNumberOfPoints() == 0 || polyData->GetNumberOfCells() == 0) {
-        return mesh;
-    }
-
-    mesh.labelId = labelId;
-    mesh.polyData = polyData;
-    mesh.lutColor = lutColor;
-    mesh.centerWorld = centerFromBounds(polyData);
-    return mesh;
-}
-
 Segment3DViewerDialog::PreparedMesh extractSelectedLabelMesh(
     vtkImageData *inputData,
     dataType::SegmentIdType selectedLabel,
@@ -1036,12 +1031,16 @@ Segment3DViewerDialog::PreparedMesh extractSelectedLabelMesh(
     const std::vector<dataType::SegmentIdType> &surfaceNetLabels,
     bool logMesh)
 {
-    Segment3DViewerDialog::PreparedMesh mesh;
     auto surfaceNet = createSurfaceNet(inputData, surfaceNetLabels);
     if (surfaceNet != nullptr) {
         surfaceNet->SetOutputStyleToSelected();
     }
     auto polyData = extractSelectedSurfaceNetOutput(surfaceNet, {selectedLabel});
+    surfaceNet = nullptr;
+    // Single-label extraction has no fallback that needs the input image.
+    if (inputData != nullptr) {
+        inputData->ReleaseData();
+    }
     if (logMesh) {
         SP_LOG_DEBUG("viewer.three_d",
                      QStringLiteral("[3DView] single-label selected mesh labelsInVOI=%1 points=%2 cells=%3")
@@ -1050,7 +1049,9 @@ Segment3DViewerDialog::PreparedMesh extractSelectedLabelMesh(
                          .arg(polyData->GetNumberOfCells()));
     }
 
-    return makePreparedMesh(selectedLabel, lutColor, polyData);
+    auto meshes = Segment3DViewerDialog::prepareExplodedMeshes(
+        polyData, {{selectedLabel, lutColor}});
+    return meshes.empty() ? Segment3DViewerDialog::PreparedMesh{} : std::move(meshes.front());
 }
 
 using MeshBounds = std::array<double, 6>;
@@ -1094,7 +1095,8 @@ struct ExplodeSourceView {
     const vtkTypeInt64 *connectivity64 = nullptr;
     const float *floatPoints = nullptr;
     const double *doublePoints = nullptr;
-    const dataType::SegmentIdType *boundaryValues = nullptr;
+    const std::uint16_t *boundaryValues16 = nullptr;
+    const dataType::SegmentIdType *boundaryValues32 = nullptr;
 
     vtkIdType pointIdAt(vtkIdType cellId, vtkIdType corner) const {
         const vtkIdType offset = 3 * cellId + corner;
@@ -1118,7 +1120,10 @@ struct ExplodeSourceView {
 
     std::pair<dataType::SegmentIdType, dataType::SegmentIdType> labelsAt(vtkIdType cellId) const {
         const vtkIdType offset = 2 * cellId;
-        return {boundaryValues[offset], boundaryValues[offset + 1]};
+        if (boundaryValues16 != nullptr) {
+            return {boundaryValues16[offset], boundaryValues16[offset + 1]};
+        }
+        return {boundaryValues32[offset], boundaryValues32[offset + 1]};
     }
 };
 
@@ -1136,14 +1141,20 @@ std::optional<ExplodeSourceView> makeExplodeSourceView(
         || source.cellCount > std::numeric_limits<vtkIdType>::max() / 3
         || boundaryLabels->GetNumberOfComponents() != 2
         || boundaryLabels->GetNumberOfTuples() != source.cellCount
-        || boundaryLabels->GetDataType() != segmentIdVtkDataType()
+        || (boundaryLabels->GetDataType() != segmentIdVtkDataType()
+            && boundaryLabels->GetDataType() != VTK_UNSIGNED_SHORT)
         || !boundaryLabels->HasStandardMemoryLayout()) {
         SP_LOG_WARNING("viewer.three_d",
                        QStringLiteral("[3DView] invalid explode boundary-label array"));
         return std::nullopt;
     }
-    source.boundaryValues =
-        static_cast<const dataType::SegmentIdType *>(boundaryLabels->GetVoidPointer(0));
+    if (boundaryLabels->GetDataType() == VTK_UNSIGNED_SHORT) {
+        source.boundaryValues16 =
+            static_cast<const std::uint16_t *>(boundaryLabels->GetVoidPointer(0));
+    } else {
+        source.boundaryValues32 =
+            static_cast<const dataType::SegmentIdType *>(boundaryLabels->GetVoidPointer(0));
+    }
 
     auto *sourcePolys = polyData->GetPolys();
     source.points = polyData->GetPoints();
@@ -1453,12 +1464,64 @@ std::optional<std::vector<vtkSmartPointer<vtkCellArray>>> buildExplodePolys(
     return polys;
 }
 
+template <typename ConnectivityArray>
+vtkSmartPointer<vtkPoints> compactMeshPoints(
+    const ExplodeSourceView &source,
+    ConnectivityArray *connectivity,
+    std::vector<std::uint32_t> &sourceToLocalPointIds,
+    std::vector<vtkIdType> &usedSourcePointIds,
+    std::uint64_t maximumBufferBytes,
+    dataType::SegmentIdType labelId)
+{
+    auto points = vtkSmartPointer<vtkPoints>::New();
+    points->SetDataType(source.points->GetDataType());
+    // Keep one uint32 value reserved for points that have not been copied yet.
+    const auto maximumPointBufferBytes = std::min(
+        maximumBufferBytes, static_cast<std::uint64_t>(kUnmappedPointId) * 3 * sizeof(float));
+    usedSourcePointIds.clear();
+    auto *pointIds = connectivity->GetPointer(0);
+    for (vtkIdType offset = 0; offset < connectivity->GetNumberOfValues(); ++offset) {
+        const vtkIdType sourcePointId = pointIds[offset];
+        auto &localPointId = sourceToLocalPointIds[static_cast<std::size_t>(sourcePointId)];
+        if (localPointId == kUnmappedPointId) {
+            checkMeshBufferSize(points->GetNumberOfPoints() + 1, 3 * sizeof(float),
+                                maximumPointBufferBytes, labelId);
+            double point[3];
+            source.pointAt(sourcePointId, point);
+            localPointId = static_cast<std::uint32_t>(points->InsertNextPoint(point));
+            usedSourcePointIds.push_back(sourcePointId);
+        }
+        pointIds[offset] = localPointId;
+    }
+    connectivity->DataChanged();
+    connectivity->Modified();
+    // Reset only used entries so the lookup can be reused for the next segment.
+    for (const vtkIdType sourcePointId : usedSourcePointIds) {
+        sourceToLocalPointIds[static_cast<std::size_t>(sourcePointId)] = kUnmappedPointId;
+    }
+    points->Squeeze();
+    return points;
+}
+
 std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
-    vtkPoints *sharedPoints,
+    const ExplodeSourceView &source,
     const std::vector<Segment3DViewerDialog::LabelWithColor> &labels,
     const ExplodeScanResult &scan,
-    std::vector<vtkSmartPointer<vtkCellArray>> polys)
+    std::vector<vtkSmartPointer<vtkCellArray>> polys,
+    std::uint64_t maximumBufferBytes)
 {
+    const bool compactPoints = labels.size() == 1
+        || static_cast<std::uint64_t>(source.pointCount) > maximumBufferBytes / (3 * sizeof(float));
+    std::vector<std::uint32_t> sourceToLocalPointIds;
+    std::vector<vtkIdType> usedSourcePointIds;
+    if (compactPoints) {
+        SP_LOG_INFO("viewer.three_d",
+                    QStringLiteral("[3DView] compacting %1 shared points into per-label buffers "
+                                   "(maximum upload=%2 bytes)")
+                        .arg(source.pointCount).arg(maximumBufferBytes));
+        sourceToLocalPointIds.assign(static_cast<std::size_t>(source.pointCount), kUnmappedPointId);
+    }
+
     std::vector<Segment3DViewerDialog::PreparedMesh> meshes;
     meshes.reserve(labels.size());
     for (std::size_t labelIndex = 0; labelIndex < labels.size(); ++labelIndex) {
@@ -1466,12 +1529,26 @@ std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
             continue;
         }
 
+        const auto labelId = labels[labelIndex].first;
+        const auto lutColor = labels[labelIndex].second;
+        vtkSmartPointer<vtkPoints> points = source.points;
+        if (compactPoints) {
+            auto *connectivity = polys[labelIndex]->GetConnectivityArray();
+            if (auto *values32 = vtkCellArray::AOSArray32::SafeDownCast(connectivity)) {
+                points = compactMeshPoints(source, values32, sourceToLocalPointIds,
+                                           usedSourcePointIds, maximumBufferBytes, labelId);
+            } else {
+                auto *values64 = vtkCellArray::AOSArray64::SafeDownCast(connectivity);
+                points = compactMeshPoints(source, values64, sourceToLocalPointIds,
+                                           usedSourcePointIds, maximumBufferBytes, labelId);
+            }
+        }
+
         auto polyData = vtkSmartPointer<SharedPointsPolyData>::New();
-        polyData->SetPoints(sharedPoints);
+        polyData->SetPoints(points);
         polyData->SetPolys(polys[labelIndex]);
         polyData->SetPrecomputedCellsBounds(scan.labelBounds[labelIndex]);
 
-        const auto &[labelId, lutColor] = labels[labelIndex];
         Segment3DViewerDialog::PreparedMesh mesh;
         mesh.labelId = labelId;
         mesh.polyData = polyData;
@@ -1485,7 +1562,8 @@ std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
 std::vector<Segment3DViewerDialog::PreparedMesh> splitMultiLabelMesh(
     vtkPolyData *combinedPolyData,
     vtkDataArray *boundaryLabels,
-    const std::vector<Segment3DViewerDialog::LabelWithColor> &labels)
+    const std::vector<Segment3DViewerDialog::LabelWithColor> &labels,
+    std::uint64_t maximumBufferBytes)
 {
     const qint64 startedAt =
         kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
@@ -1499,6 +1577,11 @@ std::vector<Segment3DViewerDialog::PreparedMesh> splitMultiLabelMesh(
     if (!scan) {
         return {};
     }
+    // Check before allocating: each triangle uses three uint32 graphics indices.
+    for (std::size_t labelIndex = 0; labelIndex < labels.size(); ++labelIndex) {
+        checkMeshBufferSize(scan->labelCellCounts[labelIndex], 3 * sizeof(std::uint32_t),
+                            maximumBufferBytes, labels[labelIndex].first);
+    }
     auto polys = buildExplodePolys(*source, *labelLookup, *scan);
     if (!polys) {
         SP_LOG_WARNING("viewer.three_d",
@@ -1506,7 +1589,7 @@ std::vector<Segment3DViewerDialog::PreparedMesh> splitMultiLabelMesh(
         return {};
     }
 
-    auto meshes = makeExplodeMeshes(source->points, labels, *scan, std::move(*polys));
+    auto meshes = makeExplodeMeshes(*source, labels, *scan, std::move(*polys), maximumBufferBytes);
     SP_LOG_3D_TIMER(startedAt, QStringLiteral("[3DView] [segmentpuzzler] split multi-label mesh"));
     return meshes;
 }
@@ -1529,7 +1612,7 @@ std::vector<Segment3DViewerDialog::PreparedMesh> extractSingleLabelMeshes(
         threshold->SetOutValue(0.0);
         threshold->ReplaceInOn();
         threshold->ReplaceOutOn();
-        threshold->SetOutputScalarTypeToFloat();
+        threshold->SetOutputScalarTypeToUnsignedChar();
 
         auto surfaceNet = vtkSmartPointer<vtkSurfaceNets3D>::New();
         surfaceNet->SetInputConnection(threshold->GetOutputPort());
@@ -1612,7 +1695,8 @@ void updateSceneBoundsFromMeshes(Segment3DViewerDialog::PreparedScene &preparedS
 
 std::vector<Segment3DViewerDialog::PreparedMesh> Segment3DViewerDialog::prepareExplodedMeshes(
     vtkPolyData *combinedPolyData,
-    const std::vector<LabelWithColor> &labels)
+    const std::vector<LabelWithColor> &labels,
+    std::uint64_t maximumBufferBytes)
 {
     if (combinedPolyData == nullptr) {
         return {};
@@ -1620,7 +1704,8 @@ std::vector<Segment3DViewerDialog::PreparedMesh> Segment3DViewerDialog::prepareE
     return splitMultiLabelMesh(
         combinedPolyData,
         combinedPolyData->GetCellData()->GetArray("BoundaryLabels"),
-        labels);
+        labels,
+        maximumBufferBytes);
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
@@ -1820,6 +1905,14 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     const int padY0 = std::max(0, minY - 1), padY1 = std::min(dimY - 1, maxY + 1);
     const int padZ0 = std::max(0, minZ - 1), padZ1 = std::min(dimZ - 1, maxZ + 1);
 
+    const auto requestedLabels = collectRequestedLabels(labels);
+    auto surfaceNetLabels = allLabelsInImage
+        ? requestedLabels
+        : collectLabelsInExtent(buf, dimX, dimY, padX0, padX1, padY0, padY1, padZ0, padZ1);
+    if (surfaceNetLabels.empty()) {
+        surfaceNetLabels = requestedLabels;
+    }
+
     SP_LOG_DEBUG("viewer.three_d",
                  QStringLiteral("[3DView] union bbox x=[%1,%2] y=[%3,%4] z=[%5,%6]")
                      .arg(minX)
@@ -1838,30 +1931,36 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     importer->SetDataExtentToWholeExtent();
     importer->SetDataSpacing(spacing[0], spacing[1], spacing[2]);
     importer->SetDataOrigin(origin[0], origin[1], origin[2]);
+    importer->SetDataDirection(segImage->GetDirection().GetVnlMatrix().data_block());
 
     auto extractor = vtkSmartPointer<vtkExtractVOI>::New();
     extractor->SetInputConnection(importer->GetOutputPort());
     extractor->SetVOI(padX0, padX1, padY0, padY1, padZ0, padZ1);
+    extractor->ReleaseDataFlagOn();
 
     auto padder = vtkSmartPointer<vtkImageConstantPad>::New();
     padder->SetInputConnection(extractor->GetOutputPort());
+    // Neighbouring labels must also fit in uint16.
+    const auto largestLabel = *std::max_element(surfaceNetLabels.begin(), surfaceNetLabels.end());
+    if (largestLabel <= std::numeric_limits<std::uint16_t>::max()) {
+        auto cast = vtkSmartPointer<vtkImageCast>::New();
+        cast->SetInputConnection(extractor->GetOutputPort());
+        cast->SetOutputScalarTypeToUnsignedShort();
+        cast->ReleaseDataFlagOn();
+        padder->SetInputConnection(cast->GetOutputPort());
+    }
     padder->SetOutputWholeExtent(padX0 - 1, padX1 + 1,
                                  padY0 - 1, padY1 + 1,
                                  padZ0 - 1, padZ1 + 1);
     padder->SetConstant(0);
     padder->Update();
     vtkImageData *paddedImage = padder->GetOutput();
-    SP_LOG_3D_TIMER(t_voi, QStringLiteral("[3DView] [segmentpuzzler] VOI extract + pad"));
+    SP_LOG_3D_TIMER(t_voi, QStringLiteral("[3DView] [segmentpuzzler] VOI extract + pad (%1)")
+                               .arg(paddedImage->GetScalarTypeAsString()));
 
     const qint64 t_surfaces = QDateTime::currentMSecsSinceEpoch();
     if (labels.size() == 1) {
         SP_LOG_INFO("viewer.three_d", QStringLiteral("[3DView] using vtkSurfaceNets3D selected-label extraction"));
-
-        auto surfaceNetLabels = collectLabelsInExtent(
-            buf, dimX, dimY, padX0, padX1, padY0, padY1, padZ0, padZ1);
-        if (surfaceNetLabels.empty()) {
-            surfaceNetLabels.push_back(labels.front().first);
-        }
 
         auto mesh = extractSelectedLabelMesh(
             paddedImage, labels.front().first, labels.front().second, surfaceNetLabels, true);
@@ -1875,20 +1974,6 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
                 ? QStringLiteral("[3DView] using vtkSurfaceNets3D default all-label extraction")
                 : QStringLiteral("[3DView] using vtkSurfaceNets3D selected multi-label extraction"));
 
-        auto requestedLabels = collectRequestedLabels(labels);
-        std::vector<dataType::SegmentIdType> surfaceNetLabels;
-        if (allLabelsInImage) {
-            surfaceNetLabels = requestedLabels;
-        } else {
-            const qint64 t_collectLabels =
-                kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
-            surfaceNetLabels = collectLabelsInExtent(
-                buf, dimX, dimY, padX0, padX1, padY0, padY1, padZ0, padZ1);
-            if (kProfile3DViewExtraction) {
-                SP_LOG_3D_TIMER(t_collectLabels, QStringLiteral("[3DView] [segmentpuzzler] collect labels in VOI"));
-            }
-        }
-
         const qint64 t_extraction = kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
         auto surfaceNet = createSurfaceNet(paddedImage, surfaceNetLabels);
         vtkSmartPointer<vtkPolyData> combinedPolyData;
@@ -1900,6 +1985,10 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
             surfaceNet->SetOutputStyleToSelected();
             combinedPolyData = extractSelectedSurfaceNetOutput(surfaceNet, requestedLabels);
         }
+        surfaceNet = nullptr;
+        if (allLabelsInImage) {
+            paddedImage->ReleaseData();
+        }
         if (kProfile3DViewExtraction) {
             SP_LOG_3D_TIMER(
                 t_extraction,
@@ -1908,11 +1997,12 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
                     : QStringLiteral("[3DView] [vtksurfacenets] selected extraction"));
         }
         SP_LOG_DEBUG("viewer.three_d",
-                     QStringLiteral("[3DView] SurfaceNets source mesh labelsInVOI=%1 requested=%2 points=%3 cells=%4")
+                     QStringLiteral("[3DView] SurfaceNets source mesh labelsInVOI=%1 requested=%2 points=%3 cells=%4 indexBits=%5")
                          .arg(surfaceNetLabels.size())
                          .arg(requestedLabels.size())
                          .arg(combinedPolyData->GetNumberOfPoints())
-                         .arg(combinedPolyData->GetNumberOfCells()));
+                         .arg(combinedPolyData->GetNumberOfCells())
+                         .arg(8 * combinedPolyData->GetPolys()->GetConnectivityArray()->GetDataTypeSize()));
 
         preparedScene.meshes = prepareExplodedMeshes(combinedPolyData, labels);
         if (preparedScene.meshes.size() != labels.size()) {
@@ -1928,7 +2018,6 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
                            QStringLiteral("[3DView] selected mesh split failed, falling back to default-output extraction"));
 
             combinedPolyData = nullptr;
-            surfaceNet = nullptr;
 
             auto fallbackSurfaceNet = vtkSmartPointer<vtkSurfaceNets3D>::New();
             fallbackSurfaceNet->SetInputData(paddedImage);
@@ -1939,6 +2028,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
             const qint64 t_legacyExtraction = kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
             fallbackSurfaceNet->Update();
             auto polyData = detachPolyData(fallbackSurfaceNet->GetOutput());
+            fallbackSurfaceNet = nullptr;
             if (kProfile3DViewExtraction) {
                 SP_LOG_3D_TIMER(t_legacyExtraction, QStringLiteral("[3DView] [vtksurfacenets] legacy extraction"));
             }
@@ -1986,19 +2076,30 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
 
         auto *sharedPoints = preparedScene.meshes.front().polyData->GetPoints();
         vtkIdType segmentCellCount = 0;
+        vtkIdType maximumPointCount = 0;
+        vtkIdType maximumCellCount = 0;
         bool allMeshesSharePoints = true;
         for (const auto &mesh : preparedScene.meshes) {
+            checkMeshBufferSize(mesh.polyData->GetNumberOfPoints(), 3 * sizeof(float),
+                                kMaximumMeshBufferBytes, mesh.labelId);
+            checkMeshBufferSize(mesh.polyData->GetNumberOfCells(), 3 * sizeof(std::uint32_t),
+                                kMaximumMeshBufferBytes, mesh.labelId);
             segmentCellCount += mesh.polyData->GetNumberOfCells();
+            maximumPointCount = std::max(maximumPointCount, mesh.polyData->GetNumberOfPoints());
+            maximumCellCount = std::max(maximumCellCount, mesh.polyData->GetNumberOfCells());
             allMeshesSharePoints &= mesh.polyData->GetPoints() == sharedPoints;
         }
         SP_LOG_DEBUG("viewer.three_d",
-                     QStringLiteral("[3DView] segment meshes=%1 sharedPoints=%2 sharedPointCount=%3 cells=%4")
+                     QStringLiteral("[3DView] segment meshes=%1 sharedPoints=%2 sharedPointCount=%3 cells=%4 "
+                                    "largestPointBufferBytes=%5 largestIndexBufferBytes=%6")
                          .arg(preparedScene.meshes.size())
                          .arg(allMeshesSharePoints)
                          .arg(allMeshesSharePoints && sharedPoints != nullptr
                                   ? sharedPoints->GetNumberOfPoints()
                                   : 0)
-                         .arg(segmentCellCount));
+                         .arg(segmentCellCount)
+                         .arg(static_cast<std::uint64_t>(maximumPointCount) * 3 * sizeof(float))
+                         .arg(static_cast<std::uint64_t>(maximumCellCount) * 3 * sizeof(std::uint32_t)));
     }
     SP_LOG_3D_TIMER(t_surfaces, QStringLiteral("[3DView] [total] surface extraction"));
     SP_LOG_3D_TIMER(t_total, QStringLiteral("[3DView] [total] total"));
@@ -3538,7 +3639,7 @@ void Segment3DViewerDialog::previewProjectedCut() {
     setSeededSplitStatus(QStringLiteral("Computing projected cut preview..."));
     updateSeededSplitUiState();
 
-    const auto computePreview = [mask, request]() {
+    try {
         auto result = computeProjected3DCut(mask, request);
         PreparedScene scene;
         if (result.valid()) {
@@ -3546,11 +3647,7 @@ void Segment3DViewerDialog::previewProjectedCut() {
                 result.partition,
                 splitPreviewLabels(result.componentVoxelCounts.size()));
         }
-        return std::make_pair(std::move(result), std::move(scene));
-    };
-    const auto finishPreview = [this](auto preview) {
         m_seededSplitBusy = false;
-        auto &[result, scene] = preview;
         if (!result.valid() || !replaceSegmentMeshes(scene, false)) {
             const QString message = result.error.empty()
                                         ? QStringLiteral(
@@ -3570,9 +3667,10 @@ void Segment3DViewerDialog::previewProjectedCut() {
                 .arg(m_projectedCutPreview->componentVoxelCounts.size())
                 .arg(m_projectedCutPreview->profile.totalMs, 0, 'f', 1));
         updateSeededSplitUiState();
-    };
-
-    finishPreview(computePreview());
+    } catch (const std::exception &exception) {
+        finishSplitTask();
+        setSeededSplitStatus(QString::fromUtf8(exception.what()), true);
+    }
 }
 
 void Segment3DViewerDialog::applyProjectedCutPreview() {
@@ -4186,7 +4284,7 @@ void Segment3DViewerDialog::previewSeededSplit() {
     setSeededSplitStatus(QStringLiteral("Running marker-controlled watershed..."));
     updateSeededSplitUiState();
 
-    const auto computePreview = [session, seeds, options]() {
+    try {
         auto result = segment_puzzler::computeSeededWatershedSplit(
             *session, seeds, options);
         PreparedScene scene;
@@ -4194,11 +4292,7 @@ void Segment3DViewerDialog::previewSeededSplit() {
             scene = Segment3DViewerDialog::prepareScene(
                 result.partition, {{1, 0xF2483D}, {2, 0x26A6FF}});
         }
-        return std::make_pair(std::move(result), std::move(scene));
-    };
-    const auto finishPreview = [this](auto preview) {
         m_seededSplitBusy = false;
-        auto &[result, scene] = preview;
         m_lastSeededSplitResult = result;
         if (!result.valid() || !replaceSegmentMeshes(scene, false)) {
             const bool disconnectedRejected =
@@ -4307,9 +4401,10 @@ void Segment3DViewerDialog::previewSeededSplit() {
                     .arg(m_seededSplitPreview->watershedMs, 0, 'f', 1));
         }
         updateSeededSplitUiState();
-    };
-
-    finishPreview(computePreview());
+    } catch (const std::exception &exception) {
+        finishSplitTask();
+        setSeededSplitStatus(QString::fromUtf8(exception.what()), true);
+    }
 }
 
 void Segment3DViewerDialog::exportSeededSplitDebugBundle() {
@@ -4698,7 +4793,13 @@ void Segment3DViewerDialog::previewErosionSplit() {
                 }
             });
     } else {
-        finishPreview(computePreview());
+        try {
+            finishPreview(computePreview());
+        } catch (const std::exception &exception) {
+            if (!dialog.isNull()) {
+                dialog->setSeededSplitStatus(QString::fromUtf8(exception.what()), true);
+            }
+        }
         if (!dialog.isNull()) {
             dialog->finishSplitTask();
         }

@@ -4,6 +4,7 @@
 #include <QDialog>
 #include <QString>
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -91,13 +92,16 @@ public:
     static PreparedScene prepareAllLabelsScene(
         dataType::SegmentsImageType::Pointer segImage,
         LabelColorSnapshot labelColors);
-    // Expects triangulated vtkSurfaceNets3D output with BoundaryLabels.
-    // Each result shares combinedPolyData's points to avoid duplicate VBOs.
-    // Treat points and cells as immutable. GetBounds() covers all shared points;
-    // use centerWorld or vtkPolyData::GetCellsBounds() for label-local bounds.
+    // Avoid large graphics buffers that can crash the macOS graphics driver.
+    static constexpr std::uint64_t kMaximumMeshBufferBytes = 256ULL * 1024 * 1024;
+
+    // Split SurfaceNets triangles by BoundaryLabels; share points where possible.
+    // Throws if a segment exceeds the buffer limit. Keep returned meshes unchanged;
+    // GetCellsBounds() gives each segment's bounds, even when points are shared.
     static std::vector<PreparedMesh> prepareExplodedMeshes(
         vtkPolyData *combinedPolyData,
-        const std::vector<LabelWithColor> &labels);
+        const std::vector<LabelWithColor> &labels,
+        std::uint64_t maximumBufferBytes = kMaximumMeshBufferBytes);
     static std::optional<CameraOrientation> cameraOrientationForSliceAxis(int sliceAxis);
 
     struct SingleLabelSessionConfig {

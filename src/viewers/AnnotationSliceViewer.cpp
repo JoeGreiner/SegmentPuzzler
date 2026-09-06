@@ -686,9 +686,13 @@ void AnnotationSliceViewer::showPrepared3DView(
     }
 
     if (taskRunner == nullptr) {
-        auto preparedScene = Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
-            segImage, labels.front());
-        openPrepared3DView(std::move(preparedScene), launchSliceAxis, true);
+        try {
+            auto preparedScene = Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
+                segImage, labels.front());
+            openPrepared3DView(std::move(preparedScene), launchSliceAxis, true);
+        } catch (const std::exception &exception) {
+            QMessageBox::critical(this, tr("3D View"), QString::fromUtf8(exception.what()));
+        }
         return;
     }
 
@@ -1294,10 +1298,14 @@ void AnnotationSliceViewer::show3DAllLabelsView() {
     }
 
     if (taskRunner == nullptr) {
-        auto preparedScene =
-            Segment3DViewerDialog::prepareAllLabelsScene(segImage, std::move(labelColors));
-        if (!preparedScene.meshes.empty()) {
-            openPrepared3DView(std::move(preparedScene), 2, true);
+        try {
+            auto preparedScene =
+                Segment3DViewerDialog::prepareAllLabelsScene(segImage, std::move(labelColors));
+            if (!preparedScene.meshes.empty()) {
+                openPrepared3DView(std::move(preparedScene), 2, true);
+            }
+        } catch (const std::exception &exception) {
+            QMessageBox::critical(this, tr("3D View"), QString::fromUtf8(exception.what()));
         }
         return;
     }

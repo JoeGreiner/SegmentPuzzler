@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,6 +23,7 @@
 
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/viewers/itkSignalBase.h"
+#include "src/utils/AppLogger.h"
 #include "src/utils/utils.h"
 #include "projected_3d_cut_sample_utils.h"
 
@@ -63,9 +65,6 @@ bool parseArgs(int argc, char **argv, ProgramOptions &options) {
         }
     }
 
-    if (options.segmentsPath.isEmpty()) {
-        options.segmentsPath = sample::defaultSampleSegmentsPath();
-    }
     return true;
 }
 
@@ -269,6 +268,89 @@ int testExplodedMeshSplit() {
         return failTest("Explode split did not duplicate the shared interface for the second label.");
     }
 
+    // A small budget exercises compaction without allocating a large mesh.
+    auto compactSource = vtkSmartPointer<vtkPolyData>::New();
+    compactSource->DeepCopy(source);
+    auto *sourcePolys = compactSource->GetPolys();
+    sourcePolys->InsertNextCell(3, shared);
+    auto *sourceLabels = vtkAOSDataArrayTemplate<SegmentIdType>::SafeDownCast(
+        compactSource->GetCellData()->GetArray("BoundaryLabels"));
+    sourceLabels->InsertNextTypedTuple(boundary1);
+    constexpr std::uint64_t budget = 6 * 3 * sizeof(float);
+    for (const bool use32BitConnectivity : {false, true}) {
+        if (use32BitConnectivity) {
+            sourcePolys->ConvertTo32BitStorage();
+        } else {
+            sourcePolys->ConvertTo64BitStorage();
+        }
+        auto compactMeshes = Segment3DViewerDialog::prepareExplodedMeshes(compactSource, labels, budget);
+        if (compactMeshes.size() != 2
+            || compactMeshes[0].polyData->GetPoints() == compactMeshes[1].polyData->GetPoints()) {
+            return failTest("Large scene did not receive per-label point buffers.");
+        }
+        const std::array<std::array<vtkIdType, 3>, 2> sourceCells{{{0, 1, 3}, {1, 2, 3}}};
+        for (std::size_t index = 0; index < compactMeshes.size(); ++index) {
+            auto *mesh = compactMeshes[index].polyData.GetPointer();
+            if (mesh->GetPoints() == compactSource->GetPoints()
+                || mesh->GetNumberOfPoints() != 6 || mesh->GetNumberOfCells() != 3) {
+                return failTest("Point compaction changed geometry counts.");
+            }
+            double bounds[6];
+            mesh->GetCellsBounds(bounds);
+            if (!std::equal(bounds, bounds + 6, expectedBounds[index].begin())) {
+                return failTest("Point compaction changed label bounds.");
+            }
+            for (vtkIdType cell = 0; cell < 3; ++cell) {
+                vtkIdType sourceCount = 0;
+                const vtkIdType *sourceIds = nullptr;
+                compactSource->GetCellPoints(sourceCells[index][cell], sourceCount, sourceIds);
+                mesh->GetCellPoints(cell, pointCount, pointIds);
+                if (sourceCount != 3 || pointCount != 3) {
+                    return failTest("Point compaction changed a triangle.");
+                }
+                for (int corner = 0; corner < 3; ++corner) {
+                    if (pointIds[corner] < 0 || pointIds[corner] >= mesh->GetNumberOfPoints()) {
+                        return failTest("Point compaction produced an invalid point id.");
+                    }
+                    double original[3], compact[3];
+                    compactSource->GetPoint(sourceIds[corner], original);
+                    mesh->GetPoint(pointIds[corner], compact);
+                    if (!std::equal(original, original + 3, compact)) {
+                        return failTest("Point compaction changed triangle coordinates or winding.");
+                    }
+                }
+            }
+        }
+        compactSource->GetCellPoints(1, pointCount, pointIds);
+        if (!std::equal(pointIds, pointIds + 3, shared) || compactSource->GetNumberOfPoints() != 10) {
+            return failTest("Point compaction mutated the source mesh.");
+        }
+        try {
+            Segment3DViewerDialog::prepareExplodedMeshes(compactSource, labels, budget - 1);
+            return failTest("Oversized per-label point buffer was not rejected.");
+        } catch (const std::runtime_error &) {
+        }
+    }
+
+    auto repeatedSource = vtkSmartPointer<vtkPolyData>::New();
+    auto repeatedPolys = vtkSmartPointer<vtkCellArray>::New();
+    auto repeatedLabels = vtkSmartPointer<vtkAOSDataArrayTemplate<SegmentIdType>>::New();
+    repeatedLabels->SetName("BoundaryLabels");
+    repeatedLabels->SetNumberOfComponents(2);
+    for (int cell = 0; cell < 11; ++cell) {
+        repeatedPolys->InsertNextCell(3, outerA);
+        repeatedLabels->InsertNextTypedTuple(boundary0);
+    }
+    repeatedSource->SetPoints(points);
+    repeatedSource->SetPolys(repeatedPolys);
+    repeatedSource->GetCellData()->AddArray(repeatedLabels);
+    try {
+        // Points fit exactly, but the triangle-index buffer exceeds the budget.
+        Segment3DViewerDialog::prepareExplodedMeshes(repeatedSource, labels, 10 * 3 * sizeof(float));
+        return failTest("Oversized triangle-index buffer was not rejected.");
+    } catch (const std::runtime_error &) {
+    }
+
     const std::vector<Segment3DViewerDialog::LabelWithColor> duplicateLabels{
         {1, 0xFF0000}, {1, 0x00FF00}};
     if (!Segment3DViewerDialog::prepareExplodedMeshes(source, duplicateLabels).empty()) {
@@ -340,8 +422,8 @@ int testAllLabelsSceneUsesSegmentMeshes() {
     LabelColorSnapshot labelColors;
     labelColors.overrides = std::move(overrides);
 
-    auto scene = Segment3DViewerDialog::prepareAllLabelsScene(
-        makeSmallSegmentsImage(true), labelColors);
+    auto image = makeSmallSegmentsImage(true);
+    auto scene = Segment3DViewerDialog::prepareAllLabelsScene(image, labelColors);
     if (scene.targetLabelId != 0 || scene.meshes.size() != 2) {
         return failTest("All-label scene did not produce one mesh per label.");
     }
@@ -364,12 +446,109 @@ int testAllLabelsSceneUsesSegmentMeshes() {
         return failTest("All-label scene bounds are invalid.");
     }
 
+    auto selectedScene = Segment3DViewerDialog::prepareScene(image, {{1, red}});
+    if (selectedScene.meshes.size() != 1) {
+        return failTest("Selected-label scene did not produce one mesh.");
+    }
+    auto *selected = selectedScene.meshes.front().polyData.GetPointer();
+    auto *reference = scene.meshes.front().polyData.GetPointer();
+    if (selected->GetNumberOfPoints() >= reference->GetNumberOfPoints()
+        || selected->GetNumberOfCells() != reference->GetNumberOfCells()
+        || selected->GetPolys()->GetConnectivityArray()->GetDataTypeSize() != sizeof(std::int32_t)) {
+        return failTest("Selected-label mesh did not compact points and connectivity.");
+    }
+    std::vector<bool> usedPoints(static_cast<std::size_t>(selected->GetNumberOfPoints()), false);
+    for (vtkIdType cell = 0; cell < selected->GetNumberOfCells(); ++cell) {
+        vtkIdType count, referenceCount;
+        const vtkIdType *ids, *referenceIds;
+        selected->GetCellPoints(cell, count, ids);
+        reference->GetCellPoints(cell, referenceCount, referenceIds);
+        if (count != 3 || referenceCount != 3) {
+            return failTest("Selected-label compaction changed a triangle.");
+        }
+        for (int corner = 0; corner < 3; ++corner) {
+            if (ids[corner] < 0 || ids[corner] >= selected->GetNumberOfPoints()) {
+                return failTest("Selected-label mesh contains an invalid point id.");
+            }
+            usedPoints[static_cast<std::size_t>(ids[corner])] = true;
+            double point[3], referencePoint[3];
+            selected->GetPoint(ids[corner], point);
+            reference->GetPoint(referenceIds[corner], referencePoint);
+            if (!std::equal(point, point + 3, referencePoint)) {
+                return failTest("Selected-label compaction changed geometry or winding.");
+            }
+        }
+    }
+    if (std::find(usedPoints.begin(), usedPoints.end(), false) != usedPoints.end()) {
+        return failTest("Selected-label mesh retained unused points.");
+    }
+
+    for (const SegmentIdType neighborLabel : {65535u, 65536u}) {
+        auto boundaryImage = makeSmallSegmentsImage(true);
+        auto *pixels = boundaryImage->GetBufferPointer();
+        const auto voxelCount = boundaryImage->GetLargestPossibleRegion().GetNumberOfPixels();
+        std::replace(pixels, pixels + voxelCount, SegmentIdType{2}, neighborLabel);
+        auto allLabels = Segment3DViewerDialog::prepareAllLabelsScene(boundaryImage, labelColors);
+        auto singleLabel = Segment3DViewerDialog::prepareScene(boundaryImage, {{1, red}});
+        if (allLabels.meshes.size() != 2 || allLabels.meshes[1].labelId != neighborLabel
+            || singleLabel.meshes.size() != 1) {
+            return failTest("Scene lost a label at the uint16 boundary.");
+        }
+        auto *actual = singleLabel.meshes.front().polyData.GetPointer();
+        if (actual->GetNumberOfPoints() != selected->GetNumberOfPoints()
+            || actual->GetNumberOfCells() != selected->GetNumberOfCells()) {
+            return failTest("Neighbor label width changed the selected mesh.");
+        }
+        for (vtkIdType pointId = 0; pointId < selected->GetNumberOfPoints(); ++pointId) {
+            double point[3], expected[3];
+            actual->GetPoint(pointId, point);
+            selected->GetPoint(pointId, expected);
+            if (!std::equal(point, point + 3, expected)) {
+                return failTest("Neighbor label width changed the selected surface coordinates.");
+            }
+        }
+    }
+
     auto singleLabelScene = Segment3DViewerDialog::prepareAllLabelsScene(
         makeSmallSegmentsImage(false), labelColors);
     if (singleLabelScene.targetLabelId != 0
         || singleLabelScene.meshes.size() != 1
         || singleLabelScene.meshes.front().labelId != 1) {
         return failTest("Single-label all-label scene did not use the segment-mesh path.");
+    }
+    return 0;
+}
+
+int testSceneImageDirection() {
+    auto image = makeSmallSegmentsImage(false);
+    dataType::SegmentsImageType::SpacingType spacing;
+    spacing.Fill(2.0);
+    image->SetSpacing(spacing);
+    const dataType::SegmentsImageType::PointType origin{{10.0, 20.0, 30.0}};
+    image->SetOrigin(origin);
+    auto reference = Segment3DViewerDialog::prepareScene(image, {{1, 0xFF0000}});
+
+    dataType::SegmentsImageType::DirectionType direction;
+    direction.SetIdentity();
+    direction[0][0] = direction[1][1] = 0.0;
+    direction[0][1] = -1.0;
+    direction[1][0] = 1.0;
+    image->SetDirection(direction);
+    auto rotated = Segment3DViewerDialog::prepareScene(image, {{1, 0xFF0000}});
+    if (reference.meshes.size() != 1 || rotated.meshes.size() != 1) {
+        return failTest("Image-direction test did not produce its meshes.");
+    }
+    double bounds[6], rotatedBounds[6];
+    reference.meshes.front().polyData->GetCellsBounds(bounds);
+    rotated.meshes.front().polyData->GetCellsBounds(rotatedBounds);
+    const double expected[6]{
+        origin[0] - (bounds[3] - origin[1]), origin[0] - (bounds[2] - origin[1]),
+        origin[1] + (bounds[0] - origin[0]), origin[1] + (bounds[1] - origin[0]),
+        bounds[4], bounds[5]};
+    for (int component = 0; component < 6; ++component) {
+        if (std::abs(rotatedBounds[component] - expected[component]) > 1e-5) {
+            return failTest("Scene ignored the image direction, spacing or origin.");
+        }
     }
     return 0;
 }
@@ -446,6 +625,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (options.sceneOnly && !options.segmentsPath.isEmpty()) {
+        using namespace segment_puzzler::app_logging;
+        auto settings = AppLogger::defaultSettings();
+        settings.minimumLevel = LogLevel::Debug;
+        AppLogger::setSettings(settings, false);
+        auto image = ITKImageLoader<SegmentIdType>(options.segmentsPath);
+        auto scene = Segment3DViewerDialog::prepareAllLabelsScene(image, {});
+        if (scene.meshes.empty()) {
+            return failTest("Input segmentation did not produce a scene.");
+        }
+        std::cout << "Input segmentation scene passed: " << scene.meshes.size() << " labels\n";
+        return 0;
+    }
+
     if (const int boundsTestResult = testRepresentativeVoxelBounds(); boundsTestResult != 0) {
         return boundsTestResult;
     }
@@ -456,12 +649,18 @@ int main(int argc, char **argv) {
         allLabelsTestResult != 0) {
         return allLabelsTestResult;
     }
+    if (const int directionTestResult = testSceneImageDirection(); directionTestResult != 0) {
+        return directionTestResult;
+    }
 
     if (options.sceneOnly) {
         std::cout << "Projected 3D scene tests passed\n";
         return 0;
     }
 
+    if (options.segmentsPath.isEmpty()) {
+        options.segmentsPath = sample::defaultSampleSegmentsPath();
+    }
     if (!QFileInfo::exists(options.segmentsPath)) {
         std::cerr << "Sample segments file not found: " << options.segmentsPath.toStdString() << "\n";
         std::cerr << "Expected cached sample data in the temp directory. Run the app sample download first,\n";
