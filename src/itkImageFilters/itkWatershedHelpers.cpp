@@ -1,3 +1,4 @@
+#include "itkWorkerThreads.h"
 #include "itkWatershedHelpers.h"
 
 #include <algorithm>
@@ -223,11 +224,7 @@ void relabelInjectedBoundaryComponents(
     const std::size_t dimZ = size[2];
     const std::size_t planeXY = dimX * dimY;
     const std::size_t total = planeXY * dimZ;
-    const int requestedThreadCount = std::max(1, threadCount);
-    int executionThreadCount = 1;
-#ifdef USE_OMP
-    executionThreadCount = std::min(requestedThreadCount, std::max(1, omp_get_max_threads()));
-#endif
+    const int executionThreadCount = segment_puzzler::workerThreadCount(threadCount);
 
     SegmentIdType *boundaryMaskedBuffer = boundaryMaskedLabels->GetBufferPointer();
     const unsigned char *thresholdBuffer = thresholdedBoundaries->GetBufferPointer();
@@ -353,11 +350,11 @@ void relabelInjectedBoundaryComponents(
                      ", components=" + std::to_string(globalComponentCount) +
                      ", local_components=" + std::to_string(localComponentCount) +
                      ", slabs=" + std::to_string(slabCount) +
-                     ", requested_threads=" + std::to_string(requestedThreadCount) +
+                     ", requested_threads=" + std::to_string(executionThreadCount) +
                      ", threads=" + std::to_string(usedThreadCount));
 
     stageStarted = std::chrono::steady_clock::now();
-    std::uint64_t nextFreshLabel = static_cast<std::uint64_t>(getMaximumOfUIntImage(labels)) + 1;
+    std::uint64_t nextFreshLabel = static_cast<std::uint64_t>(getMaximumOfUIntImage(labels, threadCount)) + 1;
     std::vector<SegmentIdType> rootToFinalLabel(localComponentCount + 1, 0);
     for (auto &entry : componentsByOriginalLabel) {
         const SegmentIdType originalLabel = entry.first;
@@ -454,7 +451,7 @@ SegmentsImageType::Pointer repairSplitLabelsWithWatershed(
 
     stageStarted = std::chrono::steady_clock::now();
     itk::Image<float, 3>::Pointer invertedDistanceMap;
-    invertDistanceMap(distanceMap, invertedDistanceMap);
+    invertDistanceMap(distanceMap, invertedDistanceMap, threadCount);
     emitWatershedLog("Boundary repair: inversion_ms=" +
                      std::to_string(elapsedMilliseconds(stageStarted)));
 
@@ -491,9 +488,10 @@ void binaryThresholdImageFilterFloat(itk::Image<unsigned short, 3>::Pointer &inp
     outputImage = thresholdFilter->GetOutput();
 }
 
-unsigned int getMaximumOfUIntImage(itk::Image<unsigned int, 3>::Pointer &UIntImage) {
+unsigned int getMaximumOfUIntImage(itk::Image<unsigned int, 3>::Pointer &UIntImage, int threadCount) {
     using StatisticsUIntImageFilterType = itk::StatisticsImageFilter<itk::Image<unsigned int, 3>>;
     StatisticsUIntImageFilterType::Pointer statisticsUIntImageFilter = StatisticsUIntImageFilterType::New();
+    segment_puzzler::setItkWorkerThreadCount(*statisticsUIntImageFilter, threadCount);
     statisticsUIntImageFilter->SetInput(UIntImage);
     statisticsUIntImageFilter->Update();
     return statisticsUIntImageFilter->GetMaximum();
@@ -598,6 +596,7 @@ void generateDistanceMap(itk::Image<unsigned char, 3>::Pointer &edgeImage,
         using SignedMaurerDistanceMapImageFilterType =
             itk::SignedMaurerDistanceMapImageFilter<itk::Image<unsigned char, 3>, itk::Image<float, 3>>;
         SignedMaurerDistanceMapImageFilterType::Pointer distanceFilter = SignedMaurerDistanceMapImageFilterType::New();
+        segment_puzzler::setItkWorkerThreadCount(*distanceFilter, threadCount);
         distanceFilter->SetInput(edgeImage);
         distanceFilter->SetBackgroundValue(0);
         distanceFilter->SquaredDistanceOff();
@@ -610,6 +609,7 @@ void generateDistanceMap(itk::Image<unsigned char, 3>::Pointer &edgeImage,
     if (varianceGaussianFilter > 0) {
         using GaussianFilterType = itk::DiscreteGaussianImageFilter<itk::Image<float, 3>, itk::Image<float, 3>>;
         GaussianFilterType::Pointer gaussianFilter = GaussianFilterType::New();
+        segment_puzzler::setItkWorkerThreadCount(*gaussianFilter, threadCount);
         gaussianFilter->SetVariance(varianceGaussianFilter);
         gaussianFilter->SetInput(distanceMap);
         gaussianFilter->SetUseImageSpacingOff();
@@ -618,21 +618,23 @@ void generateDistanceMap(itk::Image<unsigned char, 3>::Pointer &edgeImage,
     }
 }
 
-float getMaximumOfFloatImage(itk::Image<float, 3>::Pointer &floatImage) {
+float getMaximumOfFloatImage(itk::Image<float, 3>::Pointer &floatImage, int threadCount) {
     using StatisticsFloatImageFilterType = itk::StatisticsImageFilter<itk::Image<float, 3>>;
     StatisticsFloatImageFilterType::Pointer statisticsFloatImageFilter = StatisticsFloatImageFilterType::New();
+    segment_puzzler::setItkWorkerThreadCount(*statisticsFloatImageFilter, threadCount);
     statisticsFloatImageFilter->SetInput(floatImage);
     statisticsFloatImageFilter->Update();
     return statisticsFloatImageFilter->GetMaximum();
 }
 
 void invertDistanceMap(itk::Image<float, 3>::Pointer &distanceMap,
-                       itk::Image<float, 3>::Pointer &invertedDistanceMap) {
+                       itk::Image<float, 3>::Pointer &invertedDistanceMap, int threadCount) {
     using InvertIntensityImageFilterType =
         itk::InvertIntensityImageFilter<itk::Image<float, 3>, itk::Image<float, 3>>;
     InvertIntensityImageFilterType::Pointer invertFilter = InvertIntensityImageFilterType::New();
+    segment_puzzler::setItkWorkerThreadCount(*invertFilter, threadCount);
 
-    float maxDistance = getMaximumOfFloatImage(distanceMap);
+    float maxDistance = getMaximumOfFloatImage(distanceMap, threadCount);
     float DistLowestLevel = std::ceil(maxDistance);
 
     invertFilter->SetInput(distanceMap);
@@ -642,7 +644,7 @@ void invertDistanceMap(itk::Image<float, 3>::Pointer &distanceMap,
 
     emitWatershedLog("New Maximum should be: " + std::to_string(invertFilter->GetMaximum()));
     emitWatershedLog(
-        "Maximum after inverting the distancemap : " + std::to_string(getMaximumOfFloatImage(invertedDistanceMap)));
+        "Maximum after inverting the distancemap : " + std::to_string(getMaximumOfFloatImage(invertedDistanceMap, threadCount)));
 }
 
 void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
@@ -672,6 +674,7 @@ void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
             using WatershedFilterType =
                 itk::MorphologicalWatershedFromMarkersImageFilter<itk::Image<float, 3>, itk::Image<unsigned int, 3>>;
             WatershedFilterType::Pointer watershedFilter = WatershedFilterType::New();
+            segment_puzzler::setItkWorkerThreadCount(*watershedFilter, options.threadCount);
             watershedFilter->SetMarkWatershedLine(options.showWatershedLines);
             watershedFilter->SetFullyConnected(options.fullyConnected);
             watershedFilter->SetInput1(invertedDistanceMap);
@@ -827,19 +830,20 @@ void connectedComponentCharToUInt(itk::Image<unsigned char, 3>::Pointer &inputIm
 void extractMinimaFromDistanceMap(itk::Image<float, 3>::Pointer &distanceMap,
                                   itk::Image<unsigned int, 3>::Pointer &seeds,
                                   double minimalHeight,
-                                  distance_map_benchmark::SeedExtractorKind seedExtractorKind) {
+                                  distance_map_benchmark::SeedExtractorKind seedExtractorKind, int threadCount) {
     emitWatershedLog("Extracting minima ...");
-    seeds = distance_map_benchmark::extractSeedsFromDistanceImage(distanceMap, seedExtractorKind, minimalHeight);
-    emitWatershedLog("Number of seeds: " + std::to_string(getMaximumOfUIntImage(seeds)));
+    seeds = distance_map_benchmark::extractSeedsFromDistanceImage(distanceMap, seedExtractorKind, minimalHeight, threadCount);
+    emitWatershedLog("Number of seeds: " + std::to_string(getMaximumOfUIntImage(seeds, threadCount)));
 }
 
 void filterSmallSegmentSeeds(itk::Image<unsigned int, 3>::Pointer &watershedIn,
                              itk::Image<unsigned int, 3>::Pointer &watershedOut,
-                             float volumeThreshold) {
+                             float volumeThreshold, int threadCount) {
     emitWatershedLog("Filtering");
     using SegmentType = itk::Image<unsigned int, 3>;
     using ShapeFilterType = itk::LabelImageToShapeLabelMapFilter<SegmentType>;
     ShapeFilterType::Pointer shapeFilter = ShapeFilterType::New();
+    segment_puzzler::setItkWorkerThreadCount(*shapeFilter, threadCount);
     shapeFilter->SetInput(watershedIn);
     shapeFilter->SetBackgroundValue(0);
     shapeFilter->Update();
@@ -860,6 +864,7 @@ void filterSmallSegmentSeeds(itk::Image<unsigned int, 3>::Pointer &watershedIn,
     emitWatershedLog("Filtered " + std::to_string(changeMap.size()) + " seeds!");
 
     ChangeLabelImageFilterType::Pointer changeLabelImageFilter = ChangeLabelImageFilterType::New();
+    segment_puzzler::setItkWorkerThreadCount(*changeLabelImageFilter, threadCount);
     changeLabelImageFilter->SetInput(watershedIn);
     changeLabelImageFilter->SetChangeMap(changeMap);
     changeLabelImageFilter->Update();

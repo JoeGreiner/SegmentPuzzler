@@ -1,3 +1,5 @@
+#include <itkMultiThreaderBase.h>
+#include "src/utils/WorkerThreads.h"
 #include <QApplication>
 #include <QSurfaceFormat>
 #include <QVTKOpenGLNativeWidget.h>
@@ -127,12 +129,12 @@ void configureVtkSmpBackend() {
     const QString initialBackend = QString::fromLatin1(vtkSMPTools::GetBackend());
 
     if (!backendChosenByUser && initialBackend == QStringLiteral("Sequential")) {
-        if (vtkSMPTools::SetBackend("STDThread")) {
-            vtkSMPTools::Initialize();
-        } else {
+        if (!vtkSMPTools::SetBackend("STDThread")) {
             SP_LOG_WARNING("app", QStringLiteral("VTK STDThread backend unavailable; continuing sequentially"));
         }
     }
+
+    vtkSMPTools::Initialize(segment_puzzler::workerThreadCount(0, segment_puzzler::ThreadBackend::VTK));
 
     SP_LOG_INFO("app",
                 QStringLiteral("VTK SMP backend=%1, estimatedThreads=%2")
@@ -208,10 +210,12 @@ int main(int argc, char *argv[]) {
 #if defined(_OPENMP) && _OPENMP >= 200805
     omp_set_max_active_levels(1);
 #endif
-    SP_LOG_INFO("app", QStringLiteral("OpenMP enabled, maxThreads=%1").arg(omp_get_max_threads()));
+    SP_LOG_INFO("app", QStringLiteral("OpenMP enabled, defaultThreads=%1").arg(segment_puzzler::workerThreadCount()));
 #else
     SP_LOG_INFO("app", QStringLiteral("OpenMP disabled"));
 #endif
+    itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(
+        segment_puzzler::workerThreadCount(0, segment_puzzler::ThreadBackend::ITK));
     configureVtkSmpBackend();
     qRegisterMetaType<QVector<int> >("QVector<int>");
     qRegisterMetaType<QItemSelection>("QItemSelection");

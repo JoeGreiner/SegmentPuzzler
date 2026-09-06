@@ -1,3 +1,4 @@
+#include "src/itkImageFilters/itkWorkerThreads.h"
 #include <itkImage.h>
 #include <itkImageFileReader.h>
 #include <itkImageIOBase.h>
@@ -28,7 +29,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -319,10 +319,7 @@ std::array<double, 3> parseSpacing(const std::string &value) {
 
 std::vector<int> parseThreadList(const std::string &value) {
     if (value == "auto") {
-        unsigned int hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
-#ifdef USE_OMP
-        hardwareThreads = std::max(hardwareThreads, static_cast<unsigned int>(omp_get_max_threads()));
-#endif
+        const auto hardwareThreads = static_cast<unsigned int>(segment_puzzler::workerThreadCount());
         std::vector<int> threadCounts;
         for (unsigned int threads = 1; threads < hardwareThreads; threads *= 2) {
             threadCounts.push_back(static_cast<int>(threads));
@@ -1096,7 +1093,6 @@ WatershedInputs buildWatershedInputs(const BenchmarkCase &benchmarkCase,
                 "case", benchmarkCase.name.c_str(),
                 "threads", threadCount,
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
-    itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
 
     WatershedInputs inputs;
     const double distanceStart = wallTimeSeconds();
@@ -1105,11 +1101,11 @@ WatershedInputs buildWatershedInputs(const BenchmarkCase &benchmarkCase,
     const double distanceEnd = wallTimeSeconds();
 
     const double seedsStart = wallTimeSeconds();
-    inputs.seeds = extractSeedsFromDistanceImage(inputs.distanceMap, extractorKind);
+    inputs.seeds = extractSeedsFromDistanceImage(inputs.distanceMap, extractorKind, 1.0, threadCount);
     const double seedsEnd = wallTimeSeconds();
 
     const double invertStart = wallTimeSeconds();
-    invertDistanceMap(inputs.distanceMap, inputs.invertedDistanceMap);
+    invertDistanceMap(inputs.distanceMap, inputs.invertedDistanceMap, threadCount);
     const double invertEnd = wallTimeSeconds();
 
     inputs.metrics.distanceMapMs = (distanceEnd - distanceStart) * 1000.0;
@@ -1122,13 +1118,13 @@ BackendRunResult runMaurerOnce(const BenchmarkCase &benchmarkCase, int threadCou
     TRACE_EVENT("distance_map", "run_maurer_distance_map",
                 "case", benchmarkCase.name.c_str(),
                 "threads", threadCount);
-    itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
 
     MemorySnapshot before = readProcessMemory();
     const double startTime = wallTimeSeconds();
 
     using MaurerFilterType = itk::SignedMaurerDistanceMapImageFilter<BinaryImageType, DistanceImageType>;
     auto distanceFilter = MaurerFilterType::New();
+    segment_puzzler::setItkWorkerThreadCount(*distanceFilter, threadCount);
     distanceFilter->SetInput(benchmarkCase.itkMask);
     distanceFilter->SetBackgroundValue(0);
     distanceFilter->SquaredDistanceOn();
@@ -1169,13 +1165,13 @@ BackendRunResult runMaurerSeedsOnce(const BenchmarkCase &benchmarkCase,
                 "case", benchmarkCase.name.c_str(),
                 "threads", threadCount,
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
-    itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
 
     MemorySnapshot before = readProcessMemory();
     const double startTime = wallTimeSeconds();
 
     using MaurerFilterType = itk::SignedMaurerDistanceMapImageFilter<BinaryImageType, DistanceImageType>;
     auto distanceFilter = MaurerFilterType::New();
+    segment_puzzler::setItkWorkerThreadCount(*distanceFilter, threadCount);
     distanceFilter->SetInput(benchmarkCase.itkMask);
     distanceFilter->SetBackgroundValue(0);
     distanceFilter->SquaredDistanceOff();
@@ -1188,7 +1184,7 @@ BackendRunResult runMaurerSeedsOnce(const BenchmarkCase &benchmarkCase,
     const double distanceEnd = wallTimeSeconds();
 
     const double seedsStart = wallTimeSeconds();
-    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind);
+    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind, 1.0, threadCount);
     const double seedsEnd = wallTimeSeconds();
 
     std::vector<DistanceVoxelType> distances;
@@ -1265,7 +1261,7 @@ BackendRunResult runFHSeedsOnce(const BenchmarkCase &benchmarkCase,
 
     const double seedsStart = wallTimeSeconds();
     auto distanceImage = buildItkDistanceImage(metricDistances, benchmarkCase.dims, benchmarkCase.spacing);
-    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind);
+    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind, 1.0, threadCount);
     const double seedsEnd = wallTimeSeconds();
     MemorySnapshot after = readProcessMemory();
 

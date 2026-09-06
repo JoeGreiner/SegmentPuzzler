@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "BlockwiseFastMarkerWatershed3D.h"
 
 #include <algorithm>
@@ -177,6 +178,7 @@ PassResult runPass(const std::vector<Block> &blocks,
                    LabelImage::Pointer priorLabels,
                    LabelImage::Pointer output,
                    const BlockwiseFastMarkerWatershedOptions &options) {
+    const int threadCount = workerThreadCount(options.threadCount);
     const auto passStarted = std::chrono::steady_clock::now();
     std::exception_ptr firstException;
     std::mutex exceptionMutex;
@@ -185,7 +187,7 @@ PassResult runPass(const std::vector<Block> &blocks,
     std::vector<int> blockThreadIds(blocks.size(), 0);
 
 #ifdef USE_OMP
-#pragma omp parallel for schedule(dynamic, 1) num_threads(options.threadCount) if(blocks.size() > 1)
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threadCount) if(blocks.size() > 1)
 #endif
     for (long long i = 0; i < static_cast<long long>(blocks.size()); ++i) {
         const auto blockStarted = std::chrono::steady_clock::now();
@@ -268,8 +270,8 @@ FastMarkerWatershedLabelImage::Pointer runBlockwiseFastMarkerWatershed3D(
     if (options.watershed.domainMask.IsNotNull()) {
         throw std::invalid_argument("Blockwise fast marker watershed does not support domain masks.");
     }
-    if (options.threadCount <= 0 || options.blockEdge < 0 || options.halo < 0) {
-        throw std::invalid_argument("Thread count must be positive; block edge and halo must be non-negative.");
+    if (options.threadCount < 0 || options.blockEdge < 0 || options.halo < 0) {
+        throw std::invalid_argument("Thread count must be non-negative; block edge and halo must be non-negative.");
     }
     if (costImage->GetLargestPossibleRegion() != markers->GetLargestPossibleRegion()) {
         throw std::invalid_argument("Cost and marker image regions must match.");
@@ -280,7 +282,7 @@ FastMarkerWatershedLabelImage::Pointer runBlockwiseFastMarkerWatershed3D(
     const auto imageRegion = costImage->GetLargestPossibleRegion();
     const int blockEdge = options.blockEdge > 0
         ? options.blockEdge
-        : automaticWatershedBlockEdge(imageRegion.GetSize(), options.threadCount);
+        : automaticWatershedBlockEdge(imageRegion.GetSize(), workerThreadCount(options.threadCount));
     localMetrics.blockEdge = blockEdge;
 
     const auto redBlocks = makeBlocks(imageRegion, blockEdge, options.halo, 0);

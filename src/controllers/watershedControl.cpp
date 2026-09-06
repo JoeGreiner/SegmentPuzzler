@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "watershedControl.h"
 #include "src/segment_handling/graphBase.h"
 #include "src/viewers/fileIO.h"
@@ -23,8 +24,6 @@
 
 #include <QTreeWidget>
 #include <src/itkImageFilters/itkWatershedHelpers.h>
-#include <itkMultiThreaderBase.h>
-#include <QThread>
 #include <src/viewers/itkSignalThresholdPreview.h>
 #include <QtWidgets/QMessageBox>
 #include <QCheckBox>
@@ -56,19 +55,6 @@ namespace {
 constexpr size_t kInvalidSignalIndex = static_cast<size_t>(-1);
 constexpr int kDefaultWatershedBlockEdge = 256;
 constexpr int kDefaultWatershedBlockHalo = 16;
-
-int defaultWatershedThreadCount() {
-    const int idealThreadCount = QThread::idealThreadCount();
-    return idealThreadCount > 0 ? idealThreadCount : 1;
-}
-
-int clampWatershedThreadCount(int requestedThreadCount) {
-    const int idealThreadCount = QThread::idealThreadCount();
-    if (idealThreadCount > 0) {
-        return std::clamp(requestedThreadCount, 1, idealThreadCount);
-    }
-    return std::max(1, requestedThreadCount);
-}
 
 QLabel *createHelpBadgeLabel(const QString &tooltipText, QWidget *parent) {
     if (tooltipText.isEmpty()) {
@@ -115,12 +101,7 @@ dataType::SegmentsImageType::Pointer projectClusterLabelsOntoReference(
         throw std::invalid_argument("Agglomeration cluster projection requires matching label shapes.");
     }
 
-    int executionThreadCount = 1;
-#ifdef USE_OMP
-    executionThreadCount = std::min(std::max(1, threadCount), std::max(1, omp_get_max_threads()));
-#else
-    (void)threadCount;
-#endif
+    const int executionThreadCount = segment_puzzler::workerThreadCount(threadCount);
     QElapsedTimer projectionTimer;
     projectionTimer.start();
 
@@ -518,7 +499,8 @@ WatershedControl::~WatershedControl() {
 }
 
 void WatershedControl::setThreadCount(int n) {
-    workerThreadCount = clampWatershedThreadCount(n);
+    segment_puzzler::workerThreadCount(n); // Validate; keep zero as a backend-specific automatic request.
+    workerThreadCount = n;
 }
 
 void WatershedControl::setWatershedAlgorithm(WatershedAlgorithm algorithm) {
@@ -1197,7 +1179,6 @@ void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
     taskRunner->runWithLabel(
         QStringLiteral("Calculating distance map..."),
         [thresholdInput, distanceMapAlgorithm, threadCount = workerThreadCount]() {
-            itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto thresholdInputCopy = thresholdInput;
             itk::Image<float, 3>::Pointer distanceMap;
             const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -1223,11 +1204,10 @@ void WatershedControl::extractSeedsAsync(std::function<void()> then) {
     taskRunner->runWithLabel(
         QStringLiteral("Extracting seeds..."),
         [distanceMapInput, seedAlgorithm, threadCount = workerThreadCount]() {
-            itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto distanceMapInputCopy = distanceMapInput;
             itk::Image<unsigned int, 3>::Pointer seeds;
             const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
-            extractMinimaFromDistanceMap(distanceMapInputCopy, seeds, 1, seedAlgorithm);
+            extractMinimaFromDistanceMap(distanceMapInputCopy, seeds, 1, seedAlgorithm, threadCount);
             SP_LOG_INFO("watershed",
                         QStringLiteral("Seed extraction finished in %1 ms")
                             .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
@@ -1278,7 +1258,6 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
         [filterEnabled, minSegmentSize, watershedAlgorithm, watershedCompactness,
          distanceMapAlgorithm, distanceMapInput, seedsInput, thresholdInput,
          threadCount = workerThreadCount, this]() {
-            itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(threadCount);
             auto distanceMapInputCopy = distanceMapInput;
             WatershedRunOptions watershedOptions;
             watershedOptions.algorithm = watershedAlgorithm;
@@ -1288,7 +1267,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
             watershedOptions.blockHalo = kDefaultWatershedBlockHalo;
             itk::Image<float, 3>::Pointer invertedDistanceMap = itk::Image<float, 3>::New();
             qint64 stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
-            invertDistanceMap(distanceMapInputCopy, invertedDistanceMap);
+            invertDistanceMap(distanceMapInputCopy, invertedDistanceMap, threadCount);
             SP_LOG_DEBUG("watershed",
                          QStringLiteral("Distance map inversion finished in %1 ms")
                              .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
@@ -1303,7 +1282,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
 
             if (filterEnabled) {
                 stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
-                filterSmallSegmentSeeds(watershedFragments, seedsForWatershed, minSegmentSize);
+                filterSmallSegmentSeeds(watershedFragments, seedsForWatershed, minSegmentSize, threadCount);
                 SP_LOG_DEBUG("watershed",
                              QStringLiteral("Small seed filtering finished in %1 ms")
                                  .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
@@ -1659,7 +1638,6 @@ WatershedControl::WatershedControl(std::shared_ptr<GraphBase> graphBaseIn,
     agglomertionSizeBiasProtectionSpinBox = nullptr;
     inspectSegmentsButton = nullptr;
     finalOutputInputComboBox = nullptr;
-    workerThreadCount = defaultWatershedThreadCount();
     setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
     setWatershedLogSink([](const std::string &message) {
         SP_LOG_INFO("watershed", QString::fromStdString(message));

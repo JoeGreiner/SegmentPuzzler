@@ -1,3 +1,4 @@
+#include "src/itkImageFilters/itkWorkerThreads.h"
 #include "SegmentTableDialog.h"
 
 #include <algorithm>
@@ -317,13 +318,12 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
     filter->SetComputePerimeter(
         flags.perimeter || flags.roundness || flags.surfaceToVolumeRatio);
     filter->SetComputeOrientedBoundingBox(flags.orientedBBox);
-    const itk::ThreadIdType nThreads = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
-    filter->SetNumberOfWorkUnits(nThreads);
+    segment_puzzler::setItkWorkerThreadCount(*filter);
     SP_LOG_INFO(
         "segmentation",
         QStringLiteral("Running %1D LabelImageToShapeLabelMapFilter with %2 ITK work units")
             .arg(ImageType::ImageDimension)
-            .arg(nThreads));
+            .arg(filter->GetNumberOfWorkUnits()));
     filter->Update();
 
     auto *labelMap = filter->GetOutput();

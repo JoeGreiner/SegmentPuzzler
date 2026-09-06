@@ -469,7 +469,7 @@ private:
     void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
     void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
     void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage,
-                                     int graphBuildThreadCount = 1);
+                                     int graphBuildThreadCount = 0);
 
     template<typename T>
     bool insertTypedImage(

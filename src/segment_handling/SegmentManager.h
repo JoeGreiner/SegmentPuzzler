@@ -81,7 +81,7 @@ public:
     void registerTwoSidedInitialEdge(std::unique_ptr<TwoSidedInitialEdge> edgeToRegister);
 
 //    void removeTwoSidedInitialEdge();
-    void buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threadCount = 1, bool veryVerbose = false);
+    void buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threadCount = 0, bool veryVerbose = false);
 
     void buildWorkingGraphFromInitialGraph();
 

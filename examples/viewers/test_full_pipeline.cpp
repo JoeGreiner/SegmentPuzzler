@@ -434,7 +434,7 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationName("SegmentPuzzler");
     QApplication::setOrganizationName("JoeGreiner");
 
-    int threadCount = QThread::idealThreadCount();
+    int threadCount = 0;
     QString boundaryPathOverride;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];

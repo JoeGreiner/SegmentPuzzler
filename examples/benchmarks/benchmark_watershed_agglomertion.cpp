@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "examples/benchmarks/BenchmarkPerfettoTracing.h"
 #include "src/utils/DistanceMapCliIO.h"
 #include "src/utils/WatershedRagAgglomeration.h"
@@ -109,7 +110,7 @@ std::vector<int> parseThreadList(const std::string &value) {
         if (token.empty()) {
             continue;
         }
-        threadCounts.push_back(std::max(1, std::stoi(token)));
+        threadCounts.push_back(segment_puzzler::workerThreadCount(std::stoi(token)));
     }
     if (threadCounts.empty()) {
         throw std::runtime_error("Empty thread list.");

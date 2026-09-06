@@ -9,7 +9,7 @@
 namespace segment_puzzler {
 
 struct BlockwiseFastMarkerWatershedOptions {
-    int threadCount = 1;
+    int threadCount = 0;
     int blockEdge = 0;
     int halo = 16;
     FastMarkerWatershedOptions watershed;

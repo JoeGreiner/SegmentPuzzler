@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "src/utils/RegionMerger.h"
 
 #include <algorithm>
@@ -109,7 +110,7 @@ double calculateLinkageScore(const BoundaryScore &boundaryScore, RagLinkage link
 
 RegionMerger::RegionMerger(RegionAdjacencyGraph &graph, const WatershedRagAgglomerationOptions &options,
                            WatershedRagAgglomerationStats &stats, int threadCount)
-    : graph_(graph), options_(options), stats_(stats), threadCount_(std::max(1, threadCount)) {
+    : graph_(graph), options_(options), stats_(stats), threadCount_(workerThreadCount(threadCount)) {
 }
 
 bool RegionMerger::HigherMergeScoreFirst::operator()(const QueuedMergeCandidate &left,

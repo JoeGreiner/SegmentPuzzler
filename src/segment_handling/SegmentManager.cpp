@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 
 
 #include "SegmentManager.h"
@@ -574,7 +575,7 @@ void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(int threadCount) {
     }
 
     const std::vector<SegmentIdType> ignoredSegmentLabels = *pIgnoredSegmentLabels;
-    const int requestedThreadCount = std::max(1, threadCount);
+    const int requestedThreadCount = segment_puzzler::workerThreadCount(threadCount);
 #ifdef USE_OMP
     const bool runParallel = requestedThreadCount > 1 && initialNodes.size() > 1;
 #else
@@ -722,7 +723,7 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threa
         });
     const double sortEdgePairsMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
-    const int requestedThreadCount = std::max(1, threadCount);
+    const int requestedThreadCount = segment_puzzler::workerThreadCount(threadCount);
     const bool edgeFeaturesEnabled = !FeatureList::edgeFeaturesList.empty();
     bool buildInParallel = false;
 #ifdef USE_OMP

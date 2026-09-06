@@ -1740,7 +1740,7 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
 
     initializeEdgeVolumeAndEdgeStatus();
     constructInitialNodes(graphBase->pWorkingSegmentsImage);
-    segmentManager.computeOneSidedEdgesOnAllInitialNodes(1);
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes(0);
     segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
 
     std::unordered_set<SegmentIdType> assignedInitialLabels;

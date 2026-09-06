@@ -220,7 +220,7 @@ public:
 
     // construct a graph from
     void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
-                             int graphBuildThreadCount = 1);
+                             int graphBuildThreadCount = 0);
     void updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage);
 
     void initializeEdgeVolumeAndEdgeStatus();

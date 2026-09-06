@@ -151,7 +151,7 @@ Options parseArguments(int argc, char **argv) {
         } else if (argument == "--size-bias-ignore-mask") {
             options.sizeBiasRespectMask = false;
         } else if (argument == "--threads") {
-            options.threadCount = std::max(0, std::stoi(requireValue("--threads")));
+            options.threadCount = std::stoi(requireValue("--threads"));
         } else {
             throw std::runtime_error("Unknown argument: " + argument);
         }

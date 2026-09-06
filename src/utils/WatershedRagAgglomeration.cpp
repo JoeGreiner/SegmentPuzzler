@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "src/utils/WatershedRagAgglomeration.h"
 #include "src/utils/RegionAdjacencyGraph.h"
 #include "src/utils/RegionMerger.h"
@@ -76,18 +77,7 @@ void logStepTime(double startTimeSeconds, const char *description) {
     logElapsedMilliseconds(elapsedMilliseconds(startTimeSeconds), description);
 }
 
-int effectiveThreadCount(const WatershedRagAgglomerationOptions &options) {
-#ifdef USE_OMP
-    if (options.threadCount > 0) {
-        omp_set_num_threads(options.threadCount);
-        return options.threadCount;
-    }
-    return std::max(1, omp_get_max_threads());
-#else
-    (void)options;
-    return 1;
-#endif
-}
+
 
 BoundaryNormalizationMode resolveBoundaryNormalizationMode(double minValue, double maxValue,
                                                            BoundaryNormalizationMode requestedMode) {
@@ -198,7 +188,7 @@ template <typename IsActiveVoxel>
 void computeBoundaryRange(AgglomerationContext<IsActiveVoxel> &ctx) {
     double boundaryMin = std::numeric_limits<double>::infinity();
     double boundaryMax = -std::numeric_limits<double>::infinity();
-    const int threadCount = effectiveThreadCount(ctx.options);
+    const int threadCount = workerThreadCount(ctx.options.threadCount);
 #ifdef USE_OMP
     std::vector<double> threadMinimums(static_cast<size_t>(threadCount), boundaryMin);
     std::vector<double> threadMaximums(static_cast<size_t>(threadCount), boundaryMax);
@@ -241,7 +231,7 @@ void buildRegionIndex(AgglomerationContext<IsActiveVoxel> &ctx) {
 
     SegmentIdType maxLabel = 0;
     std::size_t activeNonZeroCount = 0;
-    const int threadCount = effectiveThreadCount(ctx.options);
+    const int threadCount = workerThreadCount(ctx.options.threadCount);
 #ifdef USE_OMP
 #pragma omp parallel for num_threads(threadCount) reduction(max:maxLabel) reduction(+:activeNonZeroCount)
 #endif
@@ -310,7 +300,7 @@ void buildRegionIndex(AgglomerationContext<IsActiveVoxel> &ctx) {
 template <typename IsActiveVoxel>
 void buildInitialRegionAdjacencyGraph(AgglomerationContext<IsActiveVoxel> &ctx) {
     double t = currentTimeSeconds();
-    const int threadCount = effectiveThreadCount(ctx.options);
+    const int threadCount = workerThreadCount(ctx.options.threadCount);
     const double spacingX = ctx.labels->GetSpacing()[0];
     const double spacingY = ctx.labels->GetSpacing()[1];
     const double spacingZ = ctx.labels->GetSpacing()[2];
@@ -417,7 +407,7 @@ void runRegionMerging(AgglomerationContext<IsActiveVoxel> &ctx,
 #ifdef USE_OMP
         ctx.options.sizeBiasStrategy == SizeBiasStrategy::Off &&
         !previewMode &&
-        effectiveThreadCount(ctx.options) > 1 &&
+        workerThreadCount(ctx.options.threadCount) > 1 &&
         ctx.stats.ragEdgeCount >= ctx.options.parallelMergeEdgeThreshold &&
         ctx.options.executionPolicy != AgglomerationExecutionPolicy::Serial;
 #else
@@ -454,7 +444,7 @@ void writeAgglomeratedLabels(AgglomerationContext<IsActiveVoxel> &ctx,
         outputLabelByRegionId[static_cast<std::size_t>(regionId)] = nextLabel++;
     }
 
-    const int threadCount = effectiveThreadCount(ctx.options);
+    const int threadCount = workerThreadCount(ctx.options.threadCount);
     const rag::RegionAdjacencyGraph &readOnlyGraph = ctx.graph;
 #ifdef USE_OMP
 #pragma omp parallel for num_threads(threadCount)
@@ -518,7 +508,7 @@ WatershedRagAgglomerationResult runWatershedRagAgglomerationImpl(
     emitAgglomerationLog("WatershedRagAgglomeration build rag");
     buildInitialRegionAdjacencyGraph(ctx);
 
-    const int threadCount = effectiveThreadCount(ctx.options);
+    const int threadCount = workerThreadCount(ctx.options.threadCount);
     rag::RegionMerger regionMerger(ctx.graph, ctx.options, ctx.stats, threadCount);
     ctx.stats.initialSmallClusterCount = regionMerger.countSmallRegions();
 

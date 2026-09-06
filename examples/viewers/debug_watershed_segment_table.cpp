@@ -277,7 +277,7 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationName("SegmentPuzzler");
     QApplication::setOrganizationName("JoeGreiner");
 
-    int threadCount = QThread::idealThreadCount();
+    int threadCount = 0;
     bool useFastMarker = false;
     int timeoutMs = 300000;
     QString boundaryPathOverride;

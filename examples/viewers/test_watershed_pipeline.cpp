@@ -229,8 +229,8 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationName("SegmentPuzzler");
     QApplication::setOrganizationName("JoeGreiner");
 
-    // Parse --threads N (default: all logical cores) and --fast-marker
-    int threadCount = QThread::idealThreadCount();
+    // Parse --threads N (default: automatic physical-core selection) and --fast-marker
+    int threadCount = 0;
     bool useFastMarker = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--threads" && i + 1 < argc) {

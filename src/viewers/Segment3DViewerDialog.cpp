@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "Segment3DViewerDialog.h"
 #include "src/viewers/itkSignalBase.h"
 
@@ -704,7 +705,7 @@ AllLabelsScanResult scanAllLabelsAndBounds(
 #ifdef USE_OMP
     const auto totalVoxelCount = static_cast<std::size_t>(dimX) * dimY * dimZ;
     const int threadCount = totalVoxelCount >= static_cast<std::size_t>(kParallelScanVoxelThreshold)
-                            ? omp_get_max_threads()
+                            ? segment_puzzler::workerThreadCount()
                             : 1;
 #else
     const int threadCount = 1;
@@ -816,7 +817,8 @@ BoundsScanResult scanBoundsForRequestedLabels(
 
 #ifdef USE_OMP
     if (totalVoxelCount >= kParallelScanVoxelThreshold) {
-#pragma omp parallel
+        const int threadCount = segment_puzzler::workerThreadCount();
+#pragma omp parallel num_threads(threadCount)
         {
             BoundsScanResult local{dimX, -1, dimY, -1, dimZ, -1};
 #pragma omp for nowait
@@ -942,10 +944,10 @@ std::vector<dataType::SegmentIdType> collectLabelsInExtent(
 
 #ifdef USE_OMP
     if (totalVoxelCount >= kParallelScanVoxelThreshold) {
-        const int maxThreads = omp_get_max_threads();
+        const int maxThreads = segment_puzzler::workerThreadCount();
         std::vector<std::unordered_set<dataType::SegmentIdType>> localSets(static_cast<std::size_t>(maxThreads));
 
-#pragma omp parallel
+#pragma omp parallel num_threads(maxThreads)
         {
             auto &localSet = localSets[static_cast<std::size_t>(omp_get_thread_num())];
 #pragma omp for nowait

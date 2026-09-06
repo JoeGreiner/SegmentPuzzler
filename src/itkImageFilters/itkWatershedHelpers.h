@@ -29,7 +29,7 @@ struct WatershedRunOptions {
     bool fullyConnected = false;
     // Fast Marker and Blockwise Fast Marker only; zero disables regularization.
     double compactness = 0.0;
-    int threadCount = 1;
+    int threadCount = 0;
     int blockEdge = 0;
     int blockHalo = 16;
 };
@@ -50,7 +50,7 @@ void binaryThresholdImageFilterFloat(itk::Image<unsigned short, 3>::Pointer &inp
                                      itk::Image<unsigned char, 3>::Pointer &outputImage,
                                      float thresholdValueMin);
 
-unsigned int getMaximumOfUIntImage(itk::Image<unsigned int, 3>::Pointer &UIntImage);
+unsigned int getMaximumOfUIntImage(itk::Image<unsigned int, 3>::Pointer &UIntImage, int threadCount = 0);
 
 void setBoundariesToValue(itk::Image<unsigned char, 3>::Pointer &CharImage, unsigned char value);
 
@@ -58,12 +58,12 @@ void generateDistanceMap(itk::Image<unsigned char, 3>::Pointer &edgeImage,
                          itk::Image<float, 3>::Pointer &distanceMap,
                          double varianceGaussianFilter,
                          DistanceMapAlgorithm algorithm = DistanceMapAlgorithm::Maurer,
-                         int threadCount = 1);
+                         int threadCount = 0);
 
-float getMaximumOfFloatImage(itk::Image<float, 3>::Pointer &floatImage);
+float getMaximumOfFloatImage(itk::Image<float, 3>::Pointer &floatImage, int threadCount = 0);
 
 void invertDistanceMap(itk::Image<float, 3>::Pointer &distanceMap,
-                       itk::Image<float, 3>::Pointer &invertedDistanceMap);
+                       itk::Image<float, 3>::Pointer &invertedDistanceMap, int threadCount = 0);
 
 void runWatershed(itk::Image<float, 3>::Pointer &invertedDistanceMap,
                   itk::Image<unsigned int, 3>::Pointer &seeds,
@@ -80,7 +80,7 @@ BoundaryConsistentPartitionResult deriveBoundaryConsistentPartition(
     const WatershedRunOptions &repairOptions = WatershedRunOptions(),
     bool fillBoundaries = true,
     DistanceMapAlgorithm distanceMapAlgorithm = DistanceMapAlgorithm::Maurer,
-    int threadCount = 1);
+    int threadCount = 0);
 
 void binaryThresholdImageFilterFloat(itk::Image<float, 3>::Pointer &inputImage,
                                      itk::Image<float, 3>::Pointer &outputImage,
@@ -96,10 +96,11 @@ void extractMinimaFromDistanceMap(itk::Image<float, 3>::Pointer &distanceMap,
                                   itk::Image<unsigned int, 3>::Pointer &seeds,
                                   double minimalHeight = 1,
                                   distance_map_benchmark::SeedExtractorKind seedExtractorKind =
-                                      distance_map_benchmark::SeedExtractorKind::HConvex);
+                                      distance_map_benchmark::SeedExtractorKind::HConvex,
+                                  int threadCount = 0);
 
 void filterSmallSegmentSeeds(itk::Image<unsigned int, 3>::Pointer &watershedIn,
                              itk::Image<unsigned int, 3>::Pointer &watershedOut,
-                             float volumeThreshold = 2000);
+                             float volumeThreshold = 2000, int threadCount = 0);
 
 #endif //SEGMENTCOUPLER_ITKWATERSHEDHELPERS_H

@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "DistanceMapFH3D.h"
 
 #include <algorithm>
@@ -130,11 +131,7 @@ FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
         throw std::runtime_error("FH EDT requires positive dimensions.");
     }
 
-#ifdef USE_OMP
-    omp_set_num_threads(threadCount);
-#else
-    (void)threadCount;
-#endif
+    threadCount = segment_puzzler::workerThreadCount(threadCount);
 
     const std::size_t voxelCount = mask.size();
     std::vector<DistanceVoxelType> current(voxelCount, kInfinityDistance);
@@ -155,7 +152,7 @@ FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
     const double xStart = wallTimeSeconds();
 #ifdef USE_OMP
     const long long xPassLineCount = static_cast<long long>(dims[2]) * dims[1];
-#pragma omp parallel
+#pragma omp parallel num_threads(threadCount)
     {
         std::vector<int> v(static_cast<std::size_t>(dims[0]));
         std::vector<double> z(static_cast<std::size_t>(dims[0]) + 1);
@@ -185,7 +182,7 @@ FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
     const double yStart = wallTimeSeconds();
 #ifdef USE_OMP
     const long long yPassLineCount = static_cast<long long>(dims[2]) * dims[0];
-#pragma omp parallel
+#pragma omp parallel num_threads(threadCount)
     {
         std::vector<DistanceVoxelType> lineIn(static_cast<std::size_t>(dims[1]));
         std::vector<DistanceVoxelType> lineOut(static_cast<std::size_t>(dims[1]));
@@ -229,7 +226,7 @@ FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
     const double zStart = wallTimeSeconds();
 #ifdef USE_OMP
     const long long zPassLineCount = static_cast<long long>(dims[1]) * dims[0];
-#pragma omp parallel
+#pragma omp parallel num_threads(threadCount)
     {
         std::vector<DistanceVoxelType> lineIn(static_cast<std::size_t>(dims[2]));
         std::vector<DistanceVoxelType> lineOut(static_cast<std::size_t>(dims[2]));
