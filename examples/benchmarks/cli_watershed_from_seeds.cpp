@@ -14,15 +14,12 @@ namespace {
 constexpr int kWatershedBlockEdge = 256;
 constexpr int kWatershedBlockHalo = 16;
 
-
-
 struct Options {
     std::string distanceMapPath;
     std::string seedsPath;
     std::string outputPath;
     std::string thresholdedBoundariesPath;
     int filterSmallSeeds = 0;
-    int threadCount = 0;
     bool showWatershedLines = false;
     bool fullyConnected = false;
     bool fillBoundaries = false;
@@ -37,7 +34,6 @@ void printUsage() {
               << "  --output PATH                    Required output labels\n"
               << "  --algorithm NAME                 itk, fast-marker, or blockwise-fast-marker\n"
               << "                                   (default: blockwise-fast-marker)\n"
-              << "  --threads N                      Worker threads (default: physical cores)\n"
               << "  --filter-small-seeds N           Remove fragments smaller than N voxels\n"
               << "  --show-watershed-lines {0,1}     Default: 0\n"
               << "  --fully-connected {0,1}          Default: 0\n"
@@ -68,8 +64,6 @@ Options parseArguments(int argc, char **argv) {
             options.thresholdedBoundariesPath = requireValue("--thresholded-boundaries");
         } else if (argument == "--filter-small-seeds") {
             options.filterSmallSeeds = std::stoi(requireValue("--filter-small-seeds"));
-        } else if (argument == "--threads") {
-            options.threadCount = std::stoi(requireValue("--threads"));
         } else if (argument == "--show-watershed-lines") {
             options.showWatershedLines = std::stoi(requireValue("--show-watershed-lines")) != 0;
         } else if (argument == "--fully-connected") {
@@ -97,9 +91,7 @@ Options parseArguments(int argc, char **argv) {
         throw std::runtime_error(
             "--distance-map, --seeds, --thresholded-boundaries, and --output are required.");
     }
-    if (options.threadCount < 0) {
-        throw std::runtime_error("--threads must be non-negative (zero selects automatically).");
-    }
+
     if (options.filterSmallSeeds < 0) {
         throw std::runtime_error("--filter-small-seeds must not be negative.");
     }
@@ -112,19 +104,18 @@ int main(int argc, char **argv) {
     try {
         const Options options = parseArguments(argc, argv);
         itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(
-            segment_puzzler::workerThreadCount(options.threadCount, segment_puzzler::ThreadBackend::ITK));
+            segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK));
         auto distanceMap = distance_map_benchmark::loadScalarImageAsFloat(options.distanceMapPath);
         auto seeds = distance_map_benchmark::loadSeedImage(options.seedsPath);
         distance_map_benchmark::printImageSummary<distance_map_benchmark::DistanceImageType>("distance_map", distanceMap);
         distance_map_benchmark::printImageSummary<distance_map_benchmark::SeedImageType>("seeds", seeds);
 
         distance_map_benchmark::DistanceImageType::Pointer invertedDistanceMap;
-        invertDistanceMap(distanceMap, invertedDistanceMap, options.threadCount);
+        invertDistanceMap(distanceMap, invertedDistanceMap);
         WatershedRunOptions watershedOptions;
         watershedOptions.algorithm = options.algorithm;
         watershedOptions.showWatershedLines = options.showWatershedLines;
         watershedOptions.fullyConnected = options.fullyConnected;
-        watershedOptions.threadCount = options.threadCount;
         watershedOptions.blockEdge = kWatershedBlockEdge;
         watershedOptions.blockHalo = kWatershedBlockHalo;
 
@@ -133,7 +124,7 @@ int main(int argc, char **argv) {
 
         if (options.filterSmallSeeds > 0) {
             distance_map_benchmark::SeedImageType::Pointer filteredSeeds;
-            filterSmallSegmentSeeds(watershedImage, filteredSeeds, static_cast<float>(options.filterSmallSeeds), options.threadCount);
+            filterSmallSegmentSeeds(watershedImage, filteredSeeds, static_cast<float>(options.filterSmallSeeds));
             seeds = filteredSeeds;
             runWatershed(invertedDistanceMap, seeds, watershedImage, watershedOptions);
         }
@@ -147,8 +138,7 @@ int main(int argc, char **argv) {
             thresholdedBoundaries,
             repairOptions,
             options.fillBoundaries,
-            DistanceMapAlgorithm::Maurer,
-            options.threadCount);
+            DistanceMapAlgorithm::Maurer);
         watershedImage = options.fillBoundaries ? partition.boundaryFilledLabels : partition.boundaryMaskedLabels;
 
         distance_map_benchmark::printImageSummary<distance_map_benchmark::SeedImageType>("watershed", watershedImage);

@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+#ifdef USE_OMP
+#include <omp.h>
+#endif
+
 #include "src/segment_handling/Graph.h"
 #include "src/segment_handling/feature.h"
 #include "src/segment_handling/graphBase.h"
@@ -96,13 +100,13 @@ void appendTwoSidedInitialEdge(std::ostringstream &out, const TwoSidedInitialEdg
     }
 }
 
-std::string graphFingerprint(int threadCount) {
+std::string graphFingerprint() {
     auto graphBase = std::make_shared<GraphBase>();
     graphBase->pWorkingSegmentsImage = makeTestImage();
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, threadCount);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
 
     std::ostringstream out;
     std::vector<SegmentIdType> nodeLabels;
@@ -159,18 +163,11 @@ std::string graphFingerprint(int threadCount) {
     return out.str();
 }
 
-// This test checks result equivalence and repeatability. Actual OpenMP thread use is
-// reported by the production scan log because the runtime may legally reduce a team.
-int testParallelTwoSidedInitialEdgeBuildMatchesSerial() {
-    const std::string serial = graphFingerprint(1);
-#ifdef USE_OMP
-    constexpr int parallelThreadCount = 4;
-#else
-    constexpr int parallelThreadCount = 1;
-#endif
+int testRepeatableInitialEdgeBuild() {
+    const std::string reference = graphFingerprint();
     for (int repetition = 0; repetition < 5; ++repetition) {
-        if (graphFingerprint(parallelThreadCount) != serial) {
-            return failTest("Parallel graph construction differs from the serial result.");
+        if (graphFingerprint() != reference) {
+            return failTest("Repeated graph construction differs from the first result.");
         }
     }
     return 0;
@@ -182,7 +179,7 @@ int testTwoSidedInitialEdgeReferencesBothOneSidedInitialEdges() {
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
 
     std::size_t oneSidedEdgeReferenceCount = 0;
     for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
@@ -208,7 +205,7 @@ int testTwoSidedInitialEdgePreservesVoxelOrderAndCount() {
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
 
     for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
         const VoxelLists voxelLists = edge->getVoxelLists();
@@ -232,7 +229,7 @@ int testTwoSidedInitialEdgeFeaturesUseBothOneSidedInitialEdges() {
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
 
     bool featuresAreValid = true;
     for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
@@ -255,7 +252,7 @@ int testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges() {
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
 
     if (graph->initialLabelPairToTwoSidedInitialEdge.empty()) {
         return failTest("The rebuild fixture contains no two-sided initial edge.");
@@ -265,7 +262,7 @@ int testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges() {
     const auto previousSmallerLabelEdge = previousEdge->getSmallerLabelOneSidedInitialEdge();
     const auto previousLargerLabelEdge = previousEdge->getLargerLabelOneSidedInitialEdge();
 
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
     const auto &rebuiltEdge = graph->initialLabelPairToTwoSidedInitialEdge.at(labelPair);
     const auto &currentSmallerLabelEdge =
         graph->initialNodes.at(labelPair.first)->neighborLabelToOneSidedInitialEdge.at(labelPair.second);
@@ -280,13 +277,13 @@ int testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges() {
     return 0;
 }
 
-int testFeatureEnabledBuildMatchesSerial() {
+int testRepeatableFeatureEnabledBuild() {
     FeatureList::edgeFeaturesList.emplace_back(std::make_unique<NumberOfVoxels>());
-    const std::string serial = graphFingerprint(1);
-    const std::string requestedParallel = graphFingerprint(4);
+    const std::string reference = graphFingerprint();
+    const std::string repeated = graphFingerprint();
     FeatureList::edgeFeaturesList.clear();
-    if (requestedParallel != serial) {
-        return failTest("Edge-feature fallback differs from the serial result.");
+    if (repeated != reference) {
+        return failTest("Repeated edge-feature fallback differs from the first result.");
     }
     return 0;
 }
@@ -310,7 +307,15 @@ int testIgnoredLabelsAreNotMaterialized() {
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage, 1);
+#ifdef USE_OMP
+    const int defaultThreadCount = omp_get_max_threads();
+#endif
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+#ifdef USE_OMP
+    if (omp_get_max_threads() != defaultThreadCount) {
+        return failTest("Graph construction changed the caller's OpenMP default.");
+    }
+#endif
 
     if (graph->initialNodes.count(0) != 0 || graph->initialNodes.count(additionallyIgnoredLabel) != 0) {
         return failTest("Ignored labels were materialized as initial nodes.");
@@ -357,13 +362,13 @@ int main(int argc, char **argv) {
     if (int result = testTwoSidedInitialEdgeFeaturesUseBothOneSidedInitialEdges()) {
         return result;
     }
-    if (int result = testParallelTwoSidedInitialEdgeBuildMatchesSerial()) {
+    if (int result = testRepeatableInitialEdgeBuild()) {
         return result;
     }
     if (int result = testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges()) {
         return result;
     }
-    if (int result = testFeatureEnabledBuildMatchesSerial()) {
+    if (int result = testRepeatableFeatureEnabledBuild()) {
         return result;
     }
     if (int result = testEmptyNodeProducesNoEdges()) {
@@ -373,6 +378,13 @@ int main(int argc, char **argv) {
         return result;
     }
 
-    std::cout << "Initial-edge result-equivalence tests passed.\n";
+    if (argc == 2 && std::string(argv[1]) == "--fingerprint") {
+        std::cout << graphFingerprint();
+        FeatureList::edgeFeaturesList.emplace_back(std::make_unique<NumberOfVoxels>());
+        std::cout << graphFingerprint();
+        FeatureList::edgeFeaturesList.clear();
+    } else {
+        std::cout << "Initial-edge result-equivalence tests passed.\n";
+    }
     return 0;
 }

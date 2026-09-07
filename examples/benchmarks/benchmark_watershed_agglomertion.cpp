@@ -48,7 +48,6 @@ struct Options {
     std::array<int, 3> size{64, 64, 64};
     int repetitions = 3;
     int warmup = 1;
-    std::vector<int> threadCounts{1};
     double profileMinSeconds = 0.0;
     std::optional<std::string> perfettoOutputPath;
     std::size_t perfettoBufferKb = 32768;
@@ -102,22 +101,6 @@ std::array<int, 3> parseDims(const std::string &value) {
     return dims;
 }
 
-std::vector<int> parseThreadList(const std::string &value) {
-    std::vector<int> threadCounts;
-    std::stringstream stream(value);
-    std::string token;
-    while (std::getline(stream, token, ',')) {
-        if (token.empty()) {
-            continue;
-        }
-        threadCounts.push_back(segment_puzzler::workerThreadCount(std::stoi(token)));
-    }
-    if (threadCounts.empty()) {
-        throw std::runtime_error("Empty thread list.");
-    }
-    return threadCounts;
-}
-
 void printUsage() {
     std::cout << "benchmark_watershed_agglomertion\n"
               << "  --labels PATH\n"
@@ -127,7 +110,6 @@ void printUsage() {
               << "  --boundary-generator {constant-zero,checkerboard}\n"
               << "  --threshold-mask-generator {all-open,wide-slab}\n"
               << "  --size XxYxZ\n"
-              << "  --threads list\n"
               << "  --boundary-strategy {raw-mean,open-mean,open-fraction-weighted}\n"
               << "  --execution {auto,serial,omp-batched}\n"
               << "  --repetitions N\n"
@@ -166,8 +148,6 @@ Options parseArguments(int argc, char **argv) {
             options.thresholdMaskGenerator = requireValue("--threshold-mask-generator");
         } else if (argument == "--size") {
             options.size = parseDims(requireValue("--size"));
-        } else if (argument == "--threads") {
-            options.threadCounts = parseThreadList(requireValue("--threads"));
         } else if (argument == "--boundary-strategy") {
             const std::string value = requireValue("--boundary-strategy");
             if (value == "raw-mean") {
@@ -362,15 +342,13 @@ CsvRow runOne(const Options &options,
               SegmentsImageType::Pointer labels,
               segment_puzzler::BoundaryFloatImageType::Pointer boundary,
               segment_puzzler::BoundaryMaskImageType::Pointer thresholdMask,
-              int threadCount,
               int repetition) {
-    TRACE_EVENT("agglomeration", "run_one", "threads", threadCount, "repetition", repetition);
+    TRACE_EVENT("agglomeration", "run_one", "threads", segment_puzzler::workerThreadCount(), "repetition", repetition);
     segment_puzzler::WatershedRagAgglomerationOptions agglomerationOptions;
     agglomerationOptions.linkage = segment_puzzler::RagLinkage::Average;
     agglomerationOptions.boundaryNormalization = segment_puzzler::BoundaryNormalizationMode::ProbabilityZeroToOne;
     agglomerationOptions.boundaryEvidenceStrategy = options.boundaryStrategy;
     agglomerationOptions.executionPolicy = options.executionPolicy;
-    agglomerationOptions.threadCount = threadCount;
     agglomerationOptions.sizeBiasStrategy = options.sizeBiasStrategy;
     agglomerationOptions.sizeBiasThreshold = options.sizeBiasThreshold;
     agglomerationOptions.sizeBiasStrength = options.sizeBiasStrength;
@@ -383,7 +361,7 @@ CsvRow runOne(const Options &options,
 
     CsvRow row;
     row.repetition = repetition;
-    row.threads = threadCount;
+    row.threads = segment_puzzler::workerThreadCount();
     row.fragments = result.stats.inputFragmentCount;
     row.edges = result.stats.ragEdgeCount;
     row.merges = result.stats.mergeCount;
@@ -456,24 +434,22 @@ int main(int argc, char **argv) {
         }
 
         std::vector<CsvRow> rows;
-        for (int threadCount : options.threadCounts) {
-            for (int warmup = 0; warmup < options.warmup; ++warmup) {
-                (void)runOne(options, std::get<0>(inputs), std::get<1>(inputs), std::get<2>(inputs), threadCount, 0);
-            }
-            for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
-                CsvRow row = runOne(options, std::get<0>(inputs), std::get<1>(inputs), std::get<2>(inputs), threadCount, repetition);
-                rows.push_back(row);
-                std::cout << "threads=" << row.threads
-                          << " repetition=" << row.repetition
-                          << " policy=" << row.policy
-                          << " boundary_strategy=" << segment_puzzler::boundaryEvidenceStrategyName(options.boundaryStrategy)
-                          << " fragments=" << row.fragments
-                          << " edges=" << row.edges
-                          << " merges=" << row.merges
-                          << " agglomeration_ms=" << row.agglomerationMs
-                          << " elapsed_ms=" << row.elapsedMs
-                          << '\n';
-            }
+        for (int warmup = 0; warmup < options.warmup; ++warmup) {
+            (void)runOne(options, std::get<0>(inputs), std::get<1>(inputs), std::get<2>(inputs), 0);
+        }
+        for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
+            CsvRow row = runOne(options, std::get<0>(inputs), std::get<1>(inputs), std::get<2>(inputs), repetition);
+            rows.push_back(row);
+            std::cout << "threads=" << row.threads
+                      << " repetition=" << row.repetition
+                      << " policy=" << row.policy
+                      << " boundary_strategy=" << segment_puzzler::boundaryEvidenceStrategyName(options.boundaryStrategy)
+                      << " fragments=" << row.fragments
+                      << " edges=" << row.edges
+                      << " merges=" << row.merges
+                      << " agglomeration_ms=" << row.agglomerationMs
+                      << " elapsed_ms=" << row.elapsedMs
+                      << '\n';
         }
         if (!options.csvPath.empty()) {
             writeCsv(options.csvPath, rows);

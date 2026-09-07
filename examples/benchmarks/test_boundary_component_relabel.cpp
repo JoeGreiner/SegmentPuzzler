@@ -170,14 +170,11 @@ void testKnownSplitAcrossSlabs() {
     labelBuffer[linearIndex(size, 4, 3, 2)] = 3;
     boundaryBuffer[linearIndex(size, 2, 1, 3)] = 1;
 
-    const auto serial = deriveBoundaryConsistentPartition(
-        labels, boundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer, 1);
-    const auto parallel = deriveBoundaryConsistentPartition(
-        labels, boundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer, 16);
-    requireSameResult(serial, parallel, "known split");
-    requireValidPartition(labels, boundaries, parallel);
+    const auto partition = deriveBoundaryConsistentPartition(
+        labels, boundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer);
+    requireValidPartition(labels, boundaries, partition);
 
-    const Label *display = parallel.boundaryMaskedLabels->GetBufferPointer();
+    const Label *display = partition.boundaryMaskedLabels->GetBufferPointer();
     for (int z = 0; z < 7; ++z) {
         require(display[linearIndex(size, 0, 0, z)] == 1,
                 "component crossing slab boundaries changed label");
@@ -195,13 +192,13 @@ void testKnownSplitAcrossSlabs() {
     require(display[linearIndex(size, 4, 3, 2)] == 3,
             "unsplit component changed label");
 
-    const auto splitEntry = parallel.splitComponentIds.find(2);
-    require(splitEntry != parallel.splitComponentIds.end(), "split label is missing from the result map");
+    const auto splitEntry = partition.splitComponentIds.find(2);
+    require(splitEntry != partition.splitComponentIds.end(), "split label is missing from the result map");
     require(splitEntry->second == std::vector<Label>({4, 5}),
             "split label mapping is not deterministic");
 }
 
-void testRepeatedParallelEquivalence() {
+void testRepeatablePartition(bool printResult) {
     itk::Size<3> size;
     size[0] = 19;
     size[1] = 13;
@@ -227,13 +224,19 @@ void testRepeatedParallelEquivalence() {
     const std::vector<Label> originalLabels(
         labels->GetBufferPointer(),
         labels->GetBufferPointer() + labels->GetLargestPossibleRegion().GetNumberOfPixels());
-    const auto serial = deriveBoundaryConsistentPartition(
-        labels, boundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer, 1);
-    requireValidPartition(labels, boundaries, serial);
+    const auto reference = deriveBoundaryConsistentPartition(
+        labels, boundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer);
+    requireValidPartition(labels, boundaries, reference);
     for (int repetition = 0; repetition < 20; ++repetition) {
-        const auto parallel = deriveBoundaryConsistentPartition(
-            labels, boundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer, 32);
-        requireSameResult(serial, parallel, "parallel repetition " + std::to_string(repetition));
+        const auto repeated = deriveBoundaryConsistentPartition(
+            labels, boundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer);
+        requireSameResult(reference, repeated, "repetition " + std::to_string(repetition));
+    }
+    if (printResult) {
+        for (std::size_t voxel = 0; voxel < originalLabels.size(); ++voxel) {
+            std::cout << reference.boundaryMaskedLabels->GetBufferPointer()[voxel] << ',';
+        }
+        std::cout << '\n';
     }
     require(std::equal(originalLabels.begin(), originalLabels.end(), labels->GetBufferPointer()),
             "boundary relabeling modified the input labels before boundary masking");
@@ -245,7 +248,7 @@ void testMissingAndMismatchedBoundaryImages() {
     auto labels = makeImage<LabelImage>(size, 7);
     BoundaryImage::Pointer noBoundaries;
     const auto unchanged = deriveBoundaryConsistentPartition(
-        labels, noBoundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer, 8);
+        labels, noBoundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer);
     require(imagesEqual(labels, unchanged.boundaryMaskedLabels),
             "missing boundary image changed boundary-masked labels");
     require(unchanged.splitComponentIds.empty(),
@@ -257,7 +260,7 @@ void testMissingAndMismatchedBoundaryImages() {
     bool threw = false;
     try {
         (void)deriveBoundaryConsistentPartition(
-            labels, mismatchedBoundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer, 8);
+            labels, mismatchedBoundaries, WatershedRunOptions{}, false, DistanceMapAlgorithm::Maurer);
     } catch (const std::invalid_argument &) {
         threw = true;
     }
@@ -277,9 +280,9 @@ void testOptionalBoundaryFilling() {
     WatershedRunOptions options;
     options.algorithm = WatershedAlgorithm::FastMarkerWatershed;
     const auto masked = deriveBoundaryConsistentPartition(
-        labels, boundaries, options, false, DistanceMapAlgorithm::Maurer, 2);
+        labels, boundaries, options, false, DistanceMapAlgorithm::Maurer);
     const auto filled = deriveBoundaryConsistentPartition(
-        labels, boundaries, options, true, DistanceMapAlgorithm::Maurer, 2);
+        labels, boundaries, options, true, DistanceMapAlgorithm::Maurer);
     requireSameResult(masked, filled, "optional boundary filling");
     require(imagesEqual(masked.boundaryFilledLabels, labels),
             "disabled filling must return the original unmasked labels");
@@ -291,15 +294,16 @@ void testOptionalBoundaryFilling() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    const bool printResult = argc == 2 && std::string(argv[1]) == "--fingerprint";
     try {
         setWatershedLogSink([](const std::string &) {});
         testKnownSplitAcrossSlabs();
-        testRepeatedParallelEquivalence();
+        testRepeatablePartition(printResult);
         testMissingAndMismatchedBoundaryImages();
         testOptionalBoundaryFilling();
         setWatershedLogSink({});
-        std::cout << "Boundary component relabel tests passed.\n";
+        if (!printResult) std::cout << "Boundary component relabel tests passed.\n";
         return 0;
     } catch (const std::exception &error) {
         setWatershedLogSink({});

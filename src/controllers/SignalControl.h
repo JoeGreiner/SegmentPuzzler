@@ -130,7 +130,6 @@ public:
     void addSegmentsGraphAsync(QString fileName, LoadCallback then = {});
     void loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then = {});
     void importGeneratedSegments(GraphSegmentImageType::Pointer pImage,
-                                 int graphBuildThreadCount,
                                  const QString &name = QStringLiteral("Supervoxels"));
 
     bool hasWorkingSegments() const;
@@ -468,8 +467,7 @@ private:
     void registerBoundarySignal(size_t signalIndexGlobal, const QString &name);
     void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
     void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
-    void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage,
-                                     int graphBuildThreadCount = 0);
+    void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage);
 
     template<typename T>
     bool insertTypedImage(

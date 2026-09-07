@@ -466,7 +466,6 @@ if (BUILD_TESTING)
         target_compile_definitions(test_WorkerThreads PRIVATE USE_OMP)
         target_link_libraries(test_WorkerThreads OpenMP::OpenMP_CXX)
     endif ()
-    add_test(NAME WorkerThreads COMMAND $<TARGET_FILE:test_WorkerThreads>)
 
     add_executable(test_SeededWatershedSplit
             examples/viewers/test_seeded_watershed_split.cpp
@@ -588,6 +587,13 @@ if (BUILD_TESTING)
         target_link_libraries(test_RagRegionMerger OpenMP::OpenMP_CXX)
     endif ()
 
+    foreach(worker_test IN ITEMS WorkerThreads ParallelInitialEdges BlockwiseFastMarker BoundaryComponentRelabel)
+        add_test(NAME ${worker_test}
+                COMMAND ${CMAKE_COMMAND}
+                    -DPROGRAM=$<TARGET_FILE:test_${worker_test}>
+                    -P ${CMAKE_SOURCE_DIR}/examples/benchmarks/compare_worker_counts.cmake)
+    endforeach()
+    add_test(NAME RagRegionMerger COMMAND $<TARGET_FILE:test_RagRegionMerger>)
     add_test(NAME SeededWatershedSplit COMMAND $<TARGET_FILE:test_SeededWatershedSplit>)
     add_test(NAME ConnectedComponentSplit
             COMMAND $<TARGET_FILE:test_ConnectedComponentSplit>)

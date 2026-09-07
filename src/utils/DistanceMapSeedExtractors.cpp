@@ -37,32 +37,32 @@ std::string seedExtractorName(SeedExtractorKind kind) {
 }
 
 SeedImageType::Pointer extractHConvexSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap,
-                                                            double minimalHeight, int threadCount) {
+                                                            double minimalHeight) {
     using HConvexImageFilterType = itk::HConvexImageFilter<DistanceImageType, DistanceImageType>;
     using ThresholdFilterType = itk::BinaryThresholdImageFilter<DistanceImageType, BinaryImageType>;
     using ConnectedComponentFilterType = itk::ConnectedComponentImageFilter<BinaryImageType, SeedImageType>;
 
     auto hConvexImageFilter = HConvexImageFilterType::New();
-    segment_puzzler::setItkWorkerThreadCount(*hConvexImageFilter, threadCount);
+    segment_puzzler::setItkWorkerThreadCount(*hConvexImageFilter);
     hConvexImageFilter->SetInput(distanceMap);
     hConvexImageFilter->SetHeight(minimalHeight);
     hConvexImageFilter->SetFullyConnected(true);
 
     auto thresholdFilter = ThresholdFilterType::New();
-    segment_puzzler::setItkWorkerThreadCount(*thresholdFilter, threadCount);
+    segment_puzzler::setItkWorkerThreadCount(*thresholdFilter);
     thresholdFilter->SetInput(hConvexImageFilter->GetOutput());
     thresholdFilter->SetLowerThreshold(0.1f);
     thresholdFilter->SetInsideValue(1);
     thresholdFilter->SetOutsideValue(0);
 
     auto connectedComponentFilter = ConnectedComponentFilterType::New();
-    segment_puzzler::setItkWorkerThreadCount(*connectedComponentFilter, threadCount);
+    segment_puzzler::setItkWorkerThreadCount(*connectedComponentFilter);
     connectedComponentFilter->SetInput(thresholdFilter->GetOutput());
     connectedComponentFilter->Update();
     return connectedComponentFilter->GetOutput();
 }
 
-SeedImageType::Pointer extractLocalMaximaSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap, int threadCount) {
+SeedImageType::Pointer extractLocalMaximaSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap) {
     using ConnectedComponentFilterType = itk::ConnectedComponentImageFilter<BinaryImageType, SeedImageType>;
 
     auto maximaMask = BinaryImageType::New();
@@ -118,7 +118,7 @@ SeedImageType::Pointer extractLocalMaximaSeedsFromDistanceImage(DistanceImageTyp
     }
 
     auto connectedComponentFilter = ConnectedComponentFilterType::New();
-    segment_puzzler::setItkWorkerThreadCount(*connectedComponentFilter, threadCount);
+    segment_puzzler::setItkWorkerThreadCount(*connectedComponentFilter);
     connectedComponentFilter->SetInput(maximaMask);
     connectedComponentFilter->Update();
     return connectedComponentFilter->GetOutput();
@@ -126,12 +126,12 @@ SeedImageType::Pointer extractLocalMaximaSeedsFromDistanceImage(DistanceImageTyp
 
 SeedImageType::Pointer extractSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap,
                                                      SeedExtractorKind extractorKind,
-                                                     double minimalHeight, int threadCount) {
+                                                     double minimalHeight) {
     switch (extractorKind) {
         case SeedExtractorKind::LocalMaxima:
-            return extractLocalMaximaSeedsFromDistanceImage(distanceMap, threadCount);
+            return extractLocalMaximaSeedsFromDistanceImage(distanceMap);
         case SeedExtractorKind::HConvex:
-            return extractHConvexSeedsFromDistanceImage(distanceMap, minimalHeight, threadCount);
+            return extractHConvexSeedsFromDistanceImage(distanceMap, minimalHeight);
         case SeedExtractorKind::All:
             break;
     }

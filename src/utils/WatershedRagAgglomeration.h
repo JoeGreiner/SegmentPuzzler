@@ -51,7 +51,6 @@ struct WatershedRagAgglomerationOptions {
     AgglomerationExecutionPolicy executionPolicy = AgglomerationExecutionPolicy::Auto;
     double tau = 0.5;
     bool usePhysicalFaceArea = true;
-    int threadCount = 0;
     std::size_t parallelMergeEdgeThreshold = 200000;
 
     // Size-bias options — Off by default for exact backward compatibility

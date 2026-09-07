@@ -14,7 +14,7 @@ namespace segment_puzzler::rag {
 class RegionMerger {
   public:
     RegionMerger(RegionAdjacencyGraph &graph, const WatershedRagAgglomerationOptions &options,
-                 WatershedRagAgglomerationStats &stats, int threadCount);
+                 WatershedRagAgglomerationStats &stats);
 
     void initializeMergeQueue();
     void mergeGreedily();

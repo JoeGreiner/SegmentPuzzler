@@ -52,50 +52,40 @@ void testSelection() {
     EnvironmentVariable omp("OMP_NUM_THREADS");
     EnvironmentVariable itk("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS");
     EnvironmentVariable vtk("VTK_SMP_MAX_THREADS");
-    const int automatic = workerThreadCount(0, ThreadBackend::ITK);
+    const int automatic = workerThreadCount(ThreadBackend::ITK);
     require(automatic >= 1, "Automatic selection must be positive.");
-    require(workerThreadCount(0, ThreadBackend::VTK) == automatic, "Backend hardware defaults differ.");
+    require(workerThreadCount(ThreadBackend::VTK) == automatic, "Backend hardware defaults differ.");
     itk.set("3");
     vtk.set("5");
     omp.set("7, 2");
-    require(workerThreadCount(0, ThreadBackend::ITK) == 3, "ITK environment ignored.");
-    require(workerThreadCount(0, ThreadBackend::VTK) == 5, "VTK environment ignored.");
-    require(workerThreadCount(11, ThreadBackend::ITK) == 11, "Explicit request did not take precedence.");
+    require(workerThreadCount(ThreadBackend::ITK) == 3, "ITK environment ignored.");
+    require(workerThreadCount(ThreadBackend::VTK) == 5, "VTK environment ignored.");
 #ifdef USE_OMP
     require(workerThreadCount() == 7, "OpenMP list must select the first value.");
-    require(workerThreadCount(11) == 11, "Explicit OpenMP request did not take precedence.");
 #else
-    require(workerThreadCount() == 1 && workerThreadCount(11) == 1, "OpenMP-disabled work must be serial.");
+    require(workerThreadCount() == 1, "OpenMP-disabled work must be serial.");
 #endif
     for (const char *invalid : {"", " ", "0", "-2", "2147483648", "2x", "2,3"}) {
         itk.set(invalid);
-        require(workerThreadCount(0, ThreadBackend::ITK) == automatic, "Invalid environment did not fall back.");
+        require(workerThreadCount(ThreadBackend::ITK) == automatic, "Invalid environment did not fall back.");
     }
     itk.set(" \t4 \n");
-    require(workerThreadCount(0, ThreadBackend::ITK) == 4, "Whitespace around count rejected.");
+    require(workerThreadCount(ThreadBackend::ITK) == 4, "Whitespace around count rejected.");
 #ifdef USE_OMP
     for (const char *invalid : {"", "0", "-1", "2147483648", "2x", "2,", ",2", "2,0", "2,x"}) {
         omp.set(invalid);
         require(workerThreadCount() == automatic, "Invalid OpenMP list did not fall back.");
     }
 #endif
-    for (auto backend : {ThreadBackend::OpenMP, ThreadBackend::ITK, ThreadBackend::VTK}) {
-        bool rejected = false;
-        try { workerThreadCount(-1, backend); }
-        catch (const std::invalid_argument &) { rejected = true; }
-        require(rejected, "Negative thread request accepted.");
-    }
-    std::cout << "Physical-core default: " << automatic << '\n';
 }
 
-void testRuntimeIsolation() {
+void testRuntimeIsolation(bool printResult) {
     using namespace segment_puzzler;
-    EnvironmentVariable omp("OMP_NUM_THREADS");
-    EnvironmentVariable vtk("VTK_SMP_MAX_THREADS");
 #ifdef USE_OMP
+    const int selected = workerThreadCount();
     const int previous = omp_get_max_threads();
     omp_set_num_threads(1);
-    require(workerThreadCount() == workerThreadCount(0, ThreadBackend::VTK),
+    require(workerThreadCount() == selected,
             "Automatic selection depends on an earlier OpenMP setter.");
 #endif
     const std::array<int, 3> dimensions{17, 19, 23};
@@ -104,9 +94,13 @@ void testRuntimeIsolation() {
     for (std::size_t index = 0; index < mask.size(); ++index) {
         mask[index] = (index * 37 % 101) > 10;
     }
-    const auto serial = distance_map_benchmark::runBoundaryAwareSquaredEdt(mask, dimensions, spacing, 1);
-    const auto parallel = distance_map_benchmark::runBoundaryAwareSquaredEdt(mask, dimensions, spacing, 4);
-    require(serial.distances == parallel.distances, "FH output changed with thread count.");
+    const auto distances = distance_map_benchmark::runBoundaryAwareSquaredEdt(mask, dimensions, spacing);
+    if (printResult) {
+        for (float distance : distances.distances) {
+            std::cout << std::hexfloat << distance << ",";
+        }
+        std::cout << '\n';
+    }
 #ifdef USE_OMP
     require(omp_get_max_threads() == 1, "FH changed the caller's OpenMP default.");
 #endif
@@ -122,9 +116,10 @@ void testRuntimeIsolation() {
     boundary->Allocate();
     boundary->FillBuffer(0);
     WatershedRagAgglomerationOptions options;
-    options.threadCount = 4;
     options.boundaryEvidenceStrategy = BoundaryEvidenceStrategy::RawInterfaceMean;
+    setAgglomerationLogSink([](const std::string &) {});
     const auto result = runWatershedRagAgglomeration(labels, boundary, nullptr, options);
+    setAgglomerationLogSink({});
     require(result.stats.outputClusterCount == 1, "RAG fixture did not merge.");
 #ifdef USE_OMP
     require(omp_get_max_threads() == 1, "RAG changed the caller's OpenMP default.");
@@ -137,20 +132,21 @@ void testFilterIsolation() {
     const auto defaultThreadCount = itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads();
     using Image = dataType::SegmentsImageType;
     auto filter = itk::BinaryThresholdImageFilter<Image, Image>::New();
-    setItkWorkerThreadCount(*filter, 4);
-    require(filter->GetNumberOfWorkUnits() == 4, "ITK filter work units were not set.");
+    setItkWorkerThreadCount(*filter);
+    require(filter->GetNumberOfWorkUnits() == workerThreadCount(ThreadBackend::ITK), "ITK filter work units were not set.");
     require(itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads() == defaultThreadCount,
             "Configuring an ITK filter changed the global default.");
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    const bool printResult = argc == 2 && std::string(argv[1]) == "--fingerprint";
     try {
         testSelection();
-        testRuntimeIsolation();
+        testRuntimeIsolation(printResult);
         testFilterIsolation();
-        std::cout << "Worker thread tests passed.\n";
+        if (!printResult) std::cout << "Worker thread tests passed.\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

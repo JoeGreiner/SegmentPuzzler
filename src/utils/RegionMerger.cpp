@@ -109,8 +109,8 @@ double calculateLinkageScore(const BoundaryScore &boundaryScore, RagLinkage link
 } // namespace
 
 RegionMerger::RegionMerger(RegionAdjacencyGraph &graph, const WatershedRagAgglomerationOptions &options,
-                           WatershedRagAgglomerationStats &stats, int threadCount)
-    : graph_(graph), options_(options), stats_(stats), threadCount_(workerThreadCount(threadCount)) {
+                           WatershedRagAgglomerationStats &stats)
+    : graph_(graph), options_(options), stats_(stats), threadCount_(workerThreadCount()) {
 }
 
 bool RegionMerger::HigherMergeScoreFirst::operator()(const QueuedMergeCandidate &left,

@@ -134,7 +134,7 @@ void configureVtkSmpBackend() {
         }
     }
 
-    vtkSMPTools::Initialize(segment_puzzler::workerThreadCount(0, segment_puzzler::ThreadBackend::VTK));
+    vtkSMPTools::Initialize(segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::VTK));
 
     SP_LOG_INFO("app",
                 QStringLiteral("VTK SMP backend=%1, estimatedThreads=%2")
@@ -215,7 +215,7 @@ int main(int argc, char *argv[]) {
     SP_LOG_INFO("app", QStringLiteral("OpenMP disabled"));
 #endif
     itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(
-        segment_puzzler::workerThreadCount(0, segment_puzzler::ThreadBackend::ITK));
+        segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK));
     configureVtkSmpBackend();
     qRegisterMetaType<QVector<int> >("QVector<int>");
     qRegisterMetaType<QItemSelection>("QItemSelection");

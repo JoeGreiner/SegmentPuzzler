@@ -25,8 +25,7 @@ struct FhRunResult {
 
 FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
                                        const std::array<int, 3> &dims,
-                                       const std::array<double, 3> &spacing,
-                                       int threadCount);
+                                       const std::array<double, 3> &spacing);
 
 }
 

@@ -223,8 +223,7 @@ public:
     std::unordered_map<EdgeNumIdType, EdgePairIdType> initialEdgeIdLookup;
 
     // construct a graph from
-    void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
-                             int graphBuildThreadCount = 0);
+    void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage);
     void updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage);
 
     void initializeEdgeVolumeAndEdgeStatus();

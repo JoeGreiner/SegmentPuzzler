@@ -178,7 +178,7 @@ PassResult runPass(const std::vector<Block> &blocks,
                    LabelImage::Pointer priorLabels,
                    LabelImage::Pointer output,
                    const BlockwiseFastMarkerWatershedOptions &options) {
-    const int threadCount = workerThreadCount(options.threadCount);
+    const int threadCount = workerThreadCount();
     const auto passStarted = std::chrono::steady_clock::now();
     std::exception_ptr firstException;
     std::mutex exceptionMutex;
@@ -249,11 +249,11 @@ LabelImage::Pointer copyLabels(LabelImage::Pointer source) {
 } // namespace
 
 int automaticWatershedBlockEdge(const FastMarkerWatershedCostImage::SizeType &imageSize,
-                                 int threadCount) {
+                                 int workerCount) {
     const double voxelCount = static_cast<double>(imageSize[0]) *
                               static_cast<double>(imageSize[1]) *
                               static_cast<double>(imageSize[2]);
-    const double targetVoxels = voxelCount / (2.0 * std::max(1, threadCount));
+    const double targetVoxels = voxelCount / (2.0 * std::max(1, workerCount));
     const int edge = static_cast<int>(std::cbrt(std::max(1.0, targetVoxels)));
     const int roundedDown = std::max(32, (edge / 32) * 32);
     return std::clamp(roundedDown, 128, 256);
@@ -270,8 +270,8 @@ FastMarkerWatershedLabelImage::Pointer runBlockwiseFastMarkerWatershed3D(
     if (options.watershed.domainMask.IsNotNull()) {
         throw std::invalid_argument("Blockwise fast marker watershed does not support domain masks.");
     }
-    if (options.threadCount < 0 || options.blockEdge < 0 || options.halo < 0) {
-        throw std::invalid_argument("Thread count must be non-negative; block edge and halo must be non-negative.");
+    if (options.blockEdge < 0 || options.halo < 0) {
+        throw std::invalid_argument("Block edge and halo must be non-negative.");
     }
     if (costImage->GetLargestPossibleRegion() != markers->GetLargestPossibleRegion()) {
         throw std::invalid_argument("Cost and marker image regions must match.");
@@ -282,7 +282,7 @@ FastMarkerWatershedLabelImage::Pointer runBlockwiseFastMarkerWatershed3D(
     const auto imageRegion = costImage->GetLargestPossibleRegion();
     const int blockEdge = options.blockEdge > 0
         ? options.blockEdge
-        : automaticWatershedBlockEdge(imageRegion.GetSize(), workerThreadCount(options.threadCount));
+        : automaticWatershedBlockEdge(imageRegion.GetSize(), workerThreadCount());
     localMetrics.blockEdge = blockEdge;
 
     const auto redBlocks = makeBlocks(imageRegion, blockEdge, options.halo, 0);

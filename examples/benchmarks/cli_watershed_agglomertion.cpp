@@ -1,3 +1,4 @@
+#include "src/utils/WorkerThreads.h"
 #include "src/itkImageFilters/itkWatershedHelpers.h"
 #include "src/utils/DistanceMapCliIO.h"
 #include "src/utils/WatershedRagAgglomeration.h"
@@ -37,7 +38,6 @@ struct Options {
     double sizeBiasStrength = 0.3;
     double sizeBiasProtection = 0.3;
     bool sizeBiasRespectMask = true;
-    int threadCount = 0;
 };
 
 void printUsage() {
@@ -55,8 +55,7 @@ void printUsage() {
               << "  --size-bias-strength VALUE\n"
               << "  --size-bias-protection VALUE\n"
               << "  --size-bias-ignore-mask\n"
-              << "  --execution {auto,serial,omp-batched}\n"
-              << "  --threads N\n";
+              << "  --execution {auto,serial,omp-batched}\n";
 }
 
 Options parseArguments(int argc, char **argv) {
@@ -150,8 +149,6 @@ Options parseArguments(int argc, char **argv) {
             options.sizeBiasProtection = std::stod(requireValue("--size-bias-protection"));
         } else if (argument == "--size-bias-ignore-mask") {
             options.sizeBiasRespectMask = false;
-        } else if (argument == "--threads") {
-            options.threadCount = std::stoi(requireValue("--threads"));
         } else {
             throw std::runtime_error("Unknown argument: " + argument);
         }
@@ -298,7 +295,6 @@ int main(int argc, char **argv) {
         agglomerationOptions.boundaryNormalization = options.boundaryMode;
         agglomerationOptions.boundaryEvidenceStrategy = options.boundaryStrategy;
         agglomerationOptions.executionPolicy = options.executionPolicy;
-        agglomerationOptions.threadCount = options.threadCount;
         agglomerationOptions.sizeBiasStrategy = options.sizeBiasStrategy;
         agglomerationOptions.sizeBiasThreshold = options.sizeBiasThreshold;
         agglomerationOptions.sizeBiasStrength = options.sizeBiasStrength;
@@ -323,7 +319,7 @@ int main(int argc, char **argv) {
                   << " size_bias_protection=" << options.sizeBiasProtection
                   << " size_bias_respect_mask=" << (options.sizeBiasRespectMask ? "true" : "false")
                   << " execution=" << segment_puzzler::agglomerationExecutionPolicyName(options.executionPolicy)
-                  << " threads=" << options.threadCount
+                  << " threads=" << segment_puzzler::workerThreadCount()
                   << '\n';
         std::cout << "initial_non_zero_labels=" << initialSmallSegmentStats.nonZeroLabelCount
                   << " initial_small_labels_below_threshold=" << initialSmallSegmentStats.smallLabelCount

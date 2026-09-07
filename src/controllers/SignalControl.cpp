@@ -680,15 +680,14 @@ SignalControl::~SignalControl() {
 
 }
 
-void SignalControl::prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage,
-                                                int graphBuildThreadCount) {
+void SignalControl::prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage) {
     graphBase->ignoredSegmentLabels.clear();
     graphBase->edgeStatus.clear();
     graphBase->colorLookUpEdgesStatus.clear();
     graphBase->pGraph->setBackgroundIdStrategy("backgroundIsLowestId");
     graphBase->pWorkingSegmentsImage = workingSegmentsImage;
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graphBase->pGraph->constructFromVolume(workingSegmentsImage, graphBuildThreadCount);
+    graphBase->pGraph->constructFromVolume(workingSegmentsImage);
 }
 
 void SignalControl::showInfoMessage(const QString &message) const {
@@ -3875,7 +3874,6 @@ void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>:
 }
 
 void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImage,
-                                            int graphBuildThreadCount,
                                             const QString &name) {
     if (pImage == nullptr) {
         showInfoMessage("No watershed segments available for import.");
@@ -3888,7 +3886,7 @@ void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImag
         return;
     }
 
-    prepareWorkingSegmentsGraph(pImage, graphBuildThreadCount);
+    prepareWorkingSegmentsGraph(pImage);
     registerSegmentsGraphSignal(signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     if (QTreeWidgetItem *item = findSignalTreeItem(signalTreeWidget, signalIndexGlobal)) {

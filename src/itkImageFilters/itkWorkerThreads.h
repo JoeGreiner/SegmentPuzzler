@@ -7,8 +7,8 @@
 
 namespace segment_puzzler {
 
-inline void setItkWorkerThreadCount(itk::ProcessObject &filter, int requested = 0) {
-    const int count = workerThreadCount(requested, ThreadBackend::ITK);
+inline void setItkWorkerThreadCount(itk::ProcessObject &filter) {
+    const int count = workerThreadCount(ThreadBackend::ITK);
     filter.GetMultiThreader()->SetMaximumNumberOfThreads(count);
     filter.SetNumberOfWorkUnits(count);
 }

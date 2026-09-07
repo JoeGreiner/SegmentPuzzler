@@ -31,7 +31,7 @@
 namespace {
 
 void printUsage(const char *argv0) {
-    std::cout << "Usage: " << argv0 << " [--threads N] [--timeout-ms N] [--fast-marker] [--boundary PATH]\n";
+    std::cout << "Usage: " << argv0 << " [--timeout-ms N] [--fast-marker] [--boundary PATH]\n";
 }
 
 bool downloadFile(const QString &url, const QString &outputFilePath, int maxRedirects = 5) {
@@ -112,14 +112,12 @@ public:
     GuiDebugRunner(QApplication &appIn,
                    MainWindowWatershedControl *windowIn,
                    QString boundaryPathIn,
-                   int threadCountIn,
                    bool useFastMarkerIn,
                    int timeoutMsIn)
         : app(appIn),
           window(windowIn),
           ws(windowIn->myWatershedControl),
           boundaryPath(std::move(boundaryPathIn)),
-          threadCount(threadCountIn),
           useFastMarker(useFastMarkerIn),
           timeoutMs(timeoutMsIn) {}
 
@@ -130,7 +128,6 @@ public slots:
             return;
         }
 
-        ws->setThreadCount(threadCount);
         if (useFastMarker) {
             ws->setWatershedAlgorithm(WatershedAlgorithm::FastMarkerWatershed);
         }
@@ -261,7 +258,6 @@ private:
     MainWindowWatershedControl *window;
     WatershedControl *ws;
     QString boundaryPath;
-    int threadCount;
     bool useFastMarker;
     int timeoutMs;
 };
@@ -277,7 +273,6 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationName("SegmentPuzzler");
     QApplication::setOrganizationName("JoeGreiner");
 
-    int threadCount = 0;
     bool useFastMarker = false;
     int timeoutMs = 300000;
     QString boundaryPathOverride;
@@ -287,16 +282,7 @@ int main(int argc, char *argv[]) {
             printUsage(argv[0]);
             return 0;
         }
-        if (argument == "--threads" && i + 1 < argc) {
-            try {
-                threadCount = std::stoi(argv[i + 1]);
-            } catch (const std::exception &) {
-                std::cerr << "Invalid --threads value: " << argv[i + 1] << "\n";
-                return 1;
-            }
-            ++i;
-            continue;
-        }
+
         if (argument == "--timeout-ms" && i + 1 < argc) {
             try {
                 timeoutMs = std::stoi(argv[i + 1]);
@@ -321,7 +307,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    std::cout << "Thread count: " << threadCount << "\n";
     std::cout << "Watershed algorithm: " << (useFastMarker ? "fast-marker" : "morphological") << "\n";
     std::cout << "Timeout: " << timeoutMs << " ms\n";
 
@@ -346,7 +331,7 @@ int main(int argc, char *argv[]) {
     window->raise();
     window->activateWindow();
 
-    auto *runner = new GuiDebugRunner(app, window, boundaryPath, threadCount, useFastMarker, timeoutMs);
+    auto *runner = new GuiDebugRunner(app, window, boundaryPath, useFastMarker, timeoutMs);
     QTimer::singleShot(0, runner, &GuiDebugRunner::start);
 
     return QApplication::exec();

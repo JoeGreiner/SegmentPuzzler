@@ -107,7 +107,7 @@ double calculateSingleEdgeMergeScore(BoundaryEvidenceStrategy strategy, RagLinka
     options.sizeBiasThreshold = 10;
     options.sizeBiasStrength = 0.3;
     WatershedRagAgglomerationStats stats;
-    RegionMerger merger(graph, options, stats, 1);
+    RegionMerger merger(graph, options, stats);
     merger.initializeMergeQueue();
     return graph.edge(edgeId).mergeScore;
 }
@@ -152,13 +152,13 @@ void testSerialAndBatchedMergingProduceTheSamePartition() {
 
     RegionAdjacencyGraph serialGraph = makeTwoPairGraph();
     WatershedRagAgglomerationStats serialStats;
-    RegionMerger serialMerger(serialGraph, options, serialStats, 1);
+    RegionMerger serialMerger(serialGraph, options, serialStats);
     serialMerger.initializeMergeQueue();
     serialMerger.mergeGreedily();
 
     RegionAdjacencyGraph batchedGraph = makeTwoPairGraph();
     WatershedRagAgglomerationStats batchedStats;
-    RegionMerger batchedMerger(batchedGraph, options, batchedStats, 4);
+    RegionMerger batchedMerger(batchedGraph, options, batchedStats);
     batchedMerger.initializeMergeQueue();
     batchedMerger.mergeInNonOverlappingBatches();
 
@@ -200,7 +200,7 @@ void testCleanupMergesSmallRegionAcrossAllowedBoundary() {
     options.sizeBiasThreshold = 5;
     options.sizeBiasProtection = 0.3;
     WatershedRagAgglomerationStats stats;
-    RegionMerger merger(graph, options, stats, 1);
+    RegionMerger merger(graph, options, stats);
     merger.initializeMergeQueue();
     merger.mergeGreedily();
     merger.mergeRemainingSmallRegions();
@@ -219,7 +219,7 @@ void testSingleSelectedMergeFallsBackToGreedyMerging() {
     WatershedRagAgglomerationOptions options;
     options.boundaryEvidenceStrategy = BoundaryEvidenceStrategy::RawInterfaceMean;
     WatershedRagAgglomerationStats stats;
-    RegionMerger merger(graph, options, stats, 4);
+    RegionMerger merger(graph, options, stats);
     merger.initializeMergeQueue();
     merger.mergeInNonOverlappingBatches();
 
@@ -244,7 +244,7 @@ void testSoftSizeBiasIsUpdatedForTheEnlargedTargetRegion() {
     options.sizeBiasThreshold = 10;
     options.sizeBiasStrength = 0.3;
     WatershedRagAgglomerationStats stats;
-    RegionMerger merger(graph, options, stats, 1);
+    RegionMerger merger(graph, options, stats);
     merger.initializeMergeQueue();
     merger.mergeGreedily();
 

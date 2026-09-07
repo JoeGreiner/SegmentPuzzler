@@ -75,13 +75,13 @@ public:
 
     void computeOneSidedEdgesOnInitialNode(InitialNode *pInitialNode);
 
-    void computeOneSidedEdgesOnAllInitialNodes(int threadCount);
+    void computeOneSidedEdgesOnAllInitialNodes();
 
 //    void removeOneSidedInitialEdge();
     void registerTwoSidedInitialEdge(std::unique_ptr<TwoSidedInitialEdge> edgeToRegister);
 
 //    void removeTwoSidedInitialEdge();
-    void buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threadCount = 0, bool veryVerbose = false);
+    void buildTwoSidedInitialEdgesFromOneSidedInitialEdges(bool veryVerbose = false);
 
     void buildWorkingGraphFromInitialGraph();
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -88,7 +89,7 @@ void testAutomaticBlockEdge() {
             "Automatic block edge must respect the 256 maximum.");
 }
 
-void testDeterministicCoverageAndMarkers() {
+void testDeterministicCoverageAndMarkers(bool printResult) {
     CostImage::SizeType size;
     size[0] = 57;
     size[1] = 43;
@@ -99,48 +100,42 @@ void testDeterministicCoverageAndMarkers() {
     segment_puzzler::BlockwiseFastMarkerWatershedOptions options;
     options.blockEdge = blockEdge;
     options.halo = 4;
-    options.threadCount = 1;
-    segment_puzzler::BlockwiseFastMarkerWatershedMetrics singleThreadMetrics;
-    auto singleThread = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
-        images.cost, images.markers, options, &singleThreadMetrics);
-    require(!singleThreadMetrics.usedGlobalFallback, "Dense markers should not use the global fallback.");
-
-    options.threadCount = 4;
-    segment_puzzler::BlockwiseFastMarkerWatershedMetrics parallelMetrics;
-    auto parallel = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
-        images.cost, images.markers, options, &parallelMetrics);
-    require(!parallelMetrics.usedGlobalFallback, "Parallel dense run unexpectedly used the global fallback.");
-    require(parallelMetrics.passes.size() == parallelMetrics.passCount,
+    segment_puzzler::BlockwiseFastMarkerWatershedMetrics metrics;
+    auto result = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
+        images.cost, images.markers, options, &metrics);
+    require(!metrics.usedGlobalFallback, "Dense run unexpectedly used the global fallback.");
+    require(metrics.passes.size() == metrics.passCount,
             "Every blockwise pass must expose profiling metrics.");
-    for (const auto &pass : parallelMetrics.passes) {
+    for (const auto &pass : metrics.passes) {
         require(pass.scheduledBlockCount == pass.completedBlockCount + pass.deferredBlockCount,
                 "Blockwise pass counters must be internally consistent.");
         require(pass.scheduledBlockCount == 0 || pass.threadsUsed > 0,
                 "A non-empty blockwise pass must report at least one worker thread.");
     }
-    require(imagesEqual(singleThread, parallel), "Blockwise result must not depend on scheduling.");
 
     options.watershed.compactness =
         segment_puzzler::kDefaultFastMarkerWatershedCompactness;
-    options.threadCount = 1;
-    auto compactSingleThread = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
+    auto compactResult = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
         images.cost, images.markers, options);
-    options.threadCount = 4;
-    auto compactParallel = segment_puzzler::runBlockwiseFastMarkerWatershed3D(
-        images.cost, images.markers, options);
-    require(imagesEqual(compactSingleThread, compactParallel),
-            "Compact blockwise result must not depend on scheduling.");
-    require(!imagesEqual(singleThread, compactSingleThread),
+    require(!imagesEqual(result, compactResult),
             "Compactness should affect the blockwise result.");
 
-    const std::size_t voxelCount = singleThread->GetLargestPossibleRegion().GetNumberOfPixels();
-    require(std::none_of(singleThread->GetBufferPointer(), singleThread->GetBufferPointer() + voxelCount,
+    const std::size_t voxelCount = result->GetLargestPossibleRegion().GetNumberOfPixels();
+    require(std::none_of(result->GetBufferPointer(), result->GetBufferPointer() + voxelCount,
                          [](unsigned int label) { return label == 0; }),
             "Every voxel must be covered.");
     for (std::size_t voxel = 0; voxel < voxelCount; ++voxel) {
         if (images.markers->GetBufferPointer()[voxel] != 0) {
-            require(singleThread->GetBufferPointer()[voxel] == images.markers->GetBufferPointer()[voxel],
+            require(result->GetBufferPointer()[voxel] == images.markers->GetBufferPointer()[voxel],
                     "Original marker labels must be preserved.");
+        }
+    }
+    if (printResult) {
+        for (const auto &image : {result, compactResult}) {
+            for (std::size_t voxel = 0; voxel < voxelCount; ++voxel) {
+                std::cout << image->GetBufferPointer()[voxel] << ',';
+            }
+            std::cout << '\n';
         }
     }
 }
@@ -151,7 +146,6 @@ void testSparseMarkerPropagationAndFallback() {
     auto images = makeImages(size, 16, false);
 
     segment_puzzler::BlockwiseFastMarkerWatershedOptions options;
-    options.threadCount = 4;
     options.blockEdge = 16;
     options.halo = 2;
     segment_puzzler::BlockwiseFastMarkerWatershedMetrics metrics;
@@ -173,12 +167,13 @@ void testSparseMarkerPropagationAndFallback() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    const bool printResult = argc == 2 && std::string(argv[1]) == "--fingerprint";
     try {
         testAutomaticBlockEdge();
-        testDeterministicCoverageAndMarkers();
+        testDeterministicCoverageAndMarkers(printResult);
         testSparseMarkerPropagationAndFallback();
-        std::cout << "Blockwise fast marker watershed tests passed.\n";
+        if (!printResult) std::cout << "Blockwise fast marker watershed tests passed.\n";
         return 0;
     } catch (const std::exception &exception) {
         std::cerr << "Blockwise fast marker watershed test failed: " << exception.what() << '\n';

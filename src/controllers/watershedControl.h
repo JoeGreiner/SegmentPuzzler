@@ -118,7 +118,6 @@ public slots:
     void addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn,
             int fxIn, int txIn, int fyIn, int tyIn, int fzIn, int tzIn);
 
-    void setThreadCount(int n);
     void setWatershedAlgorithm(WatershedAlgorithm algorithm);
 
     void thresholdBoundariesAsync(std::function<void()> then = {});
@@ -236,7 +235,6 @@ private:
     QPointer<SegmentTableDialog> segmentTableDialog;
     bool paintBoundaryModeActive = false;
     int registeredEdgeSignalIndex = -1;
-    int workerThreadCount = 0;
     int boundarySignalIndex = -1;
     int thresholdPreviewSignalIndex = -1;
     size_t hiddenAgglomertionPreviewSourceSignalIndex = static_cast<size_t>(-1);

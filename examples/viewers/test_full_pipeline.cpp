@@ -40,7 +40,7 @@
 namespace {
 
 void printUsage(const char *argv0) {
-    std::cout << "Usage: " << argv0 << " [--threads N] [--boundary PATH]\n";
+    std::cout << "Usage: " << argv0 << " [--boundary PATH]\n";
 }
 
 // Downloads url to outputFilePath, following up to maxRedirects redirects.
@@ -434,7 +434,6 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationName("SegmentPuzzler");
     QApplication::setOrganizationName("JoeGreiner");
 
-    int threadCount = 0;
     QString boundaryPathOverride;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -442,16 +441,7 @@ int main(int argc, char *argv[]) {
             printUsage(argv[0]);
             return 0;
         }
-        if (argument == "--threads" && i + 1 < argc) {
-            try {
-                threadCount = std::stoi(argv[i + 1]);
-            } catch (const std::exception &) {
-                std::cerr << "Invalid --threads value: " << argv[i + 1] << "\n";
-                return 1;
-            }
-            ++i;
-            continue;
-        }
+
         if (argument == "--boundary" && i + 1 < argc) {
             boundaryPathOverride = QString::fromLocal8Bit(argv[i + 1]);
             ++i;
@@ -461,7 +451,6 @@ int main(int argc, char *argv[]) {
         printUsage(argv[0]);
         return 1;
     }
-    std::cout << "Thread count: " << threadCount << "\n";
 
     const QString boundaryPath = boundaryPathOverride.isEmpty() ? ensureBoundaryFile() : boundaryPathOverride;
     if (!boundaryPathOverride.isEmpty() && !QFile::exists(boundaryPath)) {
@@ -484,9 +473,8 @@ int main(int argc, char *argv[]) {
     auto *window = new MainWindowWatershedControl();
     window->show();
 
-    QTimer::singleShot(0, [window, boundaryPath, threadCount]() {
+    QTimer::singleShot(0, [window, boundaryPath]() {
         WatershedControl *ws = window->myWatershedControl;
-        ws->setThreadCount(threadCount);
 
         std::cout << "\n=== Loading boundary file ===\n";
         ws->addBoundariesFromFile(boundaryPath);

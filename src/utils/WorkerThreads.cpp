@@ -58,18 +58,12 @@ int physicalCoreCount() {
 
 } // namespace
 
-int workerThreadCount(int requested, ThreadBackend backend) {
-    if (requested < 0) {
-        throw std::invalid_argument("Thread count must be non-negative (zero selects automatically).");
-    }
+int workerThreadCount(ThreadBackend backend) {
 #ifndef USE_OMP
     if (backend == ThreadBackend::OpenMP) {
         return 1;
     }
 #endif
-    if (requested > 0) {
-        return requested;
-    }
 
     const char *environmentName = nullptr;
     switch (backend) {

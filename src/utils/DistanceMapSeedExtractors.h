@@ -24,11 +24,11 @@ SeedExtractorKind parseSeedExtractor(const std::string &value);
 std::string seedExtractorName(SeedExtractorKind kind);
 
 SeedImageType::Pointer extractHConvexSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap,
-                                                            double minimalHeight = 1.0, int threadCount = 0);
-SeedImageType::Pointer extractLocalMaximaSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap, int threadCount = 0);
+                                                            double minimalHeight = 1.0);
+SeedImageType::Pointer extractLocalMaximaSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap);
 SeedImageType::Pointer extractSeedsFromDistanceImage(DistanceImageType::Pointer distanceMap,
                                                      SeedExtractorKind extractorKind,
-                                                     double minimalHeight = 1.0, int threadCount = 0);
+                                                     double minimalHeight = 1.0);
 
 } // namespace distance_map_benchmark
 

@@ -38,7 +38,8 @@ AppImages should be compatible across different Linux distributions, as long as 
 SegmentPuzzler automatically sets the number of workers to the number of available
 physical cores. This can be overridden with the environment variables
 `OMP_NUM_THREADS`, `ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS`, and `VTK_SMP_MAX_THREADS`
-for the respective backends.
+for the respective backends. Benchmarks use the same variables; run a separate
+process for each worker count.
 
 ## Build from source
 

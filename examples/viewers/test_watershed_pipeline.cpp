@@ -229,23 +229,15 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationName("SegmentPuzzler");
     QApplication::setOrganizationName("JoeGreiner");
 
-    // Parse --threads N (default: automatic physical-core selection) and --fast-marker
-    int threadCount = 0;
     bool useFastMarker = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
-            try {
-                threadCount = std::stoi(argv[i + 1]);
-            } catch (const std::exception &) {
-                std::cerr << "Invalid --threads value: " << argv[i + 1] << "\n";
-                return 1;
-            }
-        }
         if (std::string(argv[i]) == "--fast-marker") {
             useFastMarker = true;
+        } else {
+            std::cerr << "Unknown argument: " << argv[i] << "\n";
+            return 1;
         }
     }
-    std::cout << "Thread count: " << threadCount << "\n";
     std::cout << "Watershed algorithm: " << (useFastMarker ? "fast-marker" : "GUI default") << "\n";
 
     // Apply dark stylesheet if available
@@ -265,9 +257,9 @@ int main(int argc, char *argv[]) {
     window->show();
 
     // Kick off the pipeline once the event loop is running.
-    QTimer::singleShot(0, [window, boundaryPath, threadCount, useFastMarker]() {
+    QTimer::singleShot(0, [window, boundaryPath, useFastMarker]() {
         WatershedControl *ws = window->myWatershedControl;
-        ws->setThreadCount(threadCount);
+
         if (useFastMarker) {
             ws->setWatershedAlgorithm(WatershedAlgorithm::FastMarkerWatershed);
         }

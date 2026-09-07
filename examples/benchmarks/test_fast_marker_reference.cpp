@@ -28,7 +28,6 @@ constexpr const char *kBoundaryUrl =
     "https://drive.google.com/uc?export=download&id=1YMFz84x8_E4OVh74ABn8j2pcpGXKtu8r";
 constexpr const char *kBoundaryFileName = "BoundaryPrediction.tif";
 constexpr float kThreshold = 127.0f;
-constexpr int kThreadCount = 1;
 constexpr const char *kExpectedSha256 =
     "6d1f1498d5c27fc58d3449a92d60b953e79a3811a326408a1c6e722eeece38c7";
 
@@ -135,7 +134,7 @@ int main(int argc, char **argv) {
         auto thresholded = distance_map_benchmark::thresholdScalarImage(boundaryImage, kThreshold);
 
         distance_map_benchmark::DistanceImageType::Pointer distanceMap;
-        generateDistanceMap(thresholded, distanceMap, 0.0, DistanceMapAlgorithm::Maurer, kThreadCount);
+        generateDistanceMap(thresholded, distanceMap, 0.0, DistanceMapAlgorithm::Maurer);
 
         distance_map_benchmark::DistanceImageType::Pointer invertedDistanceMap;
         invertDistanceMap(distanceMap, invertedDistanceMap);

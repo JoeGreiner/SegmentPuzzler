@@ -125,13 +125,12 @@ void edt1d(const DistanceVoxelType *input,
 
 FhRunResult runBoundaryAwareSquaredEdt(const std::vector<BinaryVoxelType> &mask,
                                        const std::array<int, 3> &dims,
-                                       const std::array<double, 3> &spacing,
-                                       int threadCount) {
+                                       const std::array<double, 3> &spacing) {
     if (dims[0] <= 0 || dims[1] <= 0 || dims[2] <= 0) {
         throw std::runtime_error("FH EDT requires positive dimensions.");
     }
 
-    threadCount = segment_puzzler::workerThreadCount(threadCount);
+    const int threadCount = segment_puzzler::workerThreadCount();
 
     const std::size_t voxelCount = mask.size();
     std::vector<DistanceVoxelType> current(voxelCount, kInfinityDistance);

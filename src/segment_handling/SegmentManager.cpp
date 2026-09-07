@@ -553,7 +553,7 @@ void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInit
 }
 
 
-void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(int threadCount) {
+void SegmentManager::computeOneSidedEdgesOnAllInitialNodes() {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges on all initial nodes"));
 
     std::vector<std::shared_ptr<InitialNode>> initialNodes;
@@ -575,7 +575,7 @@ void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(int threadCount) {
     }
 
     const std::vector<SegmentIdType> ignoredSegmentLabels = *pIgnoredSegmentLabels;
-    const int requestedThreadCount = segment_puzzler::workerThreadCount(threadCount);
+    const int requestedThreadCount = segment_puzzler::workerThreadCount();
     QElapsedTimer scanTimer;
     scanTimer.start();
     int usedThreadCount = 1;
@@ -638,7 +638,7 @@ void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(int threadCount) {
 }
 
 
-void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threadCount, bool veryVerbose) {
+void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(bool veryVerbose) {
     const bool logTiming = verbose || veryVerbose;
     ScopedSegmentManagerTimer timer(
         logTiming,
@@ -699,7 +699,7 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(int threa
         });
     const double sortEdgePairsMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
-    const int requestedThreadCount = segment_puzzler::workerThreadCount(threadCount);
+    const int requestedThreadCount = segment_puzzler::workerThreadCount();
     const bool edgeFeaturesEnabled = !FeatureList::edgeFeaturesList.empty();
     const int executionThreadCount = edgeFeaturesEnabled ? 1 : requestedThreadCount;
 

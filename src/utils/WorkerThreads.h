@@ -5,8 +5,8 @@ namespace segment_puzzler {
 
 enum class ThreadBackend { OpenMP, ITK, VTK };
 
-// Zero selects the backend environment setting or the physical core count.
-int workerThreadCount(int requested = 0, ThreadBackend backend = ThreadBackend::OpenMP);
+// Selects the backend environment setting or the physical core count.
+int workerThreadCount(ThreadBackend backend = ThreadBackend::OpenMP);
 
 } // namespace segment_puzzler
 

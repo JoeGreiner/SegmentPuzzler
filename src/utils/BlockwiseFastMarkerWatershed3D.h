@@ -9,7 +9,6 @@
 namespace segment_puzzler {
 
 struct BlockwiseFastMarkerWatershedOptions {
-    int threadCount = 0;
     int blockEdge = 0;
     int halo = 16;
     FastMarkerWatershedOptions watershed;
@@ -42,7 +41,7 @@ struct BlockwiseFastMarkerWatershedMetrics {
 
 int automaticWatershedBlockEdge(
     const FastMarkerWatershedCostImage::SizeType &imageSize,
-    int threadCount);
+    int workerCount);
 
 // Approximate blockwise watershed: deterministic for a fixed block layout, but
 // the result may depend on blockEdge/halo and need not match

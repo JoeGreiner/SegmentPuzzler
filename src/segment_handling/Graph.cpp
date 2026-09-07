@@ -670,8 +670,7 @@ struct NeighborWorkingGroup {
 } // namespace
 
 
-void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
-                                int graphBuildThreadCount) {
+void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     const bool logGraphStorage = isGraphDebugLoggingEnabled(verbose);
     initializeEdgeVolumeAndEdgeStatus();
     updateBackgroundIdFromVolume(pImage);
@@ -682,11 +681,11 @@ void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage,
     if (logGraphStorage) {
         logStorageAfterGraphPhase(*this, QStringLiteral("initial_nodes"));
     }
-    segmentManager.computeOneSidedEdgesOnAllInitialNodes(graphBuildThreadCount);
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes();
     if (logGraphStorage) {
         logStorageAfterGraphPhase(*this, QStringLiteral("one_sided_initial_edges"));
     }
-    segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges(graphBuildThreadCount);
+    segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
     if (logGraphStorage) {
         logStorageAfterGraphPhase(*this, QStringLiteral("two_sided_initial_edges"));
     }
@@ -1741,7 +1740,7 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
 
     initializeEdgeVolumeAndEdgeStatus();
     constructInitialNodes(graphBase->pWorkingSegmentsImage);
-    segmentManager.computeOneSidedEdgesOnAllInitialNodes(0);
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes();
     segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
 
     std::unordered_set<SegmentIdType> assignedInitialLabels;

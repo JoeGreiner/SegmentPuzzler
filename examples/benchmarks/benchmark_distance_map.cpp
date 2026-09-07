@@ -246,7 +246,6 @@ struct BenchmarkOptions {
     std::optional<GeneratorKind> generator;
     std::optional<std::array<int, 3>> requestedSize;
     std::optional<std::array<double, 3>> spacingOverride;
-    std::vector<int> threadCounts;
     int repetitions = 3;
     int warmups = 1;
     int watershedBlockEdge = 0;
@@ -317,38 +316,6 @@ std::array<double, 3> parseSpacing(const std::string &value) {
     return spacing;
 }
 
-std::vector<int> parseThreadList(const std::string &value) {
-    if (value == "auto") {
-        const auto hardwareThreads = static_cast<unsigned int>(segment_puzzler::workerThreadCount());
-        std::vector<int> threadCounts;
-        for (unsigned int threads = 1; threads < hardwareThreads; threads *= 2) {
-            threadCounts.push_back(static_cast<int>(threads));
-        }
-        if (threadCounts.empty() || threadCounts.back() != static_cast<int>(hardwareThreads)) {
-            threadCounts.push_back(static_cast<int>(hardwareThreads));
-        }
-        return threadCounts;
-    }
-
-    std::vector<int> threadCounts;
-    std::stringstream stream(value);
-    std::string token;
-    while (std::getline(stream, token, ',')) {
-        if (token.empty()) {
-            continue;
-        }
-        const int threadCount = std::stoi(token);
-        if (threadCount <= 0) {
-            throw std::runtime_error("Thread counts must be positive.");
-        }
-        threadCounts.push_back(threadCount);
-    }
-    if (threadCounts.empty()) {
-        throw std::runtime_error("Thread list is empty.");
-    }
-    return threadCounts;
-}
-
 GeneratorKind parseGenerator(const std::string &value) {
     if (value == "shells") {
         return GeneratorKind::Shells;
@@ -415,7 +382,6 @@ void printUsage() {
               << "  --generator {shells,packed-spheres,sparse-sites}\n"
               << "  --size XxYxZ\n"
               << "  --spacing sx,sy,sz\n"
-              << "  --threads list|auto\n"
               << "  --repetitions N\n"
               << "  --warmup N\n"
               << "  --profile-min-seconds S\n"
@@ -429,7 +395,6 @@ void printUsage() {
 
 BenchmarkOptions parseArguments(int argc, char **argv) {
     BenchmarkOptions options;
-    options.threadCounts = parseThreadList("auto");
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -461,8 +426,6 @@ BenchmarkOptions parseArguments(int argc, char **argv) {
             options.requestedSize = parseDims(requireValue("--size"));
         } else if (argument == "--spacing") {
             options.spacingOverride = parseSpacing(requireValue("--spacing"));
-        } else if (argument == "--threads") {
-            options.threadCounts = parseThreadList(requireValue("--threads"));
         } else if (argument == "--repetitions") {
             options.repetitions = std::max(1, std::stoi(requireValue("--repetitions")));
         } else if (argument == "--warmup") {
@@ -1087,25 +1050,25 @@ struct WatershedInputs {
 };
 
 WatershedInputs buildWatershedInputs(const BenchmarkCase &benchmarkCase,
-                                     int threadCount,
                                      SeedExtractorKind extractorKind) {
     TRACE_EVENT("watershed", "build_watershed_inputs",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount,
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
 
     WatershedInputs inputs;
     const double distanceStart = wallTimeSeconds();
     BinaryImageType::Pointer maskImage = benchmarkCase.itkMask;
-    generateDistanceMap(maskImage, inputs.distanceMap, 0.0, DistanceMapAlgorithm::Maurer, threadCount);
+    generateDistanceMap(maskImage, inputs.distanceMap, 0.0, DistanceMapAlgorithm::Maurer);
     const double distanceEnd = wallTimeSeconds();
 
     const double seedsStart = wallTimeSeconds();
-    inputs.seeds = extractSeedsFromDistanceImage(inputs.distanceMap, extractorKind, 1.0, threadCount);
+    inputs.seeds = extractSeedsFromDistanceImage(inputs.distanceMap, extractorKind, 1.0);
     const double seedsEnd = wallTimeSeconds();
 
     const double invertStart = wallTimeSeconds();
-    invertDistanceMap(inputs.distanceMap, inputs.invertedDistanceMap, threadCount);
+    invertDistanceMap(inputs.distanceMap, inputs.invertedDistanceMap);
     const double invertEnd = wallTimeSeconds();
 
     inputs.metrics.distanceMapMs = (distanceEnd - distanceStart) * 1000.0;
@@ -1114,17 +1077,18 @@ WatershedInputs buildWatershedInputs(const BenchmarkCase &benchmarkCase,
     return inputs;
 }
 
-BackendRunResult runMaurerOnce(const BenchmarkCase &benchmarkCase, int threadCount) {
+BackendRunResult runMaurerOnce(const BenchmarkCase &benchmarkCase) {
     TRACE_EVENT("distance_map", "run_maurer_distance_map",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount);
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK));
 
     MemorySnapshot before = readProcessMemory();
     const double startTime = wallTimeSeconds();
 
     using MaurerFilterType = itk::SignedMaurerDistanceMapImageFilter<BinaryImageType, DistanceImageType>;
     auto distanceFilter = MaurerFilterType::New();
-    segment_puzzler::setItkWorkerThreadCount(*distanceFilter, threadCount);
+    segment_puzzler::setItkWorkerThreadCount(*distanceFilter);
     distanceFilter->SetInput(benchmarkCase.itkMask);
     distanceFilter->SetBackgroundValue(0);
     distanceFilter->SquaredDistanceOn();
@@ -1159,11 +1123,11 @@ BackendRunResult runMaurerOnce(const BenchmarkCase &benchmarkCase, int threadCou
 }
 
 BackendRunResult runMaurerSeedsOnce(const BenchmarkCase &benchmarkCase,
-                                    int threadCount,
                                     SeedExtractorKind extractorKind) {
     TRACE_EVENT("seeds", "run_maurer_seeds",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount,
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
 
     MemorySnapshot before = readProcessMemory();
@@ -1171,7 +1135,7 @@ BackendRunResult runMaurerSeedsOnce(const BenchmarkCase &benchmarkCase,
 
     using MaurerFilterType = itk::SignedMaurerDistanceMapImageFilter<BinaryImageType, DistanceImageType>;
     auto distanceFilter = MaurerFilterType::New();
-    segment_puzzler::setItkWorkerThreadCount(*distanceFilter, threadCount);
+    segment_puzzler::setItkWorkerThreadCount(*distanceFilter);
     distanceFilter->SetInput(benchmarkCase.itkMask);
     distanceFilter->SetBackgroundValue(0);
     distanceFilter->SquaredDistanceOff();
@@ -1184,7 +1148,7 @@ BackendRunResult runMaurerSeedsOnce(const BenchmarkCase &benchmarkCase,
     const double distanceEnd = wallTimeSeconds();
 
     const double seedsStart = wallTimeSeconds();
-    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind, 1.0, threadCount);
+    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind, 1.0);
     const double seedsEnd = wallTimeSeconds();
 
     std::vector<DistanceVoxelType> distances;
@@ -1215,13 +1179,14 @@ BackendRunResult runMaurerSeedsOnce(const BenchmarkCase &benchmarkCase,
     return result;
 }
 
-BackendRunResult runFHOnce(const BenchmarkCase &benchmarkCase, int threadCount) {
+BackendRunResult runFHOnce(const BenchmarkCase &benchmarkCase) {
     TRACE_EVENT("distance_map", "run_fh_distance_map",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount);
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK));
     MemorySnapshot before = readProcessMemory();
     const auto fhResult = distance_map_benchmark::runBoundaryAwareSquaredEdt(
-        benchmarkCase.mask, benchmarkCase.dims, benchmarkCase.spacing, threadCount);
+        benchmarkCase.mask, benchmarkCase.dims, benchmarkCase.spacing);
     MemorySnapshot after = readProcessMemory();
 
     BackendRunResult result;
@@ -1243,16 +1208,16 @@ BackendRunResult runFHOnce(const BenchmarkCase &benchmarkCase, int threadCount) 
 }
 
 BackendRunResult runFHSeedsOnce(const BenchmarkCase &benchmarkCase,
-                                int threadCount,
                                 SeedExtractorKind extractorKind) {
     TRACE_EVENT("seeds", "run_fh_seeds",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount,
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
     MemorySnapshot before = readProcessMemory();
     const auto unitSpacing = std::array<double, 3>{1.0, 1.0, 1.0};
     const auto fhResult = distance_map_benchmark::runBoundaryAwareSquaredEdt(
-        benchmarkCase.mask, benchmarkCase.dims, unitSpacing, threadCount);
+        benchmarkCase.mask, benchmarkCase.dims, unitSpacing);
 
     std::vector<DistanceVoxelType> metricDistances = fhResult.distances;
     for (auto &value : metricDistances) {
@@ -1261,7 +1226,7 @@ BackendRunResult runFHSeedsOnce(const BenchmarkCase &benchmarkCase,
 
     const double seedsStart = wallTimeSeconds();
     auto distanceImage = buildItkDistanceImage(metricDistances, benchmarkCase.dims, benchmarkCase.spacing);
-    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind, 1.0, threadCount);
+    auto seedImage = extractSeedsFromDistanceImage(distanceImage, extractorKind, 1.0);
     const double seedsEnd = wallTimeSeconds();
     MemorySnapshot after = readProcessMemory();
 
@@ -1287,14 +1252,14 @@ BackendRunResult runFHSeedsOnce(const BenchmarkCase &benchmarkCase,
 }
 
 BackendRunResult runItkWatershedOnce(const BenchmarkCase &benchmarkCase,
-                                     int threadCount,
                                      SeedExtractorKind extractorKind) {
     TRACE_EVENT("watershed", "run_itk_watershed",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount,
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
     MemorySnapshot before = readProcessMemory();
-    WatershedInputs inputs = buildWatershedInputs(benchmarkCase, threadCount, extractorKind);
+    WatershedInputs inputs = buildWatershedInputs(benchmarkCase, extractorKind);
 
     WatershedRunOptions options;
     options.algorithm = WatershedAlgorithm::MorphologicalWatershedFromMarkers;
@@ -1328,14 +1293,14 @@ BackendRunResult runItkWatershedOnce(const BenchmarkCase &benchmarkCase,
 }
 
 BackendRunResult runFastMarkerWatershedOnce(const BenchmarkCase &benchmarkCase,
-                                            int threadCount,
                                             SeedExtractorKind extractorKind) {
     TRACE_EVENT("watershed", "run_fast_marker_watershed",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount,
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
     MemorySnapshot before = readProcessMemory();
-    WatershedInputs inputs = buildWatershedInputs(benchmarkCase, threadCount, extractorKind);
+    WatershedInputs inputs = buildWatershedInputs(benchmarkCase, extractorKind);
 
     WatershedRunOptions options;
     options.algorithm = WatershedAlgorithm::FastMarkerWatershed;
@@ -1373,19 +1338,18 @@ BackendRunResult runFastMarkerWatershedOnce(const BenchmarkCase &benchmarkCase,
 }
 
 BackendRunResult runBlockwiseFastMarkerWatershedOnce(const BenchmarkCase &benchmarkCase,
-                                                     int threadCount,
                                                      SeedExtractorKind extractorKind,
                                                      int blockEdge,
                                                      int blockHalo) {
     TRACE_EVENT("watershed", "run_blockwise_fast_marker_watershed",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount,
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
                 "seed_extractor", seedExtractorNameLiteral(extractorKind));
     MemorySnapshot before = readProcessMemory();
-    WatershedInputs inputs = buildWatershedInputs(benchmarkCase, threadCount, extractorKind);
+    WatershedInputs inputs = buildWatershedInputs(benchmarkCase, extractorKind);
 
     segment_puzzler::BlockwiseFastMarkerWatershedOptions options;
-    options.threadCount = threadCount;
     options.blockEdge = blockEdge;
     options.halo = blockHalo;
     segment_puzzler::BlockwiseFastMarkerWatershedMetrics blockwiseMetrics;
@@ -1421,56 +1385,51 @@ BackendRunResult runBlockwiseFastMarkerWatershedOnce(const BenchmarkCase &benchm
     return result;
 }
 
-BackendRunResult runMaurer(const BenchmarkCase &benchmarkCase, int threadCount, double profileMinSeconds) {
+BackendRunResult runMaurer(const BenchmarkCase &benchmarkCase, double profileMinSeconds) {
     return runWithProfileLoop(
-        [&]() { return runMaurerOnce(benchmarkCase, threadCount); },
+        [&]() { return runMaurerOnce(benchmarkCase); },
         profileMinSeconds);
 }
 
 BackendRunResult runMaurerSeeds(const BenchmarkCase &benchmarkCase,
-                                int threadCount,
                                 SeedExtractorKind extractorKind,
                                 double profileMinSeconds) {
     return runWithProfileLoop(
-        [&]() { return runMaurerSeedsOnce(benchmarkCase, threadCount, extractorKind); },
+        [&]() { return runMaurerSeedsOnce(benchmarkCase, extractorKind); },
         profileMinSeconds);
 }
 
-BackendRunResult runFH(const BenchmarkCase &benchmarkCase, int threadCount, double profileMinSeconds) {
+BackendRunResult runFH(const BenchmarkCase &benchmarkCase, double profileMinSeconds) {
     return runWithProfileLoop(
-        [&]() { return runFHOnce(benchmarkCase, threadCount); },
+        [&]() { return runFHOnce(benchmarkCase); },
         profileMinSeconds);
 }
 
 BackendRunResult runFHSeeds(const BenchmarkCase &benchmarkCase,
-                            int threadCount,
                             SeedExtractorKind extractorKind,
                             double profileMinSeconds) {
     return runWithProfileLoop(
-        [&]() { return runFHSeedsOnce(benchmarkCase, threadCount, extractorKind); },
+        [&]() { return runFHSeedsOnce(benchmarkCase, extractorKind); },
         profileMinSeconds);
 }
 
 BackendRunResult runItkWatershed(const BenchmarkCase &benchmarkCase,
-                                 int threadCount,
                                  SeedExtractorKind extractorKind,
                                  double profileMinSeconds) {
     return runWithProfileLoop(
-        [&]() { return runItkWatershedOnce(benchmarkCase, threadCount, extractorKind); },
+        [&]() { return runItkWatershedOnce(benchmarkCase, extractorKind); },
         profileMinSeconds);
 }
 
 BackendRunResult runFastMarkerWatershed(const BenchmarkCase &benchmarkCase,
-                                        int threadCount,
                                         SeedExtractorKind extractorKind,
                                         double profileMinSeconds) {
     return runWithProfileLoop(
-        [&]() { return runFastMarkerWatershedOnce(benchmarkCase, threadCount, extractorKind); },
+        [&]() { return runFastMarkerWatershedOnce(benchmarkCase, extractorKind); },
         profileMinSeconds);
 }
 
 BackendRunResult runBlockwiseFastMarkerWatershed(const BenchmarkCase &benchmarkCase,
-                                                 int threadCount,
                                                  SeedExtractorKind extractorKind,
                                                  double profileMinSeconds,
                                                  int blockEdge,
@@ -1478,13 +1437,12 @@ BackendRunResult runBlockwiseFastMarkerWatershed(const BenchmarkCase &benchmarkC
     return runWithProfileLoop(
         [&]() {
             return runBlockwiseFastMarkerWatershedOnce(
-                benchmarkCase, threadCount, extractorKind, blockEdge, blockHalo);
+                benchmarkCase, extractorKind, blockEdge, blockHalo);
         },
         profileMinSeconds);
 }
 
 void warmupCase(const BenchmarkCase &benchmarkCase,
-                int threadCount,
                 AlgorithmSelection algorithm,
                 BenchmarkMode mode,
                 SeedExtractorKind seedExtractor,
@@ -1494,28 +1452,29 @@ void warmupCase(const BenchmarkCase &benchmarkCase,
                 int blockHalo = 16) {
     TRACE_EVENT("benchmark", "warmup_case",
                 "case", benchmarkCase.name.c_str(),
-                "threads", threadCount,
+                "omp_threads", segment_puzzler::workerThreadCount(),
+                "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
                 "warmups", warmups,
                 "mode", benchmarkModeName(mode));
     for (int i = 0; i < warmups; ++i) {
         TRACE_EVENT("benchmark", "warmup_iteration", "iteration", i + 1);
         if (mode == BenchmarkMode::Watershed) {
             if (watershedAlgorithm == WatershedAlgorithmSelection::Itk) {
-                (void)runItkWatershedOnce(benchmarkCase, threadCount, seedExtractor);
+                (void)runItkWatershedOnce(benchmarkCase, seedExtractor);
             } else if (watershedAlgorithm == WatershedAlgorithmSelection::FastMarker) {
-                (void)runFastMarkerWatershedOnce(benchmarkCase, threadCount, seedExtractor);
+                (void)runFastMarkerWatershedOnce(benchmarkCase, seedExtractor);
             } else if (watershedAlgorithm == WatershedAlgorithmSelection::BlockwiseFastMarker) {
                 (void)runBlockwiseFastMarkerWatershedOnce(
-                    benchmarkCase, threadCount, seedExtractor, blockEdge, blockHalo);
+                    benchmarkCase, seedExtractor, blockEdge, blockHalo);
             }
         } else if (algorithm == AlgorithmSelection::Maurer) {
             (void)(mode == BenchmarkMode::Seeds
-                ? runMaurerSeedsOnce(benchmarkCase, threadCount, seedExtractor)
-                : runMaurerOnce(benchmarkCase, threadCount));
+                ? runMaurerSeedsOnce(benchmarkCase, seedExtractor)
+                : runMaurerOnce(benchmarkCase));
         } else if (algorithm == AlgorithmSelection::FH) {
             (void)(mode == BenchmarkMode::Seeds
-                ? runFHSeedsOnce(benchmarkCase, threadCount, seedExtractor)
-                : runFHOnce(benchmarkCase, threadCount));
+                ? runFHSeedsOnce(benchmarkCase, seedExtractor)
+                : runFHOnce(benchmarkCase));
         }
     }
 }
@@ -1677,185 +1636,184 @@ int main(int argc, char **argv) {
                       << " foreground_fraction=" << benchmarkCase.siteFraction
                       << '\n';
 
-            for (const int threadCount : options.threadCounts) {
-                for (const auto seedExtractor : seedExtractors) {
-                    TRACE_EVENT("benchmark.case", "case_thread_config",
-                                "case", benchmarkCase.name.c_str(),
-                                "threads", threadCount,
-                                "seed_extractor", options.mode == BenchmarkMode::Edt ? "none"
-                                    : seedExtractorNameLiteral(seedExtractor));
-                    const std::string seedExtractorName =
-                        options.mode == BenchmarkMode::Edt ? "none" : distance_map_benchmark::seedExtractorName(seedExtractor);
+            for (const auto seedExtractor : seedExtractors) {
+                TRACE_EVENT("benchmark.case", "case_config",
+                            "case", benchmarkCase.name.c_str(),
+                            "omp_threads", segment_puzzler::workerThreadCount(),
+                            "itk_threads", segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK),
+                            "seed_extractor", options.mode == BenchmarkMode::Edt ? "none"
+                                : seedExtractorNameLiteral(seedExtractor));
+                const std::string seedExtractorName =
+                    options.mode == BenchmarkMode::Edt ? "none" : distance_map_benchmark::seedExtractorName(seedExtractor);
 
-                    if (options.mode == BenchmarkMode::Watershed) {
-                        warmupCase(benchmarkCase, threadCount, AlgorithmSelection::Maurer, options.mode,
-                                   seedExtractor, WatershedAlgorithmSelection::Itk, options.warmups);
-                        BackendRunResult itkReferenceRun =
-                            runItkWatershed(benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds);
+                if (options.mode == BenchmarkMode::Watershed) {
+                    warmupCase(benchmarkCase, AlgorithmSelection::Maurer, options.mode,
+                               seedExtractor, WatershedAlgorithmSelection::Itk, options.warmups);
+                    BackendRunResult itkReferenceRun =
+                        runItkWatershed(benchmarkCase, seedExtractor, options.profileMinSeconds);
 
-                        if (options.watershedAlgorithmSelection == WatershedAlgorithmSelection::All ||
-                            options.watershedAlgorithmSelection == WatershedAlgorithmSelection::Itk) {
-                            CsvRow row;
-                            row.caseName = benchmarkCase.name;
-                            row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
-                            row.algorithm = "itk";
-                            row.seedExtractor = seedExtractorName;
-                            row.dims = benchmarkCase.dims;
-                            row.spacing = benchmarkCase.spacing;
-                            row.siteFraction = benchmarkCase.siteFraction;
-                            row.threads = threadCount;
-                            row.repetition = 1;
-                            row.metrics = itkReferenceRun.metrics;
-                            row.watershedMetrics = compareWatershedLabels(
-                                itkReferenceRun.watershedLabels, itkReferenceRun.watershedLabels);
-                            rows.push_back(row);
-                            printRowSummary(rows.back());
-
-                            for (int repetition = 2; repetition <= options.repetitions; ++repetition) {
-                                BackendRunResult run =
-                                    runItkWatershed(benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds);
-                                CsvRow repeatRow = row;
-                                repeatRow.repetition = repetition;
-                                repeatRow.metrics = run.metrics;
-                                repeatRow.watershedMetrics = compareWatershedLabels(
-                                    itkReferenceRun.watershedLabels, run.watershedLabels);
-                                rows.push_back(repeatRow);
-                                printRowSummary(rows.back());
-                            }
-                        }
-
-                        if (options.watershedAlgorithmSelection == WatershedAlgorithmSelection::All ||
-                            options.watershedAlgorithmSelection == WatershedAlgorithmSelection::FastMarker) {
-                            warmupCase(benchmarkCase, threadCount, AlgorithmSelection::Maurer, options.mode,
-                                       seedExtractor, WatershedAlgorithmSelection::FastMarker, options.warmups);
-                            for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
-                                BackendRunResult run =
-                                    runFastMarkerWatershed(benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds);
-                                CsvRow row;
-                                row.caseName = benchmarkCase.name;
-                                row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
-                                row.algorithm = "fast-marker";
-                                row.seedExtractor = seedExtractorName;
-                                row.dims = benchmarkCase.dims;
-                                row.spacing = benchmarkCase.spacing;
-                                row.siteFraction = benchmarkCase.siteFraction;
-                                row.threads = threadCount;
-                                row.repetition = repetition;
-                                row.metrics = run.metrics;
-                                row.watershedMetrics = compareWatershedLabels(
-                                    itkReferenceRun.watershedLabels, run.watershedLabels);
-                                rows.push_back(row);
-                                printRowSummary(rows.back());
-                            }
-                        }
-
-                        if (options.watershedAlgorithmSelection == WatershedAlgorithmSelection::All ||
-                            options.watershedAlgorithmSelection == WatershedAlgorithmSelection::BlockwiseFastMarker) {
-                            warmupCase(benchmarkCase, threadCount, AlgorithmSelection::Maurer, options.mode,
-                                       seedExtractor, WatershedAlgorithmSelection::BlockwiseFastMarker, options.warmups,
-                                       options.watershedBlockEdge, options.watershedBlockHalo);
-                            for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
-                                BackendRunResult run = runBlockwiseFastMarkerWatershed(
-                                    benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds,
-                                    options.watershedBlockEdge, options.watershedBlockHalo);
-                                CsvRow row;
-                                row.caseName = benchmarkCase.name;
-                                row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
-                                row.algorithm = "blockwise-fast-marker";
-                                row.seedExtractor = seedExtractorName;
-                                row.dims = benchmarkCase.dims;
-                                row.spacing = benchmarkCase.spacing;
-                                row.siteFraction = benchmarkCase.siteFraction;
-                                row.threads = threadCount;
-                                row.repetition = repetition;
-                                row.metrics = run.metrics;
-                                row.watershedMetrics = compareWatershedLabels(
-                                    itkReferenceRun.watershedLabels, run.watershedLabels);
-                                rows.push_back(row);
-                                printRowSummary(rows.back());
-                            }
-                        }
-                        continue;
-                    }
-
-                    std::vector<DistanceVoxelType> maurerReferenceDistances;
-                    std::vector<SeedLabelType> maurerReferenceSeeds;
-                    warmupCase(benchmarkCase, threadCount, AlgorithmSelection::Maurer, options.mode,
-                               seedExtractor, WatershedAlgorithmSelection::All, options.warmups);
-                    BackendRunResult maurerReferenceRun =
-                        options.mode == BenchmarkMode::Seeds
-                            ? runMaurerSeeds(benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds)
-                            : runMaurer(benchmarkCase, threadCount, options.profileMinSeconds);
-                    maurerReferenceDistances = maurerReferenceRun.distances;
-                    maurerReferenceSeeds = maurerReferenceRun.seeds;
-
-                    if (options.algorithmSelection == AlgorithmSelection::All ||
-                        options.algorithmSelection == AlgorithmSelection::Maurer) {
+                    if (options.watershedAlgorithmSelection == WatershedAlgorithmSelection::All ||
+                        options.watershedAlgorithmSelection == WatershedAlgorithmSelection::Itk) {
                         CsvRow row;
                         row.caseName = benchmarkCase.name;
                         row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
-                        row.algorithm = "maurer";
+                        row.algorithm = "itk";
                         row.seedExtractor = seedExtractorName;
                         row.dims = benchmarkCase.dims;
                         row.spacing = benchmarkCase.spacing;
                         row.siteFraction = benchmarkCase.siteFraction;
-                        row.threads = threadCount;
+                        row.threads = segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK);
                         row.repetition = 1;
-                        row.metrics = maurerReferenceRun.metrics;
-                        row.accuracy = {};
-                        row.seedMetrics.referenceSeedCount = maurerReferenceSeeds.empty()
-                            ? 0
-                            : summarizeSeedComponents(maurerReferenceSeeds, benchmarkCase.dims).size();
-                        row.seedMetrics.candidateSeedCount = row.seedMetrics.referenceSeedCount;
-                        row.seedMetrics.referenceSeedVoxels = static_cast<std::size_t>(
-                            std::count_if(maurerReferenceSeeds.begin(), maurerReferenceSeeds.end(), [](SeedLabelType v) { return v != 0; }));
-                        row.seedMetrics.candidateSeedVoxels = row.seedMetrics.referenceSeedVoxels;
-                        row.seedMetrics.overlappingSeedVoxels = row.seedMetrics.referenceSeedVoxels;
-                        row.seedMetrics.voxelIoU = maurerReferenceSeeds.empty() ? 0.0 : 1.0;
-                        row.seedMetrics.matchedSeedCount = row.seedMetrics.referenceSeedCount;
+                        row.metrics = itkReferenceRun.metrics;
+                        row.watershedMetrics = compareWatershedLabels(
+                            itkReferenceRun.watershedLabels, itkReferenceRun.watershedLabels);
                         rows.push_back(row);
                         printRowSummary(rows.back());
 
                         for (int repetition = 2; repetition <= options.repetitions; ++repetition) {
                             BackendRunResult run =
-                                options.mode == BenchmarkMode::Seeds
-                                    ? runMaurerSeeds(benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds)
-                                    : runMaurer(benchmarkCase, threadCount, options.profileMinSeconds);
+                                runItkWatershed(benchmarkCase, seedExtractor, options.profileMinSeconds);
                             CsvRow repeatRow = row;
                             repeatRow.repetition = repetition;
                             repeatRow.metrics = run.metrics;
+                            repeatRow.watershedMetrics = compareWatershedLabels(
+                                itkReferenceRun.watershedLabels, run.watershedLabels);
                             rows.push_back(repeatRow);
                             printRowSummary(rows.back());
                         }
                     }
 
-                    if (options.algorithmSelection == AlgorithmSelection::All ||
-                        options.algorithmSelection == AlgorithmSelection::FH) {
-                        warmupCase(benchmarkCase, threadCount, AlgorithmSelection::FH, options.mode,
-                                   seedExtractor, WatershedAlgorithmSelection::All, options.warmups);
+                    if (options.watershedAlgorithmSelection == WatershedAlgorithmSelection::All ||
+                        options.watershedAlgorithmSelection == WatershedAlgorithmSelection::FastMarker) {
+                        warmupCase(benchmarkCase, AlgorithmSelection::Maurer, options.mode,
+                                   seedExtractor, WatershedAlgorithmSelection::FastMarker, options.warmups);
                         for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
                             BackendRunResult run =
-                                options.mode == BenchmarkMode::Seeds
-                                    ? runFHSeeds(benchmarkCase, threadCount, seedExtractor, options.profileMinSeconds)
-                                    : runFH(benchmarkCase, threadCount, options.profileMinSeconds);
+                                runFastMarkerWatershed(benchmarkCase, seedExtractor, options.profileMinSeconds);
                             CsvRow row;
                             row.caseName = benchmarkCase.name;
                             row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
-                            row.algorithm = "fh";
+                            row.algorithm = "fast-marker";
                             row.seedExtractor = seedExtractorName;
                             row.dims = benchmarkCase.dims;
                             row.spacing = benchmarkCase.spacing;
                             row.siteFraction = benchmarkCase.siteFraction;
-                            row.threads = threadCount;
+                            row.threads = segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK);
                             row.repetition = repetition;
                             row.metrics = run.metrics;
-                            row.accuracy = computeAccuracy(maurerReferenceDistances, run.distances);
-                            if (options.mode == BenchmarkMode::Seeds) {
-                                row.seedMetrics = compareSeeds(maurerReferenceSeeds, run.seeds, benchmarkCase.dims);
-                            }
+                            row.watershedMetrics = compareWatershedLabels(
+                                itkReferenceRun.watershedLabels, run.watershedLabels);
                             rows.push_back(row);
                             printRowSummary(rows.back());
                         }
+                    }
+
+                    if (options.watershedAlgorithmSelection == WatershedAlgorithmSelection::All ||
+                        options.watershedAlgorithmSelection == WatershedAlgorithmSelection::BlockwiseFastMarker) {
+                        warmupCase(benchmarkCase, AlgorithmSelection::Maurer, options.mode,
+                                   seedExtractor, WatershedAlgorithmSelection::BlockwiseFastMarker, options.warmups,
+                                   options.watershedBlockEdge, options.watershedBlockHalo);
+                        for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
+                            BackendRunResult run = runBlockwiseFastMarkerWatershed(
+                                benchmarkCase, seedExtractor, options.profileMinSeconds,
+                                options.watershedBlockEdge, options.watershedBlockHalo);
+                            CsvRow row;
+                            row.caseName = benchmarkCase.name;
+                            row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
+                            row.algorithm = "blockwise-fast-marker";
+                            row.seedExtractor = seedExtractorName;
+                            row.dims = benchmarkCase.dims;
+                            row.spacing = benchmarkCase.spacing;
+                            row.siteFraction = benchmarkCase.siteFraction;
+                            row.threads = segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::OpenMP);
+                            row.repetition = repetition;
+                            row.metrics = run.metrics;
+                            row.watershedMetrics = compareWatershedLabels(
+                                itkReferenceRun.watershedLabels, run.watershedLabels);
+                            rows.push_back(row);
+                            printRowSummary(rows.back());
+                        }
+                    }
+                    continue;
+                }
+
+                std::vector<DistanceVoxelType> maurerReferenceDistances;
+                std::vector<SeedLabelType> maurerReferenceSeeds;
+                warmupCase(benchmarkCase, AlgorithmSelection::Maurer, options.mode,
+                           seedExtractor, WatershedAlgorithmSelection::All, options.warmups);
+                BackendRunResult maurerReferenceRun =
+                    options.mode == BenchmarkMode::Seeds
+                        ? runMaurerSeeds(benchmarkCase, seedExtractor, options.profileMinSeconds)
+                        : runMaurer(benchmarkCase, options.profileMinSeconds);
+                maurerReferenceDistances = maurerReferenceRun.distances;
+                maurerReferenceSeeds = maurerReferenceRun.seeds;
+
+                if (options.algorithmSelection == AlgorithmSelection::All ||
+                    options.algorithmSelection == AlgorithmSelection::Maurer) {
+                    CsvRow row;
+                    row.caseName = benchmarkCase.name;
+                    row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
+                    row.algorithm = "maurer";
+                    row.seedExtractor = seedExtractorName;
+                    row.dims = benchmarkCase.dims;
+                    row.spacing = benchmarkCase.spacing;
+                    row.siteFraction = benchmarkCase.siteFraction;
+                    row.threads = segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK);
+                    row.repetition = 1;
+                    row.metrics = maurerReferenceRun.metrics;
+                    row.accuracy = {};
+                    row.seedMetrics.referenceSeedCount = maurerReferenceSeeds.empty()
+                        ? 0
+                        : summarizeSeedComponents(maurerReferenceSeeds, benchmarkCase.dims).size();
+                    row.seedMetrics.candidateSeedCount = row.seedMetrics.referenceSeedCount;
+                    row.seedMetrics.referenceSeedVoxels = static_cast<std::size_t>(
+                        std::count_if(maurerReferenceSeeds.begin(), maurerReferenceSeeds.end(), [](SeedLabelType v) { return v != 0; }));
+                    row.seedMetrics.candidateSeedVoxels = row.seedMetrics.referenceSeedVoxels;
+                    row.seedMetrics.overlappingSeedVoxels = row.seedMetrics.referenceSeedVoxels;
+                    row.seedMetrics.voxelIoU = maurerReferenceSeeds.empty() ? 0.0 : 1.0;
+                    row.seedMetrics.matchedSeedCount = row.seedMetrics.referenceSeedCount;
+                    rows.push_back(row);
+                    printRowSummary(rows.back());
+
+                    for (int repetition = 2; repetition <= options.repetitions; ++repetition) {
+                        BackendRunResult run =
+                            options.mode == BenchmarkMode::Seeds
+                                ? runMaurerSeeds(benchmarkCase, seedExtractor, options.profileMinSeconds)
+                                : runMaurer(benchmarkCase, options.profileMinSeconds);
+                        CsvRow repeatRow = row;
+                        repeatRow.repetition = repetition;
+                        repeatRow.metrics = run.metrics;
+                        rows.push_back(repeatRow);
+                        printRowSummary(rows.back());
+                    }
+                }
+
+                if (options.algorithmSelection == AlgorithmSelection::All ||
+                    options.algorithmSelection == AlgorithmSelection::FH) {
+                    warmupCase(benchmarkCase, AlgorithmSelection::FH, options.mode,
+                               seedExtractor, WatershedAlgorithmSelection::All, options.warmups);
+                    for (int repetition = 1; repetition <= options.repetitions; ++repetition) {
+                        BackendRunResult run =
+                            options.mode == BenchmarkMode::Seeds
+                                ? runFHSeeds(benchmarkCase, seedExtractor, options.profileMinSeconds)
+                                : runFH(benchmarkCase, options.profileMinSeconds);
+                        CsvRow row;
+                        row.caseName = benchmarkCase.name;
+                        row.sourceKind = options.inputPath.has_value() ? "file" : "synthetic";
+                        row.algorithm = "fh";
+                        row.seedExtractor = seedExtractorName;
+                        row.dims = benchmarkCase.dims;
+                        row.spacing = benchmarkCase.spacing;
+                        row.siteFraction = benchmarkCase.siteFraction;
+                        row.threads = segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::OpenMP);
+                        row.repetition = repetition;
+                        row.metrics = run.metrics;
+                        row.accuracy = computeAccuracy(maurerReferenceDistances, run.distances);
+                        if (options.mode == BenchmarkMode::Seeds) {
+                            row.seedMetrics = compareSeeds(maurerReferenceSeeds, run.seeds, benchmarkCase.dims);
+                        }
+                        rows.push_back(row);
+                        printRowSummary(rows.back());
                     }
                 }
             }

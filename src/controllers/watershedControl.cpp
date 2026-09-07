@@ -91,8 +91,7 @@ WatershedRunOptions makeBoundaryRepairOptions(
 
 dataType::SegmentsImageType::Pointer projectClusterLabelsOntoReference(
     dataType::SegmentsImageType::Pointer referenceLabels,
-    dataType::SegmentsImageType::Pointer clusteredLabels,
-    int threadCount) {
+    dataType::SegmentsImageType::Pointer clusteredLabels) {
     if (referenceLabels.IsNull() || clusteredLabels.IsNull()) {
         return nullptr;
     }
@@ -101,7 +100,7 @@ dataType::SegmentsImageType::Pointer projectClusterLabelsOntoReference(
         throw std::invalid_argument("Agglomeration cluster projection requires matching label shapes.");
     }
 
-    const int executionThreadCount = segment_puzzler::workerThreadCount(threadCount);
+    const int executionThreadCount = segment_puzzler::workerThreadCount();
     QElapsedTimer projectionTimer;
     projectionTimer.start();
 
@@ -496,11 +495,6 @@ dataType::BoundaryImageType::Pointer rescaleBoundaryImage(
 
 WatershedControl::~WatershedControl() {
     clearAgglomertionPreview();
-}
-
-void WatershedControl::setThreadCount(int n) {
-    segment_puzzler::workerThreadCount(n); // Validate; keep zero as a backend-specific automatic request.
-    workerThreadCount = n;
 }
 
 void WatershedControl::setWatershedAlgorithm(WatershedAlgorithm algorithm) {
@@ -1072,7 +1066,7 @@ void WatershedControl::refreshAgglomertionPreview() {
             thresholdMask,
             options);
         previewLabels = projectClusterLabelsOntoReference(
-            watershedInput, result.agglomeratedLabels, options.threadCount);
+            watershedInput, result.agglomeratedLabels);
     } else {
         segment_puzzler::OrthoPlanePreviewSelection previewSelection;
         previewSelection.sliceIndices = {{
@@ -1178,11 +1172,11 @@ void WatershedControl::calculateDistanceMapAsync(std::function<void()> then) {
         QStringLiteral("Distance [%1]").arg(distanceOutputToken(distanceMapAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Calculating distance map..."),
-        [thresholdInput, distanceMapAlgorithm, threadCount = workerThreadCount]() {
+        [thresholdInput, distanceMapAlgorithm]() {
             auto thresholdInputCopy = thresholdInput;
             itk::Image<float, 3>::Pointer distanceMap;
             const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
-            generateDistanceMap(thresholdInputCopy, distanceMap, 0, distanceMapAlgorithm, threadCount);
+            generateDistanceMap(thresholdInputCopy, distanceMap, 0, distanceMapAlgorithm);
             SP_LOG_INFO("watershed",
                         QStringLiteral("Distance map generation finished in %1 ms")
                             .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
@@ -1203,11 +1197,11 @@ void WatershedControl::extractSeedsAsync(std::function<void()> then) {
     const QString signalName = QStringLiteral("Seeds [%1]").arg(seedOutputToken(seedAlgorithm));
     taskRunner->runWithLabel(
         QStringLiteral("Extracting seeds..."),
-        [distanceMapInput, seedAlgorithm, threadCount = workerThreadCount]() {
+        [distanceMapInput, seedAlgorithm]() {
             auto distanceMapInputCopy = distanceMapInput;
             itk::Image<unsigned int, 3>::Pointer seeds;
             const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
-            extractMinimaFromDistanceMap(distanceMapInputCopy, seeds, 1, seedAlgorithm, threadCount);
+            extractMinimaFromDistanceMap(distanceMapInputCopy, seeds, 1, seedAlgorithm);
             SP_LOG_INFO("watershed",
                         QStringLiteral("Seed extraction finished in %1 ms")
                             .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
@@ -1256,18 +1250,16 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
     taskRunner->runWithLabel(
         QStringLiteral("Running watershed..."),
         [filterEnabled, minSegmentSize, watershedAlgorithm, watershedCompactness,
-         distanceMapAlgorithm, distanceMapInput, seedsInput, thresholdInput,
-         threadCount = workerThreadCount, this]() {
+         distanceMapAlgorithm, distanceMapInput, seedsInput, thresholdInput, this]() {
             auto distanceMapInputCopy = distanceMapInput;
             WatershedRunOptions watershedOptions;
             watershedOptions.algorithm = watershedAlgorithm;
             watershedOptions.compactness = watershedCompactness;
-            watershedOptions.threadCount = threadCount;
             watershedOptions.blockEdge = kDefaultWatershedBlockEdge;
             watershedOptions.blockHalo = kDefaultWatershedBlockHalo;
             itk::Image<float, 3>::Pointer invertedDistanceMap = itk::Image<float, 3>::New();
             qint64 stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
-            invertDistanceMap(distanceMapInputCopy, invertedDistanceMap, threadCount);
+            invertDistanceMap(distanceMapInputCopy, invertedDistanceMap);
             SP_LOG_DEBUG("watershed",
                          QStringLiteral("Distance map inversion finished in %1 ms")
                              .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
@@ -1282,7 +1274,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
 
             if (filterEnabled) {
                 stepStartedAtMs = QDateTime::currentMSecsSinceEpoch();
-                filterSmallSegmentSeeds(watershedFragments, seedsForWatershed, minSegmentSize, threadCount);
+                filterSmallSegmentSeeds(watershedFragments, seedsForWatershed, minSegmentSize);
                 SP_LOG_DEBUG("watershed",
                              QStringLiteral("Small seed filtering finished in %1 ms")
                                  .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
@@ -1299,8 +1291,7 @@ void WatershedControl::watershedAsync(std::function<void()> then) {
                 thresholdInput,
                 makeBoundaryRepairOptions(watershedAlgorithm, watershedCompactness),
                 /*fillBoundaries=*/true,
-                distanceMapAlgorithm,
-                threadCount);
+                distanceMapAlgorithm);
             SP_LOG_INFO("watershed",
                         QStringLiteral("Boundary-consistent watershed labels finished in %1 ms")
                             .arg(QDateTime::currentMSecsSinceEpoch() - stepStartedAtMs));
@@ -1377,7 +1368,6 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
             options.boundaryNormalization = boundaryMode;
             options.boundaryEvidenceStrategy = boundaryStrategy;
             options.tau = tau;
-            options.threadCount = workerThreadCount;
             options.sizeBiasStrategy = sizeBiasStrategy;
             options.sizeBiasThreshold = sizeBiasThreshold;
             options.sizeBiasStrength = sizeBiasStrength;
@@ -1392,16 +1382,14 @@ void WatershedControl::agglomertionAsync(std::function<void()> then) {
 
             auto boundaryFilledAgglomertionLabels = projectClusterLabelsOntoReference(
                 watershedInput,
-                agglomerationResult.agglomeratedLabels,
-                options.threadCount);
+                agglomerationResult.agglomeratedLabels);
 
             auto derivedPartition = deriveBoundaryConsistentPartition(
                 boundaryFilledAgglomertionLabels,
                 thresholdInput,
                 makeBoundaryRepairOptions(watershedAlgorithm, watershedCompactness),
                 /*fillBoundaries=*/false,
-                distanceMapAlgorithm,
-                workerThreadCount);
+                distanceMapAlgorithm);
 
             rebuildGraphFromSegmentsImage(derivedPartition.boundaryMaskedLabels);
             return BoundaryConsistentPartitionResult{
@@ -1498,7 +1486,7 @@ void WatershedControl::createRefinementAsync(std::function<void()> then) {
             }
 
             if (outputMode == OutputMode::Segments) {
-                linkedSignalControl->importGeneratedSegments(createdOutput, workerThreadCount);
+                linkedSignalControl->importGeneratedSegments(createdOutput);
             } else {
                 linkedSignalControl->receiveNewRefinement(createdOutput);
             }
@@ -2560,7 +2548,6 @@ segment_puzzler::WatershedRagAgglomerationOptions WatershedControl::currentAgglo
     options.boundaryNormalization = selectedAgglomertionBoundaryNormalization();
     options.boundaryEvidenceStrategy = selectedAgglomertionBoundaryEvidenceStrategy();
     options.tau = selectedAgglomertionTau();
-    options.threadCount = workerThreadCount;
     if (agglomertionSizeBiasCheckBox != nullptr && agglomertionSizeBiasCheckBox->isChecked()) {
         options.sizeBiasStrategy = selectedSizeBiasStrategy();
         options.sizeBiasThreshold = selectedSizeBiasThreshold();
@@ -2914,7 +2901,7 @@ void WatershedControl::rebuildGraphFromSegmentsImage(dataType::SegmentsImageType
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     SP_LOG_INFO("watershed", QStringLiteral("Building graph from watershed segments volume"));
-    graphBase->pGraph->constructFromVolume(segmentsImage, workerThreadCount);
+    graphBase->pGraph->constructFromVolume(segmentsImage);
     SP_LOG_INFO("watershed",
                 QStringLiteral("Finished building graph from watershed segments volume in %1 ms")
                     .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs));
