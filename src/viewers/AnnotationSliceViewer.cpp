@@ -1012,7 +1012,8 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
             prepared.session =
                 std::make_shared<segment_puzzler::SeededWatershedSplitSession>(
                     segment_puzzler::prepareSeededWatershedSplit(
-                        selectedImage, prepared.selectedLabel));
+                        selectedImage, prepared.selectedLabel,
+                        segment_puzzler::SplitLandscapePreparation::Deferred));
             if (prepared.session->connectedComponentCount != 1) {
                 prepared.error = QStringLiteral(
                     "Automatic 6-connected component repair did not produce one connected component.");

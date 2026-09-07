@@ -2328,6 +2328,13 @@ Segment3DViewerDialog::Segment3DViewerDialog(
             m_seedStatusLabel->setWordWrap(true);
             m_seedStatusLabel->setSizePolicy(
                 QSizePolicy::Expanding, QSizePolicy::Preferred);
+            m_seededSplitSmoothingPending =
+                m_seededSplitSession.session->landscape.IsNull();
+            if (m_seededSplitSmoothingPending) {
+                setSeededSplitStatus(QStringLiteral(
+                    "Preparing distance-map smoothing. You can already place seeds."));
+            }
+            m_smoothingTaskRunner = new TaskRunner(this, this);
             m_connectSeedsCheckBox = new QCheckBox(
                 QStringLiteral("Connect Seeds"), optionsWidget);
             m_connectSeedsCheckBox->setObjectName(QStringLiteral("connectSeedsCheckBox"));
@@ -2447,12 +2454,6 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                 m_smoothingLabel->setText(
                     QStringLiteral("Smoothing: %1 px")
                         .arg(sigmaPixels, 0, 'f', 1));
-                if (std::abs(
-                        sigmaPixels
-                        - m_seededSplitSession.session->landscapeSmoothingSigmaPixels)
-                    <= 1e-9) {
-                    return;
-                }
                 m_seededSplitSmoothingPending = true;
                 m_lastSeededSplitResult.reset();
                 clearErosionSplitPreview();
@@ -3420,6 +3421,9 @@ void Segment3DViewerDialog::finishInitialRender() {
                  && m_vtkWidget->interactor()->GetEnabled()));
 
     m_initialFrameScheduled = false;
+    if (m_seededSplitSmoothingPending) {
+        QTimer::singleShot(0, this, &Segment3DViewerDialog::updateSeededSplitSmoothing);
+    }
 }
 
 bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
@@ -4138,61 +4142,120 @@ void Segment3DViewerDialog::resetSplit() {
 }
 
 void Segment3DViewerDialog::updateSeededSplitSmoothing() {
-    m_seededSplitSmoothingPending = false;
-    if (m_seededSplitBusy || m_seededSplitSession.session == nullptr
-        || m_smoothingSlider == nullptr) {
-        updateSeededSplitUiState();
+    if (!m_initialFrameRendered || m_seededSplitSession.session == nullptr
+        || m_smoothingSlider == nullptr || m_smoothingTaskRunner == nullptr
+        || m_smoothingTaskRunner->isBusy()) {
         return;
     }
+    if (m_seededSplitBusy) {
+        m_smoothingUpdateTimer->start();
+        return;
+    }
+    m_smoothingUpdateTimer->stop();
 
     const double sigmaPixels =
         static_cast<double>(m_smoothingSlider->value())
         / kSmoothingSliderStepsPerPixel;
-    auto &session = *m_seededSplitSession.session;
-    if (std::abs(sigmaPixels - session.landscapeSmoothingSigmaPixels) > 1e-9) {
+    const auto sourceSession = m_seededSplitSession.session;
+    if (sourceSession->landscape.IsNotNull()
+        && std::abs(sigmaPixels - sourceSession->landscapeSmoothingSigmaPixels) <= 1e-9) {
+        m_seededSplitSmoothingPending = false;
+        if (m_activeSplitMethod == SplitMethod::SeededWatershed) {
+            setSeededSplitStatus(QStringLiteral("Distance-map smoothing ready."));
+        } else if (m_activeSplitMethod == SplitMethod::ErosionWatershed) {
+            setSeededSplitStatus(
+                QStringLiteral("Smoothing updated. Run Erosion Split again."));
+        }
+        updateSeededSplitUiState();
+        previewSeededSplitIfReady();
+        return;
+    }
+
+    struct SmoothingResult {
+        segment_puzzler::SeededWatershedSplitSession session;
+        QString error;
+    };
+    // Mask and distance are immutable. Compute into a session snapshot so seed
+    // placement can read them and closing the dialog cannot invalidate them.
+    const auto compute = [snapshot = *sourceSession, sigmaPixels]() mutable {
+        SmoothingResult result{std::move(snapshot), {}};
         try {
             segment_puzzler::updateSeededWatershedSplitLandscape(
-                session, sigmaPixels);
-            SP_LOG_INFO(
-                "segmentation",
-                QStringLiteral(
-                    "operation=seeded_watershed_split phase=landscape_update "
-                    "source_label=%1 smoothing_sigma_px=%2 landscape_hash=%3 "
-                    "smoothing_ms=%4")
-                    .arg(session.sourceLabel)
-                    .arg(session.landscapeSmoothingSigmaPixels, 0, 'f', 1)
-                    .arg(formatHash(session.landscapeHash))
-                    .arg(session.landscapeSmoothingMs, 0, 'f', 1));
+                result.session, sigmaPixels);
         } catch (const std::exception &error) {
+            result.error = QString::fromUtf8(error.what());
+        } catch (...) {
+            result.error = QStringLiteral("Unknown error");
+        }
+        return result;
+    };
+    m_seededSplitSmoothingPending = true;
+    updateSeededSplitUiState();
+    const QPointer<Segment3DViewerDialog> dialog(this);
+    const auto commit = [dialog, sourceSession, sigmaPixels](SmoothingResult result) {
+        if (dialog.isNull() || dialog->m_seededSplitSession.session != sourceSession
+            || std::abs(sigmaPixels - static_cast<double>(dialog->m_smoothingSlider->value())
+                       / kSmoothingSliderStepsPerPixel) > 1e-9) {
+            return;
+        }
+        if (!result.error.isEmpty()) {
             const QString message = QStringLiteral("Could not update smoothing: %1")
-                                        .arg(QString::fromUtf8(error.what()));
+                                        .arg(result.error);
             SP_LOG_WARNING(
                 "segmentation",
                 QStringLiteral(
                     "operation=seeded_watershed_split status=landscape_update_failed "
                     "source_label=%1 smoothing_sigma_px=%2 message=\"%3\"")
-                    .arg(session.sourceLabel)
+                    .arg(sourceSession->sourceLabel)
                     .arg(sigmaPixels, 0, 'f', 1)
                     .arg(message));
-            setSeededSplitStatus(message);
-            updateSeededSplitUiState();
+            dialog->setSeededSplitStatus(message, true);
+            dialog->updateSeededSplitUiState();
             return;
         }
-    }
 
-    if (m_activeSplitMethod == SplitMethod::ErosionWatershed) {
-        setSeededSplitStatus(
-            QStringLiteral("Smoothing updated. Run Erosion Split again."));
-        updateSeededSplitUiState();
-    } else {
-        setSeededSplitStatus(QStringLiteral("Smoothing updated."));
-        updateSeededSplitUiState();
-        previewSeededSplitIfReady();
-    }
+        sourceSession->landscape = std::move(result.session.landscape);
+        sourceSession->landscapeHash = result.session.landscapeHash;
+        sourceSession->landscapeSmoothingSigmaPixels = sigmaPixels;
+        sourceSession->landscapeSmoothingMs = result.session.landscapeSmoothingMs;
+        dialog->m_seededSplitSmoothingPending = false;
+        SP_LOG_INFO(
+            "segmentation",
+            QStringLiteral(
+                "operation=seeded_watershed_split phase=landscape_update "
+                "source_label=%1 smoothing_sigma_px=%2 landscape_hash=%3 "
+                "smoothing_ms=%4")
+                .arg(sourceSession->sourceLabel)
+                .arg(sigmaPixels, 0, 'f', 1)
+                .arg(formatHash(sourceSession->landscapeHash))
+                .arg(sourceSession->landscapeSmoothingMs, 0, 'f', 1));
+        if (dialog->m_activeSplitMethod == SplitMethod::SeededWatershed) {
+            dialog->setSeededSplitStatus(QStringLiteral("Distance-map smoothing ready."));
+        } else if (dialog->m_activeSplitMethod == SplitMethod::ErosionWatershed) {
+            dialog->setSeededSplitStatus(
+                QStringLiteral("Smoothing updated. Run Erosion Split again."));
+        }
+        dialog->updateSeededSplitUiState();
+    };
+    m_smoothingTaskRunner->runInBackground(
+        QStringLiteral("Preparing distance-map smoothing..."), compute, commit,
+        [dialog, sigmaPixels]() {
+            if (dialog.isNull()) {
+                return;
+            }
+            const double requestedSigma = static_cast<double>(dialog->m_smoothingSlider->value())
+                                          / kSmoothingSliderStepsPerPixel;
+            if (std::abs(requestedSigma - sigmaPixels) > 1e-9) {
+                dialog->updateSeededSplitSmoothing();
+            } else {
+                dialog->previewSeededSplitIfReady();
+            }
+        });
 }
 
 void Segment3DViewerDialog::previewSeededSplitIfReady() {
-    if (m_seededSplitBusy || m_seededSplitSmoothingPending
+    if (m_activeSplitMethod != SplitMethod::SeededWatershed
+        || m_seededSplitBusy || m_seededSplitSmoothingPending
         || m_seededSplitPreview.has_value()) {
         return;
     }
@@ -4662,6 +4725,9 @@ void Segment3DViewerDialog::exportSeededSplitDebugBundle() {
 }
 
 void Segment3DViewerDialog::applyActiveSplit() {
+    if (m_activeSplitMethod != SplitMethod::ProjectedCut && m_seededSplitSmoothingPending) {
+        return;
+    }
     if (m_activeSplitMethod == SplitMethod::ProjectedCut) {
         applyProjectedCutPreview();
         return;

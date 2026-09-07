@@ -314,7 +314,8 @@ MarkerBuildResult buildSeededSplitMarkers(
 
 SeededWatershedSplitSession prepareSeededWatershedSplit(
     dataType::SegmentsImageType::Pointer segments,
-    dataType::SegmentIdType label)
+    dataType::SegmentIdType label,
+    SplitLandscapePreparation landscapePreparation)
 {
     if (segments.IsNull() || label == 0) {
         throw std::invalid_argument("A nonzero label image is required for a seeded split.");
@@ -420,8 +421,15 @@ SeededWatershedSplitSession prepareSeededWatershedSplit(
     session.distance->DisconnectPipeline();
     session.distanceTransformMs = elapsedMilliseconds(distanceStartedAt);
 
-    updateSeededWatershedSplitLandscape(
-        session, kDefaultSeededSplitSmoothingSigmaPixels);
+    if (landscapePreparation == SplitLandscapePreparation::Deferred) {
+        session.landscapeSmoothingSigmaPixels = kDefaultSeededSplitSmoothingSigmaPixels;
+        const auto *distances = session.distance->GetBufferPointer();
+        session.maximumDistance = *std::max_element(
+            distances, distances + localRegion.GetNumberOfPixels());
+    } else {
+        updateSeededWatershedSplitLandscape(
+            session, kDefaultSeededSplitSmoothingSigmaPixels);
+    }
     return session;
 }
 

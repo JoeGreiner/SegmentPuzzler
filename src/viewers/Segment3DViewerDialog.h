@@ -279,6 +279,7 @@ private:
     QSlider *m_smoothingSlider = nullptr;
     QLabel *m_smoothingLabel = nullptr;
     QTimer *m_smoothingUpdateTimer = nullptr;
+    TaskRunner *m_smoothingTaskRunner = nullptr;
     QSpinBox *m_minimumErosionPartCountSpinBox = nullptr;
     QSpinBox *m_minimumErosionMarkerSizeSpinBox = nullptr;
     QPushButton *m_erosionSplitButton = nullptr;

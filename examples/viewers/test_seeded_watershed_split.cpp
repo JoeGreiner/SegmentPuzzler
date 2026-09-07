@@ -75,6 +75,32 @@ int main(int argc, char **argv) {
         return fail("synthetic dumbbell should be one connected component");
     }
     const auto smoothedLandscapeHash = session.landscapeHash;
+    auto deferredSession = segment_puzzler::prepareSeededWatershedSplit(
+        image, 1, segment_puzzler::SplitLandscapePreparation::Deferred);
+    const auto distanceVoxelCount = session.distance->GetLargestPossibleRegion().GetNumberOfPixels();
+    if (deferredSession.landscape.IsNotNull() || deferredSession.landscapeHash != 0
+        || deferredSession.landscapeSmoothingMs != 0.0
+        || deferredSession.landscapeSmoothingSigmaPixels != session.landscapeSmoothingSigmaPixels
+        || deferredSession.maskHash != session.maskHash
+        || deferredSession.voxelCount != session.voxelCount
+        || deferredSession.connectedComponentCount != session.connectedComponentCount
+        || deferredSession.maximumDistance != session.maximumDistance
+        || !std::equal(session.distance->GetBufferPointer(),
+                       session.distance->GetBufferPointer() + distanceVoxelCount,
+                       deferredSession.distance->GetBufferPointer())) {
+        return fail("deferred preparation should retain the mask, connectivity and distance without a landscape");
+    }
+    const auto deferredSeed = segment_puzzler::seededSplitMaximumAlongWorldRay(
+        deferredSession, {10.0, 11.0, -10.0}, {10.0, 11.0, 30.0});
+    if (!deferredSeed || deferredSeed != segment_puzzler::seededSplitMaximumAlongWorldRay(
+            session, {10.0, 11.0, -10.0}, {10.0, 11.0, 30.0})) {
+        return fail("seed placement should work identically before deferred smoothing finishes");
+    }
+    segment_puzzler::updateSeededWatershedSplitLandscape(
+        deferredSession, segment_puzzler::kDefaultSeededSplitSmoothingSigmaPixels);
+    if (deferredSession.landscapeHash != smoothedLandscapeHash) {
+        return fail("deferred smoothing should reproduce the original landscape exactly");
+    }
     segment_puzzler::updateSeededWatershedSplitLandscape(session, 0.0);
     if (session.landscapeSmoothingSigmaPixels != 0.0
         || session.landscapeHash == smoothedLandscapeHash) {
@@ -120,6 +146,14 @@ int main(int argc, char **argv) {
     if (!result.valid()) {
         std::cerr << "FAIL: " << result.error << '\n';
         return EXIT_FAILURE;
+    }
+    const auto deferredResult = segment_puzzler::computeSeededWatershedSplit(
+        deferredSession, {leftSeed.value(), rightSeed.value()});
+    if (!deferredResult.valid()
+        || !std::equal(result.partition->GetBufferPointer(),
+                       result.partition->GetBufferPointer() + distanceVoxelCount,
+                       deferredResult.partition->GetBufferPointer())) {
+        return fail("deferred smoothing should preserve the watershed partition");
     }
     if (result.markers.IsNull()) {
         return fail("watershed markers should be retained for debugging");

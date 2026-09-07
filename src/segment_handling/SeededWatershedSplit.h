@@ -119,9 +119,12 @@ struct ErosionWatershedSplitResult {
     }
 };
 
+enum class SplitLandscapePreparation { Immediate, Deferred };
+
 SeededWatershedSplitSession prepareSeededWatershedSplit(
     dataType::SegmentsImageType::Pointer segments,
-    dataType::SegmentIdType label);
+    dataType::SegmentIdType label,
+    SplitLandscapePreparation landscapePreparation = SplitLandscapePreparation::Immediate);
 
 void updateSeededWatershedSplitLandscape(
     SeededWatershedSplitSession &session,
