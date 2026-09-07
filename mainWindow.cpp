@@ -1485,7 +1485,7 @@ void MainWindow::showHotkeys() {
     addSection(tr("3D & Analysis"), {
         {tr("M + Click"), tr("Open the clicked segment in the 3D surface view.")},
         {tr("N"), tr("Open all segments in a 3D surface view.")},
-        {tr("W + Click"), tr("Open the clicked segment in the 3D split view with Projected Cut and Seeded Watershed.")},
+        {tr("W + Click"), tr("Open the clicked segment in the 3D split view with Projected Cut, Seeded Watershed, and Erosion Split.")},
         {tr("F8"), tr("Open the Segment Feature Table.")}
     });
     addSection(tr("Export & Diagnostics"), {
@@ -1589,7 +1589,7 @@ void MainWindow::arm3DSegmentSplit() {
         myOrthowindow->flashShortcutLegendKey("3dsplit");
     }
     receiveStatusMessage(QStringLiteral(
-        "Click a segment in the selected segmentation to open Projected Cut and Seeded Watershed in 3D."));
+        "Click a segment in the selected segmentation to open Projected Cut, Seeded Watershed, and Erosion Split in 3D."));
 }
 
 void MainWindow::update3DSegmentSplitActionState() {
@@ -1602,7 +1602,7 @@ void MainWindow::update3DSegmentSplitActionState() {
         mySignalControl->hasWorkingSegments() && selectedSegmentationAvailable && !taskRunner->isBusy());
 
     const QString description = tr(
-        "Open a selected segment in the 3D split view and choose Projected Cut or Seeded Watershed.");
+        "Open a selected segment in the 3D split view and choose Projected Cut, Seeded Watershed, or Erosion Split.");
     splitSegment3DAction->setStatusTip(description);
     splitSegment3DAction->setToolTip(description);
 }

@@ -398,7 +398,7 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
                            "Press F8 to open the segment feature table: shape features for all labels, sortable and color-coded.",
                            isFlashed("f8")),
         createShortcutHint("3dsplit", "W", "3D Split",
-                           "Hold W and click a selected segment to use Projected Cut or Seeded Watershed in 3D.",
+                           "Hold W and click a selected segment to use Projected Cut, Seeded Watershed, or Erosion Split in 3D.",
                            activeTool == SliceViewer::ToolMode::View3DSplit || isFlashed("3dsplit")),
         createShortcutHint("f1", "F1", "Hotkeys",
                            "Press F1 to open the full hotkey reference dialog.",

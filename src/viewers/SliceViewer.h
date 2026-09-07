@@ -119,7 +119,7 @@ public:
         Erode,       // K: single-step erosion on the clicked segmentation label
         Insert,      // H: insert segmentation segment into initial segments (clears after click)
         View3D,      // M: open a 3D view for the clicked segment (clears after click)
-        View3DSplit  // W: open projected-cut and seeded-watershed tools for a selected segment
+        View3DSplit  // W: open projected-cut, seeded-watershed, and erosion-split tools for a selected segment
     };
     ToolMode activeTool = ToolMode::None;
 
