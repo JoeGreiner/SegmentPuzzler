@@ -524,10 +524,12 @@ if (BUILD_TESTING)
     target_include_directories(test_ITKSignalColorLookup PRIVATE ${CMAKE_SOURCE_DIR})
     set_target_properties(test_ITKSignalColorLookup PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
     target_link_libraries(test_ITKSignalColorLookup
+            segmentpuzzler_worker_threads
             ${SEGMENT_PUZZLER_ITK_LIBRARIES}
             ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES})
     target_include_directories(test_SelectedSegmentationAutosave PRIVATE ${CMAKE_SOURCE_DIR})
     target_link_libraries(test_SelectedSegmentationAutosave
+            segmentpuzzler_worker_threads
             ${SEGMENT_PUZZLER_ITK_LIBRARIES}
             ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES})
     target_link_libraries(test_OrthoViewer segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
@@ -562,6 +564,7 @@ if (BUILD_TESTING)
         target_compile_definitions(test_Projected3DCut PRIVATE USE_OMP)
         target_compile_definitions(test_SliceViewer PRIVATE USE_OMP)
         target_compile_definitions(test_ITKSignalColorLookup PRIVATE USE_OMP)
+        target_compile_definitions(test_SelectedSegmentationAutosave PRIVATE USE_OMP)
         target_compile_definitions(test_OrthoViewer PRIVATE USE_OMP)
         target_compile_definitions(test_OrthoViewerZoom PRIVATE USE_OMP)
         target_compile_definitions(test_ConnectedComponentSplit PRIVATE USE_OMP)
@@ -576,6 +579,7 @@ if (BUILD_TESTING)
         target_link_libraries(test_Projected3DCut OpenMP::OpenMP_CXX)
         target_link_libraries(test_SliceViewer OpenMP::OpenMP_CXX)
         target_link_libraries(test_ITKSignalColorLookup OpenMP::OpenMP_CXX)
+        target_link_libraries(test_SelectedSegmentationAutosave OpenMP::OpenMP_CXX)
         target_link_libraries(test_OrthoViewer OpenMP::OpenMP_CXX)
         target_link_libraries(test_OrthoViewerZoom OpenMP::OpenMP_CXX)
         target_link_libraries(test_ConnectedComponentSplit OpenMP::OpenMP_CXX)
@@ -642,6 +646,7 @@ if (BUILD_BENCHMARKS)
     set_target_properties(benchmark_ITKSignalColorLookup PROPERTIES
             AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
     target_link_libraries(benchmark_ITKSignalColorLookup
+            segmentpuzzler_worker_threads
             ${SEGMENT_PUZZLER_ITK_LIBRARIES}
             ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES})
     if (USE_OMP)

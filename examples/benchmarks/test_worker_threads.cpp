@@ -1,14 +1,18 @@
 #include "src/utils/WorkerThreads.h"
+#include "src/utils/MinMaxValues.h"
 #include "src/utils/DistanceMapFH3D.h"
 #include "src/utils/WatershedRagAgglomeration.h"
 #include "src/itkImageFilters/itkWorkerThreads.h"
 #include <itkBinaryThresholdImageFilter.h>
+#include <itkMinimumMaximumImageCalculator.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #ifdef USE_OMP
 #include <omp.h>
@@ -94,6 +98,11 @@ void testRuntimeIsolation(bool printResult) {
     for (std::size_t index = 0; index < mask.size(); ++index) {
         mask[index] = (index * 37 % 101) > 10;
     }
+    require(minMaxValues(mask.data(), mask.size()) == std::make_pair<unsigned char, unsigned char>(0, 1),
+            "Min/max of the binary mask is incorrect.");
+#ifdef USE_OMP
+    require(omp_get_max_threads() == 1, "Min/max changed the caller's OpenMP default.");
+#endif
     const auto distances = distance_map_benchmark::runBoundaryAwareSquaredEdt(mask, dimensions, spacing);
     if (printResult) {
         for (float distance : distances.distances) {
@@ -138,6 +147,45 @@ void testFilterIsolation() {
             "Configuring an ITK filter changed the global default.");
 }
 
+template<typename T>
+void checkMinMax(const std::vector<T> &values) {
+    using Image = itk::Image<T, 1>;
+    auto image = Image::New();
+    typename Image::SizeType size{{values.size()}};
+    image->SetRegions(size);
+    image->Allocate();
+    std::copy(values.begin(), values.end(), image->GetBufferPointer());
+    auto reference = itk::MinimumMaximumImageCalculator<Image>::New();
+    reference->SetImage(image);
+    reference->Compute();
+    const auto result = segment_puzzler::minMaxValues(values.data(), values.size());
+    require(result.first == reference->GetMinimum() && result.second == reference->GetMaximum(),
+            "Buffer min/max differs from ITK.");
+    require(std::signbit(result.first) == std::signbit(reference->GetMinimum()) &&
+            std::signbit(result.second) == std::signbit(reference->GetMaximum()),
+            "Buffer min/max changed the sign of zero.");
+}
+
+template<typename T>
+void testMinMax() {
+    checkMinMax<T>({});
+    checkMinMax<T>({0});
+    checkMinMax<T>({3, 3, 3, 3, 3});
+    checkMinMax<T>({7, 0, 2, std::numeric_limits<T>::max(), 1, std::numeric_limits<T>::lowest(), 4, 2, 6});
+    if constexpr (std::is_floating_point_v<T>) {
+        const T nan = std::numeric_limits<T>::quiet_NaN();
+        const T inf = std::numeric_limits<T>::infinity();
+        checkMinMax<T>({-8, -2, -4, -9, -3});
+        checkMinMax<T>({nan, -3, nan, -8, 2, nan, 7, nan, -1});
+        checkMinMax<T>({nan, nan, nan});
+        checkMinMax<T>({inf, inf});
+        checkMinMax<T>({-inf, -inf});
+        checkMinMax<T>({nan, inf, -inf, 0});
+        checkMinMax<T>({-T(0), T(0)});
+        checkMinMax<T>({T(0), -T(0)});
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -146,6 +194,11 @@ int main(int argc, char **argv) {
         testSelection();
         testRuntimeIsolation(printResult);
         testFilterIsolation();
+        testMinMax<unsigned int>();
+        testMinMax<unsigned long long>();
+        testMinMax<int>();
+        testMinMax<float>();
+        testMinMax<double>();
         if (!printResult) std::cout << "Worker thread tests passed.\n";
         return 0;
     } catch (const std::exception &error) {

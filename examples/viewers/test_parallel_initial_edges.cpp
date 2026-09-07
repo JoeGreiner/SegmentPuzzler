@@ -316,6 +316,10 @@ int testIgnoredLabelsAreNotMaterialized() {
         return failTest("Graph construction changed the caller's OpenMP default.");
     }
 #endif
+    if (graph->backgroundId != 0 || graph->nextFreeId != 41 ||
+        graph->getLargestIdInSegmentVolume(graphBase->pWorkingSegmentsImage) != 40) {
+        return failTest("Graph label extrema or next free id are incorrect.");
+    }
 
     if (graph->initialNodes.count(0) != 0 || graph->initialNodes.count(additionallyIgnoredLabel) != 0) {
         return failTest("Ignored labels were materialized as initial nodes.");
@@ -325,11 +329,13 @@ int testIgnoredLabelsAreNotMaterialized() {
     }
 
     std::size_t expectedVoxelCount = 0;
+    std::vector<std::size_t> expectedCountByLabel(41, 0);
     const auto *segmentLabelBuffer = graphBase->pWorkingSegmentsImage->GetBufferPointer();
     const std::size_t imageVoxelCount =
         graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels();
     for (std::size_t voxelIndex = 0; voxelIndex < imageVoxelCount; ++voxelIndex) {
         const SegmentIdType label = segmentLabelBuffer[voxelIndex];
+        ++expectedCountByLabel[label];
         if (label != 0 && label != additionallyIgnoredLabel) {
             ++expectedVoxelCount;
         }
@@ -337,10 +343,23 @@ int testIgnoredLabelsAreNotMaterialized() {
 
     std::size_t materializedVoxelCount = 0;
     for (const auto &[label, initialNode] : graph->initialNodes) {
+        if (initialNode->voxels.size() != expectedCountByLabel.at(label)) {
+            return failTest("Initial-node voxel count differs from the reference histogram.");
+        }
         materializedVoxelCount += initialNode->voxels.size();
+    }
+    for (SegmentIdType label = 37; label < 40; ++label) {
+        if (graph->initialNodes.count(label) != 0) {
+            return failTest("A missing label was materialized as an initial node.");
+        }
     }
     if (materializedVoxelCount != expectedVoxelCount) {
         return failTest("Initial nodes do not contain exactly the non-ignored voxels.");
+    }
+    graph->setBackgroundIdStrategy("backgroundIsHighestId");
+    graph->updateBackgroundIdFromVolume(graphBase->pWorkingSegmentsImage);
+    if (graph->backgroundId != 40) {
+        return failTest("Highest-label background selection is incorrect.");
     }
     return 0;
 }

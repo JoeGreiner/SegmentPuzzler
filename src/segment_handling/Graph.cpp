@@ -21,6 +21,7 @@
 #include <chrono>
 #include <QStringList>
 #include "src/utils/AppLogger.h"
+#include "src/utils/MinMaxValues.h"
 #include "src/utils/systemStats.h"
 #include "src/utils/utils.h"
 #include "graphBase.h"
@@ -699,12 +700,29 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
     ScopedGraphTimer totalTimer(verbose, __func__, QStringLiteral("Constructing initial nodes"));
     std::vector<std::size_t> voxelCountByLabel(nextFreeId, 0);
     {   ScopedGraphTimer histogramTimer(verbose, __func__, QStringLiteral("Building segment histogram"));
-        // get histogram of label ids to preallocate voxel array sizes
-        itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
-        it.GoToBegin();
-        while (!it.IsAtEnd()) {
-            ++voxelCountByLabel[it.Get()];
-            ++it;
+        const int threadCount = segment_puzzler::workerThreadCount();
+        // Dense per-worker histograms favour speed; memory scales with threadCount * nextFreeId.
+        std::vector<std::vector<std::size_t>> localHistograms(
+            threadCount, std::vector<std::size_t>(nextFreeId, 0));
+        const auto *buffer = pImage->GetBufferPointer();
+        const std::size_t voxelCount = pImage->GetLargestPossibleRegion().GetNumberOfPixels();
+        const std::size_t chunkSize = voxelCount / threadCount;
+        const std::size_t remainder = voxelCount % threadCount;
+#ifdef USE_OMP
+#pragma omp parallel for num_threads(threadCount) schedule(static)
+#endif
+        for (int worker = 0; worker < threadCount; ++worker) {
+            auto &histogram = localHistograms[worker];
+            const std::size_t begin = worker * chunkSize + std::min<std::size_t>(worker, remainder);
+            const std::size_t end = begin + chunkSize + (worker < remainder);
+            for (std::size_t index = begin; index < end; ++index) {
+                ++histogram[buffer[index]];
+            }
+        }
+        for (const auto &histogram : localHistograms) {
+            for (std::size_t label = 0; label < voxelCountByLabel.size(); ++label) {
+                voxelCountByLabel[label] += histogram[label];
+            }
         }
     }
 
@@ -846,32 +864,16 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
 
 Graph::SegmentIdType Graph::getSmallestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding smallest segment id"));
-    SegmentIdType smallestId = std::numeric_limits<SegmentIdType>::max(), currentId;
-    itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
-    it.GoToBegin();
-    while (!it.IsAtEnd()) {
-        currentId = it.Get();
-        if (currentId < smallestId) {
-            smallestId = currentId;
-        }
-        ++it;
-    }
+    const SegmentIdType smallestId = segment_puzzler::minMaxValues(
+        pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels()).first;
     logGraphDebugIf(verbose, __func__, QStringLiteral("Smallest segment id=%1").arg(smallestId));
     return smallestId;
 }
 
 Graph::SegmentIdType Graph::getLargestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding largest segment id"));
-    SegmentIdType largestId = std::numeric_limits<SegmentIdType>::min(), currentId;
-    itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
-    it.GoToBegin();
-    while (!it.IsAtEnd()) {
-        currentId = it.Get();
-        if (currentId > largestId) {
-            largestId = currentId;
-        }
-        ++it;
-    }
+    const SegmentIdType largestId = segment_puzzler::minMaxValues(
+        pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels()).second;
     logGraphDebugIf(verbose, __func__, QStringLiteral("Largest segment id=%1").arg(largestId));
     return largestId;
 }
@@ -879,17 +881,8 @@ Graph::SegmentIdType Graph::getLargestSegmentId(itk::Image<SegmentIdType, 3>::Po
 
 Graph::SegmentIdType Graph::getNextFreeId(itk::Image<Graph::SegmentIdType, 3>::Pointer pImage) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding next free segment id"));
-
-    SegmentIdType largestId = 0, currentId;
-    itk::ImageRegionConstIterator<SegmentsImageType> it(pImage, pImage->GetLargestPossibleRegion());
-    it.GoToBegin();
-    while (!it.IsAtEnd()) {
-        currentId = it.Get();
-        if (currentId > largestId) {
-            largestId = currentId;
-        }
-        ++it;
-    }
+    const SegmentIdType largestId = segment_puzzler::minMaxValues(
+        pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels()).second;
     logGraphDebugIf(verbose, __func__, QStringLiteral("Next free segment id=%1").arg(largestId + 1));
     return largestId + 1;
 }
@@ -1533,19 +1526,10 @@ void Graph::splitIntoConnectedComponentsOfWorkingNode(
 
 Graph::SegmentIdType Graph::getLargestIdInSegmentVolume(Graph::SegmentsImageType::Pointer pSegment) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding largest id in segment volume"));
-    SegmentIdType backgroundLabel = 0;
-    itk::ImageRegionConstIterator<SegmentsImageType>
-            it(pSegment, pSegment->GetLargestPossibleRegion());
-
-    it.GoToBegin();
-    while (!it.IsAtEnd()) {
-        if (it.Get() > backgroundLabel) {
-            backgroundLabel = it.Get();
-        }
-        ++it;
-    }
-    logGraphDebugIf(verbose, __func__, QStringLiteral("Largest id in segment volume=%1").arg(backgroundLabel));
-    return backgroundLabel;
+    const SegmentIdType largestId = segment_puzzler::minMaxValues(
+        pSegment->GetBufferPointer(), pSegment->GetLargestPossibleRegion().GetNumberOfPixels()).second;
+    logGraphDebugIf(verbose, __func__, QStringLiteral("Largest id in segment volume=%1").arg(largestId));
+    return largestId;
 }
 
 

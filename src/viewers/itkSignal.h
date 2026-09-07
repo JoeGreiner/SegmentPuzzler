@@ -14,6 +14,7 @@
 #include "src/file_definitions/dataTypes.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/MinMaxValues.h"
 #include "src/utils/utils.h"
 //#include "graphBase.h"
 
@@ -27,10 +28,6 @@
 #include <atomic>
 #include <cmath>
 #include <type_traits>
-
-#include <itkMinimumMaximumImageCalculator.h>
-#include <itkImageToHistogramFilter.h>
-
 
 template<typename dType>
 class itkSignal : public itkSignalBase {
@@ -254,73 +251,16 @@ template<typename dType>
 void itkSignal<dType>::computeExtrema() {
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
 
-//    typename itk::MinimumMaximumImageCalculator<SignalImageType>::Pointer minMaxCalc = itk::MinimumMaximumImageCalculator<SignalImageType>::New();
-//    // calculate xy
-//    unsigned int z_half = dimZ / 2;
-//    typename SignalImageType::IndexType startIndexXY = {0, 0, z_half};
-//    typename SignalImageType::SizeType sizeXY = {dimX, dimY, 1};
-//    typename SignalImageType::RegionType regionXY = {startIndexXY, sizeXY};
-//    minMaxCalc->SetImage(pImage);
-//    minMaxCalc->SetRegion(regionXY);
-//    minMaxCalc->Compute();
-//    minimumValue = minMaxCalc->GetMinimum();
-//    maximumValue = minMaxCalc->GetMaximum();
-//
-//    unsigned int y_half = dimY / 2;
-//    typename SignalImageType::IndexType startIndexXZ = {0, y_half, 0};
-//    typename SignalImageType::SizeType sizeXZ = {dimX, 1, dimZ};
-//    typename SignalImageType::RegionType regionXZ = {startIndexXZ, sizeXZ};
-//    minMaxCalc->SetRegion(regionXZ);
-//    minMaxCalc->Compute();
-//    minimumValue = std::min<dType>(minimumValue, minMaxCalc->GetMinimum());
-//    maximumValue = std::max<dType>(maximumValue, minMaxCalc->GetMaximum());
-//
-//    unsigned int x_half = dimX / 2;
-//    typename SignalImageType::IndexType startIndexYZ = {x_half, 0, 0};
-//    typename SignalImageType::SizeType sizeYZ = {1, dimY, dimZ};
-//    typename SignalImageType::RegionType regionYZ = {startIndexYZ, sizeYZ};
-//    minMaxCalc->SetRegion(regionYZ);
-//    minMaxCalc->Compute();
-//    minimumValue = std::min<dType>(minimumValue, minMaxCalc->GetMinimum());
-//    maximumValue = std::max<dType>(maximumValue, minMaxCalc->GetMaximum());
-
-//    calculate for whole image
-    typename itk::MinimumMaximumImageCalculator<SignalImageType>::Pointer minMaxCalc = itk::MinimumMaximumImageCalculator<SignalImageType>::New();
-    minMaxCalc->SetImage(pImage);
-    minMaxCalc->SetRegion(pImage->GetLargestPossibleRegion());
-    minMaxCalc->Compute();
-
-//    minimumValue = std::max<dType>(minimumValue, minMaxCalc->GetMinimum());
-//    maximumValue = std::min<dType>(maximumValue, minMaxCalc->GetMaximum());
-    minimumValue = minMaxCalc->GetMinimum();
-    maximumValue = minMaxCalc->GetMaximum();
+    const auto extrema = segment_puzzler::minMaxValues(
+        pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels());
+    minimumValue = extrema.first;
+    maximumValue = extrema.second;
 
     SP_LOG_DEBUG("viewer.render",
                  QStringLiteral("Computed extrema in %1 ms min=%2 max=%3")
                      .arg(QDateTime::currentMSecsSinceEpoch() - startedAtMs)
                      .arg(minimumValue)
                      .arg(maximumValue));
-//
-//    tic = omp_get_wtime();
-//    typedef itk::Statistics::ImageToHistogramFilter<SignalImageType> ImageToHistogramFilterType;
-//    typename ImageToHistogramFilterType::Pointer imageHist = itk::Statistics::ImageToHistogramFilter<SignalImageType>::New();
-//    typename ImageToHistogramFilterType::HistogramSizeType size(1);
-//    size[0] = 1000;
-//    imageHist->SetHistogramSize(size);
-//    typename ImageToHistogramFilterType::HistogramSizeType minimumVal(1);
-//    typename ImageToHistogramFilterType::HistogramSizeType maximumVal(1);
-//    imageHist->SetHistogramBinMinimum(minimumVal);
-//    imageHist->SetHistogramBinMaximum(maximumVal);
-//    imageHist->SetInput(pImage);
-//    imageHist->SetMarginalScale(10);
-//    imageHist->Update();
-//    typename ImageToHistogramFilterType::HistogramType::Pointer calculatedHistogram = imageHist->GetOutput();
-//    q01 = static_cast<dType>(calculatedHistogram->Quantile(0, 0.01));
-//    q95 = static_cast<dType>(calculatedHistogram->Quantile(0, 0.95));
-//    std::cout << "1% quantile: " << std::to_string(minimumValue) << " " << "95% quantile: "
-//              << std::to_string(maximumValue) << "\n";
-//    toc = omp_get_wtime();
-//    if (verbose) { std::cout << "duration itkSignal ImageToHistogramFilter: " << toc - tic << std::endl; }
 };
 
 
