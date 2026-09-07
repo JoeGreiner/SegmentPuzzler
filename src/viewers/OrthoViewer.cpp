@@ -50,6 +50,7 @@ struct ShortcutHintPresentation {
     QString actionLabel;
     QString toolTip;
     bool active = false;
+    QColor flashColor;
 };
 
 struct MouseActionPresentation {
@@ -285,6 +286,8 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
             return createSingleActionWithPan("Center Views", QColor("#69a7ff"));
         case SliceViewer::ToolMode::Transfer:
             return createSingleActionWithPan("Transfer", QColor("#55c5b8"));
+        case SliceViewer::ToolMode::NonOverlappingTransfer:
+            return createSingleActionWithPan("Non-Overlap Transfer", QColor("#55c5b8"));
         case SliceViewer::ToolMode::Delete:
             return createSingleActionWithPan("Delete", QColor("#ff6b6b"));
         case SliceViewer::ToolMode::Split:
@@ -314,16 +317,20 @@ InteractionModePresentation currentInteractionModePresentation(const AnnotationS
 }
 
 std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const AnnotationSliceViewer *viewer,
-                                                                     const QSet<QString> &flashedShortcutIds,
+                                                                     const QHash<QString, QColor> &shortcutFlashColors,
                                                                      OrthoViewer::ShortcutLegendProfile profile) {
-    const auto isFlashed = [&flashedShortcutIds](const QString &id) {
-        return flashedShortcutIds.contains(id);
+    const auto isFlashed = [&shortcutFlashColors](const QString &id) {
+        return shortcutFlashColors.contains(id);
     };
     const auto activeTool = viewer != nullptr ? viewer->activeTool : SliceViewer::ToolMode::None;
     std::vector<ShortcutHintPresentation> hints{
         createShortcutHint("s", "S", "Transfer",
                            "Hold S and click to transfer the working supervoxel under the cursor to the selected segmentation.",
                            activeTool == SliceViewer::ToolMode::Transfer || isFlashed("s")),
+        createShortcutHint("e", "E", "Non-Overlap Transfer",
+                           "Hold E and click to transfer the working supervoxel if it meets the overlap limit. "
+                           "Uses Settings → Non-Overlapping Transfer, including preservation of existing labels.",
+                           activeTool == SliceViewer::ToolMode::NonOverlappingTransfer || isFlashed("e")),
         createShortcutHint("d", "D", "Delete",
                            "Hold D and click to delete the segmentation label under the cursor.",
                            activeTool == SliceViewer::ToolMode::Delete || isFlashed("d")),
@@ -404,6 +411,9 @@ std::vector<ShortcutHintPresentation> currentShortcutHintPresentation(const Anno
                            isFlashed("n")),
     };
 
+    for (auto &hint : hints) {
+        hint.flashColor = shortcutFlashColors.value(hint.id);
+    }
     if (profile != OrthoViewer::ShortcutLegendProfile::Watershed) {
         return hints;
     }
@@ -453,6 +463,7 @@ public:
         keyLabel = presentation.keyLabel;
         actionLabel = presentation.actionLabel;
         active = presentation.active;
+        flashColor = presentation.flashColor;
         setToolTip(presentation.toolTip);
         update();
     }
@@ -464,9 +475,11 @@ protected:
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
 
-        const QColor fillColor = active ? QColor("#22384a") : QColor("#171b20");
-        const QColor borderColor = active ? QColor("#9bd1ff") : QColor("#2c333b");
-        const QColor keyFillColor = active ? QColor("#9bd1ff") : QColor("#232a32");
+        const QColor highlightColor = flashColor.isValid() ? flashColor : QColor("#9bd1ff");
+        const QColor fillColor = flashColor.isValid() ? mixColors(QColor("#171b20"), flashColor, 0.2)
+                                                     : (active ? QColor("#22384a") : QColor("#171b20"));
+        const QColor borderColor = active ? highlightColor : QColor("#2c333b");
+        const QColor keyFillColor = active ? highlightColor : QColor("#232a32");
         const QColor keyTextColor = active ? QColor("#0e1318") : QColor("#e7edf5");
         const QColor textColor = QColor("#f8fafc");
 
@@ -505,6 +518,7 @@ private:
     QString keyLabel;
     QString actionLabel;
     bool active = false;
+    QColor flashColor;
 };
 
 class MouseActionChip : public QWidget {
@@ -1421,8 +1435,15 @@ void OrthoViewer::setSignalRenderOrder(const std::vector<itkSignalBase *> &order
     }
 }
 
-void OrthoViewer::receiveStatusMessage(QString string) {
-    emit sendStatusMessage(string);
+void OrthoViewer::receiveStatusMessage(QString string, int timeoutMs) {
+    temporaryStatusMessageDeadline.setRemainingTime(timeoutMs);
+    emit sendStatusMessage(string, timeoutMs);
+}
+
+void OrthoViewer::receiveCoordinateStatusMessage(QString string) {
+    if (temporaryStatusMessageDeadline.hasExpired()) {
+        emit sendStatusMessage(string);
+    }
 }
 
 void OrthoViewer::setMorphologyOpeningRadius(int radius) {
@@ -1493,6 +1514,9 @@ void OrthoViewer::initialize() {
     connect(xy, &SliceViewer::sendStatusMessage, this, &OrthoViewer::receiveStatusMessage);
     connect(xz, &SliceViewer::sendStatusMessage, this, &OrthoViewer::receiveStatusMessage);
     connect(zy, &SliceViewer::sendStatusMessage, this, &OrthoViewer::receiveStatusMessage);
+    connect(xy, &SliceViewer::sendCoordinateStatusMessage, this, &OrthoViewer::receiveCoordinateStatusMessage);
+    connect(xz, &SliceViewer::sendCoordinateStatusMessage, this, &OrthoViewer::receiveCoordinateStatusMessage);
+    connect(zy, &SliceViewer::sendCoordinateStatusMessage, this, &OrthoViewer::receiveCoordinateStatusMessage);
     updatePlaneIndicators();
     refreshInteractionModeIndicators();
 }
@@ -1780,15 +1804,15 @@ void OrthoViewer::refreshInteractionModeIndicators() {
     }
 
     shortcutLegendWidget->setMouseActions(currentMouseActionPresentation(xy));
-    shortcutLegendWidget->setHints(currentShortcutHintPresentation(xy, flashedShortcutIds, shortcutLegendProfile));
+    shortcutLegendWidget->setHints(currentShortcutHintPresentation(xy, shortcutFlashColors, shortcutLegendProfile));
 }
 
-void OrthoViewer::flashShortcutLegendKey(const QString &shortcutId) {
+void OrthoViewer::flashShortcutLegendKey(const QString &shortcutId, const QColor &color) {
     if (shortcutId.isEmpty()) {
         return;
     }
 
-    flashedShortcutIds.insert(shortcutId);
+    shortcutFlashColors.insert(shortcutId, color);
     shortcutFlashGenerations[shortcutId] = shortcutFlashGenerations.value(shortcutId) + 1;
     const int generation = shortcutFlashGenerations.value(shortcutId);
     refreshInteractionModeIndicators();
@@ -1797,7 +1821,7 @@ void OrthoViewer::flashShortcutLegendKey(const QString &shortcutId) {
         if (shortcutFlashGenerations.value(shortcutId) != generation) {
             return;
         }
-        flashedShortcutIds.remove(shortcutId);
+        shortcutFlashColors.remove(shortcutId);
         refreshInteractionModeIndicators();
     });
 }

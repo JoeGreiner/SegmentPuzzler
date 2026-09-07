@@ -112,6 +112,8 @@ protected:
 
     void refreshBrushCursor() override;
 
+    void transferNonOverlappingWorkingNodeToSegmentation(int posX, int posY);
+
     void drawLineTo(QPoint endPoint);
 
     void setPenWidth(int newPenWidth);

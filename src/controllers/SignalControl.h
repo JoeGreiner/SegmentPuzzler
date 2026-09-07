@@ -207,6 +207,8 @@ public slots:
 
     void transferSupervoxelsByRefinementOverlap();
 
+    void showNonOverlappingTransferSettings();
+
     void setTransparentLabelIdInRefinement();
 
     void runConnectedComponentSplit();
@@ -228,6 +230,9 @@ public slots:
 
 
 private:
+    enum class NonOverlappingTransferDialogMode { All, ByVolume, Settings };
+    void showNonOverlappingTransferDialog(NonOverlappingTransferDialogMode mode);
+
     struct LoadedImageLayer {
         itk::DataObject::Pointer image;
         QString suffix;
@@ -309,6 +314,8 @@ private:
     QAction *transferWithVolumeAction = nullptr;
     QAction *transferAllAction = nullptr;
     QAction *transferWithRefinementAction = nullptr;
+    QAction *transferNonOverlappingAction = nullptr;
+    QAction *transferNonOverlappingWithVolumeAction = nullptr;
 
     bool roiSelectionActive = false;
     bool paintModeActive = false;

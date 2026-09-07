@@ -2660,6 +2660,120 @@ void Graph::transferSegmentsWithVolumeCriterion(double volumeThreshold) {
     }
 }
 
+void Graph::transferNonOverlappingSegments(
+        double maximumOverlapFraction,
+        double minimumVoxelCount,
+        bool preserveExistingSegmentation) {
+    std::vector<SegmentIdType> workingLabels;
+    workingLabels.reserve(workingNodes.size());
+    for (const auto &entry : workingNodes) {
+        workingLabels.push_back(entry.first);
+    }
+    transferNonOverlappingWorkingNodesToSegmentation(
+        workingLabels, maximumOverlapFraction, minimumVoxelCount, preserveExistingSegmentation);
+}
+
+std::optional<Graph::SegmentIdType> Graph::transferNonOverlappingWorkingNodeToSegmentation(
+        int x, int y, int z, double maximumOverlapFraction,
+        bool preserveExistingSegmentation, NonOverlappingTransferRejection *rejection) {
+    if (rejection != nullptr) {
+        *rejection = NonOverlappingTransferRejection::None;
+    }
+    if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr) {
+        return std::nullopt;
+    }
+    const SegmentsImageType::IndexType index{{x, y, z}};
+    if (!graphBase->pWorkingSegmentsImage->GetBufferedRegion().IsInside(index)) {
+        return std::nullopt;
+    }
+    const SegmentIdType workingLabel = graphBase->pWorkingSegmentsImage->GetPixel(index);
+    const auto assignedLabels = transferNonOverlappingWorkingNodesToSegmentation(
+        {workingLabel}, maximumOverlapFraction, 0, preserveExistingSegmentation, rejection);
+    if (assignedLabels.empty()) {
+        return std::nullopt;
+    }
+    return assignedLabels.front();
+}
+
+std::vector<Graph::SegmentIdType> Graph::transferNonOverlappingWorkingNodesToSegmentation(
+        const std::vector<SegmentIdType> &workingLabels,
+        double maximumOverlapFraction, double minimumVoxelCount,
+        bool preserveExistingSegmentation, NonOverlappingTransferRejection *rejection) {
+    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring non-overlapping supervoxels"));
+    if (!std::isfinite(maximumOverlapFraction) ||
+        maximumOverlapFraction < 0.0 || maximumOverlapFraction > 1.0) {
+        throw std::invalid_argument("Maximum overlap fraction must be between 0 and 1.");
+    }
+    if (!std::isfinite(minimumVoxelCount) || minimumVoxelCount < 0.0) {
+        throw std::invalid_argument("Minimum voxel count must be finite and non-negative.");
+    }
+    if (graphBase == nullptr || graphBase->pSelectedSegmentation == nullptr) {
+        logGraph(LogLevel::Warning, __func__, QStringLiteral("No selected segmentation is loaded"));
+        return {};
+    }
+    if (graphBase->pWorkingSegmentsImage == nullptr ||
+        !regionsMatch(graphBase->pSelectedSegmentation->GetLargestPossibleRegion(),
+                      graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion())) {
+        logGraph(LogLevel::Warning,
+                 __func__,
+                 QStringLiteral("Selected segmentation and working segments use incompatible image regions"));
+        return {};
+    }
+
+    // Converting a UI percentage to a fraction can round down by one representable step.
+    const double overlapLimit = maximumOverlapFraction > 0.0
+        ? std::nextafter(maximumOverlapFraction, 1.0) : 0.0;
+    const auto selectedRegion = graphBase->pSelectedSegmentation->GetBufferedRegion();
+    std::vector<SegmentIdType> workingLabelsToTransfer;
+    for (const SegmentIdType workingLabel : workingLabels) {
+        const auto nodeIt = workingNodes.find(workingLabel);
+        if (nodeIt == workingNodes.end() || nodeIt->second == nullptr || workingLabel == backgroundId ||
+            (pIgnoredSegmentLabels != nullptr && isIgnoredId(workingLabel))) {
+            continue;
+        }
+        const auto voxelLists = nodeIt->second->getVoxelLists();
+        std::size_t voxelCount = 0;
+        for (const auto *voxelList : voxelLists) {
+            if (voxelList == nullptr) {
+                throw std::invalid_argument("Working supervoxel contains a null voxel list.");
+            }
+            voxelCount += voxelList->size();
+        }
+        if (voxelCount == 0 || voxelCount <= minimumVoxelCount) {
+            continue;
+        }
+
+        std::size_t overlappingVoxelCount = 0;
+        for (const auto *voxelList : voxelLists) {
+            for (const Voxel &voxel : *voxelList) {
+                const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
+                if (!selectedRegion.IsInside(index)) {
+                    throw std::invalid_argument("Working supervoxel lies outside the selected segmentation.");
+                }
+                if (graphBase->pSelectedSegmentation->GetPixel(index) != 0) {
+                    ++overlappingVoxelCount;
+                }
+            }
+        }
+        if (preserveExistingSegmentation && overlappingVoxelCount == voxelCount) {
+            if (rejection != nullptr) {
+                *rejection = NonOverlappingTransferRejection::NoEmptyVoxels;
+            }
+            continue;
+        }
+        const double overlapFraction =
+            static_cast<double>(overlappingVoxelCount) / static_cast<double>(voxelCount);
+        if (overlapFraction <= overlapLimit) {
+            workingLabelsToTransfer.push_back(workingLabel);
+        } else if (rejection != nullptr) {
+            *rejection = NonOverlappingTransferRejection::OverlapExceeded;
+        }
+    }
+
+    std::sort(workingLabelsToTransfer.begin(), workingLabelsToTransfer.end());
+    return transferWorkingNodesToSegmentation(workingLabelsToTransfer, preserveExistingSegmentation);
+}
+
 void Graph::setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn) {
     backgroundIdStrategy = backgroundIdStrategyIn;
     logGraphDebugIf(verbose,
@@ -3999,7 +4113,9 @@ Graph::transferWorkingNodeToSegmentation(SegmentIdType labelOfNodeToTransfer) {
 }
 
 std::vector<Graph::SegmentIdType>
-Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &workingLabelsToTransfer) {
+Graph::transferWorkingNodesToSegmentation(
+        const std::vector<SegmentIdType> &workingLabelsToTransfer,
+        bool preserveExistingSegmentation) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring working nodes to segmentation"));
     std::vector<SegmentIdType> assignedSegmentationLabels;
     if (workingLabelsToTransfer.empty()) {
@@ -4022,7 +4138,7 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
     nodesToTransfer.reserve(workingLabelsToTransfer.size());
     std::unordered_set<SegmentIdType> seenWorkingLabels;
     seenWorkingLabels.reserve(workingLabelsToTransfer.size());
-    const auto selectedRegion = graphBase->pSelectedSegmentation->GetLargestPossibleRegion();
+    const auto selectedRegion = graphBase->pSelectedSegmentation->GetBufferedRegion();
 
     for (const SegmentIdType workingLabel : workingLabelsToTransfer) {
         if (!seenWorkingLabels.insert(workingLabel).second) {
@@ -4047,6 +4163,7 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
                      QStringLiteral("Working label %1 is missing from workingNodes").arg(workingLabel));
             return {};
         }
+        bool hasVoxelsToTransfer = !preserveExistingSegmentation;
         for (const auto &voxelList : workingNodeIt->second->getVoxelLists()) {
             if (voxelList == nullptr) {
                 logGraph(LogLevel::Error,
@@ -4063,9 +4180,15 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
                                  .arg(workingLabel));
                     return {};
                 }
+                if (preserveExistingSegmentation &&
+                    graphBase->pSelectedSegmentation->GetPixel(index) == 0) {
+                    hasVoxelsToTransfer = true;
+                }
             }
         }
-        nodesToTransfer.push_back(workingNodeIt->second);
+        if (hasVoxelsToTransfer) {
+            nodesToTransfer.push_back(workingNodeIt->second);
+        }
     }
 
     if (nodesToTransfer.empty()) {
@@ -4093,7 +4216,10 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
         const SegmentIdType segmentationLabel = assignedSegmentationLabels[nodeIndex];
         for (const auto &voxelList : nodesToTransfer[nodeIndex]->getVoxelLists()) {
             for (const Voxel &voxel : *voxelList) {
-                graphBase->pSelectedSegmentation->SetPixel({voxel.x, voxel.y, voxel.z}, segmentationLabel);
+                const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
+                if (!preserveExistingSegmentation || graphBase->pSelectedSegmentation->GetPixel(index) == 0) {
+                    graphBase->pSelectedSegmentation->SetPixel(index, segmentationLabel);
+                }
             }
         }
     }
@@ -4103,7 +4229,7 @@ Graph::transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &work
     logGraphDebugIf(
         verbose,
         __func__,
-        QStringLiteral("Transferred working labels=[%1] to segmentation labels=[%2]")
+        QStringLiteral("Requested working labels=[%1], assigned segmentation labels=[%2]")
             .arg(joinIds(workingLabelsToTransfer))
             .arg(joinIds(assignedSegmentationLabels)));
     return assignedSegmentationLabels;

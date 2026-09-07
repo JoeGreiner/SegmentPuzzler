@@ -31,7 +31,7 @@ protected:
 
 public slots:
     void loadSegmentationSample();
-    void receiveStatusMessage(const QString& string);
+    void receiveStatusMessage(const QString& string, int timeoutMs = 0);
 
 private slots:
     void showHotkeys();

@@ -127,7 +127,7 @@ void ROIExtractionSliceViewer::mouseMoveEvent(QMouseEvent *event) {
         }
     }
 
-    sendStatusMessage(logMessage);
+    sendCoordinateStatusMessage(logMessage);
 
     for (auto *viewer : linkedViewerList) {
         viewer->updateMousePosition(x, y, z);

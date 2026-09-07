@@ -9,10 +9,12 @@
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/qtUtils/ImageNormalizationSettingsDialog.h"
+#include "src/qtUtils/NonOverlappingTransferSettings.h"
 #include <itkImage.h>
 #include <src/viewers/itkSignal.h>
 #include <QFileDialog>
 #include <QColorDialog>
+#include <QCheckBox>
 #include <QDir>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -939,6 +941,9 @@ void SignalControl::refreshUiState() {
     transferWithVolumeAction->setEnabled(enabled && hasSelectedSegmentation());
     transferWithRefinementAction->setEnabled(enabled && hasSelectedSegmentation() && hasSelectedRefinement());
     transferAllAction->setEnabled(enabled && hasSelectedSegmentation());
+    const bool canTransferNonOverlapping = enabled && hasWorkingSegments() && hasSelectedSegmentation();
+    transferNonOverlappingAction->setEnabled(canTransferNonOverlapping);
+    transferNonOverlappingWithVolumeAction->setEnabled(canTransferNonOverlapping);
     schedulePreferredSidebarWidthChanged();
 }
 
@@ -2457,6 +2462,8 @@ void SignalControl::populateSegmentationMenu(QMenu *menu) {
     QMenu *transferMenu = menu->addMenu(tr("Transfer"));
     transferMenu->addAction(transferAllAction);
     transferMenu->addAction(transferWithVolumeAction);
+    transferMenu->addAction(transferNonOverlappingAction);
+    transferMenu->addAction(transferNonOverlappingWithVolumeAction);
     transferMenu->addAction(transferWithRefinementAction);
 
     QMenu *refinementMenu = menu->addMenu(tr("Refinement"));
@@ -2495,6 +2502,12 @@ void SignalControl::createMenuActions() {
     createAction(transferWithVolumeAction, tr("Transfer Supervoxels by Volume"), &SignalControl::transferSegmentsWithVolume);
     createAction(transferAllAction, tr("Transfer All Supervoxels"), &SignalControl::transferAllSegments);
     createAction(transferWithRefinementAction, tr("Transfer Supervoxels by Refinement Overlap"), &SignalControl::transferSupervoxelsByRefinementOverlap);
+    createAction(transferNonOverlappingAction,
+                 tr("Transfer Non-Overlapping Supervoxels…"),
+                 [this]() { showNonOverlappingTransferDialog(NonOverlappingTransferDialogMode::All); });
+    createAction(transferNonOverlappingWithVolumeAction,
+                 tr("Transfer Non-Overlapping Supervoxels by Volume…"),
+                 [this]() { showNonOverlappingTransferDialog(NonOverlappingTransferDialogMode::ByVolume); });
 
     connectedComponentSplitTargetGroup = new QActionGroup(this);
     connectedComponentSplitTargetInitialAction = new QAction(tr("Target: Initial Segments"), this);
@@ -2931,6 +2944,87 @@ void SignalControl::transferAllSegments() {
         [this]() { refreshViewers(); });
 }
 
+
+void SignalControl::showNonOverlappingTransferSettings() {
+    showNonOverlappingTransferDialog(NonOverlappingTransferDialogMode::Settings);
+}
+
+void SignalControl::showNonOverlappingTransferDialog(NonOverlappingTransferDialogMode mode) {
+    namespace transfer_settings = segment_puzzler::non_overlapping_transfer;
+    const bool settingsOnly = mode == NonOverlappingTransferDialogMode::Settings;
+    const bool filterByVolume = mode == NonOverlappingTransferDialogMode::ByVolume;
+    if (!settingsOnly && (!hasWorkingSegments() || !hasSelectedSegmentation())) {
+        showInfoMessage("Please load supervoxels and load or create a segmentation first.");
+        return;
+    }
+
+    const auto defaults = transfer_settings::loadSettings();
+    QDialog optionsDialog(this);
+    optionsDialog.setWindowTitle(settingsOnly
+        ? tr("Non-Overlapping Transfer Settings")
+        : (filterByVolume ? tr("Transfer Non-Overlapping Supervoxels by Volume")
+                          : tr("Transfer Non-Overlapping Supervoxels")));
+    auto *form = new QFormLayout(&optionsDialog);
+
+    auto *overlapSpinBox = new QDoubleSpinBox(&optionsDialog);
+    overlapSpinBox->setRange(0.0, 100.0);
+    overlapSpinBox->setDecimals(1);
+    overlapSpinBox->setSuffix(tr(" %"));
+    overlapSpinBox->setValue(100.0 * defaults.maximumOverlapFraction);
+    form->addRow(tr("Maximum overlap with existing segmentation:"), overlapSpinBox);
+    auto *overlapHint = new QLabel(
+        tr("Maximum percentage of each supervoxel already covered by the existing segmentation. "
+           "0% allows no overlap."), &optionsDialog);
+    overlapHint->setWordWrap(true);
+    form->addRow(overlapHint);
+
+    QSpinBox *volumeSpinBox = nullptr;
+    if (filterByVolume) {
+        volumeSpinBox = new QSpinBox(&optionsDialog);
+        volumeSpinBox->setRange(0, 1000000);
+        volumeSpinBox->setValue(50000);
+        volumeSpinBox->setSuffix(tr(" voxels"));
+        volumeSpinBox->setToolTip(tr("Uses the entire supervoxel volume before preserving existing labels."));
+        form->addRow(tr("Supervoxel volume greater than:"), volumeSpinBox);
+    }
+
+    auto *preserveSegmentationCheckBox = new QCheckBox(tr("Preserve existing segmentation"), &optionsDialog);
+    preserveSegmentationCheckBox->setChecked(defaults.preserveExistingSegmentation);
+    form->addRow(preserveSegmentationCheckBox);
+    auto *priorityHint = new QLabel(
+        tr("When checked, only empty voxels are filled. Otherwise, transferred supervoxels "
+           "overwrite existing labels where they overlap."), &optionsDialog);
+    priorityHint->setWordWrap(true);
+    form->addRow(priorityHint);
+
+    auto *buttons = new QDialogButtonBox(
+        (settingsOnly ? QDialogButtonBox::Save : QDialogButtonBox::Ok) | QDialogButtonBox::Cancel,
+        &optionsDialog);
+    if (!settingsOnly) {
+        buttons->button(QDialogButtonBox::Ok)->setText(tr("Transfer"));
+    }
+    connect(buttons, &QDialogButtonBox::accepted, &optionsDialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &optionsDialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (optionsDialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const double maximumOverlapFraction = overlapSpinBox->value() / 100.0;
+    const double minimumVoxelCount = volumeSpinBox != nullptr ? volumeSpinBox->value() : 0;
+    const bool preserveExistingSegmentation = preserveSegmentationCheckBox->isChecked();
+    if (settingsOnly) {
+        transfer_settings::saveSettings({maximumOverlapFraction, preserveExistingSegmentation});
+        return;
+    }
+    taskRunner->runWithLabel(
+        QStringLiteral("Transferring non-overlapping supervoxels..."),
+        [this, maximumOverlapFraction, minimumVoxelCount, preserveExistingSegmentation]() {
+            graphBase->pGraph->transferNonOverlappingSegments(
+                maximumOverlapFraction, minimumVoxelCount, preserveExistingSegmentation);
+        },
+        [this]() { refreshViewers(); });
+}
 
 void SignalControl::transferSupervoxelsByRefinementOverlap() {
     if (!hasSelectedSegmentation()) {

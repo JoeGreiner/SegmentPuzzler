@@ -26,6 +26,7 @@
 #include "src/utils/ConnectedComponentLabelSplitter.h"
 #include "OrthoViewer.h"
 #include "src/qtUtils/TaskRunner.h"
+#include "src/qtUtils/NonOverlappingTransferSettings.h"
 
 namespace {
 
@@ -154,6 +155,8 @@ std::optional<SliceViewer::ToolMode> transientToolModeForKey(int key) {
             return SliceViewer::ToolMode::Ctrl;
         case Qt::Key_S:
             return SliceViewer::ToolMode::Transfer;
+        case Qt::Key_E:
+            return SliceViewer::ToolMode::NonOverlappingTransfer;
         case Qt::Key_P:
             return SliceViewer::ToolMode::Refine;
         case Qt::Key_D:
@@ -639,6 +642,8 @@ void AnnotationSliceViewer::keyPressEvent(QKeyEvent *event) {
         this->exportView();
     } else if (event->key() == Qt::Key_S) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Transfer);
+    } else if (event->key() == Qt::Key_E) {
+        setLinkedToolModeAndNotify(linkedViewerList, ToolMode::NonOverlappingTransfer);
     } else if (event->key() == Qt::Key_P) {
         setLinkedToolModeAndNotify(linkedViewerList, ToolMode::Refine);
     } else if (event->key() == Qt::Key_Q) {
@@ -1426,6 +1431,10 @@ void AnnotationSliceViewer::mousePressEvent(QMouseEvent *event) {
         transferWorkingNodeToSegmentation(event->pos().x(), event->pos().y());
         for (auto *viewer : linkedViewerList) { viewer->recalculateQImages(); }
         break;
+    case ToolMode::NonOverlappingTransfer:
+        transferNonOverlappingWorkingNodeToSegmentation(event->pos().x(), event->pos().y());
+        for (auto *viewer : linkedViewerList) { viewer->recalculateQImages(); }
+        break;
     case ToolMode::Delete:
         deleteConnectedLabelFromSegmentation(event->pos().x(), event->pos().y());
         for (auto *viewer : linkedViewerList) { viewer->recalculateQImages(); }
@@ -1990,6 +1999,36 @@ void AnnotationSliceViewer::transferWorkingNodeToSegmentation(int posX, int posY
 }
 
 
+void AnnotationSliceViewer::transferNonOverlappingWorkingNodeToSegmentation(int posX, int posY) {
+    if (graphBase == nullptr || graphBase->pGraph == nullptr || graphBase->pSelectedSegmentation == nullptr) {
+        return;
+    }
+    int x, y, z;
+    getXYZfromPixmapPos(posX, posY, x, y, z);
+    const auto settings = segment_puzzler::non_overlapping_transfer::loadSettings();
+    try {
+        Graph::NonOverlappingTransferRejection rejection = Graph::NonOverlappingTransferRejection::None;
+        graphBase->pGraph->transferNonOverlappingWorkingNodeToSegmentation(
+            x, y, z, settings.maximumOverlapFraction, settings.preserveExistingSegmentation, &rejection);
+        QString message;
+        if (rejection == Graph::NonOverlappingTransferRejection::OverlapExceeded) {
+            message = QStringLiteral("Not transferred: overlap exceeds %1%.")
+                          .arg(settings.maximumOverlapFraction * 100.0, 0, 'f', 1);
+        } else if (rejection == Graph::NonOverlappingTransferRejection::NoEmptyVoxels) {
+            message = QStringLiteral("Not transferred: no empty voxels.");
+        }
+        if (!message.isEmpty()) {
+            emit sendStatusMessage(message, 4000);
+            if (auto *viewer = orthoViewer(); viewer != nullptr) {
+                viewer->flashShortcutLegendKey("e", QColor("#f0a44b"));
+            }
+        }
+    } catch (const std::exception &error) {
+        SP_LOG_ERROR("segmentation", QStringLiteral("Non-overlapping transfer failed: %1")
+                         .arg(QString::fromUtf8(error.what())));
+    }
+}
+
 void AnnotationSliceViewer::deleteConnectedLabelFromSegmentation(int posX, int posY) {
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     if (graphBase->pSelectedSegmentation != nullptr
@@ -2033,7 +2072,7 @@ void AnnotationSliceViewer::mouseMoveEvent(QMouseEvent *event) {
     }
 
 //        logMessage.sprintf("x: %01.0d y: %01.0d z: %01.0d", lastMouseY, lastMouseY, lastMouseZ);
-    sendStatusMessage(logMessage);
+    sendCoordinateStatusMessage(logMessage);
 
 
 

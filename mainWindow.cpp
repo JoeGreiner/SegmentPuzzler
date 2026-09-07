@@ -384,6 +384,12 @@ MainWindow::MainWindow() {
     connect(renderOrderAction, &QAction::triggered, this, &MainWindow::showLayerRenderOrder);
 
     settingsMenu = menuBar()->addMenu(tr("&Settings"));
+    QAction *nonOverlappingTransferSettingsAction =
+        settingsMenu->addAction(tr("Non-Overlapping Transfer…"));
+    connect(nonOverlappingTransferSettingsAction, &QAction::triggered,
+            mySignalControl, &SignalControl::showNonOverlappingTransferSettings);
+    connect(taskRunner.get(), &TaskRunner::busyChanged,
+            nonOverlappingTransferSettingsAction, &QAction::setDisabled);
     voxelSpacingAction = new QAction(tr("Voxel Spacing..."), this);
     settingsMenu->addAction(voxelSpacingAction);
     connect(voxelSpacingAction, &QAction::triggered, this, &MainWindow::showVoxelSpacingSettings);
@@ -1468,6 +1474,7 @@ void MainWindow::showHotkeys() {
     });
     addSection(tr("Supervoxels & Refinement"), {
         {tr("S + Click"), tr("Transfer the clicked working supervoxel to the selected segmentation.")},
+        {tr("E + Click"), tr("Transfer the clicked supervoxel using Settings → Non-Overlapping Transfer.")},
         {tr("X + Click"), tr("Split the clicked working node into its initial nodes.")},
         {tr("C + Click"), tr("Cut the clicked initial label out of its working supervoxel.")},
         {tr("H + Click"), tr("Insert the clicked segmentation segment into the initial nodes.")},
@@ -1495,8 +1502,8 @@ void MainWindow::showHotkeys() {
 }
 
 
-void MainWindow::receiveStatusMessage(const QString& string) {
-    statusBar()->showMessage(string);
+void MainWindow::receiveStatusMessage(const QString& string, int timeoutMs) {
+    statusBar()->showMessage(string, timeoutMs);
 }
 
 void MainWindow::exportViewSeries(AnnotationSliceViewer *viewer) {

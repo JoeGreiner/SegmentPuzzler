@@ -11,6 +11,7 @@
 #include <QVBoxLayout>
 #include <QGridLayout>
 #include <QHash>
+#include <QDeadlineTimer>
 #include <QSet>
 #include "src/viewers/AnnotationSliceViewer.h"
 #include "itkSignal.h"
@@ -77,7 +78,7 @@ public:
     double computeFittedZoom() const;
     int maximumSliceExtent() const;
     void refreshInteractionModeIndicators();
-    void flashShortcutLegendKey(const QString &shortcutId);
+    void flashShortcutLegendKey(const QString &shortcutId, const QColor &color = {});
     void setShortcutLegendProfile(ShortcutLegendProfile profile);
     void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
     void setPaintId(dataType::SegmentIdType paintId);
@@ -108,11 +109,12 @@ public:
 
 
 signals:
-    void sendStatusMessage(QString);
+    void sendStatusMessage(QString, int timeoutMs = 0);
     void viewerInputFocusChanged(bool active);
 
 public slots:
-    void receiveStatusMessage(QString string);
+    void receiveStatusMessage(QString string, int timeoutMs = 0);
+    void receiveCoordinateStatusMessage(QString string);
     void setViewToMiddleOfStack();
     void setMorphologyOpeningRadius(int radius);
     void setMorphologyClosingRadius(int radius);
@@ -180,8 +182,9 @@ private:
     VisibleRectOverlay *xyIndicator;
     VisibleRectOverlay *xzIndicator;
     VisibleRectOverlay *zyIndicator;
-    QSet<QString> flashedShortcutIds;
+    QHash<QString, QColor> shortcutFlashColors;
     QHash<QString, int> shortcutFlashGenerations;
+    QDeadlineTimer temporaryStatusMessageDeadline;
     ShortcutLegendProfile shortcutLegendProfile = ShortcutLegendProfile::Default;
     bool autoAdjustingSplitters = false;
     bool viewerInputFocusActive = false;

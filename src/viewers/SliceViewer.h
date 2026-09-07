@@ -107,6 +107,7 @@ public:
         None,
         Ctrl,        // Ctrl: center viewports on click, pan on drag
         Transfer,    // S: transfer working node to final segmentation
+        NonOverlappingTransfer, // E: transfer working node if it meets the overlap limit
         Delete,      // D: delete label from final segmentation
         Split,       // X: split working node into initial nodes
         Cut,         // C: cut one initial segment out of a working node
@@ -147,7 +148,8 @@ public:
 
 signals:
 
-    void sendStatusMessage(QString);
+    void sendStatusMessage(QString, int timeoutMs = 0);
+    void sendCoordinateStatusMessage(QString);
     void sliceIndexChanged(int sliceAxis, int sliceIndex);
 
 

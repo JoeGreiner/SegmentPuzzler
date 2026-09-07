@@ -248,8 +248,11 @@ public:
 
     // Transfers each unique WorkingNode under one fresh label into the selected segmentation.
     // Returns the assigned selected-segmentation labels in the same order.
+    // When preserving existing segmentation, only label-zero voxels are written;
+    // nodes without free voxels are skipped and receive no label.
     std::vector<SegmentIdType>
-    transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &workingLabelsToTransfer);
+    transferWorkingNodesToSegmentation(const std::vector<SegmentIdType> &workingLabelsToTransfer,
+                                      bool preserveExistingSegmentation = false);
 
     // Delete all pixels with the given label from pSelectedSegmentation (sets them to backgroundId).
     void deleteSegmentationLabel(SegmentIdType label);
@@ -264,6 +267,20 @@ public:
         std::size_t exclusiveVoxelThreshold) const;
 
     void transferSegmentsWithVolumeCriterion(double volumeThreshold=50000);
+
+    // Transfers WorkingNodes with total voxel count > minimumVoxelCount and
+    // non-zero selected-segmentation overlap <= maximumOverlapFraction (0..1).
+    void transferNonOverlappingSegments(double maximumOverlapFraction,
+                                        double minimumVoxelCount = 0,
+                                        bool preserveExistingSegmentation = true);
+
+    enum class NonOverlappingTransferRejection { None, OverlapExceeded, NoEmptyVoxels };
+
+    // Applies the same overlap criterion to only the WorkingNode at this position.
+    std::optional<SegmentIdType> transferNonOverlappingWorkingNodeToSegmentation(
+        int x, int y, int z, double maximumOverlapFraction,
+        bool preserveExistingSegmentation = true,
+        NonOverlappingTransferRejection *rejection = nullptr);
 
     // Transfers every WorkingNode whose largest non-zero refinement overlap
     // fraction is > overlapThreshold.
@@ -391,6 +408,12 @@ public:
 
 
 private:
+    std::vector<SegmentIdType> transferNonOverlappingWorkingNodesToSegmentation(
+        const std::vector<SegmentIdType> &workingLabels,
+        double maximumOverlapFraction, double minimumVoxelCount,
+        bool preserveExistingSegmentation,
+        NonOverlappingTransferRejection *rejection = nullptr);
+
     bool applyWorkingNodePartition(
         SegmentIdType targetWorkingLabel,
         const std::vector<Voxel> &targetVoxels,

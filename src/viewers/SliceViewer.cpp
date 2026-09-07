@@ -228,7 +228,7 @@ void SliceViewer::setSliceIndex(int proposedSliceIndex) {
                 .arg(lastMouseZ).arg(getDimZ() - 1)
                 .arg(sliceAxis);
 //        logMessage.sprintf("x: %01.0d y: %01.0d z: %01.0d", lastMouseY, lastMouseY, lastMouseZ);
-        sendStatusMessage(logMessage);
+        sendCoordinateStatusMessage(logMessage);
 
 // Protect access to signalList with a mutex
 //        std::lock_guard<std::mutex> lock(signalListMutex);
