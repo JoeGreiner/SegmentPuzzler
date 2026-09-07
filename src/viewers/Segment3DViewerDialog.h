@@ -61,6 +61,7 @@ public:
         quint32 lutColor = 0xAAAAAA;
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
         bool touchesImageBoundary = false;
+        std::uint64_t voxelCount = 0;
     };
 
     struct PreparedScene {
@@ -73,6 +74,7 @@ public:
         bool navigationCatalogComplete = false;
         std::array<double, 3> sceneCenterWorld{0.0, 0.0, 0.0};
         double sceneExtent = 1.0;
+        bool allLabelsInImage = false;
     };
 
     static PreparedScene prepareScene(
@@ -162,6 +164,7 @@ private:
         dataType::SegmentIdType labelId = 0;
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
         bool touchesImageBoundary = false;
+        std::uint64_t voxelCount = 0;
     };
 
     struct SeedRayHit {
@@ -175,7 +178,15 @@ private:
         ErosionWatershed
     };
 
+    enum class CellSelection {
+        All,
+        Largest,
+        Smallest,
+        Random
+    };
+
     void cycleSegmentColors();
+    void updateCellVisibility();
     void applyColorCycle(std::vector<SegmentActorInfo> &actors) const;
     void stepExplodeSlider(int direction);
     QHBoxLayout *ensureControlsRow();
@@ -242,6 +253,12 @@ private:
 
     QSlider *m_explodeSlider = nullptr;
     QHBoxLayout *m_controlsRow = nullptr;
+    QSpinBox *m_cellCountSpinBox = nullptr;
+    QLabel *m_visibleCellCountLabel = nullptr;
+    QCheckBox *m_hideImageBoundaryCellsCheckBox = nullptr;
+    CellSelection m_cellSelection = CellSelection::All;
+    int m_cellCountLimit = 50;
+    quint32 m_cellSelectionSeed = 0;
     QPushButton *m_previousLabelButton = nullptr;
     QPushButton *m_nextLabelButton = nullptr;
     QLabel *m_navigationLabel = nullptr;

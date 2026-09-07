@@ -30,6 +30,7 @@
 #include <QRandomGenerator>
 #include <QShortcut>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QSaveFile>
 #include <QSlider>
 #include <QSpinBox>
@@ -85,6 +86,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -663,10 +665,15 @@ struct BoundsScanResult {
     int maxZ = -1;
 };
 
+struct LabelScanResult {
+    BoundsScanResult bounds;
+    std::uint64_t voxelCount = 0;
+};
+
 struct AllLabelsScanResult {
     BoundsScanResult bounds;
     std::vector<dataType::SegmentIdType> labels;
-    std::unordered_map<dataType::SegmentIdType, BoundsScanResult> boundsByLabel;
+    std::unordered_map<dataType::SegmentIdType, LabelScanResult> statsByLabel;
 };
 
 void includeInBounds(BoundsScanResult &bounds, int x, int y, int z) {
@@ -695,7 +702,7 @@ AllLabelsScanResult scanAllLabelsAndBounds(
 {
     struct LocalResult {
         BoundsScanResult bounds;
-        std::unordered_map<dataType::SegmentIdType, BoundsScanResult> boundsByLabel;
+        std::unordered_map<dataType::SegmentIdType, LabelScanResult> statsByLabel;
     };
 
     const BoundsScanResult emptyBounds{dimX, -1, dimY, -1, dimZ, -1};
@@ -730,10 +737,11 @@ AllLabelsScanResult scanAllLabelsAndBounds(
                         continue;
                     }
                     includeInBounds(local.bounds, x, y, z);
-                    const auto [labelBounds, inserted] = local.boundsByLabel.try_emplace(
-                        labelId, BoundsScanResult{x, x, y, y, z, z});
+                    const auto [labelStats, inserted] = local.statsByLabel.try_emplace(
+                        labelId, LabelScanResult{{x, x, y, y, z, z}, 0});
+                    ++labelStats->second.voxelCount;
                     if (!inserted) {
-                        includeInBounds(labelBounds->second, x, y, z);
+                        includeInBounds(labelStats->second.bounds, x, y, z);
                     }
                 }
             }
@@ -747,24 +755,25 @@ AllLabelsScanResult scanAllLabelsAndBounds(
             includeInBounds(result.bounds, local.bounds.minX, local.bounds.minY, local.bounds.minZ);
             includeInBounds(result.bounds, local.bounds.maxX, local.bounds.maxY, local.bounds.maxZ);
         }
-        for (const auto &[labelId, localBounds] : local.boundsByLabel) {
-            const auto [labelBounds, inserted] = result.boundsByLabel.try_emplace(
-                labelId, localBounds);
+        for (const auto &[labelId, localStats] : local.statsByLabel) {
+            const auto [labelStats, inserted] = result.statsByLabel.try_emplace(
+                labelId, localStats);
             if (!inserted) {
-                includeInBounds(labelBounds->second,
-                                localBounds.minX,
-                                localBounds.minY,
-                                localBounds.minZ);
-                includeInBounds(labelBounds->second,
-                                localBounds.maxX,
-                                localBounds.maxY,
-                                localBounds.maxZ);
+                labelStats->second.voxelCount += localStats.voxelCount;
+                includeInBounds(labelStats->second.bounds,
+                                localStats.bounds.minX,
+                                localStats.bounds.minY,
+                                localStats.bounds.minZ);
+                includeInBounds(labelStats->second.bounds,
+                                localStats.bounds.maxX,
+                                localStats.bounds.maxY,
+                                localStats.bounds.maxZ);
             }
         }
     }
 
-    result.labels.reserve(result.boundsByLabel.size());
-    for (const auto &[labelId, bounds] : result.boundsByLabel) {
+    result.labels.reserve(result.statsByLabel.size());
+    for (const auto &[labelId, stats] : result.statsByLabel) {
         result.labels.push_back(labelId);
     }
     std::sort(result.labels.begin(), result.labels.end());
@@ -1671,9 +1680,9 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
         QStringLiteral("[3DView] [segmentpuzzler] slideshow label and bbox scan"));
 
     PreparedScene preparedScene;
-    const auto requestedBounds = scan.boundsByLabel.find(label.first);
-    if (requestedBounds != scan.boundsByLabel.end()) {
-        const Roi bounds = roiFromBounds(requestedBounds->second);
+    const auto requestedStats = scan.statsByLabel.find(label.first);
+    if (requestedStats != scan.statsByLabel.end()) {
+        const Roi bounds = roiFromBounds(requestedStats->second.bounds);
         preparedScene = prepareScene(segImage, requestedLabels, bounds, false);
     } else {
         preparedScene.targetLabelId = label.first;
@@ -1684,8 +1693,8 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
     preparedScene.navigationCatalogComplete = true;
     preparedScene.navigationBoundsModifiedTime = boundsModifiedTime;
     preparedScene.navigationLabels = std::move(scan.labels);
-    for (const auto &[labelId, labelBounds] : scan.boundsByLabel) {
-        preparedScene.navigationBounds.emplace(labelId, roiFromBounds(labelBounds));
+    for (const auto &[labelId, labelStats] : scan.statsByLabel) {
+        preparedScene.navigationBounds.emplace(labelId, roiFromBounds(labelStats.bounds));
     }
     return preparedScene;
 }
@@ -1746,10 +1755,11 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
     bounds.maxZ = scan.bounds.maxZ;
     auto preparedScene = prepareScene(segImage, std::move(labels), bounds, true);
     for (auto &mesh : preparedScene.meshes) {
-        const auto labelBounds = scan.boundsByLabel.find(mesh.labelId);
-        if (labelBounds != scan.boundsByLabel.end()) {
+        const auto labelStats = scan.statsByLabel.find(mesh.labelId);
+        if (labelStats != scan.statsByLabel.end()) {
+            mesh.voxelCount = labelStats->second.voxelCount;
             mesh.touchesImageBoundary = touchesImageBoundary(
-                labelBounds->second,
+                labelStats->second.bounds,
                 static_cast<int>(size[0]),
                 static_cast<int>(size[1]),
                 static_cast<int>(size[2]));
@@ -1765,6 +1775,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     bool allLabelsInImage)
 {
     PreparedScene preparedScene;
+    preparedScene.allLabelsInImage = allLabelsInImage;
     if (!allLabelsInImage && labels.size() == 1) {
         preparedScene.targetLabelId = labels[0].first;
         preparedScene.windowTitle = QString("Segment %1 (press q to quit)").arg(labels[0].first);
@@ -2073,7 +2084,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         auto actor = createMeshActor(mesh);
         m_renderer->AddActor(actor);
         m_segmentActors.push_back(
-            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary});
+            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount});
     }
 
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
@@ -2194,32 +2205,15 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         }
 
         if (showImageBoundaryFilter) {
-            auto *hideImageBoundarySegmentsCheckBox = new QCheckBox(
+            m_hideImageBoundaryCellsCheckBox = new QCheckBox(
                 QStringLiteral("Hide border cells"), m_controlsWidget);
-            hideImageBoundarySegmentsCheckBox->setObjectName(
+            m_hideImageBoundaryCellsCheckBox->setObjectName(
                 QStringLiteral("hideImageBoundarySegmentsCheckBox"));
-            hideImageBoundarySegmentsCheckBox->setToolTip(
+            m_hideImageBoundaryCellsCheckBox->setToolTip(
                 QStringLiteral("Hide cells that touch the volume boundary"));
-            connect(hideImageBoundarySegmentsCheckBox, &QCheckBox::toggled,
-                    this, [this](bool hideBoundarySegments) {
-                bool haveVisibleActor = false;
-                for (const auto &actorInfo : m_segmentActors) {
-                    if (actorInfo.actor == nullptr) {
-                        continue;
-                    }
-                    const bool visible = !hideBoundarySegments
-                                         || !actorInfo.touchesImageBoundary;
-                    actorInfo.actor->SetVisibility(visible);
-                    haveVisibleActor |= visible;
-                }
-                if (haveVisibleActor && m_renderer != nullptr) {
-                    m_renderer->ResetCameraClippingRange();
-                }
-                if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
-                    m_vtkWidget->renderWindow()->Render();
-                }
-            });
-            m_controlsRow->addWidget(hideImageBoundarySegmentsCheckBox);
+            connect(m_hideImageBoundaryCellsCheckBox, &QCheckBox::toggled,
+                    this, &Segment3DViewerDialog::updateCellVisibility);
+            m_controlsRow->addWidget(m_hideImageBoundaryCellsCheckBox);
         }
 
         if (showSeededSplitControls) {
@@ -2551,6 +2545,54 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         }
     }
 
+    if (preparedScene.allLabelsInImage && !showSeededSplitControls) {
+        auto *filterWidget = new QWidget(this);
+        auto *filterRow = new QHBoxLayout(filterWidget);
+        filterRow->setContentsMargins(10, 0, 10, 8);
+        filterRow->setSpacing(8);
+        m_cellCountSpinBox = new QSpinBox(filterWidget);
+        m_cellCountSpinBox->setObjectName(QStringLiteral("cellCountSpinBox"));
+        m_cellCountSpinBox->setRange(1, std::numeric_limits<int>::max());
+        m_cellCountSpinBox->setValue(50);
+        m_cellCountSpinBox->setToolTip(QStringLiteral(
+            "Number of cells to show when a selection button is clicked. "
+            "Largest and smallest are ranked by voxel count."));
+        auto *countLabel = new QLabel(QStringLiteral("Cells:"), filterWidget);
+        countLabel->setBuddy(m_cellCountSpinBox);
+        filterRow->addWidget(countLabel);
+        filterRow->addWidget(m_cellCountSpinBox);
+
+        const auto addSelectionButton = [this, filterWidget, filterRow](
+            const QString &text, const QString &objectName, CellSelection selection) {
+            auto *button = new QPushButton(text, filterWidget);
+            button->setObjectName(objectName);
+            button->setAutoDefault(false);
+            connect(button, &QPushButton::clicked, this, [this, selection]() {
+                m_cellSelection = selection;
+                m_cellCountLimit = m_cellCountSpinBox->value();
+                if (selection == CellSelection::Random) {
+                    m_cellSelectionSeed = QRandomGenerator::global()->generate();
+                }
+                if (selection == CellSelection::All && m_hideImageBoundaryCellsCheckBox != nullptr) {
+                    const QSignalBlocker blocker(m_hideImageBoundaryCellsCheckBox);
+                    m_hideImageBoundaryCellsCheckBox->setChecked(false);
+                }
+                updateCellVisibility();
+            });
+            filterRow->addWidget(button);
+        };
+        addSelectionButton(QStringLiteral("Show largest"), QStringLiteral("showLargestCellsButton"), CellSelection::Largest);
+        addSelectionButton(QStringLiteral("Show smallest"), QStringLiteral("showSmallestCellsButton"), CellSelection::Smallest);
+        addSelectionButton(QStringLiteral("Show random"), QStringLiteral("showRandomCellsButton"), CellSelection::Random);
+        addSelectionButton(QStringLiteral("Show all"), QStringLiteral("showAllCellsButton"), CellSelection::All);
+        m_visibleCellCountLabel = new QLabel(filterWidget);
+        m_visibleCellCountLabel->setObjectName(QStringLiteral("visibleCellCountLabel"));
+        filterRow->addWidget(m_visibleCellCountLabel);
+        filterRow->addStretch(1);
+        layout->addWidget(filterWidget);
+        updateCellVisibility();
+    }
+
     if (m_vtkWidget != nullptr && m_vtkWidget->interactor() != nullptr) {
         auto *interactor = m_vtkWidget->interactor();
         auto navigationObserver = vtkSmartPointer<vtkCallbackCommand>::New();
@@ -2645,6 +2687,54 @@ void Segment3DViewerDialog::setNavigateToLabelHandler(NavigateToLabelHandler han
 
 void Segment3DViewerDialog::setDeleteLabelHandler(DeleteLabelHandler handler) {
     m_deleteLabelHandler = std::move(handler);
+}
+
+void Segment3DViewerDialog::updateCellVisibility() {
+    const bool hideBorderCells = m_hideImageBoundaryCellsCheckBox != nullptr
+                                 && m_hideImageBoundaryCellsCheckBox->isChecked();
+    std::vector<const SegmentActorInfo *> cells;
+    cells.reserve(m_segmentActors.size());
+    for (const auto &cell : m_segmentActors) {
+        cell.actor->SetVisibility(false);
+        if (!hideBorderCells || !cell.touchesImageBoundary) {
+            cells.push_back(&cell);
+        }
+    }
+
+    const auto visibleCount = m_cellSelection == CellSelection::All
+        ? cells.size() : std::min(cells.size(), static_cast<std::size_t>(m_cellCountLimit));
+    if (m_cellSelection == CellSelection::Largest || m_cellSelection == CellSelection::Smallest) {
+        std::partial_sort(cells.begin(), cells.begin() + visibleCount, cells.end(),
+                          [this](const SegmentActorInfo *left, const SegmentActorInfo *right) {
+            if (left->voxelCount == right->voxelCount) {
+                return left->labelId < right->labelId;
+            }
+            return m_cellSelection == CellSelection::Largest
+                ? left->voxelCount > right->voxelCount : left->voxelCount < right->voxelCount;
+        });
+    } else if (m_cellSelection == CellSelection::Random) {
+        std::mt19937 generator(m_cellSelectionSeed);
+        std::shuffle(cells.begin(), cells.end(), generator);
+    }
+    for (std::size_t index = 0; index < visibleCount; ++index) {
+        cells[index]->actor->SetVisibility(true);
+    }
+    if (m_visibleCellCountLabel != nullptr) {
+        m_visibleCellCountLabel->setText(QStringLiteral("Showing %1 of %2 cells")
+            .arg(static_cast<qulonglong>(visibleCount))
+            .arg(static_cast<qulonglong>(m_segmentActors.size())));
+    }
+    if (m_cellCountSpinBox != nullptr) {
+        m_cellCountSpinBox->setMaximum(static_cast<int>(std::clamp(
+            m_segmentActors.size(), std::size_t{1}, static_cast<std::size_t>(std::numeric_limits<int>::max()))));
+        m_cellCountSpinBox->setEnabled(!m_segmentActors.empty());
+    }
+    if (visibleCount > 0 && m_renderer != nullptr) {
+        m_renderer->ResetCameraClippingRange();
+    }
+    if (m_initialFrameRendered && m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->Render();
+    }
 }
 
 QHBoxLayout *Segment3DViewerDialog::ensureControlsRow() {
@@ -2930,10 +3020,7 @@ bool Segment3DViewerDialog::removeLabelActor(dataType::SegmentIdType labelId) {
 
     m_renderer->RemoveActor(actorIt->actor);
     m_segmentActors.erase(actorIt);
-    m_renderer->ResetCameraClippingRange();
-    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
-        m_vtkWidget->renderWindow()->Render();
-    }
+    updateCellVisibility();
     return true;
 }
 
@@ -3092,7 +3179,7 @@ bool Segment3DViewerDialog::replaceSegmentMeshes(const PreparedScene &preparedSc
         }
         auto actor = createMeshActor(mesh);
         newActors.push_back(
-            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary});
+            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount});
     }
 
     if (newActors.empty() || m_renderer == nullptr) {

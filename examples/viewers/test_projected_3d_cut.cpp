@@ -424,8 +424,11 @@ int testAllLabelsSceneUsesSegmentMeshes() {
 
     auto image = makeSmallSegmentsImage(true);
     auto scene = Segment3DViewerDialog::prepareAllLabelsScene(image, labelColors);
-    if (scene.targetLabelId != 0 || scene.meshes.size() != 2) {
+    if (!scene.allLabelsInImage || scene.targetLabelId != 0 || scene.meshes.size() != 2) {
         return failTest("All-label scene did not produce one mesh per label.");
+    }
+    if (scene.meshes[0].voxelCount != 64 || scene.meshes[1].voxelCount != 16) {
+        return failTest("All-label scene did not preserve the segment voxel counts.");
     }
     if (scene.meshes[0].labelId != 1 || scene.meshes[0].lutColor != red
         || scene.meshes[1].labelId != 2 || scene.meshes[1].lutColor != green) {
@@ -501,7 +504,7 @@ int testAllLabelsSceneUsesSegmentMeshes() {
         auto allLabels = Segment3DViewerDialog::prepareAllLabelsScene(boundaryImage, labelColors);
         auto singleLabel = Segment3DViewerDialog::prepareScene(boundaryImage, {{1, red}});
         if (allLabels.meshes.size() != 2 || allLabels.meshes[1].labelId != neighborLabel
-            || singleLabel.meshes.size() != 1) {
+            || allLabels.meshes[1].voxelCount != 16 || singleLabel.meshes.size() != 1) {
             return failTest("Scene lost a label at the uint16 boundary.");
         }
         auto *actual = singleLabel.meshes.front().polyData.GetPointer();
@@ -521,9 +524,10 @@ int testAllLabelsSceneUsesSegmentMeshes() {
 
     auto singleLabelScene = Segment3DViewerDialog::prepareAllLabelsScene(
         makeSmallSegmentsImage(false), labelColors);
-    if (singleLabelScene.targetLabelId != 0
+    if (!singleLabelScene.allLabelsInImage || singleLabelScene.targetLabelId != 0
         || singleLabelScene.meshes.size() != 1
-        || singleLabelScene.meshes.front().labelId != 1) {
+        || singleLabelScene.meshes.front().labelId != 1
+        || singleLabelScene.meshes.front().voxelCount != 64) {
         return failTest("Single-label all-label scene did not use the segment-mesh path.");
     }
     return 0;
