@@ -112,6 +112,7 @@ int main(int argc, char **argv) {
 
         distance_map_benchmark::DistanceImageType::Pointer invertedDistanceMap;
         invertDistanceMap(distanceMap, invertedDistanceMap);
+        distanceMap = nullptr;
         WatershedRunOptions watershedOptions;
         watershedOptions.algorithm = options.algorithm;
         watershedOptions.showWatershedLines = options.showWatershedLines;
@@ -128,6 +129,9 @@ int main(int argc, char **argv) {
             seeds = filteredSeeds;
             runWatershed(invertedDistanceMap, seeds, watershedImage, watershedOptions);
         }
+        // Keep both inputs through the optional second watershed, but not the boundary repair.
+        invertedDistanceMap = nullptr;
+        seeds = nullptr;
 
         auto thresholdedBoundaries = distance_map_benchmark::loadBinaryImage(options.thresholdedBoundariesPath);
         WatershedRunOptions repairOptions = watershedOptions;

@@ -4,6 +4,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -96,6 +97,11 @@ void testDeterministicCoverageAndMarkers(bool printResult) {
     size[2] = 35;
     constexpr int blockEdge = 20;
     auto images = makeImages(size, blockEdge, true);
+    const std::size_t inputVoxelCount = images.cost->GetLargestPossibleRegion().GetNumberOfPixels();
+    const float *costBuffer = images.cost->GetBufferPointer();
+    const unsigned int *markerBuffer = images.markers->GetBufferPointer();
+    const std::vector<float> originalCost(costBuffer, costBuffer + inputVoxelCount);
+    const std::vector<unsigned int> originalMarkers(markerBuffer, markerBuffer + inputVoxelCount);
 
     segment_puzzler::BlockwiseFastMarkerWatershedOptions options;
     options.blockEdge = blockEdge;
@@ -119,6 +125,11 @@ void testDeterministicCoverageAndMarkers(bool printResult) {
         images.cost, images.markers, options);
     require(!imagesEqual(result, compactResult),
             "Compactness should affect the blockwise result.");
+    require(images.cost->GetBufferPointer() == costBuffer && images.markers->GetBufferPointer() == markerBuffer,
+            "Repeated watersheds must retain the caller's input buffers.");
+    require(std::equal(originalCost.begin(), originalCost.end(), costBuffer) &&
+                std::equal(originalMarkers.begin(), originalMarkers.end(), markerBuffer),
+            "Repeated watersheds must not modify the caller's cost or marker images.");
 
     const std::size_t voxelCount = result->GetLargestPossibleRegion().GetNumberOfPixels();
     require(std::none_of(result->GetBufferPointer(), result->GetBufferPointer() + voxelCount,

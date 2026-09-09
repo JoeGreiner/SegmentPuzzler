@@ -308,6 +308,8 @@ FastMarkerWatershedLabelImage::Pointer runBlockwiseFastMarkerWatershed3D(
     auto blackPriorLabels = copyLabels(output);
     const double blackSnapshotMs = elapsedMs(blackSnapshotStarted);
     PassResult blackResult = runPass(blackBlocks, costImage, markers, blackPriorLabels, output, options);
+    // runPass joins its workers; later passes need a fresh snapshot, not this one.
+    blackPriorLabels = nullptr;
     blackResult.metrics.red = false;
     blackResult.metrics.snapshotMs = blackSnapshotMs;
     localMetrics.passes.push_back(blackResult.metrics);
