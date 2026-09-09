@@ -712,6 +712,8 @@ void WatershedControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     auto *upperSlider = new QSlider(Qt::Horizontal, container);
     auto *lowerSpinBox = new QSpinBox(container);
     auto *upperSpinBox = new QSpinBox(container);
+    lowerSpinBox->setKeyboardTracking(false);
+    upperSpinBox->setKeyboardTracking(false);
     auto *autoButton = new QPushButton("Auto", container);
     auto *resetButton = new QPushButton("Reset", container);
 
@@ -825,6 +827,7 @@ void WatershedControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
 
     action->setDefaultWidget(container);
     menu->addAction(action);
+    menu->setFixedWidth(640);
     menu->popup(popupPositionForAnchor(anchor));
 }
 
