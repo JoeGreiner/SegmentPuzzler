@@ -26,7 +26,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up MSVC x64
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
@@ -58,7 +58,7 @@ jobs:
 
       - name: Restore ITK
         id: itk-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: D:/spci/install/itk
           key: windows-2022-x64-itk-${{ steps.toolchain.outputs.compiler }}-${{ steps.toolchain.outputs.cmake }}-${{ hashFiles('scripts/windows/dependencies.json', 'scripts/windows/build-dependency.ps1') }}
@@ -69,14 +69,14 @@ jobs:
 
       - name: Save ITK before building the application
         if: steps.itk-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: D:/spci/install/itk
           key: ${{ steps.itk-cache.outputs.cache-primary-key }}
 
       - name: Restore VTK
         id: vtk-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: D:/spci/install/vtk
           key: windows-2022-x64-vtk-qt${{ env.QT_VERSION }}-${{ steps.toolchain.outputs.compiler }}-${{ steps.toolchain.outputs.cmake }}-${{ hashFiles('scripts/windows/dependencies.json', 'scripts/windows/build-dependency.ps1') }}
@@ -87,7 +87,7 @@ jobs:
 
       - name: Save VTK before building the application
         if: steps.vtk-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: D:/spci/install/vtk
           key: ${{ steps.vtk-cache.outputs.cache-primary-key }}
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload portable ZIP
         if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SegmentPuzzler-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
           path: D:/spci/packages/*.zip
@@ -114,7 +114,7 @@ jobs:
 
       - name: Upload build diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-build-logs-${{ github.sha }}-${{ github.run_attempt }}
           path: |
