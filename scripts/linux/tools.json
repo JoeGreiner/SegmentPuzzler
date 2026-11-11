@@ -1,0 +1,23 @@
+{
+  "linuxdeploy": {
+    "url": "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage",
+    "sha256": "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+  },
+  "appimagetool": {
+    "url": "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage",
+    "sha256": "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+  },
+  "runtime_source": {
+    "version": "20251108",
+    "url": "https://codeload.github.com/AppImage/type2-runtime/tar.gz/refs/tags/20251108",
+    "sha256": "4c4f6df4647c9f01f871d7edd3716d8aeeffda9d22ffbebe3fccd95a6ab52c95"
+  },
+  "squashfs_source": {
+    "url": "https://codeload.github.com/plougher/squashfs-tools/tar.gz/refs/tags/4.7.4",
+    "sha256": "91c49f9a1ed972ad00688a38222119e2baf49ba74cf5fda05729a79d7d59d335"
+  },
+  "appimagelauncher_source": {
+    "url": "https://codeload.github.com/TheAssassin/AppImageLauncher/tar.gz/refs/tags/v2.2.0",
+    "sha256": "bef1c4b5db0adb14599802bcc9bf4515e920050f6bb76534e6fe4731c03637c0"
+  }
+}

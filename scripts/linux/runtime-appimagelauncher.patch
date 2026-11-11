@@ -1,0 +1,47 @@
+--- a/src/runtime/runtime.c
++++ b/src/runtime/runtime.c
+@@ -1475,0 +1476,17 @@
++    /* AppImageLauncher 2.2 executes a copy of the runtime without its payload.
++     * Its LD_PRELOAD helper cannot redirect this statically linked runtime.
++     */
++    const char* target_appimage = getenv("TARGET_APPIMAGE");
++    const char* redirect_appimage = getenv("REDIRECT_APPIMAGE");
++    const char* preload = getenv("LD_PRELOAD");
++    const char* preload_name = preload == NULL ? NULL : strrchr(preload, '/');
++    preload_name = preload_name == NULL ? preload : preload_name + 1;
++    const bool legacy_launcher = redirect_appimage != NULL &&
++        redirect_appimage[0] == '/' && preload != NULL &&
++        strpbrk(preload, " :\t\n") == NULL &&
++        strcmp(preload_name, "libbinfmt-bypass-preload.so") == 0;
++    if (target_appimage == NULL && legacy_launcher) {
++        target_appimage = redirect_appimage;
++    }
++    const bool use_target_appimage = target_appimage != NULL;
++
+@@ -1482 +1499 @@
+-    if (getenv("TARGET_APPIMAGE") == NULL) {
++    if (!use_target_appimage) {
+@@ -1486,2 +1503,6 @@
+-        strcpy(appimage_path, getenv("TARGET_APPIMAGE"));
+-        strcpy(argv0_path, getenv("TARGET_APPIMAGE"));
++        if (strlen(target_appimage) >= sizeof(appimage_path)) {
++            fprintf(stderr, "Target AppImage path is too long\n");
++            exit(EXIT_EXECERROR);
++        }
++        strcpy(appimage_path, target_appimage);
++        strcpy(argv0_path, target_appimage);
+@@ -1488,0 +1510,5 @@
++    if (legacy_launcher) {
++        /* Do not inject the launcher's helper into fusermount or AppRun. */
++        unsetenv("LD_PRELOAD");
++        unsetenv("REDIRECT_APPIMAGE");
++    }
+@@ -1514,2 +1540 @@
+-        ssize_t length = readlink(appimage_path, fullpath, sizeof(fullpath));
+-        if (length < 0) {
++        if (realpath(appimage_path, fullpath) == NULL) {
+@@ -1519 +1543,0 @@
+-        fullpath[length] = '\0';
+@@ -1562 +1586 @@
+-    if (getenv("TARGET_APPIMAGE") == NULL) {
++    if (!use_target_appimage) {
