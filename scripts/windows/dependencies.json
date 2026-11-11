@@ -1,0 +1,12 @@
+{
+  "itk": {
+    "repository": "InsightSoftwareConsortium/ITK",
+    "version": "6.0b02",
+    "commit": "f98424e48c3a74a11cc5afd4ab95d3f590e97068"
+  },
+  "vtk": {
+    "repository": "Kitware/VTK",
+    "version": "9.7.2",
+    "commit": "0558d4d4e4bc86c4b4bf7af2f2488011a4de9e0f"
+  }
+}
