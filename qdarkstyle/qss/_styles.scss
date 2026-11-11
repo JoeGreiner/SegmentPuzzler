@@ -1298,13 +1298,14 @@ https://doc.qt.io/qt-5/stylesheet-examples.html#customizing-qcombobox
 
 --------------------------------------------------------------------------- */
 QComboBox {
+    /* Use list popups to avoid oversized menu-style rows. */
+    combobox-popup: 0;
     border: $BORDER_2;
     border-radius: $SIZE_BORDER_RADIUS;
     selection-background-color: $COLOR_ACCENT_2;
     padding-left: 4px;
-    padding-right: 4px;
-    /* padding-right = 36; 4 + 16*2 See scrollbar size */
-    /* changed to 4px to fix #239 */
+    /* Reserve the 12px drop-down arrow plus 4px spacing. */
+    padding-right: 16px;
 
     /* Fixes #103, #111 */
     min-height: 1.5em;

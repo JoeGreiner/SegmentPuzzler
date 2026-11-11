@@ -24,10 +24,8 @@ private slots:
     void restoreDefaults();
 
 private:
-    void configureMinimumLevelComboBox() const;
     void loadSettingsIntoWidgets(const segment_puzzler::app_logging::LogSettings &settings);
     segment_puzzler::app_logging::LogSettings collectSettingsFromWidgets() const;
-    int minimumLevelComboBoxWidth() const;
     QString resolvedLogDirectoryPath() const;
     void updateLogFileControls();
 

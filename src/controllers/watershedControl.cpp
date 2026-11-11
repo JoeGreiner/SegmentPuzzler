@@ -18,7 +18,6 @@
 #include "src/qtUtils/LabelBoundaryWidthControl.h"
 #include <QInputDialog>
 #include <QHeaderView>
-#include <QAbstractItemView>
 #include <src/viewers/fileIO.h>
 
 
@@ -1813,7 +1812,7 @@ void WatershedControl::setupThresholdWidget() {
     auto *thresholdControl = createSliderWithSpinBox(thresholdValueSlider, thresholdValueSpinBox);
     thresholdValueSlider->setEnabled(false);
     thresholdValueSpinBox->setEnabled(false);
-    configureInputCombo(boundaryInputComboBox);
+    configureComboBox(boundaryInputComboBox);
 
     auto *controlsWidget = new QWidget(this);
     auto *controlsLayout = new QVBoxLayout(controlsWidget);
@@ -1838,7 +1837,7 @@ void WatershedControl::setupDistanceMapWidget() {
     thresholdInputComboBox = new QComboBox(this);
     distanceMapAlgorithmComboBox = new QComboBox(this);
     togglePaintBoundaryModeButton = new QPushButton(this);
-    configureInputCombo(thresholdInputComboBox);
+    configureComboBox(thresholdInputComboBox);
     updatePaintBoundaryModeButtonText();
 
     auto *controlsWidget = new QWidget(this);
@@ -1870,7 +1869,7 @@ void WatershedControl::setupSeedWidget() {
     calculateSeedsButton->setObjectName("calculateSeedsButton");
     distanceMapInputComboBox = new QComboBox(this);
     seedAlgorithmComboBox = new QComboBox(this);
-    configureInputCombo(distanceMapInputComboBox);
+    configureComboBox(distanceMapInputComboBox);
 
     auto *controlsWidget = new QWidget(this);
     auto *controlsLayout = new QVBoxLayout(controlsWidget);
@@ -1894,9 +1893,9 @@ void WatershedControl::setupWatershedWidget() {
     watershedSeedsInputComboBox = new QComboBox(this);
     watershedThresholdInputComboBox = new QComboBox(this);
     watershedAlgorithmComboBox = new QComboBox(this);
-    configureInputCombo(watershedDistanceMapInputComboBox);
-    configureInputCombo(watershedSeedsInputComboBox);
-    configureInputCombo(watershedThresholdInputComboBox);
+    configureComboBox(watershedDistanceMapInputComboBox);
+    configureComboBox(watershedSeedsInputComboBox);
+    configureComboBox(watershedThresholdInputComboBox);
     checkBoxFiltering = new QCheckBox("Activate Segment Size Filtering", this);
     checkBoxFiltering->setChecked(false);
     compactWatershedCheckBox = new QCheckBox("Compact Watershed", this);
@@ -1987,8 +1986,8 @@ void WatershedControl::setupAgglomertionWidget() {
     agglomertionReplaceCheckBox = new QCheckBox(this);
     agglomertionReplaceCheckBox->setObjectName("agglomertionReplaceCheckBox");
     agglomertionReplaceCheckBox->setChecked(true);
-    configureInputCombo(agglomertionInputComboBox);
-    configureInputCombo(agglomertionThresholdMaskComboBox);
+    configureComboBox(agglomertionInputComboBox);
+    configureComboBox(agglomertionThresholdMaskComboBox);
     agglomertionBiasSlider->setRange(0, 100);
     agglomertionBiasSpinBox->setRange(0, 100);
     agglomertionBiasSlider->setValue(9);
@@ -2161,7 +2160,7 @@ void WatershedControl::setupFinalizeWidget() {
     createRefinementButton->setObjectName("createRefinementButton");
     finalOutputInputComboBox = new QComboBox(this);
     finalOutputInputComboBox->setObjectName("finalOutputInputComboBox");
-    configureInputCombo(finalOutputInputComboBox);
+    configureComboBox(finalOutputInputComboBox);
 
     auto *controlsWidget = new QWidget(this);
     auto *controlsLayout = new QVBoxLayout(controlsWidget);
@@ -2186,13 +2185,13 @@ void WatershedControl::setupFinalizeWidget() {
 }
 
 void WatershedControl::setupAlgorithmComboBoxes() {
-    configureAlgorithmCombo(thresholdAlgorithmComboBox);
+    configureComboBox(thresholdAlgorithmComboBox);
     thresholdAlgorithmComboBox->addItem(
         thresholdAlgorithmLabel(ThresholdAlgorithm::BinaryThreshold),
         static_cast<int>(ThresholdAlgorithm::BinaryThreshold));
     thresholdAlgorithmComboBox->setCurrentIndex(0);
 
-    configureAlgorithmCombo(distanceMapAlgorithmComboBox);
+    configureComboBox(distanceMapAlgorithmComboBox);
     distanceMapAlgorithmComboBox->addItem(
         distanceMapAlgorithmLabel(DistanceMapAlgorithm::Maurer),
         static_cast<int>(DistanceMapAlgorithm::Maurer));
@@ -2201,7 +2200,7 @@ void WatershedControl::setupAlgorithmComboBoxes() {
         static_cast<int>(DistanceMapAlgorithm::FH));
     distanceMapAlgorithmComboBox->setCurrentIndex(0);
 
-    configureAlgorithmCombo(seedAlgorithmComboBox);
+    configureComboBox(seedAlgorithmComboBox);
     seedAlgorithmComboBox->addItem(
         seedAlgorithmLabel(distance_map_benchmark::SeedExtractorKind::LocalMaxima),
         static_cast<int>(distance_map_benchmark::SeedExtractorKind::LocalMaxima));
@@ -2210,7 +2209,7 @@ void WatershedControl::setupAlgorithmComboBoxes() {
         static_cast<int>(distance_map_benchmark::SeedExtractorKind::HConvex));
     seedAlgorithmComboBox->setCurrentIndex(0);
 
-    configureAlgorithmCombo(watershedAlgorithmComboBox);
+    configureComboBox(watershedAlgorithmComboBox);
     watershedAlgorithmComboBox->addItem(
         watershedAlgorithmLabel(WatershedAlgorithm::MorphologicalWatershedFromMarkers),
         static_cast<int>(WatershedAlgorithm::MorphologicalWatershedFromMarkers));
@@ -2222,7 +2221,7 @@ void WatershedControl::setupAlgorithmComboBoxes() {
         static_cast<int>(WatershedAlgorithm::BlockwiseFastMarkerWatershed));
     watershedAlgorithmComboBox->setCurrentIndex(2);
 
-    configureAlgorithmCombo(agglomertionLinkageComboBox);
+    configureComboBox(agglomertionLinkageComboBox);
     agglomertionLinkageComboBox->addItem(
         agglomertionLinkageLabel(segment_puzzler::RagLinkage::Average),
         static_cast<int>(segment_puzzler::RagLinkage::Average));
@@ -2231,7 +2230,7 @@ void WatershedControl::setupAlgorithmComboBoxes() {
         static_cast<int>(segment_puzzler::RagLinkage::Sum));
     agglomertionLinkageComboBox->setCurrentIndex(0);
 
-    configureAlgorithmCombo(agglomertionStrategyComboBox);
+    configureComboBox(agglomertionStrategyComboBox);
     agglomertionStrategyComboBox->addItem(
         agglomertionBoundaryEvidenceStrategyLabel(segment_puzzler::BoundaryEvidenceStrategy::OpenFractionWeighted),
         static_cast<int>(segment_puzzler::BoundaryEvidenceStrategy::OpenFractionWeighted));
@@ -2243,7 +2242,7 @@ void WatershedControl::setupAlgorithmComboBoxes() {
         static_cast<int>(segment_puzzler::BoundaryEvidenceStrategy::RawInterfaceMean));
     agglomertionStrategyComboBox->setCurrentIndex(0);
 
-    configureAlgorithmCombo(agglomertionBoundaryModeComboBox);
+    configureComboBox(agglomertionBoundaryModeComboBox);
     agglomertionBoundaryModeComboBox->addItem(
         agglomertionBoundaryModeLabel(segment_puzzler::BoundaryNormalizationMode::AutoDetect),
         static_cast<int>(segment_puzzler::BoundaryNormalizationMode::AutoDetect));
@@ -2261,7 +2260,7 @@ void WatershedControl::setupAlgorithmComboBoxes() {
         static_cast<int>(segment_puzzler::BoundaryNormalizationMode::UInt16FullRange));
     agglomertionBoundaryModeComboBox->setCurrentIndex(0);
 
-    configureAlgorithmCombo(agglomertionSizeBiasStrategyComboBox);
+    configureComboBox(agglomertionSizeBiasStrategyComboBox);
     agglomertionSizeBiasStrategyComboBox->addItem(
         sizeBiasStrategyLabel(segment_puzzler::SizeBiasStrategy::SoftBias),
         static_cast<int>(segment_puzzler::SizeBiasStrategy::SoftBias));
@@ -2274,22 +2273,9 @@ void WatershedControl::setupAlgorithmComboBoxes() {
     agglomertionSizeBiasStrategyComboBox->setCurrentIndex(0);
 }
 
-void WatershedControl::configureInputCombo(QComboBox *comboBox) const {
+void WatershedControl::configureComboBox(QComboBox *comboBox) const {
     comboBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     comboBox->setMaxVisibleItems(8);
-    comboBox->setStyleSheet(
-        "QComboBox { combobox-popup: 0; }"
-        "QComboBox QAbstractItemView { padding: 0px; margin: 0px; outline: 0; }"
-        "QComboBox QAbstractItemView::item { margin: 0px; padding: 0px; min-height: 0px; }");
-
-    auto *view = new QListView(comboBox);
-    view->setUniformItemSizes(true);
-    view->setSpacing(0);
-    comboBox->setView(view);
-}
-
-void WatershedControl::configureAlgorithmCombo(QComboBox *comboBox) const {
-    configureInputCombo(comboBox);
 }
 
 void WatershedControl::setTreeVisibleRows(QTreeWidget *treeWidget, int rows) const {
@@ -2301,8 +2287,7 @@ void WatershedControl::setTreeVisibleRows(QTreeWidget *treeWidget, int rows) con
     const int headerHeight = treeWidget->header() != nullptr ? treeWidget->header()->sizeHint().height() : 0;
     const int frameHeight = treeWidget->frameWidth() * 2;
     const int targetHeight = headerHeight + frameHeight + (std::max(0, rows) * rowHeight);
-    treeWidget->setMinimumHeight(targetHeight);
-    treeWidget->setMaximumHeight(targetHeight);
+    treeWidget->setFixedHeight(targetHeight);
 }
 
 void WatershedControl::refreshComboSelection(QComboBox *comboBox, const std::vector<size_t> &signalIndices) {

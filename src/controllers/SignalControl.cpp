@@ -25,9 +25,7 @@
 #include <QActionGroup>
 #include <QInputDialog>
 #include <QHeaderView>
-#include <QAbstractItemView>
 #include <QLabel>
-#include <QListView>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPointer>
@@ -122,32 +120,6 @@ QComboBox *createNeighborSelectionComboBox(
     comboBox->setCurrentIndex(selectedIndex);
     comboBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     comboBox->setMaxVisibleItems(comboBox->count());
-    // Force a list popup because QDarkStyle's menu popup ignores maxVisibleItems.
-    comboBox->setStyleSheet(
-        "QComboBox { combobox-popup: 0; }"
-        "QComboBox QAbstractItemView { padding: 0px; margin: 0px; outline: 0; }"
-        "QComboBox QAbstractItemView::item { margin: 0px; padding: 2px 6px; min-height: 0px; }");
-
-    auto *view = new QListView(comboBox);
-    view->setUniformItemSizes(true);
-    view->setSpacing(0);
-    view->setTextElideMode(Qt::ElideNone);
-    view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    view->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    comboBox->setView(view);
-    view->ensurePolished();
-
-    int widestText = 0;
-    for (int index = 0; index < comboBox->count(); ++index) {
-        widestText = std::max(
-            widestText,
-            view->fontMetrics().horizontalAdvance(comboBox->itemText(index)));
-    }
-    const int popupWidth = std::max(comboBox->sizeHint().width(), widestText + 28);
-    const int rowHeight = std::max(view->sizeHintForRow(0), view->fontMetrics().height() + 4);
-    comboBox->setMinimumWidth(popupWidth);
-    view->setMinimumWidth(popupWidth);
-    view->setFixedHeight(rowHeight * comboBox->count() + 2 * view->frameWidth());
     return comboBox;
 }
 

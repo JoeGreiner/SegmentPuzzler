@@ -1,6 +1,5 @@
 #include "LoggingSettingsDialog.h"
 
-#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
@@ -8,18 +7,14 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFontMetrics>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListView>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSizePolicy>
-#include <QStyle>
-#include <QStyleOptionComboBox>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -28,14 +23,6 @@ using segment_puzzler::app_logging::LogLevel;
 using segment_puzzler::app_logging::LogSettings;
 
 namespace {
-
-int textWidth(const QFontMetrics &metrics, const QString &text) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
-    return metrics.horizontalAdvance(text);
-#else
-    return metrics.width(text);
-#endif
-}
 
 void addLevelOption(QComboBox *comboBox, const QString &label, LogLevel level) {
     comboBox->addItem(label, static_cast<int>(level));
@@ -84,7 +71,8 @@ LoggingSettingsDialog::LoggingSettingsDialog(QWidget *parent)
     addLevelOption(minimumLevelComboBox_, QStringLiteral("Info"), LogLevel::Info);
     addLevelOption(minimumLevelComboBox_, QStringLiteral("Warning"), LogLevel::Warning);
     addLevelOption(minimumLevelComboBox_, QStringLiteral("Error"), LogLevel::Error);
-    configureMinimumLevelComboBox();
+    minimumLevelComboBox_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    minimumLevelComboBox_->setMaxVisibleItems(5);
     generalLayout->addRow(QStringLiteral("Minimum Level"), minimumLevelComboBox_);
 
     consoleEnabledCheckBox_ = new QCheckBox(QStringLiteral("Write logs to the terminal"), generalGroup);
@@ -191,26 +179,6 @@ void LoggingSettingsDialog::restoreDefaults() {
     loadSettingsIntoWidgets(AppLogger::defaultSettings());
 }
 
-void LoggingSettingsDialog::configureMinimumLevelComboBox() const {
-    minimumLevelComboBox_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    minimumLevelComboBox_->setMaxVisibleItems(5);
-    minimumLevelComboBox_->setStyleSheet(
-        "QComboBox { combobox-popup: 0; }"
-        "QComboBox QAbstractItemView { padding: 0px; margin: 0px; outline: 0; }"
-        "QComboBox QAbstractItemView::item { margin: 0px; padding: 0px 4px; min-height: 0px; }");
-
-    auto *view = new QListView(minimumLevelComboBox_);
-    view->setUniformItemSizes(true);
-    view->setSpacing(0);
-    view->setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
-    view->setTextElideMode(Qt::ElideNone);
-    minimumLevelComboBox_->setView(view);
-
-    const int comboBoxWidth = minimumLevelComboBoxWidth();
-    minimumLevelComboBox_->setMinimumWidth(comboBoxWidth);
-    minimumLevelComboBox_->view()->setMinimumWidth(comboBoxWidth);
-}
-
 void LoggingSettingsDialog::loadSettingsIntoWidgets(const LogSettings &settings) {
     const int levelIndex = minimumLevelComboBox_->findData(static_cast<int>(settings.minimumLevel));
     minimumLevelComboBox_->setCurrentIndex(levelIndex >= 0 ? levelIndex : 0);
@@ -240,32 +208,6 @@ LogSettings LoggingSettingsDialog::collectSettingsFromWidgets() const {
     }
 
     return settings;
-}
-
-int LoggingSettingsDialog::minimumLevelComboBoxWidth() const {
-    QString longestLabel;
-    int widestLabel = 0;
-    const QFontMetrics fontMetrics(minimumLevelComboBox_->font());
-    for (int index = 0; index < minimumLevelComboBox_->count(); ++index) {
-        const QString label = minimumLevelComboBox_->itemText(index);
-        const int labelWidth = textWidth(fontMetrics, label);
-        if (labelWidth > widestLabel) {
-            widestLabel = labelWidth;
-            longestLabel = label;
-        }
-    }
-
-    minimumLevelComboBox_->setMinimumContentsLength(longestLabel.size());
-
-    QStyleOptionComboBox option;
-    option.initFrom(minimumLevelComboBox_);
-    option.editable = minimumLevelComboBox_->isEditable();
-    option.currentText = longestLabel;
-
-    const QSize contentSize(widestLabel, fontMetrics.height());
-    return minimumLevelComboBox_->style()
-        ->sizeFromContents(QStyle::CT_ComboBox, &option, contentSize, minimumLevelComboBox_)
-        .width();
 }
 
 QString LoggingSettingsDialog::resolvedLogDirectoryPath() const {

@@ -266,8 +266,7 @@ private:
     void setupTreeWidget(QTreeWidget *treeWidget);
     void updatePaintBoundaryModeButtonText();
     void setupAlgorithmComboBoxes();
-    void configureInputCombo(QComboBox *comboBox) const;
-    void configureAlgorithmCombo(QComboBox *comboBox) const;
+    void configureComboBox(QComboBox *comboBox) const;
     void setTreeVisibleRows(QTreeWidget *treeWidget, int rows) const;
     void updateLayerSelectionState(QTreeWidget *treeWidget);
     void attachLayerWidgetToItem(QTreeWidget *treeWidget, QTreeWidgetItem *item);

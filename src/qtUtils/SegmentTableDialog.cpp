@@ -27,7 +27,6 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListView>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
@@ -613,15 +612,6 @@ QWidget *SegmentTableDialog::createSetupPage() {
         physicalUnitComboBox->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         physicalUnitComboBox->setMinimumWidth(72);
         physicalUnitComboBox->setMaxVisibleItems(3);
-        physicalUnitComboBox->setStyleSheet(
-            "QComboBox { combobox-popup: 0; }"
-            "QComboBox QAbstractItemView { padding: 0px; margin: 0px; outline: 0; }"
-            "QComboBox QAbstractItemView::item { margin: 0px; padding: 2px 6px; min-height: 0px; }");
-        auto *unitView = new QListView(physicalUnitComboBox);
-        unitView->setUniformItemSizes(true);
-        unitView->setSpacing(0);
-        unitView->setMinimumWidth(72);
-        physicalUnitComboBox->setView(unitView);
 
         auto *valueWidget = new QWidget(gb);
         auto *valueLayout = new QHBoxLayout(valueWidget);
