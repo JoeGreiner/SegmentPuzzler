@@ -52,7 +52,7 @@ Categories=Utility;
 EOF
 probe="$root/runtime-tests/runtime probe.AppImage"
 rm -f "$probe"
-APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$root/tools/appimagetool" \
+ARCH=x86_64 "$root/tools/appimagetool-extracted/squashfs-root/AppRun" \
     --comp gzip --runtime-file "$root/runtime/runtime-x86_64" "$probe_dir" "$probe"
 
 for mode in direct legacy target; do

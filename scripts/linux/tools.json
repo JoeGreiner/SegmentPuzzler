@@ -12,6 +12,10 @@
     "url": "https://codeload.github.com/AppImage/type2-runtime/tar.gz/refs/tags/20251108",
     "sha256": "4c4f6df4647c9f01f871d7edd3716d8aeeffda9d22ffbebe3fccd95a6ab52c95"
   },
+  "squashfs_source": {
+    "url": "https://codeload.github.com/plougher/squashfs-tools/tar.gz/refs/tags/4.7.4",
+    "sha256": "91c49f9a1ed972ad00688a38222119e2baf49ba74cf5fda05729a79d7d59d335"
+  },
   "appimagelauncher_source": {
     "url": "https://codeload.github.com/TheAssassin/AppImageLauncher/tar.gz/refs/tags/v2.2.0",
     "sha256": "bef1c4b5db0adb14599802bcc9bf4515e920050f6bb76534e6fe4731c03637c0"

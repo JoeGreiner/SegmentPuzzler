@@ -8,6 +8,7 @@ root=${CI_ROOT:?Set CI_ROOT}
 mkdir -p "$root/tools" "$root/packages" "$root/logs"
 exec > >(tee "$root/logs/package.log") 2>&1
 test -x "$root/runtime/runtime-x86_64"
+test -x "$root/runtime/mksquashfs"
 for tool in linuxdeploy appimagetool; do
     url=$(jq -er --arg tool "$tool" '.[$tool].url' "$repository/scripts/linux/tools.json")
     checksum=$(jq -er --arg tool "$tool" '.[$tool].sha256' "$repository/scripts/linux/tools.json")
@@ -15,6 +16,16 @@ for tool in linuxdeploy appimagetool; do
     printf '%s  %s\n' "$checksum" "$root/tools/$tool" | sha256sum --check
     chmod +x "$root/tools/$tool"
 done
+
+# Replace appimagetool's zstd-only packer in its extracted bundle.
+mkdir -p "$root/tools/appimagetool-extracted"
+(
+    cd "$root/tools/appimagetool-extracted"
+    "$root/tools/appimagetool" --appimage-extract > "$root/logs/appimagetool-extract.log"
+)
+tool_dir="$root/tools/appimagetool-extracted/squashfs-root"
+test -x "$tool_dir/usr/bin/mksquashfs"
+install -m 755 "$root/runtime/mksquashfs" "$tool_dir/usr/bin/mksquashfs"
 
 appdir=$(mktemp -d "$root/SegmentPuzzler.AppDir.XXXXXX")
 mkdir -p "$appdir/usr/bin" "$appdir/usr/plugins"
@@ -97,5 +108,5 @@ done < <(find "$appdir/usr" -type f -print0)
 
 version=$(sed -nE 's/^project\(.*VERSION ([0-9.]+)\).*/\1/p' "$repository/CMakeLists.txt")
 test -n "$version"
-ARCH=x86_64 "$root/tools/appimagetool" --comp gzip --runtime-file "$root/runtime/runtime-x86_64" \
+ARCH=x86_64 "$tool_dir/AppRun" --comp gzip --runtime-file "$root/runtime/runtime-x86_64" \
     "$appdir" "$root/packages/SegmentPuzzler-$version-linux-x86_64.AppImage"
