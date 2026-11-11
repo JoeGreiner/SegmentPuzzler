@@ -233,18 +233,30 @@ void buildRegionIndex(AgglomerationContext<IsActiveVoxel> &ctx) {
     std::size_t activeNonZeroCount = 0;
     const int threadCount = workerThreadCount();
 #ifdef USE_OMP
-#pragma omp parallel for num_threads(threadCount) reduction(max:maxLabel) reduction(+:activeNonZeroCount)
+#pragma omp parallel num_threads(threadCount) reduction(+:activeNonZeroCount)
 #endif
-    for (long long index = 0; index < static_cast<long long>(ctx.voxelCount); ++index) {
-        if (!ctx.isActiveVoxel(static_cast<size_t>(index))) {
-            continue;
+    {
+        SegmentIdType localMaxLabel = 0;
+#ifdef USE_OMP
+#pragma omp for nowait
+#endif
+        for (long long index = 0; index < static_cast<long long>(ctx.voxelCount); ++index) {
+            if (!ctx.isActiveVoxel(static_cast<size_t>(index))) {
+                continue;
+            }
+            const SegmentIdType label = ctx.labelBuffer[index];
+            if (label == 0) {
+                continue;
+            }
+            localMaxLabel = std::max(localMaxLabel, label);
+            ++activeNonZeroCount;
         }
-        const SegmentIdType label = ctx.labelBuffer[index];
-        if (label == 0) {
-            continue;
+#ifdef USE_OMP
+#pragma omp critical
+#endif
+        {
+            maxLabel = std::max(maxLabel, localMaxLabel);
         }
-        maxLabel = std::max(maxLabel, label);
-        ++activeNonZeroCount;
     }
 
     const bool useDenseMap = activeNonZeroCount > 0 &&

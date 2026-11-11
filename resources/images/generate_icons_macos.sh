@@ -10,6 +10,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ICON_DOCUMENT="$SCRIPT_DIR/SegmentPuzzler.icon"
 OUTPUT_PNG="$SCRIPT_DIR/icon.png"
+OUTPUT_APPIMAGE_PNG="$SCRIPT_DIR/icon-appimage.png"
 OUTPUT_ICO="$SCRIPT_DIR/SegmentPuzzler.ico"
 
 if [ ! -d "$ICON_DOCUMENT" ]; then
@@ -36,6 +37,7 @@ fi
 
 BUILD_FOLDER="$(mktemp -d "${TMPDIR:-/tmp}/SegmentPuzzler-icons.XXXXXX")"
 TEMP_PNG="$BUILD_FOLDER/icon.png"
+TEMP_APPIMAGE_PNG="$BUILD_FOLDER/icon-appimage.png"
 TEMP_ICO="$BUILD_FOLDER/SegmentPuzzler.ico"
 
 cleanup() {
@@ -53,6 +55,16 @@ echo "Rendering the Icon Composer document..."
     --height 1024 \
     --scale 1
 
+echo "Rendering the 512 x 512 AppImage icon..."
+"$ICON_COMPOSER_TOOL" "$ICON_DOCUMENT" \
+    --export-image \
+    --output-file "$TEMP_APPIMAGE_PNG" \
+    --platform macOS \
+    --rendition Default \
+    --width 512 \
+    --height 512 \
+    --scale 1
+
 echo "Generating the Windows icon..."
 python3 -c '
 import sys
@@ -66,7 +78,9 @@ source.save(sys.argv[2], "ICO", sizes=sizes)
 ' "$TEMP_PNG" "$TEMP_ICO"
 
 mv "$TEMP_PNG" "$OUTPUT_PNG"
+mv "$TEMP_APPIMAGE_PNG" "$OUTPUT_APPIMAGE_PNG"
 mv "$TEMP_ICO" "$OUTPUT_ICO"
 
 echo "Generated: $OUTPUT_PNG"
+echo "Generated: $OUTPUT_APPIMAGE_PNG"
 echo "Generated: $OUTPUT_ICO"
