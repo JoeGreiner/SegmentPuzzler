@@ -14,7 +14,7 @@ concurrency:
 
 env:
   CI_ROOT: /tmp/spci
-  BUILD_PARALLEL: '3'
+  BUILD_PARALLEL: '4'
 
 jobs:
   build:
