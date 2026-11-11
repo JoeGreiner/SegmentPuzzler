@@ -1,0 +1,138 @@
+name: Windows build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CI_ROOT: 'D:\spci'
+  BUILD_PARALLEL: '4'
+
+jobs:
+  build:
+    name: Windows x64 installer and portable ZIP
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up MSVC x64
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+
+      - name: Record compiler and CMake versions
+        id: toolchain
+        run: |
+          $compiler = (Get-Item (Get-Command cl.exe).Source).VersionInfo.FileVersion
+          $cmakeVersion = (cmake --version | Select-Object -First 1) -replace '^cmake version ', ''
+          "compiler=$compiler" >> $env:GITHUB_OUTPUT
+          "cmake=$cmakeVersion" >> $env:GITHUB_OUTPUT
+          $dependencies = Get-Content scripts/ci/dependencies.json -Raw | ConvertFrom-Json
+          "qt=$($dependencies.qt.version)" >> $env:GITHUB_OUTPUT
+          Write-Host "MSVC: $compiler; CMake: $cmakeVersion"
+
+      - name: Check NSIS
+        run: |
+          $nsis = Join-Path ${env:ProgramFiles(x86)} 'NSIS'
+          if (-not (Test-Path "$nsis/makensis.exe")) { throw 'NSIS is missing from the runner.' }
+          $nsis >> $env:GITHUB_PATH
+          & "$nsis/makensis.exe" /VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS version check failed.' }
+
+      - name: Install Qt
+        id: qt
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
+        with:
+          version: ${{ steps.toolchain.outputs.qt }}
+          arch: win64_msvc2022_64
+          dir: D:/Qt
+          cache: true
+
+      - name: Set Qt prefix
+        env:
+          QT_PREFIX: ${{ steps.qt.outputs.qt-root-dir }}
+        run: '"QT_ROOT_DIR=$env:QT_PREFIX" >> $env:GITHUB_ENV'
+
+      - name: Restore ITK
+        id: itk-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:/spci/install/itk
+          key: windows-2022-x64-itk-${{ steps.toolchain.outputs.compiler }}-${{ steps.toolchain.outputs.cmake }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/windows/build-dependency.ps1') }}
+
+      - name: Build ITK
+        if: steps.itk-cache.outputs.cache-hit != 'true'
+        run: ./scripts/windows/build-dependency.ps1 -Stage itk -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
+
+      - name: Save ITK
+        if: steps.itk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:/spci/install/itk
+          key: ${{ steps.itk-cache.outputs.cache-primary-key }}
+
+      - name: Restore VTK
+        id: vtk-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:/spci/install/vtk
+          key: windows-2022-x64-vtk-qt${{ steps.toolchain.outputs.qt }}-${{ steps.toolchain.outputs.compiler }}-${{ steps.toolchain.outputs.cmake }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/windows/build-dependency.ps1') }}
+
+      - name: Build VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        run: ./scripts/windows/build-dependency.ps1 -Stage vtk -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
+
+      - name: Save VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:/spci/install/vtk
+          key: ${{ steps.vtk-cache.outputs.cache-primary-key }}
+
+      - name: Build SegmentPuzzler
+        run: ./scripts/windows/build.ps1 -Stage app -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
+
+      - name: Package NSIS installer and portable ZIP
+        id: package
+        run: ./scripts/windows/build.ps1 -Stage package -Root $env:CI_ROOT
+
+      - name: Check portable executable startup
+        run: ./scripts/windows/build.ps1 -Stage check-package -Root $env:CI_ROOT
+
+      - name: Check installer, installed executable, and uninstaller
+        run: ./scripts/windows/build.ps1 -Stage check-installer -Root $env:CI_ROOT
+
+      - name: Upload NSIS installer and portable ZIP
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-windows-x64
+          overwrite: true
+          path: |
+            D:/spci/packages/*.exe
+            D:/spci/packages/*.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logs-windows-x64
+          overwrite: true
+          path: |
+            D:/spci/logs/
+            D:/spci/build/**/CMakeCache.txt
+            D:/spci/build/**/CMakeConfigureLog.yaml
+            D:/spci/packages/_CPack_Packages/**/*.log
+            D:/spci/packages/_CPack_Packages/**/*.nsi
+          if-no-files-found: ignore
+          retention-days: 7
