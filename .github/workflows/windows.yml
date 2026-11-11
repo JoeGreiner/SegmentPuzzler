@@ -15,6 +15,7 @@ concurrency:
 env:
   QT_VERSION: '6.8.3'
   CI_ROOT: 'D:\spci'
+  BUILD_PARALLEL: '4'
 
 jobs:
   build:
@@ -65,7 +66,7 @@ jobs:
 
       - name: Build ITK
         if: steps.itk-cache.outputs.cache-hit != 'true'
-        run: ./scripts/windows/build-dependency.ps1 -Stage itk -Root $env:CI_ROOT
+        run: ./scripts/windows/build-dependency.ps1 -Stage itk -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
 
       - name: Save ITK before building the application
         if: steps.itk-cache.outputs.cache-hit != 'true'
@@ -83,7 +84,7 @@ jobs:
 
       - name: Build VTK
         if: steps.vtk-cache.outputs.cache-hit != 'true'
-        run: ./scripts/windows/build-dependency.ps1 -Stage vtk -Root $env:CI_ROOT
+        run: ./scripts/windows/build-dependency.ps1 -Stage vtk -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
 
       - name: Save VTK before building the application
         if: steps.vtk-cache.outputs.cache-hit != 'true'
@@ -93,7 +94,7 @@ jobs:
           key: ${{ steps.vtk-cache.outputs.cache-primary-key }}
 
       - name: Build SegmentPuzzler
-        run: ./scripts/windows/build.ps1 -Stage app -Root $env:CI_ROOT
+        run: ./scripts/windows/build.ps1 -Stage app -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
 
       - name: Package portable ZIP
         id: package
