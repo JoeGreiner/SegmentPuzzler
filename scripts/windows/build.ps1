@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('app', 'package', 'smoke')]
+    [ValidateSet('app', 'package', 'smoke', 'smoke-installer')]
     [string] $Stage,
     [string] $Root = 'D:\spci',
     [string] $QtRoot = $env:QT_ROOT_DIR,
@@ -18,9 +18,69 @@ if (-not $IsWindows) {
 
 function Invoke-Checked {
     param([string] $Program, [string[]] $CommandArguments)
-    & $Program @CommandArguments
+    & $Program @CommandArguments 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "$Program failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Test-ApplicationStartup {
+    param([string] $Executable, [string] $LogPrefix)
+    $application = Get-Item -LiteralPath $Executable
+    # An invalid log level exits after QApplication initialisation, before creating the 3D window.
+    $environmentNames = @('PATH', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_PLATFORM', 'QML2_IMPORT_PATH')
+    $savedEnvironment = @{}
+    foreach ($name in $environmentNames) {
+        $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+    $process = $null
+    try {
+        $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+        $env:QT_PLUGIN_PATH = $null
+        $env:QT_QPA_PLATFORM_PLUGIN_PATH = $null
+        $env:QML2_IMPORT_PATH = $null
+        $env:QT_QPA_PLATFORM = 'windows'
+        $process = Start-Process -FilePath $application.FullName `
+            -ArgumentList '--log-level', 'windows-ci-smoke' `
+            -WorkingDirectory $application.DirectoryName `
+            -RedirectStandardOutput "$LogPrefix-stdout.log" `
+            -RedirectStandardError "$LogPrefix-stderr.log" -PassThru
+        if (-not $process.WaitForExit(30000)) {
+            throw 'The packaged executable did not finish its startup check within 30 seconds.'
+        }
+        $process.WaitForExit()
+        $stderr = Get-Content "$LogPrefix-stderr.log" -Raw
+        if ($process.ExitCode -ne 1 -or $stderr -notmatch 'Invalid value for --log-level: windows-ci-smoke') {
+            throw "Packaged executable failed the startup check (exit $($process.ExitCode)): $stderr"
+        }
+        Write-Host "Startup check passed: $($application.FullName)"
+    } finally {
+        if ($null -ne $process -and -not $process.HasExited) {
+            $process.Kill()
+            $process.WaitForExit()
+        }
+        foreach ($name in $environmentNames) {
+            [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+        }
+    }
+}
+
+function Invoke-Installer {
+    param([string] $Executable, [string] $Arguments)
+    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -PassThru
+    try {
+        if (-not $process.WaitForExit(300000)) {
+            throw "Installer timed out: $Executable"
+        }
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw "Installer failed with exit code $($process.ExitCode): $Executable"
+        }
+    } finally {
+        if (-not $process.HasExited) {
+            $process.Kill()
+            $process.WaitForExit()
+        }
     }
 }
 
@@ -56,7 +116,7 @@ try {
 
     if ($Stage -eq 'package') {
         New-Item -ItemType Directory -Force $packages | Out-Null
-        Invoke-Checked cpack @('--config', "$appBuild/CPackConfig.cmake", '-C', 'Release', '-G', 'ZIP', '-B', $packages)
+        Invoke-Checked cpack @('--config', "$appBuild/CPackConfig.cmake", '-C', 'Release', '-G', 'NSIS;ZIP', '-B', $packages)
     }
 
     if ($Stage -eq 'smoke') {
@@ -71,40 +131,33 @@ try {
             throw 'The ZIP must contain exactly one SegmentPuzzler.exe.'
         }
 
-        # An invalid log level exits after QApplication initialisation, before creating the 3D window.
-        $environmentNames = @('PATH', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_PLATFORM', 'QML2_IMPORT_PATH')
-        $savedEnvironment = @{}
-        foreach ($name in $environmentNames) {
-            $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        Test-ApplicationStartup $executables[0].FullName "$logs/startup"
+    }
+
+    if ($Stage -eq 'smoke-installer') {
+        $installers = @(Get-ChildItem $packages -Filter '*.exe')
+        if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer in $packages; found $($installers.Count)."
         }
-        $process = $null
+        $installDirectory = Join-Path $Root "smoke/$([guid]::NewGuid().ToString('N'))/SegmentPuzzler Test"
+        $executable = Join-Path $installDirectory 'bin/SegmentPuzzler.exe'
+        $uninstaller = Join-Path $installDirectory 'Uninstall.exe'
         try {
-            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-            $env:QT_PLUGIN_PATH = $null
-            $env:QT_QPA_PLATFORM_PLUGIN_PATH = $null
-            $env:QML2_IMPORT_PATH = $null
-            $env:QT_QPA_PLATFORM = 'windows'
-            $process = Start-Process -FilePath $executables[0].FullName `
-                -ArgumentList '--log-level', 'windows-ci-smoke' `
-                -WorkingDirectory $executables[0].DirectoryName `
-                -RedirectStandardOutput "$logs/startup-stdout.log" `
-                -RedirectStandardError "$logs/startup-stderr.log" -PassThru
-            if (-not $process.WaitForExit(30000)) {
-                throw 'The packaged executable did not finish its startup check within 30 seconds.'
+            Write-Host "Installing $($installers[0].Name) into $installDirectory"
+            # NSIS requires /D last, without quotes, even when the path contains spaces.
+            Invoke-Installer $installers[0].FullName "/S /D=$installDirectory"
+            if (-not (Test-Path -LiteralPath $uninstaller)) {
+                throw 'The installer did not create Uninstall.exe.'
             }
-            $process.WaitForExit()
-            $stderr = Get-Content "$logs/startup-stderr.log" -Raw
-            if ($process.ExitCode -ne 1 -or $stderr -notmatch 'Invalid value for --log-level: windows-ci-smoke') {
-                throw "Packaged executable failed the startup check (exit $($process.ExitCode)): $stderr"
-            }
-            Write-Host 'Packaged executable loaded its DLLs and Qt platform plugin successfully.'
+            Test-ApplicationStartup $executable "$logs/installed-startup"
         } finally {
-            if ($null -ne $process -and -not $process.HasExited) {
-                $process.Kill()
-                $process.WaitForExit()
-            }
-            foreach ($name in $environmentNames) {
-                [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+            if (Test-Path -LiteralPath $uninstaller) {
+                # _?= keeps the uninstaller in this process so we can wait for it.
+                Invoke-Installer $uninstaller "/S _?=$installDirectory"
+                if (Test-Path -LiteralPath $executable) {
+                    throw 'The uninstaller left SegmentPuzzler.exe installed.'
+                }
+                Write-Host 'Uninstall check passed.'
             }
         }
     }

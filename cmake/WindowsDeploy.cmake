@@ -87,7 +87,8 @@ function(windeployqt target directory)
 
 endfunction()
 set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL TRUE)
-set(CPACK_NSIS_MUI_FINISHPAGE_RUN "${BIN_INSTALL_DIR}/SegmentPuzzler.exe")
+set(CPACK_NSIS_EXECUTABLES_DIRECTORY "bin")
+set(CPACK_NSIS_MUI_FINISHPAGE_RUN "SegmentPuzzler.exe")
 set(SEGMENT_PUZZLER_WINDOWS_ICON "${CMAKE_SOURCE_DIR}/resources/images/SegmentPuzzler.ico")
 set(CPACK_NSIS_MUI_ICON "${SEGMENT_PUZZLER_WINDOWS_ICON}")
 set(CPACK_NSIS_MUI_UNIICON "${SEGMENT_PUZZLER_WINDOWS_ICON}")
@@ -95,12 +96,7 @@ set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\SegmentPuzzler.exe")
 set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
 set(CMAKE_INSTALL_OPENMP_LIBRARIES TRUE)
 
-set(CPACK_NSIS_CREATE_ICONS_EXTRA
-        "CreateShortCut '$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\SegmentPuzzler.lnk' '$INSTDIR\\\\bin\\\\SegmentPuzzler.exe' '' '$INSTDIR\\\\bin\\\\SegmentPuzzler.exe' 0"
-        )
-#    set(CPACK_NSIS_CREATE_ICONS_EXTRA
-#        "CreateShortCut '$DESKTOP\\\\SegmentPuzzler.lnk' '$INSTDIR\\\\bin\\\\SegmentPuzzler.exe'"
-#    )
+set(CPACK_PACKAGE_EXECUTABLES "SegmentPuzzler" "SegmentPuzzler")
 
 include(InstallRequiredSystemLibraries)
 install(TARGETS SegmentPuzzler DESTINATION bin)

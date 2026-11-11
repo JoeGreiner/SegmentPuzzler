@@ -19,7 +19,7 @@ env:
 
 jobs:
   build:
-    name: Windows x64 portable ZIP
+    name: Windows x64 installer and portable ZIP
     runs-on: windows-2022
     timeout-minutes: 180
     defaults:
@@ -42,6 +42,14 @@ jobs:
           "compiler=$compiler" >> $env:GITHUB_OUTPUT
           "cmake=$cmakeVersion" >> $env:GITHUB_OUTPUT
           Write-Host "MSVC: $compiler; CMake: $cmakeVersion"
+
+      - name: Check NSIS
+        run: |
+          $nsis = Join-Path ${env:ProgramFiles(x86)} 'NSIS'
+          if (-not (Test-Path "$nsis/makensis.exe")) { throw 'NSIS is missing from the runner.' }
+          $nsis >> $env:GITHUB_PATH
+          & "$nsis/makensis.exe" /VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS version check failed.' }
 
       - name: Install Qt
         id: qt
@@ -96,19 +104,24 @@ jobs:
       - name: Build SegmentPuzzler
         run: ./scripts/windows/build.ps1 -Stage app -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
 
-      - name: Package portable ZIP
+      - name: Package NSIS installer and portable ZIP
         id: package
         run: ./scripts/windows/build.ps1 -Stage package -Root $env:CI_ROOT
 
-      - name: Check packaged executable startup
+      - name: Check portable executable startup
         run: ./scripts/windows/build.ps1 -Stage smoke -Root $env:CI_ROOT
 
-      - name: Upload portable ZIP
+      - name: Check installer, installed executable, and uninstaller
+        run: ./scripts/windows/build.ps1 -Stage smoke-installer -Root $env:CI_ROOT
+
+      - name: Upload NSIS installer and portable ZIP
         if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SegmentPuzzler-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
-          path: D:/spci/packages/*.zip
+          path: |
+            D:/spci/packages/*.exe
+            D:/spci/packages/*.zip
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
@@ -122,5 +135,7 @@ jobs:
             D:/spci/logs/
             D:/spci/build/**/CMakeCache.txt
             D:/spci/build/**/CMakeConfigureLog.yaml
+            D:/spci/packages/_CPack_Packages/**/*.log
+            D:/spci/packages/_CPack_Packages/**/*.nsi
           if-no-files-found: ignore
           retention-days: 7
