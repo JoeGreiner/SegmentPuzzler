@@ -1,0 +1,126 @@
+name: macOS build trial
+
+on:
+  push:
+    branches: [macos-ci]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-trial-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI_ROOT: /Users/runner/spci
+  MACOSX_DEPLOYMENT_TARGET: '15.0'
+  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+  BUILD_PARALLEL: '3'
+  HOMEBREW_NO_AUTO_UPDATE: '1'
+
+jobs:
+  build:
+    name: macOS Apple Silicon DMG
+    runs-on: macos-15
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up build tools
+        id: toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          brew list libomp >/dev/null 2>&1 || brew install libomp
+          echo "OpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+          echo "qt=$(jq -r '.qt.version' scripts/ci/dependencies.json)" >> "$GITHUB_OUTPUT"
+          key=$( { clang --version; cmake --version; xcodebuild -version; brew list --versions libomp; } | shasum -a 256 | cut -d ' ' -f 1)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Install Qt
+        id: qt
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
+        with:
+          version: ${{ steps.toolchain.outputs.qt }}
+          arch: clang_64
+          modules: qtimageformats
+          dir: /Users/runner/Qt
+          cache: true
+
+      - name: Set Qt prefix
+        env:
+          QT_PREFIX: ${{ steps.qt.outputs.qt-root-dir }}
+        run: echo "QT_ROOT_DIR=$QT_PREFIX" >> "$GITHUB_ENV"
+
+      - name: Restore ITK
+        id: itk-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /Users/runner/spci/install/itk
+          key: macos15-arm64-itk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh') }}
+
+      - name: Build ITK
+        if: steps.itk-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/build-dependency.sh itk
+
+      - name: Save ITK
+        if: steps.itk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /Users/runner/spci/install/itk
+          key: ${{ steps.itk-cache.outputs.cache-primary-key }}
+
+      - name: Restore VTK
+        id: vtk-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /Users/runner/spci/install/vtk
+          key: macos15-arm64-vtk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh') }}
+
+      - name: Build VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/build-dependency.sh vtk
+
+      - name: Save VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /Users/runner/spci/install/vtk
+          key: ${{ steps.vtk-cache.outputs.cache-primary-key }}
+
+      - name: Build SegmentPuzzler
+        run: bash scripts/ci/build-app.sh
+
+      - name: Package DMG
+        id: package
+        run: bash scripts/macos/package.sh
+
+      - name: Check packaged application
+        run: bash scripts/macos/smoke.sh
+
+      - name: Upload DMG
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SegmentPuzzler-macos-arm64-${{ github.sha }}-${{ github.run_attempt }}
+          path: /Users/runner/spci/packages/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-build-logs-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            /Users/runner/spci/logs/
+            /Users/runner/spci/build/**/CMakeCache.txt
+            /Users/runner/spci/build/**/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7
