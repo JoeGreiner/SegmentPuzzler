@@ -18,7 +18,7 @@ codesign --verify --deep --strict --verbose=2 "$app"
 
 while IFS= read -r -d '' binary; do
     file -b "$binary" | grep -q 'Mach-O' || continue
-    lipo -verify_arch arm64 "$binary"
+    lipo "$binary" -verify_arch arm64
     otool -L "$binary"
     if otool -L "$binary" | tail -n +2 | awk '{print $1}' | grep -E '^/' | grep -Ev '^(/usr/lib/|/System/Library/)'; then
         echo "External library dependency in $binary" >&2
