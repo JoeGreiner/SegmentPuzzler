@@ -1,4 +1,4 @@
-#include "aboutDialog.h"
+#include "AboutDialog.h"
 #include "SegmentPuzzlerBuildInfo.h"
 
 #include <QApplication>

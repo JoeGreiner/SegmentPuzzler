@@ -307,6 +307,8 @@ file(GLOB_RECURSE SRCS
         "src/qtUtils/*.cpp"
         "src/controllers/*.cpp"
         )
+# Only the application uses the About dialog and its generated build info.
+list(REMOVE_ITEM SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/qtUtils/AboutDialog.cpp")
 
 set(SRC_VIEWERS
         src/viewers/fileIO.cpp
@@ -386,14 +388,14 @@ endif()
 
 if (APPLE)
     MESSAGE(STATUS "Using Bundle for MacOS")
-    add_executable(SegmentPuzzler MACOSX_BUNDLE main.cpp mainWindow.cpp ${SRC_CORRECT_ORDER} ${APP_ICON_RESOURCES})
+    add_executable(SegmentPuzzler MACOSX_BUNDLE main.cpp src/mainWindow.cpp ${SRC_CORRECT_ORDER} ${APP_ICON_RESOURCES})
     set_target_properties(SegmentPuzzler PROPERTIES
             MACOSX_BUNDLE_ICON_FILE ${MACOSX_BUNDLE_ICON_FILE}
             MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/resources/Info.plist.in
             RESOURCE "${APP_ICON_RESOURCES}"
             )
 else ()
-    add_executable(SegmentPuzzler main.cpp mainWindow.cpp ${SRC_CORRECT_ORDER})
+    add_executable(SegmentPuzzler main.cpp src/mainWindow.cpp ${SRC_CORRECT_ORDER})
 endif ()
 
 add_custom_target(segmentpuzzler_build_info
@@ -406,7 +408,7 @@ add_custom_target(segmentpuzzler_build_info
         VERBATIM)
 add_dependencies(SegmentPuzzler segmentpuzzler_build_info)
 target_include_directories(SegmentPuzzler PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_sources(SegmentPuzzler PRIVATE aboutDialog.cpp)
+target_sources(SegmentPuzzler PRIVATE src/qtUtils/AboutDialog.cpp)
 
 target_link_libraries(SegmentPuzzler segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)

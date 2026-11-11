@@ -1,5 +1,5 @@
 #include "mainWindow.h"
-#include "aboutDialog.h"
+#include "src/qtUtils/AboutDialog.h"
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>

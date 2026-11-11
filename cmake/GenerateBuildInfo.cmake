@@ -26,4 +26,4 @@ endif ()
 string(REPLACE "\\" "\\\\" GIT_DESCRIPTION "${GIT_DESCRIPTION}")
 string(REPLACE "\"" "\\\"" GIT_DESCRIPTION "${GIT_DESCRIPTION}")
 # configure_file preserves the timestamp when the build information is unchanged.
-configure_file("${SOURCE_DIR}/resources/BuildInfo.h.in" "${OUTPUT_FILE}" @ONLY)
+configure_file("${SOURCE_DIR}/cmake/BuildInfo.h.in" "${OUTPUT_FILE}" @ONLY)

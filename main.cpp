@@ -12,7 +12,7 @@
 #endif
 #include <QTextStream>
 #include <QItemSelection>
-#include <mainWindow.h>
+#include "src/mainWindow.h"
 #include <QMetaType>
 #include <QtGlobal>
 #include <sys/stat.h>
