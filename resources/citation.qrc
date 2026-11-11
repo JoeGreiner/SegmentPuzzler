@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/citations">
+        <file alias="apa.txt">citation-apa.txt</file>
+        <file alias="bibtex.bib">../CITATION.bib</file>
+    </qresource>
+</RCC>

@@ -1,5 +1,6 @@
 #include "mainWindow.h"
 #include "src/qtUtils/AboutDialog.h"
+#include "src/qtUtils/CitationDialog.h"
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
@@ -654,12 +655,15 @@ MainWindow::MainWindow() {
         }
     });
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
+    auto *citeAction = helpMenu->addAction(tr("Cite SegmentPuzzler…"));
+    connect(citeAction, &QAction::triggered, this, &MainWindow::showCitation);
     auto *aboutAction = new QAction(tr("About SegmentPuzzler"), this);
     aboutAction->setMenuRole(QAction::AboutRole);
     helpMenu->addAction(aboutAction);
     connect(aboutAction, &QAction::triggered, this, [this]() {
         if (!aboutDialog) {
             aboutDialog = new AboutDialog(this);
+            connect(aboutDialog, &AboutDialog::citationRequested, this, &MainWindow::showCitation);
         }
         aboutDialog->show();
         aboutDialog->raise();
@@ -1430,6 +1434,15 @@ void MainWindow::showRecoverySettings() {
     requested.enabled = enabledCheckBox->isChecked();
     requested.intervalMinutes = intervalSpinBox->value();
     selectedSegmentationAutosave->applySettings(requested);
+}
+
+void MainWindow::showCitation() {
+    if (!citationDialog) {
+        citationDialog = new CitationDialog(this);
+    }
+    citationDialog->show();
+    citationDialog->raise();
+    citationDialog->activateWindow();
 }
 
 void MainWindow::showHotkeys() {

@@ -85,6 +85,21 @@ AboutDialog::AboutDialog(QWidget *parent) : QDialog(parent) {
     credits->setOpenExternalLinks(true);
     layout->addWidget(credits);
 
+    auto *citationRow = new QHBoxLayout;
+    auto *citation = new QLabel(this);
+    citation->ensurePolished();
+    citation->setText(tr(
+        "If you use SegmentPuzzler in your research, please consider citing "
+        "<a href=\"https://doi.org/10.1113/JP288557\" style=\"color: %1;\">Greiner et al. (2026)</a>.")
+        .arg(citation->palette().color(QPalette::WindowText).name()));
+    citation->setWordWrap(true);
+    citation->setOpenExternalLinks(true);
+    citationRow->addWidget(citation, 1);
+    auto *cite = new QPushButton(tr("How to cite…"), this);
+    connect(cite, &QPushButton::clicked, this, &AboutDialog::citationRequested);
+    citationRow->addWidget(cite);
+    layout->addLayout(citationRow);
+
     auto *status = new QLabel(this);
     status->setTextFormat(Qt::RichText);
     status->setWordWrap(true);

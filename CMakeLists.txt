@@ -325,8 +325,10 @@ file(GLOB_RECURSE SRCS
         "src/qtUtils/*.cpp"
         "src/controllers/*.cpp"
         )
-# Only the application uses the About dialog and its generated build info.
-list(REMOVE_ITEM SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/qtUtils/AboutDialog.cpp")
+# These dialogs are only used by the application.
+list(REMOVE_ITEM SRCS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/qtUtils/AboutDialog.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/qtUtils/CitationDialog.cpp")
 
 set(SRC_VIEWERS
         src/viewers/fileIO.cpp
@@ -394,6 +396,7 @@ set(SRC_SEGMENTHANDLERS
 
 set(QT_RESOURCES
         resources/icon.qrc
+        resources/citation.qrc
         qdarkstyle/dark/style.qrc
         )
 set(SRC_CORRECT_ORDER ${SRC_UTILS} ${SRC_ITKIMAGEFILTERS} ${SRC_SEGMENTHANDLERS} ${SRC_VIEWERS} ${SRCS} ${QT_RESOURCES})
@@ -426,7 +429,7 @@ add_custom_target(segmentpuzzler_build_info
         VERBATIM)
 add_dependencies(SegmentPuzzler segmentpuzzler_build_info)
 target_include_directories(SegmentPuzzler PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_sources(SegmentPuzzler PRIVATE src/qtUtils/AboutDialog.cpp)
+target_sources(SegmentPuzzler PRIVATE src/qtUtils/AboutDialog.cpp src/qtUtils/CitationDialog.cpp)
 
 target_link_libraries(SegmentPuzzler segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)

@@ -1,0 +1,1 @@
+Greiner, J., Frangiamore, F., Sonak, F., Madl, J., Seidel, T., Kohl, P., & Rog-Zielinska, E. A. (2026). A deep learning-enabled toolkit for the 3D segmentation of ventricular cardiomyocytes. The Journal of Physiology, 604(13), 5561–5584. https://doi.org/10.1113/JP288557

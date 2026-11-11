@@ -39,6 +39,45 @@ AppImages should be compatible across different Linux distributions, as long as 
   ```
 </details>
 
+## Citation
+
+If you use SegmentPuzzler in your research, please consider citing the following publication:
+
+Greiner, J., Frangiamore, F., Sonak, F., Madl, J., Seidel, T., Kohl, P., & Rog-Zielinska, E. A. (2026).
+A deep learning-enabled toolkit for the 3D segmentation of ventricular cardiomyocytes.
+*The Journal of Physiology, 604*(13), 5561–5584. [https://doi.org/10.1113/JP288557](https://doi.org/10.1113/JP288557)
+
+<details>
+<summary>Copy BibTeX</summary>
+
+```bibtex
+@article{greiner2026deep,
+  title = {A deep learning-enabled toolkit for the {3D} segmentation of ventricular cardiomyocytes},
+  author = {Greiner, Joachim and Frangiamore, Fabio and Sonak, Fr{\'e}d{\'e}ric and Madl, Josef and Seidel, Thomas and Kohl, Peter and Rog-Zielinska, Eva A.},
+  journal = {The Journal of Physiology},
+  year = {2026},
+  volume = {604},
+  number = {13},
+  pages = {5561--5584},
+  doi = {10.1113/JP288557}
+}
+```
+
+[BibTeX file](CITATION.bib)
+
+</details>
+
+<details>
+<summary>Copy APA</summary>
+
+```text
+Greiner, J., Frangiamore, F., Sonak, F., Madl, J., Seidel, T., Kohl, P., & Rog-Zielinska, E. A. (2026). A deep learning-enabled toolkit for the 3D segmentation of ventricular cardiomyocytes. The Journal of Physiology, 604(13), 5561–5584. https://doi.org/10.1113/JP288557
+```
+
+</details>
+
+The citation is also available in the application under **Help → Cite SegmentPuzzler…**.
+
 ## Build from source
 
 ### Prerequisites

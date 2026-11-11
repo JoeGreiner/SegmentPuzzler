@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use SegmentPuzzler in your research, please consider citing the following publication."
+title: SegmentPuzzler
+type: software
+authors:
+  - family-names: Greiner
+    given-names: Joachim
+url: "https://github.com/JoeGreiner/SegmentPuzzler"
+preferred-citation:
+  type: article
+  title: "A deep learning-enabled toolkit for the 3D segmentation of ventricular cardiomyocytes"
+  authors:
+    - family-names: Greiner
+      given-names: Joachim
+    - family-names: Frangiamore
+      given-names: Fabio
+    - family-names: Sonak
+      given-names: Frédéric
+    - family-names: Madl
+      given-names: Josef
+    - family-names: Seidel
+      given-names: Thomas
+    - family-names: Kohl
+      given-names: Peter
+    - family-names: Rog-Zielinska
+      given-names: Eva A.
+  journal: The Journal of Physiology
+  year: 2026
+  volume: "604"
+  issue: "13"
+  start: "5561"
+  end: "5584"
+  doi: "10.1113/JP288557"

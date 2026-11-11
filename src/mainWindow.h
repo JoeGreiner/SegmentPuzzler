@@ -16,6 +16,7 @@ class SegmentTableDialog;
 class SelectedSegmentationAutosave;
 class QCloseEvent;
 class AboutDialog;
+class CitationDialog;
 
 class MainWindow : public QMainWindow {
 Q_OBJECT
@@ -36,6 +37,7 @@ public slots:
 
 private slots:
     void showHotkeys();
+    void showCitation();
     void showSegmentTable();
     void showLayerRenderOrder();
     void arm3DSegmentSplit();
@@ -70,6 +72,7 @@ private:
     std::unique_ptr<SelectedSegmentationAutosave> selectedSegmentationAutosave;
     QPointer<SegmentTableDialog> segmentTableDialog;
     QPointer<AboutDialog> aboutDialog;
+    QPointer<CitationDialog> citationDialog;
     PendingQuit pendingQuit = PendingQuit::None;
     bool discardQuitConfirmed = false;
     bool quitApproved = false;
