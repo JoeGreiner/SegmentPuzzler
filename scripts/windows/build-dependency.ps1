@@ -51,7 +51,8 @@ try {
     $configure = @(
         '-S', $source, '-B', $build, '-G', 'Ninja',
         '-DCMAKE_BUILD_TYPE=Release', "-DCMAKE_INSTALL_PREFIX=$install",
-        '-DCMAKE_CXX_STANDARD=17', '-DCMAKE_CXX_FLAGS=/bigobj /utf-8',
+        '-DCMAKE_CXX_STANDARD=17', '-UCMAKE_CXX_FLAGS',
+        '-DCMAKE_CXX_FLAGS_INIT=/bigobj /utf-8',
         '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW',
         '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL',
         '-DBUILD_TESTING=OFF'

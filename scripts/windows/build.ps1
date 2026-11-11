@@ -45,7 +45,7 @@ try {
         Invoke-Checked cmake @(
             '-S', $repository, '-B', $appBuild, '-G', 'Ninja',
             '-DCMAKE_BUILD_TYPE=Release', "-DCMAKE_PREFIX_PATH=$prefixes",
-            '-DCMAKE_CXX_FLAGS=/bigobj /utf-8',
+            '-UCMAKE_CXX_FLAGS', '-DCMAKE_CXX_FLAGS_INIT=/bigobj /utf-8',
             '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW',
             '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL',
             '-DSEGMENT_PUZZLER_QT_MAJOR=6', '-DDEPLOY=ON',

@@ -119,12 +119,25 @@ dataType::SegmentsImageType::Pointer projectClusterLabelsOntoReference(
     dataType::SegmentIdType maximumReferenceLabel = 0;
     dataType::SegmentIdType maximumClusterLabel = 0;
 #ifdef USE_OMP
-#pragma omp parallel for num_threads(executionThreadCount) \
-    reduction(max:maximumReferenceLabel) reduction(max:maximumClusterLabel)
+#pragma omp parallel num_threads(executionThreadCount)
 #endif
-    for (long long index = 0; index < static_cast<long long>(voxelCount); ++index) {
-        maximumReferenceLabel = std::max(maximumReferenceLabel, referenceBuffer[index]);
-        maximumClusterLabel = std::max(maximumClusterLabel, clusteredBuffer[index]);
+    {
+        dataType::SegmentIdType localMaximumReferenceLabel = 0;
+        dataType::SegmentIdType localMaximumClusterLabel = 0;
+#ifdef USE_OMP
+#pragma omp for nowait
+#endif
+        for (long long index = 0; index < static_cast<long long>(voxelCount); ++index) {
+            localMaximumReferenceLabel = std::max(localMaximumReferenceLabel, referenceBuffer[index]);
+            localMaximumClusterLabel = std::max(localMaximumClusterLabel, clusteredBuffer[index]);
+        }
+#ifdef USE_OMP
+#pragma omp critical
+#endif
+        {
+            maximumReferenceLabel = std::max(maximumReferenceLabel, localMaximumReferenceLabel);
+            maximumClusterLabel = std::max(maximumClusterLabel, localMaximumClusterLabel);
+        }
     }
 
     const size_t labelCount = static_cast<size_t>(maximumReferenceLabel) + 1;
