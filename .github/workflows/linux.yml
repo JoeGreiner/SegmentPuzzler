@@ -1,0 +1,125 @@
+name: Linux build trial
+
+on:
+  push:
+    branches: [linux-ci]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-trial-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI_ROOT: /tmp/spci
+  BUILD_PARALLEL: '3'
+
+jobs:
+  build:
+    name: Linux x86_64 AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build AlmaLinux 8 environment
+        run: bash scripts/linux/run.sh image
+
+      - name: Record toolchain
+        id: toolchain
+        run: |
+          mkdir -p "$CI_ROOT/logs"
+          bash scripts/linux/run.sh toolchain | tee "$CI_ROOT/logs/toolchain.log"
+          echo "key=$(sha256sum "$CI_ROOT/logs/toolchain.log" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Qt
+        id: qt-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/spci/qt
+          key: alma8-x64-qt-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
+
+      - name: Install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: bash scripts/linux/run.sh qt
+
+      - name: Save Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/spci/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
+
+      - name: Restore ITK
+        id: itk-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/spci/install/itk
+          key: alma8-x64-itk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
+
+      - name: Build ITK
+        if: steps.itk-cache.outputs.cache-hit != 'true'
+        run: bash scripts/linux/run.sh itk
+
+      - name: Save ITK
+        if: steps.itk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/spci/install/itk
+          key: ${{ steps.itk-cache.outputs.cache-primary-key }}
+
+      - name: Restore VTK
+        id: vtk-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/spci/install/vtk
+          key: alma8-x64-vtk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
+
+      - name: Build VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        run: bash scripts/linux/run.sh vtk
+
+      - name: Save VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/spci/install/vtk
+          key: ${{ steps.vtk-cache.outputs.cache-primary-key }}
+
+      - name: Build SegmentPuzzler
+        run: bash scripts/linux/run.sh app
+
+      - name: Package AppImage
+        id: package
+        run: bash scripts/linux/run.sh package
+
+      - name: Check packaged application on AlmaLinux 8
+        run: bash scripts/linux/run.sh smoke
+
+      - name: Upload AppImage
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SegmentPuzzler-linux-x86_64-${{ github.sha }}-${{ github.run_attempt }}
+          path: /tmp/spci/packages/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-build-logs-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            /tmp/spci/logs/
+            /tmp/spci/build/**/CMakeCache.txt
+            /tmp/spci/build/**/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7
