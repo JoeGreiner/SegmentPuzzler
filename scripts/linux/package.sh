@@ -17,7 +17,7 @@ done
 
 appdir=$(mktemp -d "$root/SegmentPuzzler.AppDir.XXXXXX")
 mkdir -p "$appdir/usr/bin" "$appdir/usr/plugins"
-cp "$repository/resources/images/icon.png" "$appdir/SegmentPuzzler.png"
+cp "$repository/resources/images/icon-appimage.png" "$appdir/SegmentPuzzler.png"
 cat > "$appdir/SegmentPuzzler.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
