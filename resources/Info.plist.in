@@ -14,7 +14,6 @@
     <string>@PROJECT_NAME@</string>
     <key>CFBundleIconFile</key>
     <string>@MACOSX_BUNDLE_ICON_FILE@</string>
-    <key>CFBundleIconName</key>
-    <string>@MACOSX_BUNDLE_ICON_NAME@</string>
+    @MACOSX_BUNDLE_ICON_NAME_ENTRY@
 </dict>
 </plist>

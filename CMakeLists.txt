@@ -86,17 +86,19 @@ if (APPLE AND DEPLOY)
             "${ICON_COMPOSER_FILE}/icon.json"
             "${ICON_COMPOSER_FILE}/Assets/SegmentPuzzler-heart.svg")
 
-    find_program(SEGMENT_PUZZLER_XCRUN_EXECUTABLE xcrun)
-    if (NOT SEGMENT_PUZZLER_XCRUN_EXECUTABLE)
-        message(FATAL_ERROR "Xcode 26 or newer is required to compile the app icon")
-    endif ()
-
     set(ICON_COMPOSER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/icon-composer")
     set(ICON_COMPOSER_ASSETS_CAR "${ICON_COMPOSER_OUTPUT_DIR}/Assets.car")
     set(ICON_COMPOSER_ICNS "${ICON_COMPOSER_OUTPUT_DIR}/${ICON_COMPOSER_NAME}.icns")
     set(ICON_COMPOSER_PARTIAL_PLIST "${ICON_COMPOSER_OUTPUT_DIR}/partial-info.plist")
 
-    add_custom_command(
+    option(SEGMENT_PUZZLER_USE_ICON_COMPOSER "Compile the layered macOS app icon" ON)
+    if (SEGMENT_PUZZLER_USE_ICON_COMPOSER)
+        find_program(SEGMENT_PUZZLER_XCRUN_EXECUTABLE xcrun)
+        if (NOT SEGMENT_PUZZLER_XCRUN_EXECUTABLE)
+            message(FATAL_ERROR "Xcode 26 or newer is required to compile the app icon")
+        endif ()
+
+        add_custom_command(
             OUTPUT
             "${ICON_COMPOSER_ASSETS_CAR}"
             "${ICON_COMPOSER_ICNS}"
@@ -120,17 +122,33 @@ if (APPLE AND DEPLOY)
             DEPENDS ${ICON_COMPOSER_INPUTS}
             COMMENT "Compiling the SegmentPuzzler Icon Composer asset"
             VERBATIM)
-
-    set(MACOSX_BUNDLE_ICON_FILE "${ICON_COMPOSER_NAME}")
-    set(MACOSX_BUNDLE_ICON_NAME "${ICON_COMPOSER_NAME}")
-    set(APP_ICON_RESOURCES
+        set(APP_ICON_RESOURCES
             "${ICON_COMPOSER_ASSETS_CAR}"
             "${ICON_COMPOSER_ICNS}")
+        set(MACOSX_BUNDLE_ICON_NAME_ENTRY
+            "<key>CFBundleIconName</key>\n    <string>${ICON_COMPOSER_NAME}</string>")
+        message(STATUS "Using Icon Composer asset: ${ICON_COMPOSER_FILE}")
+    else ()
+        set(MACOS_ICON_PNG "${CMAKE_SOURCE_DIR}/resources/images/icon.png")
+        add_custom_command(
+            OUTPUT "${ICON_COMPOSER_ICNS}"
+            COMMAND "${CMAKE_COMMAND}"
+                "-DICON_PNG=${MACOS_ICON_PNG}"
+                "-DOUTPUT_ICNS=${ICON_COMPOSER_ICNS}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/GenerateMacIcon.cmake"
+            DEPENDS "${MACOS_ICON_PNG}" "${CMAKE_SOURCE_DIR}/cmake/GenerateMacIcon.cmake"
+            COMMENT "Generating the macOS app icon from PNG"
+            VERBATIM)
+        set(APP_ICON_RESOURCES "${ICON_COMPOSER_ICNS}")
+        set(MACOSX_BUNDLE_ICON_NAME_ENTRY "")
+        message(STATUS "Using static macOS icon: ${MACOS_ICON_PNG}")
+    endif ()
+
+    set(MACOSX_BUNDLE_ICON_FILE "${ICON_COMPOSER_NAME}")
     set_source_files_properties(${APP_ICON_RESOURCES}
             PROPERTIES
             GENERATED TRUE
             MACOSX_PACKAGE_LOCATION "Resources")
-    message(STATUS "Using Icon Composer asset: ${ICON_COMPOSER_FILE}")
 endif ()
 
 set(SEGMENT_PUZZLER_PERFETTO_AVAILABLE FALSE)

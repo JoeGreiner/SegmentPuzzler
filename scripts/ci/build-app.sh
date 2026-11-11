@@ -17,6 +17,7 @@ configure=(
 if [[ $(uname -s) = Darwin ]]; then
     configure+=(
         -DCMAKE_OSX_ARCHITECTURES=arm64
+        "-DSEGMENT_PUZZLER_USE_ICON_COMPOSER=${SEGMENT_PUZZLER_USE_ICON_COMPOSER:-ON}"
         "-DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-15.0}"
         "-DOpenMP_ROOT=${OpenMP_ROOT:?Set OpenMP_ROOT to the libomp installation prefix}"
     )
