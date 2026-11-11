@@ -36,7 +36,7 @@ try {
         }
         $env:PATH = "$QtRoot/bin;$env:PATH"
     }
-    $dependencies = Get-Content "$PSScriptRoot/dependencies.json" -Raw | ConvertFrom-Json
+    $dependencies = Get-Content "$PSScriptRoot/../ci/dependencies.json" -Raw | ConvertFrom-Json
     $dependency = $dependencies.$Stage
     $source = Join-Path $Root "src/$Stage"
     $build = Join-Path $Root "build/$Stage"

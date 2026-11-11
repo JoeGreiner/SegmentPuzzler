@@ -5,7 +5,7 @@ repository=$(cd "$(dirname "$0")/../.." && pwd)
 root=${CI_ROOT:?Set CI_ROOT}
 appimage=${1:?Pass the packaged AppImage}
 mkdir -p "$root/logs" "$root/runtime-tests"
-exec > >(tee "$root/logs/runtime-tests.log") 2>&1
+exec > >(tee "$root/logs/check-runtime.log") 2>&1
 test_dir=$(mktemp -d "$root/runtime-tests/check.XXXXXX")
 trap 'rm -rf "$test_dir"' EXIT
 

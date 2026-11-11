@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('app', 'package', 'smoke', 'smoke-installer')]
+    [ValidateSet('app', 'package', 'check-package', 'check-installer')]
     [string] $Stage,
     [string] $Root = 'D:\spci',
     [string] $QtRoot = $env:QT_ROOT_DIR,
@@ -41,7 +41,7 @@ function Test-ApplicationStartup {
         $env:QML2_IMPORT_PATH = $null
         $env:QT_QPA_PLATFORM = 'windows'
         $process = Start-Process -FilePath $application.FullName `
-            -ArgumentList '--log-level', 'windows-ci-smoke' `
+            -ArgumentList '--log-level', 'package-check' `
             -WorkingDirectory $application.DirectoryName `
             -RedirectStandardOutput "$LogPrefix-stdout.log" `
             -RedirectStandardError "$LogPrefix-stderr.log" -PassThru
@@ -50,7 +50,7 @@ function Test-ApplicationStartup {
         }
         $process.WaitForExit()
         $stderr = Get-Content "$LogPrefix-stderr.log" -Raw
-        if ($process.ExitCode -ne 1 -or $stderr -notmatch 'Invalid value for --log-level: windows-ci-smoke') {
+        if ($process.ExitCode -ne 1 -or $stderr -notmatch 'Invalid value for --log-level: package-check') {
             throw "Packaged executable failed the startup check (exit $($process.ExitCode)): $stderr"
         }
         Write-Host "Startup check passed: $($application.FullName)"
@@ -119,12 +119,12 @@ try {
         Invoke-Checked cpack @('--config', "$appBuild/CPackConfig.cmake", '-C', 'Release', '-G', 'NSIS;ZIP', '-B', $packages)
     }
 
-    if ($Stage -eq 'smoke') {
+    if ($Stage -eq 'check-package') {
         $archives = @(Get-ChildItem $packages -Filter '*.zip')
         if ($archives.Count -ne 1) {
             throw "Expected one package ZIP in $packages; found $($archives.Count)."
         }
-        $unpacked = Join-Path $Root "smoke/$([guid]::NewGuid().ToString('N'))"
+        $unpacked = Join-Path $Root "package-check/$([guid]::NewGuid().ToString('N'))"
         Expand-Archive $archives[0].FullName -DestinationPath $unpacked
         $executables = @(Get-ChildItem $unpacked -Recurse -Filter 'SegmentPuzzler.exe')
         if ($executables.Count -ne 1) {
@@ -134,12 +134,12 @@ try {
         Test-ApplicationStartup $executables[0].FullName "$logs/startup"
     }
 
-    if ($Stage -eq 'smoke-installer') {
+    if ($Stage -eq 'check-installer') {
         $installers = @(Get-ChildItem $packages -Filter '*.exe')
         if ($installers.Count -ne 1) {
             throw "Expected one NSIS installer in $packages; found $($installers.Count)."
         }
-        $installDirectory = Join-Path $Root "smoke/$([guid]::NewGuid().ToString('N'))/SegmentPuzzler Test"
+        $installDirectory = Join-Path $Root "package-check/$([guid]::NewGuid().ToString('N'))/SegmentPuzzler Test"
         $executable = Join-Path $installDirectory 'bin/SegmentPuzzler.exe'
         $uninstaller = Join-Path $installDirectory 'Uninstall.exe'
         try {

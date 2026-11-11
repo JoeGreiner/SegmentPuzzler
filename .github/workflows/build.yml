@@ -1,0 +1,88 @@
+name: Build packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        type: choice
+        default: all
+        options: [all, windows, macos, linux]
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.platform || 'all' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read project version and check tag
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -nE 's/^project\(.*VERSION ([0-9.]+)\).*/\1/p' CMakeLists.txt)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid project version' >&2; exit 1; }
+          if [[ "$GITHUB_REF_TYPE" = tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match project version v$version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
+    uses: ./.github/workflows/windows.yml
+
+  macos:
+    needs: version
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
+    uses: ./.github/workflows/macos.yml
+
+  linux:
+    needs: version
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux'
+    uses: ./.github/workflows/linux.yml
+
+  release:
+    name: Prepare release draft
+    needs: [version, windows, macos, linux]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Download packages and prepare draft
+        shell: bash
+        run: |
+          gh run download "$GITHUB_RUN_ID" --pattern 'packages-*' --dir packages
+          files=(
+            "packages/packages-windows-x64/SegmentPuzzler-$VERSION-windows-x64-installer.exe"
+            "packages/packages-windows-x64/SegmentPuzzler-$VERSION-windows-x64-portable.zip"
+            "packages/packages-macos-arm64/SegmentPuzzler-$VERSION-macos-arm64.dmg"
+            "packages/packages-linux-x86_64/SegmentPuzzler-$VERSION-linux-x86_64.AppImage"
+          )
+          for file in "${files[@]}"; do test -s "$file"; done
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft'); then
+            [[ "$draft" = true ]] || { echo 'Release is already published' >&2; exit 1; }
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi

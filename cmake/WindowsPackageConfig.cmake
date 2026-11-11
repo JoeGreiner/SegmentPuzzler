@@ -1,5 +1,5 @@
 if(CPACK_GENERATOR STREQUAL "NSIS")
-    string(APPEND CPACK_PACKAGE_FILE_NAME "_installer")
+    string(APPEND CPACK_PACKAGE_FILE_NAME "-installer")
 elseif(CPACK_GENERATOR STREQUAL "ZIP")
-    string(APPEND CPACK_PACKAGE_FILE_NAME "_portable")
+    string(APPEND CPACK_PACKAGE_FILE_NAME "-portable")
 endif()

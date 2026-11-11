@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-stage=${1:?Usage: run.sh image|toolchain|qt|itk|vtk|app|package|smoke}
+stage=${1:?Usage: run.sh image|toolchain|qt|itk|vtk|app|package|check-package}
 repository=$(cd "$(dirname "$0")/../.." && pwd)
 root=${CI_ROOT:?Set CI_ROOT to an absolute build directory on the host}
 [[ "$root" = /* ]] || { echo 'CI_ROOT must be absolute' >&2; exit 2; }
@@ -20,7 +20,7 @@ case "$stage" in
         ;;
     itk|vtk) command=(bash scripts/ci/build-dependency.sh "$stage") ;;
     app) command=(bash scripts/ci/build-app.sh) ;;
-    package|smoke) command=(bash "scripts/linux/$stage.sh") ;;
+    package|check-package) command=(bash "scripts/linux/$stage.sh") ;;
     *) echo "Unknown stage: $stage" >&2; exit 2 ;;
 esac
 exec docker run --rm --platform linux/amd64 \
