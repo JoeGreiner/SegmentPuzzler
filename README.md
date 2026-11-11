@@ -27,7 +27,7 @@ AppImages should be compatible across different Linux distributions, as long as 
   ``` bash
   chmod u+x SegmentPuzzler.AppImage
   ```
-* Terminal - execute AppImage:
+* Terminal - execute AppImage: (you may need to install FUSE and libopengl on Ubuntu 26: apt-get install libopengl0/libfuse2t64)
   ``` bash
   ./SegmentPuzzler.AppImage
   ```
