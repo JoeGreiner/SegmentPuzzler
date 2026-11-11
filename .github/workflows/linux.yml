@@ -29,7 +29,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build AlmaLinux 8 environment
-        run: bash scripts/linux/run.sh image
+        run: |
+          mkdir -p "$CI_ROOT/logs"
+          bash scripts/linux/run.sh image 2>&1 | tee "$CI_ROOT/logs/container.log"
 
       - name: Record toolchain
         id: toolchain

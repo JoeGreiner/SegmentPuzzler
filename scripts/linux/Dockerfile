@@ -13,7 +13,7 @@ RUN dnf install -y dnf-plugins-core epel-release \
        dbus-libs openssl-libs openssl3-libs wayland-devel \
        xorg-x11-server-Xvfb xorg-x11-xauth dejavu-sans-fonts \
     && python3.12 -m pip install --no-cache-dir \
-       cmake==3.31.8 ninja==1.11.1.4 aqtinstall==3.3.0 py7zr==1.1.0 \
+       cmake==3.31.10 ninja==1.11.1.4 aqtinstall==3.3.0 py7zr==1.1.0 \
     && dnf clean all
 
 ENV PATH="/opt/rh/gcc-toolset-12/root/usr/bin:/usr/local/bin:${PATH}"
