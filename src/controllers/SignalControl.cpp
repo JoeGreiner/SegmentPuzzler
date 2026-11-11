@@ -1533,7 +1533,7 @@ void SignalControl::refreshAfterVisibilityChange() {
 QString SignalControl::resolvedDisplayName(const QString &fileName,
                                            const QString &displayedName,
                                            const std::vector<QString> &suffixes) const {
-    const QString requestedName = !displayedName.isEmpty() ? displayedName : QFileInfo(fileName).baseName();
+    const QString requestedName = !displayedName.isEmpty() ? displayedName : export_path_utils::sourceStem(fileName);
     return signal_name_utils::makeUniqueSignalName(allSignalList, requestedName, suffixes);
 }
 

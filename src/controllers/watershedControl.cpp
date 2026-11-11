@@ -40,6 +40,7 @@
 #include "src/qtUtils/BoundaryConversionDialog.h"
 #include "src/qtUtils/ImageNormalizationSettingsDialog.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/ExportPathUtils.h"
 #include "src/utils/SignalNameUtils.h"
 #include <algorithm>
 #include <atomic>
@@ -1577,7 +1578,7 @@ void WatershedControl::addImage(QString fileName) {
             segment_puzzler::image_normalization::configureLoadedImageDisplay(
                 allSignalList[signalIndexGlobal]);
             allSignalList[signalIndexGlobal]->setName(
-                signal_name_utils::makeUniqueSignalName(allSignalList, QFileInfo(fileName).baseName()));
+                signal_name_utils::makeUniqueSignalName(allSignalList, export_path_utils::sourceStem(fileName)));
             allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
             attachLayerWidgetToLastItem(signalTreeWidget);
             orthoViewer->addSignal(allSignalList[signalIndexGlobal]);

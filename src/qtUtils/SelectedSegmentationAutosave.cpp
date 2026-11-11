@@ -271,7 +271,7 @@ bool SelectedSegmentationAutosave::createRecoveryGenerationPath(
 
     QString segmentationName = state.name;
     if (segmentationName.trimmed().isEmpty() && !preferredPath.trimmed().isEmpty()) {
-        segmentationName = QFileInfo(preferredPath).completeBaseName();
+        segmentationName = export_path_utils::sourceStem(preferredPath);
     }
     QString fileNameStem = export_path_utils::sanitizedFileNameStem(segmentationName);
     fileNameStem = export_path_utils::sanitizedFileNameStem(fileNameStem.left(120));
