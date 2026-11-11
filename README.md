@@ -1,20 +1,26 @@
 # SegmentPuzzler
 
+[![Build packages](https://github.com/JoeGreiner/SegmentPuzzler/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/JoeGreiner/SegmentPuzzler/actions/workflows/build.yml)
+[![Windows x64](https://img.shields.io/badge/Windows-x64-blue)][releases]
+[![macOS arm64](https://img.shields.io/badge/macOS-arm64-blue)][releases]
+[![Linux x86_64](https://img.shields.io/badge/Linux-x86__64-blue)][releases]
+[![Latest release](https://img.shields.io/github/v/release/JoeGreiner/SegmentPuzzler)](https://github.com/JoeGreiner/SegmentPuzzler/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/JoeGreiner/SegmentPuzzler)](LICENSE)
+
 Tool to manipulate (merge, unmerge, regenerate, paint, select, ...) and proofread instance segmentations. Under construction, more to come.
-
-
-
-
 
 <video src="https://github.com/user-attachments/assets/478145be-9f75-4305-96e0-66af3779de33" autoplay muted loop playsinline style="width:100%; max-width:800px; display:block; margin:0 auto;">
   Your browser does not support the video tag.
 </video>
 
-
 ## Executables
-| Windows | MacOSX | Linux |
-|---------|---------|-------|
-| <div align="center"><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases"><img src="https://github.com/user-attachments/assets/78670603-900a-48f2-a857-6a0cc01cda93" width="100" alt="Windows"></a></div><br><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases" style="text-decoration:none;color:inherit;">Installer, Portable</a> | <div align="center"><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases"><img src="https://github.com/user-attachments/assets/975288b5-5e57-4e2e-9b41-17d38e590fbd" width="100" alt="MacOS"></a></div><br><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases" style="text-decoration:none;color:inherit;">M1, Intel</a> | <div align="center"><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases"><img src="https://github.com/user-attachments/assets/cb89df5c-52e2-4ca2-a388-f9c6ecdd0ef5" width="100" alt="Linux"></a></div><br><a href="https://github.com/JoeGreiner/SegmentPuzzler/releases" style="text-decoration:none;color:inherit;">AppImage (cross-distribution)</a> |
+
+| Windows | macOS | Linux |
+| :---: | :---: | :---: |
+| [<img src="resources/images/platforms/windows.svg" width="80" height="80" alt="Windows">][releases] | [<img src="resources/images/platforms/macos.svg" width="80" height="80" alt="macOS">][releases] | [<img src="resources/images/platforms/linux.svg" width="80" height="80" alt="Linux">][releases] |
+| [Installer / Portable (x64)][releases] | [DMG (Apple Silicon)][releases] | [AppImage (x86_64)][releases] |
+
+[releases]: https://github.com/JoeGreiner/SegmentPuzzler/releases
 
 Please reach out if you encounter issues!
 
@@ -32,14 +38,6 @@ AppImages should be compatible across different Linux distributions, as long as 
   ./SegmentPuzzler.AppImage
   ```
 </details>
-
-## Worker threads
-
-SegmentPuzzler automatically sets the number of workers to the number of available
-physical cores. This can be overridden with the environment variables
-`OMP_NUM_THREADS`, `ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS`, and `VTK_SMP_MAX_THREADS`
-for the respective backends. Benchmarks use the same variables; run a separate
-process for each worker count.
 
 ## Build from source
 
