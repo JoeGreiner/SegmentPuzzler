@@ -1,0 +1,6 @@
+#pragma once
+
+namespace segment_puzzler {
+inline constexpr char version[] = "@APP_VERSION@";
+inline constexpr char gitDescription[] = "@GIT_DESCRIPTION@";
+}

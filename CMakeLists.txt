@@ -396,6 +396,17 @@ else ()
     add_executable(SegmentPuzzler main.cpp mainWindow.cpp ${SRC_CORRECT_ORDER})
 endif ()
 
+add_custom_target(segmentpuzzler_build_info
+        COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/generated/SegmentPuzzlerBuildInfo.h"
+        "-DAPP_VERSION=${PROJECT_VERSION}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateBuildInfo.cmake"
+        BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/SegmentPuzzlerBuildInfo.h"
+        VERBATIM)
+add_dependencies(SegmentPuzzler segmentpuzzler_build_info)
+target_include_directories(SegmentPuzzler PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_sources(SegmentPuzzler PRIVATE aboutDialog.cpp)
 
 target_link_libraries(SegmentPuzzler segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)

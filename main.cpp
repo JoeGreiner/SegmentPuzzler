@@ -28,6 +28,7 @@
 
 #include "src/qtUtils/WindowStats.h"
 #include "src/utils/AppLogger.h"
+#include "SegmentPuzzlerBuildInfo.h"
 
 bool return_string_if_valid_option(int argc, char *argv[], int requested_index){
     if (requested_index >= argc){
@@ -150,6 +151,7 @@ int main(int argc, char *argv[]) {
     std::setlocale(LC_NUMERIC, "C");
 
     QApplication::setApplicationName("SegmentPuzzler");
+    QApplication::setApplicationVersion(QString::fromUtf8(segment_puzzler::version));
     QApplication::setOrganizationName("JoeGreiner");
     QApplication::setOrganizationDomain("joegreiner.de");
 

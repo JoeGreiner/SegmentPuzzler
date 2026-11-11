@@ -1,4 +1,5 @@
 #include "mainWindow.h"
+#include "aboutDialog.h"
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
@@ -653,6 +654,17 @@ MainWindow::MainWindow() {
         }
     });
     connect(openHotkeysAction, &QAction::triggered, this, &MainWindow::showHotkeys);
+    auto *aboutAction = new QAction(tr("About SegmentPuzzler"), this);
+    aboutAction->setMenuRole(QAction::AboutRole);
+    helpMenu->addAction(aboutAction);
+    connect(aboutAction, &QAction::triggered, this, [this]() {
+        if (!aboutDialog) {
+            aboutDialog = new AboutDialog(this);
+        }
+        aboutDialog->show();
+        aboutDialog->raise();
+        aboutDialog->activateWindow();
+    });
     connect(myOrthowindow, &OrthoViewer::sendStatusMessage, this, &MainWindow::receiveStatusMessage);
 
     auto *viewerInputStatus = new QLabel(this);

@@ -15,6 +15,7 @@ class TaskRunner;
 class SegmentTableDialog;
 class SelectedSegmentationAutosave;
 class QCloseEvent;
+class AboutDialog;
 
 class MainWindow : public QMainWindow {
 Q_OBJECT
@@ -68,6 +69,7 @@ private:
     std::unique_ptr<TaskRunner> taskRunner;
     std::unique_ptr<SelectedSegmentationAutosave> selectedSegmentationAutosave;
     QPointer<SegmentTableDialog> segmentTableDialog;
+    QPointer<AboutDialog> aboutDialog;
     PendingQuit pendingQuit = PendingQuit::None;
     bool discardQuitConfirmed = false;
     bool quitApproved = false;
