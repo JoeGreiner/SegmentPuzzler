@@ -40,6 +40,24 @@ jobs:
           bash scripts/linux/run.sh toolchain | tee "$CI_ROOT/logs/toolchain.log"
           echo "key=$(sha256sum "$CI_ROOT/logs/toolchain.log" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
+      - name: Restore AppImage runtime
+        id: runtime-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/spci/runtime
+          key: appimage-runtime-x64-${{ hashFiles('scripts/linux/tools.json', 'scripts/linux/build-runtime.sh', 'scripts/linux/runtime-appimagelauncher.patch') }}
+
+      - name: Build compatible AppImage runtime
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        run: bash scripts/linux/build-runtime.sh
+
+      - name: Save AppImage runtime
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/spci/runtime
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+
       - name: Restore Qt
         id: qt-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -103,6 +121,28 @@ jobs:
 
       - name: Check packaged application on AlmaLinux 8
         run: bash scripts/linux/run.sh smoke
+
+      - name: Check runtime mounting on Ubuntu
+        run: |
+          test -x /usr/bin/fusermount3
+          test -c /dev/fuse
+          probe="$CI_ROOT/runtime-tests/runtime probe.AppImage"
+          for mode in direct legacy target; do
+            case "$mode" in
+              direct) command=("$probe") ;;
+              legacy) command=("$CI_ROOT/build/appimagelauncher-test/binfmt-bypass" "$probe") ;;
+              target) command=(env "TARGET_APPIMAGE=$probe" "$CI_ROOT/runtime/runtime-x86_64") ;;
+            esac
+            log="$CI_ROOT/logs/runtime-mount-$mode.log"
+            set +e
+            env -i PATH=/usr/bin:/bin FUSERMOUNT_PROG=/usr/bin/fusermount3 \
+              timeout 30 "${command[@]}" 'argument with spaces' '--literal=*' > "$log" 2>&1
+            result=$?
+            set -e
+            cat "$log"
+            [[ "$result" = 37 ]]
+            grep -Fxq 'Runtime probe passed' "$log"
+          done
 
       - name: Upload AppImage
         if: always() && steps.package.outcome == 'success'
