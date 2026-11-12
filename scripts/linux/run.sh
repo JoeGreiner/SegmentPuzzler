@@ -3,6 +3,7 @@ set -euo pipefail
 
 stage=${1:?Usage: run.sh image|toolchain|qt|itk|vtk|app|package|check-package}
 repository=$(cd "$(dirname "$0")/../.." && pwd)
+app_source=${APP_SOURCE_DIR:-$repository}
 root=${CI_ROOT:?Set CI_ROOT to an absolute build directory on the host}
 [[ "$root" = /* ]] || { echo 'CI_ROOT must be absolute' >&2; exit 2; }
 image=segmentpuzzler-linux-ci
@@ -33,6 +34,7 @@ exec docker run --rm --platform linux/amd64 \
     --user "$(id -u):$(id -g)" \
     --workdir "$workdir" \
     -v "$repository:/source:ro" -v "$root:/work" \
+    -v "$app_source:/app-source:ro" -e APP_SOURCE_DIR=/app-source \
     -e HOME=/tmp -e "QT_ROOT_DIR=/work/qt/$qt_version/gcc_64" \
     -e "BUILD_PARALLEL=${BUILD_PARALLEL:-3}" \
     "$image" "${command[@]}"

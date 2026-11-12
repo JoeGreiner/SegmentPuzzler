@@ -85,6 +85,7 @@ function Invoke-Installer {
 }
 
 $repository = (Resolve-Path "$PSScriptRoot/../..").Path
+$appSource = if ($env:APP_SOURCE_DIR) { $env:APP_SOURCE_DIR } else { $repository }
 $Root = [System.IO.Path]::GetFullPath($Root)
 $logs = Join-Path $Root 'logs'
 $appBuild = Join-Path $Root 'build/app'
@@ -103,7 +104,7 @@ try {
     if ($Stage -eq 'app') {
         $prefixes = "$QtRoot;$Root/install/itk;$Root/install/vtk"
         Invoke-Checked cmake @(
-            '-S', $repository, '-B', $appBuild, '-G', 'Ninja',
+            '-S', $appSource, '-B', $appBuild, '-G', 'Ninja',
             '-DCMAKE_BUILD_TYPE=Release', "-DCMAKE_PREFIX_PATH=$prefixes",
             '-UCMAKE_CXX_FLAGS', '-DCMAKE_CXX_FLAGS_INIT=/bigobj /utf-8',
             '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW',

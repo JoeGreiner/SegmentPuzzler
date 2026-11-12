@@ -3,6 +3,7 @@
 set -euo pipefail
 
 repository=$(cd "$(dirname "$0")/../.." && pwd)
+app_source=${APP_SOURCE_DIR:-$repository}
 root=${CI_ROOT:?Set CI_ROOT}
 : "${QT_ROOT_DIR:?Set QT_ROOT_DIR}"
 mkdir -p "$root/tools" "$root/packages" "$root/logs"
@@ -29,7 +30,7 @@ install -m 755 "$root/runtime/mksquashfs" "$tool_dir/usr/bin/mksquashfs"
 
 appdir=$(mktemp -d "$root/SegmentPuzzler.AppDir.XXXXXX")
 mkdir -p "$appdir/usr/bin" "$appdir/usr/plugins"
-cp "$repository/resources/images/icon-appimage.png" "$appdir/SegmentPuzzler.png"
+cp "$app_source/resources/images/icon-appimage.png" "$appdir/SegmentPuzzler.png"
 cat > "$appdir/SegmentPuzzler.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
@@ -106,7 +107,7 @@ while IFS= read -r -d '' binary; do
     fi
 done < <(find "$appdir/usr" -type f -print0)
 
-version=$(sed -nE 's/^project\(.*VERSION ([0-9.]+)\).*/\1/p' "$repository/CMakeLists.txt")
+version=$(sed -nE 's/^project\(.*VERSION ([0-9.]+)\).*/\1/p' "$app_source/CMakeLists.txt")
 test -n "$version"
 ARCH=x86_64 "$tool_dir/AppRun" --comp gzip --runtime-file "$root/runtime/runtime-x86_64" \
     "$appdir" "$root/packages/SegmentPuzzler-$version-linux-x86_64.AppImage"

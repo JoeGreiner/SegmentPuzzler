@@ -2,11 +2,17 @@ name: Linux build
 
 on:
   workflow_call:
+    inputs:
+      source_commit:
+        description: Application commit to build with this workflow's scripts
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 env:
+  APP_SOURCE_DIR: ${{ inputs.source_commit != '' && format('{0}/release-source', github.workspace) || github.workspace }}
   CI_ROOT: /tmp/spci
   BUILD_PARALLEL: '4'
 
@@ -19,8 +25,15 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Check out source
+      - name: Check out build scripts and default source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out release source
+        if: inputs.source_commit != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: release-source
 
       - name: Build AlmaLinux 8 environment
         run: |

@@ -2,13 +2,14 @@
 set -euo pipefail
 
 repository=$(cd "$(dirname "$0")/../.." && pwd)
+app_source=${APP_SOURCE_DIR:-$repository}
 root=${CI_ROOT:?Set CI_ROOT to an absolute build directory}
 : "${QT_ROOT_DIR:?Set QT_ROOT_DIR to the Qt installation prefix}"
 [[ "$root" = /* ]] || { echo 'CI_ROOT must be absolute' >&2; exit 2; }
 mkdir -p "$root/logs"
 exec > >(tee "$root/logs/app.log") 2>&1
 configure=(
-    -S "$repository" -B "$root/build/app" -G Ninja
+    -S "$app_source" -B "$root/build/app" -G Ninja
     -DCMAKE_BUILD_TYPE=Release
     "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR;$root/install/itk;$root/install/vtk"
     -DSEGMENT_PUZZLER_QT_MAJOR=6 -DDEPLOY=ON -DBUILD_TESTING=OFF

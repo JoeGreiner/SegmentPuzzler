@@ -2,11 +2,17 @@ name: macOS build
 
 on:
   workflow_call:
+    inputs:
+      source_commit:
+        description: Application commit to build with this workflow's scripts
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 env:
+  APP_SOURCE_DIR: ${{ inputs.source_commit != '' && format('{0}/release-source', github.workspace) || github.workspace }}
   CI_ROOT: /Users/runner/spci
   MACOSX_DEPLOYMENT_TARGET: '15.0'
   DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
@@ -23,8 +29,15 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Check out source
+      - name: Check out build scripts and default source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out release source
+        if: inputs.source_commit != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: release-source
 
       - name: Set up build tools
         id: toolchain
