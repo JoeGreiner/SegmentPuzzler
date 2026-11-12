@@ -2,13 +2,18 @@
 set -euo pipefail
 
 root=${CI_ROOT:?Set CI_ROOT}
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 mkdir -p "$root/logs" "$root/package-check"
 exec > >(tee "$root/logs/check-package.log") 2>&1
 shopt -s nullglob
 packages=("$root/packages/"*.dmg)
 [[ ${#packages[@]} = 1 ]] || { echo 'Expected exactly one DMG' >&2; exit 1; }
 mount_dir=$(mktemp -d "$root/package-check/mount.XXXXXX")
-trap 'hdiutil detach "$mount_dir" || true; rmdir "$mount_dir" || true' EXIT
+cleanup() {
+    "$script_dir/hdiutil-retry.sh" detach "$mount_dir" || echo '::warning::Could not detach package check disk image' >&2
+    rmdir "$mount_dir" || true
+}
+trap cleanup EXIT
 hdiutil attach "${packages[0]}" -readonly -nobrowse -mountpoint "$mount_dir"
 app="$mount_dir/SegmentPuzzler.app"
 test -x "$app/Contents/MacOS/SegmentPuzzler"
@@ -33,7 +38,13 @@ env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin:/usr/sbin:/sbin 
     QT_DEBUG_PLUGINS=1 "$app/Contents/MacOS/SegmentPuzzler" --log-level package-check \
     > "$root/logs/startup.log" 2>&1 &
 process=$!
-(sleep 60; kill "$process" 2>/dev/null) &
+(
+    trap 'kill "$!" 2>/dev/null; exit 0' TERM
+    sleep 60 & wait "$!"
+    kill "$process" 2>/dev/null || exit 0
+    sleep 5 & wait "$!"
+    kill -KILL "$process" 2>/dev/null
+) &
 watchdog=$!
 wait "$process"
 result=$?

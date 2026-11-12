@@ -94,7 +94,11 @@ install(CODE "
   execute_process(
     COMMAND codesign --force --deep --sign - \"${APPS}\"
     WORKING_DIRECTORY \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}\"
+    RESULT_VARIABLE signing_result
   )
+  if (NOT signing_result STREQUAL \"0\")
+    message(FATAL_ERROR \"codesign failed: \${signing_result}\")
+  endif()
 ")
 
 
