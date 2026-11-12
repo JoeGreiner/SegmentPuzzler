@@ -27,6 +27,10 @@ function Invoke-Checked {
 function Test-ApplicationStartup {
     param([string] $Executable, [string] $LogPrefix)
     $application = Get-Item -LiteralPath $Executable
+    $tiffPlugin = Join-Path $application.DirectoryName 'imageformats/qtiff.dll'
+    if (-not (Test-Path -LiteralPath $tiffPlugin -PathType Leaf)) {
+        throw 'Packaged application is missing the Qt TIFF image plugin.'
+    }
     # An invalid log level exits after QApplication initialisation, before creating the 3D window.
     $environmentNames = @('PATH', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_PLATFORM', 'QML2_IMPORT_PATH')
     $savedEnvironment = @{}

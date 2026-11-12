@@ -59,7 +59,11 @@ function(windeployqt target directory)
                     \${_file}
             OUTPUT_VARIABLE _output
             OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _deploy_result
         )
+        if (NOT _deploy_result STREQUAL \"0\")
+            message(FATAL_ERROR \"windeployqt failed: \${_deploy_result}\")
+        endif()
         separate_arguments(_files WINDOWS_COMMAND \${_output})
         while(_files)
             list(GET _files 0 _src)
@@ -67,7 +71,11 @@ function(windeployqt target directory)
             execute_process(
                 COMMAND \"${CMAKE_COMMAND}\" -E
                     copy \${_src} \"\${CMAKE_INSTALL_PREFIX}/${directory}/\${_dest}\"
+                RESULT_VARIABLE _copy_result
             )
+            if (NOT _copy_result STREQUAL \"0\")
+                message(FATAL_ERROR \"Failed to copy Qt runtime file \${_src}: \${_copy_result}\")
+            endif()
             list(REMOVE_AT _files 0 1)
         endwhile()
         "
