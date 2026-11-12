@@ -114,17 +114,18 @@ jobs:
         run: ./scripts/windows/build.ps1 -Stage app -Root $env:CI_ROOT -Parallel $env:BUILD_PARALLEL
 
       - name: Package NSIS installer and portable ZIP
-        id: package
+        timeout-minutes: 15
         run: ./scripts/windows/build.ps1 -Stage package -Root $env:CI_ROOT
 
       - name: Check portable executable startup
+        timeout-minutes: 5
         run: ./scripts/windows/build.ps1 -Stage check-package -Root $env:CI_ROOT
 
       - name: Check installer, installed executable, and uninstaller
+        timeout-minutes: 15
         run: ./scripts/windows/build.ps1 -Stage check-installer -Root $env:CI_ROOT
 
       - name: Upload NSIS installer and portable ZIP
-        if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-windows-x64
@@ -138,6 +139,7 @@ jobs:
 
       - name: Upload build diagnostics
         if: always()
+        timeout-minutes: 5
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: logs-windows-x64

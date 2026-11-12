@@ -123,13 +123,15 @@ jobs:
         run: bash scripts/linux/run.sh app
 
       - name: Package AppImage
-        id: package
+        timeout-minutes: 15
         run: bash scripts/linux/run.sh package
 
       - name: Check packaged application on AlmaLinux 8
+        timeout-minutes: 5
         run: bash scripts/linux/run.sh check-package
 
       - name: Check runtime mounting on Ubuntu
+        timeout-minutes: 5
         run: |
           test -x /usr/bin/fusermount3
           test -c /dev/fuse
@@ -143,7 +145,7 @@ jobs:
             log="$CI_ROOT/logs/runtime-mount-$mode.log"
             set +e
             env -i PATH=/usr/bin:/bin FUSERMOUNT_PROG=/usr/bin/fusermount3 \
-              timeout 30 "${command[@]}" 'argument with spaces' '--literal=*' > "$log" 2>&1
+              timeout --kill-after=5s 30 "${command[@]}" 'argument with spaces' '--literal=*' > "$log" 2>&1
             result=$?
             set -e
             cat "$log"
@@ -152,7 +154,6 @@ jobs:
           done
 
       - name: Upload AppImage
-        if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-linux-x86_64
@@ -164,6 +165,7 @@ jobs:
 
       - name: Upload build diagnostics
         if: always()
+        timeout-minutes: 5
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: logs-linux-x86_64

@@ -66,7 +66,7 @@ for mode in direct legacy target; do
     grep -Fq -- '--appimage-extract' "$root/logs/runtime-help-$mode.log"
     set +e
     output=$(env -i PATH=/usr/bin:/bin APPIMAGE_EXTRACT_AND_RUN=1 \
-        timeout 30 "${command[@]}" 'argument with spaces' '--literal=*' 2>&1)
+        timeout --kill-after=5s 30 "${command[@]}" 'argument with spaces' '--literal=*' 2>&1)
     result=$?
     set -e
     printf '%s: %s (exit %s)\n' "$mode" "$output" "$result"

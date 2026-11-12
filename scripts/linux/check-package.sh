@@ -31,7 +31,7 @@ for mode in direct legacy; do
     env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin DISPLAY=:99 \
         QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 LIBGL_ALWAYS_SOFTWARE=1 \
         APPIMAGE_EXTRACT_AND_RUN=1 \
-        timeout 60 "${command[@]}" --log-level package-check > "$log" 2>&1
+        timeout --kill-after=5s 60 "${command[@]}" --log-level package-check > "$log" 2>&1
     result=$?
     set -e
     cat "$log"
