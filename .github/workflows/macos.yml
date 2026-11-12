@@ -125,6 +125,6 @@ jobs:
             /Users/runner/spci/logs/
             /Users/runner/spci/build/**/CMakeCache.txt
             /Users/runner/spci/build/**/CMakeConfigureLog.yaml
-            /Users/runner/spci/packages/_CPack_Packages/**/*.log
+            /Users/runner/spci/packages/_CPack_Packages/Darwin/DragNDrop/*.log
           if-no-files-found: ignore
           retention-days: 7
