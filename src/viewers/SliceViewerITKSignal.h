@@ -17,7 +17,7 @@ public:
 
     void calculateImageSize();
 
-    void calculateSliceQImages();
+    void calculateSliceQImages(bool reuseRawSlice = false);
 
     void prepareNextSliceIndexAsync(unsigned int proposedSliceIndex);
 

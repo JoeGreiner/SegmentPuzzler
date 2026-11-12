@@ -5,6 +5,7 @@
 #include "MainWindowWatershedControl.h"
 #include "src/viewers/OrthoViewer.h"
 #include "src/qtUtils/SignalLayerWidget.h"
+#include "src/qtUtils/SliderUpdateTimer.h"
 #include "src/qtUtils/LabelBoundaryWidthControl.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
@@ -1230,7 +1231,15 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     const int initialLower = clampPopupValue(signal->getNormLower(), popupMinimum, popupMaximum);
     const int initialUpper = clampPopupValue(signal->getNormUpper(), popupMinimum, popupMaximum);
 
-    auto applyNorm = [this, tree, item, signal, lowerSlider, upperSlider, lowerSpinBox, upperSpinBox](int lower, int upper) {
+    auto *update = new SliderUpdateTimer(menu, [this, tree, item, signal] {
+        refreshLayerWidget(tree, item);
+        orthoViewer->refreshViewers(signal);
+    });
+    connect(lowerSlider, &QSlider::sliderReleased, update, [update] { update->flush(); });
+    connect(upperSlider, &QSlider::sliderReleased, update, [update] { update->flush(); });
+    connect(menu, &QMenu::aboutToHide, update, [update] { update->flush(); });
+
+    auto applyNorm = [signal, update, lowerSlider, upperSlider, lowerSpinBox, upperSpinBox](int lower, int upper) {
         lower = std::min(lower, upper);
         upper = std::max(lower, upper);
 
@@ -1245,8 +1254,7 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
         upperSpinBox->setValue(upper);
 
         signal->setNorm(lower, upper);
-        refreshLayerWidget(tree, item);
-        refreshViewers();
+        update->request(lowerSlider->isSliderDown() || upperSlider->isSliderDown());
     };
 
     {
@@ -3834,7 +3842,7 @@ void SignalControl::setSignalNormAndRefresh(size_t signalIndex, double lower, do
         }
     }
 
-    refreshViewers();
+    orthoViewer->refreshViewers(allSignalList[signalIndex]);
 }
 
 

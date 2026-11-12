@@ -70,7 +70,8 @@ public:
     void removeSignal(itkSignalBase *signal);
     std::vector<itkSignalBase *> signalRenderOrder();
     void setSignalRenderOrder(const std::vector<itkSignalBase *> &order);
-    void refreshViewers();
+    // A selected signal is a display-only refresh; omit it after voxel edits.
+    void refreshViewers(itkSignalBase *signal = nullptr);
     bool isBusy() const;
     TaskRunner *getTaskRunner() const;
 

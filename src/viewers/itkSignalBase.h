@@ -323,8 +323,9 @@ public:
 
     virtual void setIsActive(bool isActiveIn) = 0;
 
+    // Raw data reuse is only for display changes; normal refreshes reread edited voxels.
     virtual QImage
-    calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer) = 0;
+    calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer, bool reuseRawSlice = false) = 0;
 
     virtual QString getNumberOfXYZAsString(int x, int y, int z) = 0;
     // todo: make function return string? or double for xyz position for printout

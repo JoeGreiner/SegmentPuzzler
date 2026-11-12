@@ -1,4 +1,5 @@
 #include <QCoreApplication>
+#include <QEventLoop>
 
 #include <atomic>
 #include <cstdint>
@@ -7,10 +8,12 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <future>
 #include <unordered_map>
 #include <vector>
 
 #include "src/viewers/itkSignal.h"
+#include "src/qtUtils/SliderUpdateTimer.h"
 
 namespace {
 
@@ -377,11 +380,189 @@ int testConcurrentSnapshotPublication() {
     return 0;
 }
 
+
+template<typename Pixel>
+int testContinuousRendering(typename itk::Image<Pixel, 3>::SizeType size = {{257, 259, 3}}) {
+    using Image = itk::Image<Pixel, 3>;
+    auto image = Image::New();
+    // One plane exceeds the 16-bit table threshold; the others use direct conversion.
+    image->SetRegions(size);
+    image->Allocate();
+    for (std::size_t i = 0; i < image->GetLargestPossibleRegion().GetNumberOfPixels(); ++i) {
+        const long long range = static_cast<long long>(std::numeric_limits<Pixel>::max()) -
+                                std::numeric_limits<Pixel>::lowest() + 1;
+        image->GetBufferPointer()[i] = static_cast<Pixel>(static_cast<long long>(i % range) + std::numeric_limits<Pixel>::lowest());
+    }
+    itkSignal<Pixel> signal(image, false);
+    const std::array<std::pair<double, double>, 6> ranges{{
+        {-100, 1000}, {0, 0}, {100, 100}, {200, 100},
+        {std::numeric_limits<double>::quiet_NaN(), 100}, {-32768, 65535}}};
+    for (const auto blend : {itkSignalBase::BlendMode::SourceOver, itkSignalBase::BlendMode::Additive}) {
+        signal.setBlendMode(blend);
+        for (std::size_t setting = 0; setting < ranges.size(); ++setting) {
+            const auto [lower, upper] = ranges[setting];
+            const int alpha = setting % 2 ? 83 : 255;
+            const QColor tint = setting % 2 ? QColor(17, 129, 243) : QColor(Qt::white);
+            signal.setNorm(lower, upper);
+            signal.setAlpha(alpha);
+            signal.setMainColor(tint);
+            for (unsigned int axis = 0; axis < 3; ++axis) {
+                for (unsigned int slice : {0U, static_cast<unsigned int>(size[axis] / 2), static_cast<unsigned int>(size[axis] - 1)}) {
+                    std::vector<quint32> buffer;
+                    const auto rendered = signal.calculateSliceQImage(slice, axis, &buffer);
+                    for (int row = 0; row < rendered.height(); ++row) {
+                        for (int column = 0; column < rendered.width(); ++column) {
+                            typename Image::IndexType index;
+                            index[axis] = slice;
+                            index[axis == 0 ? 2 : 0] = column;
+                            index[axis == 2 ? 1 : axis == 1 ? 2 : 1] = row;
+                            const double value = image->GetPixel(index);
+                            double normalized = 0;
+                            if (std::isfinite(lower) && std::isfinite(upper) && upper >= lower) {
+                                normalized = upper == lower ? (value != 0 && value >= lower ? 255 : 0)
+                                    : std::clamp((value - lower) * 255.0 / (upper - lower), 0.0, 255.0);
+                            }
+                            const QRgb expected = blend == itkSignalBase::BlendMode::Additive
+                                ? qRgba(static_cast<unsigned char>(normalized * (tint.red() / 255.)),
+                                        static_cast<unsigned char>(normalized * (tint.green() / 255.)),
+                                        static_cast<unsigned char>(normalized * (tint.blue() / 255.)), alpha)
+                                : qRgba(tint.red(), tint.green(), tint.blue(),
+                                        static_cast<unsigned char>(normalized * (alpha / 255.)));
+                            if (rendered.pixel(column, row) != expected) return fail("continuous scalar rendering changed");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Changing mode must bypass the intensity table, including signed labels.
+    signal.setCategoricalColorMode();
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        std::vector<quint32> buffer;
+        const auto rendered = signal.calculateSliceQImage(0, axis, &buffer);
+        for (int row = 0; row < rendered.height(); ++row) {
+            for (int column = 0; column < rendered.width(); ++column) {
+                typename Image::IndexType index;
+                index[axis] = 0;
+                index[axis == 0 ? 2 : 0] = column;
+                index[axis == 2 ? 1 : axis == 1 ? 2 : 1] = row;
+                const auto key = static_cast<std::uint64_t>(static_cast<std::int64_t>(image->GetPixel(index)));
+                if (rendered.pixel(column, row) != signal.colorForLabel(key)) return fail("tiled label color changed");
+            }
+        }
+    }
+    return 0;
+}
+
+
+int testSliderUpdateTimer() {
+    const auto wait = [] {
+        QEventLoop events;
+        QTimer::singleShot(40, &events, &QEventLoop::quit);
+        events.exec();
+    };
+    int value = 0, rendered = -1, calls = 0;
+    const auto render = [&] { rendered = value; ++calls; };
+    SliderUpdateTimer update(nullptr, render);
+    for (int next = 1; next <= 30; ++next) {
+        value = next;
+        update.request(true);
+    }
+    if (calls != 0) return fail("slider drag was not coalesced");
+    wait();
+    if (calls != 1 || rendered != 30) return fail("slider timer missed the latest value");
+    value = 31;
+    update.request(true);
+    update.flush();
+    if (calls != 2 || rendered != 31) return fail("slider release missed the final value");
+    update.request(true);
+    update.request(false);
+    if (calls != 3) return fail("non-drag slider update was not immediate");
+    { SliderUpdateTimer temporary(nullptr, render); temporary.request(true); }
+    wait();
+    if (calls != 3) return fail("cancelled slider timer fired");
+    return 0;
+}
+
+int testRawSliceCache() {
+    using Image = itk::Image<unsigned short, 3>;
+    auto image = Image::New();
+    image->SetRegions(Image::SizeType{{257, 259, 263}});
+    image->Allocate();
+    image->FillBuffer(100);
+    itkSignal<unsigned short> signal(image, false);
+    signal.setNorm(0, 1000);
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        image->FillBuffer(100);
+        std::vector<quint32> pixels;
+        signal.calculateSliceQImage(0, axis, &pixels);
+        const auto original = pixels;
+        // A display-only refresh reuses the snapshot, even if an unannounced
+        // edit changed the buffer. Full refreshes must always observe that edit.
+        image->GetBufferPointer()[0] = 500;
+        signal.calculateSliceQImage(0, axis, &pixels, true);
+        if (pixels != original) return fail("raw slice was not reused");
+        signal.calculateSliceQImage(0, axis, &pixels);
+        if (pixels[0] == original[0]) return fail("full refresh missed an in-place edit");
+        image->GetBufferPointer()[0] = 800;
+        image->Modified();
+        const auto beforeModified = pixels;
+        signal.calculateSliceQImage(0, axis, &pixels, true);
+        if (pixels[0] == beforeModified[0]) return fail("ITK Modified did not invalidate the raw slice");
+        signal.setNorm(0, 900);
+        signal.calculateSliceQImage(0, axis, &pixels, true);
+        const auto recolored = pixels;
+        signal.calculateSliceQImage(0, axis, &pixels);
+        if (pixels != recolored) return fail("cached contrast differs from a fresh slice");
+        signal.calculateSliceQImage(1, axis, &pixels, true);
+        const auto moved = pixels;
+        signal.calculateSliceQImage(1, axis, &pixels);
+        if (pixels != moved) return fail("cache reused the wrong slice index");
+    }
+    std::vector<std::future<std::vector<quint32>>> work;
+    // Include concurrent requests on the same axis, as well as all three axes.
+    for (unsigned int axis : {0U, 1U, 2U, 0U}) {
+        work.push_back(std::async(std::launch::async, [&signal, axis] {
+            std::vector<quint32> pixels;
+            signal.calculateSliceQImage(axis, axis, &pixels, true);
+            return pixels;
+        }));
+    }
+    for (unsigned int i = 0; i < work.size(); ++i) {
+        const auto pixels = work[i].get();
+        std::vector<quint32> reference;
+        signal.calculateSliceQImage(i % 3, i % 3, &reference);
+        if (pixels != reference) return fail("parallel cached rendering differs");
+    }
+    auto replacement = Image::New();
+    replacement->SetRegions(image->GetLargestPossibleRegion());
+    replacement->Allocate();
+    replacement->FillBuffer(700);
+    signal.updateImage(replacement);
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        std::vector<quint32> pixels, reference;
+        signal.calculateSliceQImage(0, axis, &pixels, true);
+        signal.calculateSliceQImage(0, axis, &reference);
+        if (pixels != reference) return fail("cache survived image replacement");
+    }
+    signal.releaseImage();
+    std::vector<quint32> pixels;
+    if (!signal.calculateSliceQImage(0, 0, &pixels, true).isNull()) return fail("released image rendered");
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
 
+    if (int result = testSliderUpdateTimer()) return result;
+    if (int result = testRawSliceCache()) return result;
+    if (int result = testContinuousRendering<unsigned char>()) return result;
+    if (int result = testContinuousRendering<signed char>()) return result;
+    if (int result = testContinuousRendering<unsigned short>()) return result;
+    if (int result = testContinuousRendering<short>()) return result;
+    if (int result = testContinuousRendering<unsigned short>({{3, 257, 259}})) return result;
     if (int result = testReportedBoundaryFailureAndFilledAxes()) return result;
     if (int result = testLabelBoundaryWidths()) return result;
     if (int result = testMaximumUnsignedLabels()) return result;

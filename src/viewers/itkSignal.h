@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <cmath>
 #include <type_traits>
 
@@ -72,6 +73,11 @@ public:
     }
 
     void releaseImage() override {
+        for (auto &slice : rawSlices) {
+            std::lock_guard<std::mutex> lock(slice.mutex);
+            std::vector<dType>().swap(slice.pixels);
+            slice.source = nullptr;
+        }
         pImage = nullptr;
         dimX = 0;
         dimY = 0;
@@ -100,7 +106,7 @@ public:
 
 
     virtual QImage
-    calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer) override;
+    calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer, bool reuseRawSlice = false) override;
 
     void setNorm(double lower, double upper) override;
 
@@ -217,6 +223,15 @@ private:
     void publishColorSnapshot(LabelColorSnapshot snapshot);
     double normalizeContinuousValue(double value) const;
     QRgb makeContinuousPixel(double value) const;
+
+    struct RawSlice {
+        std::mutex mutex;
+        std::vector<dType> pixels;
+        const dType *source = nullptr;
+        itk::ModifiedTimeType modified = 0;
+        unsigned int index = 0;
+    };
+    std::array<RawSlice, 3> rawSlices;
 
     std::shared_ptr<const LabelColorSnapshot> colorSnapshotState =
         std::make_shared<const LabelColorSnapshot>();
@@ -746,7 +761,7 @@ unsigned int itkSignal<dType>::getAlpha() {
 
 template<typename dType>
 QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis,
-                                              std::vector<quint32> *sliceBuffer) {
+                                              std::vector<quint32> *sliceBuffer, bool reuseRawSlice) {
     if (pImage.IsNull() || sliceBuffer == nullptr) {
         return {};
     }
@@ -785,6 +800,64 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
             break;
         default:
             throw std::logic_error("sliceAxis not implemented!");
+    }
+
+    // A local table bounds memory to 256 KiB and always reflects current display settings.
+    // Small slices and wide label types keep their existing rendering path.
+    if constexpr (std::is_integral_v<dType> && sizeof(dType) <= 2) {
+        constexpr std::size_t colorCount = std::size_t{1} << (sizeof(dType) * 8);
+        if (!isCategorical && !isEdge && requiredPixelCount >= colorCount) {
+            std::vector<QRgb> colors(colorCount);
+            for (std::size_t index = 0; index < colorCount; ++index) {
+                colors[index] = makeContinuousPixel(
+                    static_cast<double>(index) + std::numeric_limits<dType>::lowest());
+            }
+            const dType *pixels = pImage->GetBufferPointer();
+            auto &cached = rawSlices[sliceAxis];
+            std::lock_guard<std::mutex> lock(cached.mutex);
+            // Only display-only refreshes may reuse raw data. Full refreshes
+            // reread even in-place voxel edits that did not call ITK Modified().
+            if (!reuseRawSlice || cached.source != pixels || cached.modified != pImage->GetMTime() ||
+                cached.index != sliceIndex || cached.pixels.size() != requiredPixelCount) {
+                cached.pixels.resize(requiredPixelCount);
+                const auto writePixel = [&](unsigned long row, unsigned long column) {
+                    const auto value = pixels[baseOffset + row * rowStride + column * columnStride];
+                    cached.pixels[row * sliceWidth + column] = value;
+                };
+                if (sliceAxis == 0) {
+                    // YZ: read nearby Y rows within each Z plane; tiles bound scattered output writes.
+                    constexpr unsigned long tileSize = 32;
+                    for (unsigned long firstRow = 0; firstRow < sliceHeight; firstRow += tileSize) {
+                        for (unsigned long firstColumn = 0; firstColumn < sliceWidth; firstColumn += tileSize) {
+                            const auto rowEnd = std::min(firstRow + tileSize, sliceHeight);
+                            const auto columnEnd = std::min(firstColumn + tileSize, sliceWidth);
+                            for (unsigned long column = firstColumn; column < columnEnd; ++column) {
+                                for (unsigned long row = firstRow; row < rowEnd; ++row) {
+                                    writePixel(row, column);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    for (unsigned long row = 0; row < sliceHeight; ++row) {
+                        for (unsigned long column = 0; column < sliceWidth; ++column) {
+                            writePixel(row, column);
+                        }
+                    }
+                }
+                cached.source = pixels;
+                cached.modified = pImage->GetMTime();
+                cached.index = sliceIndex;
+            }
+            quint32 *output = sliceBuffer->data();
+            for (std::size_t pixel = 0; pixel < requiredPixelCount; ++pixel) {
+                const auto index = static_cast<std::size_t>(
+                    static_cast<int>(cached.pixels[pixel]) - std::numeric_limits<dType>::lowest());
+                output[pixel] = colors[index];
+            }
+            return QImage(reinterpret_cast<const unsigned char *>(sliceBuffer->data()),
+                          static_cast<int>(sliceWidth), static_cast<int>(sliceHeight), QImage::Format_ARGB32);
+        }
     }
 
     const dType *imageBuffer = pImage->GetBufferPointer();

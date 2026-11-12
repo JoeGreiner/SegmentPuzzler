@@ -22,7 +22,7 @@ public:
 public:
     explicit itkSignalThresholdPreview(SignalImagePointerType pointerToImage, bool verboseIn = false);
 
-    virtual QImage calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer) override;
+    virtual QImage calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer, bool reuseRawSlice = false) override;
 
 };
 
@@ -34,7 +34,7 @@ itkSignal<dType>(pointerToImage, verboseIn){
 
 template<typename dType>
 QImage itkSignalThresholdPreview<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis,
-                                              std::vector<quint32> *sliceBuffer) {
+                                              std::vector<quint32> *sliceBuffer, bool /*reuseRawSlice*/) {
     // attention! slicebuffer has to be valid the whole time the qimage is used, therefore it is passed into the function
     unsigned int width, height;
     const auto dims = slice_geometry::makeDimensions(this->dimX, this->dimY, this->dimZ);

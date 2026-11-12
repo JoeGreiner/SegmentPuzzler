@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <future>
+#include "src/qtUtils/SliderUpdateTimer.h"
 #include <stdexcept>
 #include <unordered_map>
 
@@ -1040,10 +1042,26 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
     splitterHorizontalBottom->moveSplitterExt(300, 1);
 }
 
-void OrthoViewer::refreshViewers() {
+void OrthoViewer::refreshViewers(itkSignalBase *signal) {
+    // Only independent slice buffers are written by workers. Join every view
+    // before returning to the event loop or painting; even on exceptions,
+    // std::async futures wait for their workers when destroyed.
+    std::vector<std::future<void>> updates;
     for (auto *viewer : viewerList) {
-        viewer->recalculateQImages();
+        std::vector<SliceViewerITKSignal *> layers;
+        for (auto *layer : viewer->signalList) {
+            if (layer->getIsActive() && (signal == nullptr || layer->getSignal() == signal)) {
+                layers.push_back(layer);
+            }
+        }
+        if (!layers.empty()) {
+            updates.push_back(std::async(std::launch::async, [layers, signal] {
+                for (auto *layer : layers) layer->calculateSliceQImages(signal != nullptr);
+            }));
+        }
     }
+    for (auto &update : updates) update.get();
+    for (auto *viewer : viewerList) viewer->updateFunction();
 }
 
 bool OrthoViewer::isBusy() const {
@@ -1503,9 +1521,18 @@ void OrthoViewer::initialize() {
     scrollAreaXZ->setWidget(xz);
     scrollAreaXY->setWidget(xy);
 
-    connect(sliderXY, &QSlider::valueChanged, xy, &SliceViewer::setSliceIndex);
-    connect(sliderZY, &QSlider::valueChanged, zy, &SliceViewer::setSliceIndex);
-    connect(sliderXZ, &QSlider::valueChanged, xz, &SliceViewer::setSliceIndex);
+    const auto connectSlider = [](QSlider *slider, SliceViewer *viewer) {
+        auto *update = new SliderUpdateTimer(slider, [slider, viewer] {
+            viewer->setSliceIndex(slider->value());
+        });
+        connect(slider, &QSlider::valueChanged, update, [slider, update] {
+            update->request(slider->isSliderDown());
+        });
+        connect(slider, &QSlider::sliderReleased, update, [update] { update->flush(); });
+    };
+    connectSlider(sliderXY, xy);
+    connectSlider(sliderZY, zy);
+    connectSlider(sliderXZ, xz);
 
     xy->setLinkedSlider(sliderXY);
     zy->setLinkedSlider(sliderZY);

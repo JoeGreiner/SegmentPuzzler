@@ -1,6 +1,7 @@
 #include <itkMultiThreaderBase.h>
 #include "src/utils/WorkerThreads.h"
 #include <QApplication>
+#include <QTimer>
 #include <QSurfaceFormat>
 #include <QVTKOpenGLNativeWidget.h>
 #include <itkImage.h>
@@ -238,6 +239,14 @@ int main(int argc, char *argv[]) {
     auto window_icon = QIcon(":images/icon.png");
     myMainWindow->setWindowIcon(window_icon);
     myMainWindow->show();
+    QTimer::singleShot(0, myMainWindow, [myMainWindow]() {
+        SP_LOG_INFO("app",
+                    QStringLiteral("Qt runtime=%1 backend=%2 windowDpr=%3 logicalDpi=%4x%5")
+                        .arg(QString::fromLatin1(qVersion()), QGuiApplication::platformName())
+                        .arg(myMainWindow->devicePixelRatioF(), 0, 'f', 3)
+                        .arg(myMainWindow->logicalDpiX())
+                        .arg(myMainWindow->logicalDpiY()));
+    });
 
     bool loadSegment = false, segmentNameIsGiven = false;
     bool boundaryNameIsGiven = false;

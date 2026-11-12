@@ -49,8 +49,8 @@ SliceViewerITKSignal::getIsActive() {
 }
 
 
-void SliceViewerITKSignal::calculateSliceQImages() {
-    sliceQImage = pSignal->calculateSliceQImage(sliceIndex, sliceAxis, currentSignalSliceBuffer.get());
+void SliceViewerITKSignal::calculateSliceQImages(bool reuseRawSlice) {
+    sliceQImage = pSignal->calculateSliceQImage(sliceIndex, sliceAxis, currentSignalSliceBuffer.get(), reuseRawSlice);
 }
 
 
