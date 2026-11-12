@@ -13,7 +13,13 @@ qt_version=$(jq -er '.qt.version' "$repository/scripts/ci/dependencies.json")
 mkdir -p "$root/logs"
 workdir=/source
 case "$stage" in
-    toolchain) command=(bash -c 'rpm -qa | LC_ALL=C sort; gcc --version; cmake --version; python3.12 -m pip freeze') ;;
+    toolchain)
+        command=(bash -e -o pipefail -c '
+            { rpm -qa | LC_ALL=C sort; gcc --version; g++ --version; cmake --version; ninja --version; } \
+                | tee /work/logs/native-toolchain.log
+            python3.12 -m pip freeze
+        ')
+        ;;
     qt)
         workdir=/work/logs
         command=(python3.12 -m aqt install-qt linux desktop "$qt_version" linux_gcc_64 --outputdir /work/qt --modules qtimageformats)

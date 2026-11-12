@@ -32,7 +32,7 @@ jobs:
         run: |
           mkdir -p "$CI_ROOT/logs"
           bash scripts/linux/run.sh toolchain | tee "$CI_ROOT/logs/toolchain.log"
-          echo "key=$(sha256sum "$CI_ROOT/logs/toolchain.log" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "key=$(sha256sum "$CI_ROOT/logs/native-toolchain.log" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Restore AppImage runtime
         id: runtime-cache

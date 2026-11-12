@@ -12,9 +12,11 @@ RUN dnf install -y dnf-plugins-core epel-release \
        libxkbcommon-x11-devel fontconfig-devel freetype-devel \
        dbus-libs openssl-libs openssl3-libs wayland-devel \
        xorg-x11-server-Xvfb xorg-x11-xauth dejavu-sans-fonts \
-    && python3.12 -m pip install --no-cache-dir \
-       cmake==3.31.10 ninja==1.11.1.4 aqtinstall==3.3.0 py7zr==1.1.0 \
     && dnf clean all
+
+COPY requirements.txt /tmp/build-requirements.txt
+RUN python3.12 -m pip install --no-cache-dir --no-deps -r /tmp/build-requirements.txt \
+    && python3.12 -m pip check
 
 ENV PATH="/opt/rh/gcc-toolset-12/root/usr/bin:/usr/local/bin:${PATH}"
 ENV CC=gcc CXX=g++ CI_ROOT=/work BUILD_PARALLEL=3
