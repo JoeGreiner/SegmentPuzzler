@@ -65,12 +65,6 @@ jobs:
           QT_PREFIX: ${{ steps.qt.outputs.qt-root-dir }}
         run: echo "QT_ROOT_DIR=$QT_PREFIX" >> "$GITHUB_ENV"
 
-      - name: Remove obsolete AGL dependency from Qt
-        run: |
-          # Qt 6.8.3 still adds AGL, which is absent from the macOS 26 SDK.
-          module="$QT_ROOT_DIR/lib/cmake/Qt6/FindWrapOpenGL.cmake"
-          sed -i '' '/target_link_libraries.*__opengl_agl_fw_path/d' "$module"
-
       - name: Restore ITK
         id: itk-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -94,7 +88,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /Users/runner/spci/install/vtk
-          key: macos15-arm64-vtk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh') }}-no-agl
+          key: macos15-arm64-vtk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh') }}
 
       - name: Build VTK
         if: steps.vtk-cache.outputs.cache-hit != 'true'
