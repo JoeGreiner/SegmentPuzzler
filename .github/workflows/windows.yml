@@ -65,6 +65,8 @@ jobs:
         with:
           version: ${{ steps.toolchain.outputs.qt }}
           arch: win64_msvc2022_64
+          # Qt 6.11+ Windows repository layout: miurahr/aqtinstall#1000.
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b
           modules: qtimageformats
           dir: D:/Qt
           cache: true
