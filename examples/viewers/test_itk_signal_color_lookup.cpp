@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "src/viewers/itkSignal.h"
+#include "src/viewers/SliceViewerITKSignal.h"
 #include "src/qtUtils/SliderUpdateTimer.h"
 
 namespace {
@@ -48,6 +49,10 @@ int expectCenterColorOnAllAxes(itkSignal<Pixel> &signal,
         }
         if (buffer[4] != expectedColor) {
             return fail(context + ": center color mismatch for axis " + std::to_string(axis));
+        }
+        if (signal.supportsVisibleLabelRendering() &&
+            signal.calculateVisibleLabelImage(1, axis, {1}, {1}).pixel(0, 0) != expectedColor) {
+            return fail(context + ": sampled label color mismatch");
         }
     }
     return 0;
@@ -551,10 +556,89 @@ int testRawSliceCache() {
     return 0;
 }
 
+int testVisibleLabelRendering() {
+    using Image = itk::Image<unsigned int, 3>;
+    auto image = Image::New();
+    image->SetRegions(Image::SizeType{{127, 193, 277}});
+    image->Allocate();
+    image->FillBuffer(0);
+    itkSignal<unsigned int> signal(image, false);
+    signal.setCategoricalColorMode();
+    signal.setValueColorToTransparent(0);
+    SliceViewerITKSignal slice(&signal);
+    for (unsigned int axis = 0; axis < 3; ++axis) {
+        slice.setSliceAxis(axis);
+        for (int revision = 0; revision < 3; ++revision) {
+            for (std::size_t i = 0; i < image->GetLargestPossibleRegion().GetNumberOfPixels(); ++i)
+                image->GetBufferPointer()[i] = i % 7 == 0 ? 0 : static_cast<unsigned int>((i + revision) * 2654435761U);
+            signal.setAlpha(revision == 0 ? 255 : revision == 1 ? 150 : 1);
+            if (revision) {
+                signal.randomizeCategoricalPalette();
+                // Include edits without ITK Modified(): an explicit refresh must suffice.
+                if (revision == 2) image->Modified();
+            }
+            slice.setSliceIndex(revision + 1);
+            slice.calculateSliceQImages(true);
+            std::vector<quint32> buffer;
+            const auto full = signal.calculateSliceQImage(revision + 1, axis, &buffer);
+            const auto compare = [&](qreal dpr, qreal zoom, const QPoint &pan, QPainter::CompositionMode mode) {
+                const QRect target(0, 0, qRound(61 * zoom), qRound(47 * zoom));
+                QImage expected(qCeil(61 * dpr), qCeil(47 * dpr), QImage::Format_ARGB32_Premultiplied);
+                expected.setDevicePixelRatio(dpr);
+                expected.fill(qRgb(17, 31, 63));
+                auto actual = expected.copy();
+                for (int pass = 0; pass < 2; ++pass) {
+                    QPainter painter(pass ? &actual : &expected);
+                    painter.translate(-pan);
+                    painter.setCompositionMode(mode);
+                    if (pass) {
+                        if (!slice.drawVisibleSlice(painter, target, QRectF(pan, QSizeF(61, 47))))
+                            return fail("visible rendering unexpectedly fell back");
+                    } else painter.drawImage(target, full);
+                }
+                if (actual != expected) {
+                    std::cerr << "axis=" << axis << " revision=" << revision << " dpr=" << dpr
+                              << " zoom=" << zoom << " pan=" << pan.x() << ',' << pan.y()
+                              << " mode=" << mode << '\n';
+                    return fail("visible label pixels differ from full Qt rendering");
+                }
+                // A repeated draw must reuse the same geometry without changing pixels.
+                QImage cached = expected.copy();
+                cached.fill(qRgb(17, 31, 63));
+                QPainter painter(&cached);
+                painter.translate(-pan);
+                painter.setCompositionMode(mode);
+                slice.drawVisibleSlice(painter, target, QRectF(pan, QSizeF(61, 47)));
+                painter.end();
+                if (cached != expected) return fail("cached visible label image differs");
+                return 0;
+            };
+            // Start and end with the same geometry to detect stale pixels after the next refresh.
+            if (int result = compare(1, 1, {}, QPainter::CompositionMode_SourceOver)) return result;
+            for (qreal dpr : {1.0, 1.25, 1.5, 2.0})
+                for (qreal zoom : {1.0, 1.31, 4.3})
+                    for (const QPoint pan : {QPoint(0, 0), QPoint(7, 11), QPoint(33, 19)})
+                        for (const auto mode : {QPainter::CompositionMode_SourceOver, QPainter::CompositionMode_Plus})
+                            if (int result = compare(dpr, zoom, pan, mode)) return result;
+            if (int result = compare(1, 1, {}, QPainter::CompositionMode_SourceOver)) return result;
+            if (*slice.getAddressSliceQImage() != full) return fail("full-resolution image changed after visible rendering");
+        }
+    }
+    signal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Boundaries);
+    if (signal.supportsVisibleLabelRendering()) return fail("boundaries must retain the full renderer");
+    slice.calculateSliceQImages();
+    std::vector<quint32> buffer;
+    if (*slice.getAddressSliceQImage() != signal.calculateSliceQImage(3, 2, &buffer))
+        return fail("switching to boundaries reused filled pixels");
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
+
+    if (int result = testVisibleLabelRendering()) return result;
 
     if (int result = testSliderUpdateTimer()) return result;
     if (int result = testRawSliceCache()) return result;
@@ -563,6 +647,7 @@ int main(int argc, char **argv) {
     if (int result = testContinuousRendering<unsigned short>()) return result;
     if (int result = testContinuousRendering<short>()) return result;
     if (int result = testContinuousRendering<unsigned short>({{3, 257, 259}})) return result;
+    if (int result = testContinuousRendering<int>({{3, 257, 259}})) return result;
     if (int result = testReportedBoundaryFailureAndFilledAxes()) return result;
     if (int result = testLabelBoundaryWidths()) return result;
     if (int result = testMaximumUnsignedLabels()) return result;

@@ -154,6 +154,13 @@ public:
     bool supportsNormControl() const override { return !isCategorical && !isEdge; }
 
     bool usesCategoricalColors() const override { return isCategorical && !isEdge; }
+    bool supportsVisibleLabelRendering() const override {
+        return std::is_integral_v<dType> && usesCategoricalColors() &&
+               getLabelRenderMode() == itkSignalBase::LabelRenderMode::Filled;
+    }
+    QImage calculateVisibleLabelImage(unsigned int sliceIndex, unsigned int sliceAxis,
+                                     const std::vector<int> &columns,
+                                     const std::vector<int> &rows) override;
 
     bool usesEdgeStatusColors() const override { return isEdge; }
 
@@ -760,6 +767,57 @@ unsigned int itkSignal<dType>::getAlpha() {
 }
 
 template<typename dType>
+QImage itkSignal<dType>::calculateVisibleLabelImage(unsigned int sliceIndex, unsigned int sliceAxis,
+                                                  const std::vector<int> &columns,
+                                                  const std::vector<int> &rows) {
+    if constexpr (std::is_integral_v<dType>) {
+        if (!supportsVisibleLabelRendering() || pImage.IsNull() || columns.empty() || rows.empty()) return {};
+        const auto dims = slice_geometry::makeDimensions(dimX, dimY, dimZ);
+        if (sliceIndex >= slice_geometry::sliceLimit(sliceAxis, dims))
+            throw std::out_of_range("sliceIndex lies outside the image");
+        const unsigned long rowStride = sliceAxis == 1 ? dimX * dimY : dimX;
+        const unsigned long columnStride = sliceAxis == 0 ? dimX * dimY : 1;
+        const unsigned long baseOffset = sliceIndex * (sliceAxis == 0 ? 1 : sliceAxis == 1 ? dimX : dimX * dimY);
+        const auto *input = pImage->GetBufferPointer() + baseOffset;
+        const auto colors = labelColorSnapshot();
+        QImage result(static_cast<int>(columns.size()), static_cast<int>(rows.size()), QImage::Format_ARGB32);
+        auto *output = reinterpret_cast<QRgb *>(result.bits());
+        bool hasLastColor = false;
+        std::uint64_t lastLabel = 0;
+        QRgb lastColor = 0;
+        const auto sample = [&](std::size_t row, std::size_t column) {
+            auto &pixel = output[row * columns.size() + column];
+            if (rows[row] < 0 || columns[column] < 0) { pixel = 0; return; }
+            const auto label = labelColorKey(input[rows[row] * rowStride + columns[column] * columnStride]);
+            if (!hasLastColor || label != lastLabel) {
+                lastLabel = label;
+                lastColor = colors.colorForLabel(label);
+                hasLastColor = true;
+            }
+            pixel = lastColor;
+        };
+        if (sliceAxis == 0) {
+            // Keep nearby strided reads together, as in the full YZ renderer.
+            constexpr std::size_t tileSize = 32;
+            for (std::size_t firstRow = 0; firstRow < rows.size(); firstRow += tileSize) {
+                for (std::size_t firstColumn = 0; firstColumn < columns.size(); firstColumn += tileSize) {
+                    for (auto column = firstColumn; column < std::min(firstColumn + tileSize, columns.size()); ++column) {
+                        for (auto row = firstRow; row < std::min(firstRow + tileSize, rows.size()); ++row) {
+                            sample(row, column);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (std::size_t row = 0; row < rows.size(); ++row)
+                for (std::size_t column = 0; column < columns.size(); ++column) sample(row, column);
+        }
+        return result;
+    }
+    return {};
+}
+
+template<typename dType>
 QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis,
                                               std::vector<quint32> *sliceBuffer, bool reuseRawSlice) {
     if (pImage.IsNull() || sliceBuffer == nullptr) {
@@ -1003,12 +1061,29 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
         }
     } else if constexpr (!std::is_floating_point_v<dType>) {
         if (renderLabels) {
-            for (unsigned long row = 0; row < sliceHeight; ++row) {
-                const unsigned long imageRowOffset = baseOffset + row * rowStride;
-                const unsigned long sliceRowOffset = row * sliceWidth;
-                for (unsigned long column = 0; column < sliceWidth; ++column) {
-                    const dType value = imageBuffer[imageRowOffset + column * columnStride];
-                    sliceBufferPtr[sliceRowOffset + column] = colorForLabelValue(value);
+            if (sliceAxis == 0 && requiredPixelCount >= 65536) {
+                // YZ reads are strided across the volume; reuse nearby rows before moving to the next Z plane.
+                constexpr unsigned long tileSize = 32;
+                for (unsigned long firstRow = 0; firstRow < sliceHeight; firstRow += tileSize) {
+                    for (unsigned long firstColumn = 0; firstColumn < sliceWidth; firstColumn += tileSize) {
+                        const auto rowEnd = std::min(firstRow + tileSize, sliceHeight);
+                        const auto columnEnd = std::min(firstColumn + tileSize, sliceWidth);
+                        for (unsigned long column = firstColumn; column < columnEnd; ++column) {
+                            for (unsigned long row = firstRow; row < rowEnd; ++row) {
+                                const dType value = imageBuffer[baseOffset + row * rowStride + column * columnStride];
+                                sliceBufferPtr[row * sliceWidth + column] = colorForLabelValue(value);
+                            }
+                        }
+                    }
+                }
+            } else {
+                for (unsigned long row = 0; row < sliceHeight; ++row) {
+                    const unsigned long imageRowOffset = baseOffset + row * rowStride;
+                    const unsigned long sliceRowOffset = row * sliceWidth;
+                    for (unsigned long column = 0; column < sliceWidth; ++column) {
+                        const dType value = imageBuffer[imageRowOffset + column * columnStride];
+                        sliceBufferPtr[sliceRowOffset + column] = colorForLabelValue(value);
+                    }
                 }
             }
         } else {

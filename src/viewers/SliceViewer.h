@@ -2,6 +2,7 @@
 #define HELLOWORLD_SLICEVIEWER_H
 
 #include <QLabel>
+#include <QPixmap>
 #include <itkImage.h>
 #include <QSlider>
 #include <src/viewers/SliceViewer.h>
@@ -93,6 +94,9 @@ public:
     // this can be as simple as update() or a custom repaint function
     virtual void updateFunction();
 
+    // Freeze before a worker starts; unfreeze after its GUI commit.
+    void setRenderingFrozen(bool frozen);
+
     void setImageOnlyMode(bool enabled);
     bool isImageOnlyMode() const { return imageOnlyMode; }
     void setOverlayOnlyMode(bool enabled);
@@ -169,10 +173,13 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
 
     void drawActiveSignalLayers(QPainter &painter, const QRect &targetRect);
+    bool drawFrozenFrame();
     void clearSliceIndicatorCrossingGap();
 
     QImage backGroundImage;
     QImage sliceIndicatorImage;
+    QPixmap frozenFrame;
+    bool renderingFrozen = false;
     std::vector<SliceViewer *> linkedViewerList;
 
     bool verbose;

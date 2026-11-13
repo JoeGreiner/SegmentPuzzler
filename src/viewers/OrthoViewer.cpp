@@ -1016,6 +1016,17 @@ OrthoViewer::OrthoViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *tas
     xy->setOrthoViewer(this);
     xz->setOrthoViewer(this);
 
+    if (taskRunner != nullptr) {
+        const auto updateInteraction = [this](bool busy) {
+            const bool enabled = !busy || taskRunner->allowsReadOnlyInteraction();
+            // busyChanged is synchronous: capture the visible frames before the worker starts.
+            for (auto *viewer : viewerList) viewer->setRenderingFrozen(!enabled);
+            setEnabled(enabled);
+        };
+        connect(taskRunner, &TaskRunner::busyChanged, this, updateInteraction);
+        updateInteraction(taskRunner->isBusy());
+    }
+
     connect(qApp, &QGuiApplication::applicationStateChanged, this,
             [this](Qt::ApplicationState state) {
                 refreshViewerInputFocusIndicator();

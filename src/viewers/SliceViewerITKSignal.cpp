@@ -29,9 +29,8 @@ SliceViewerITKSignal::initializeBuffer() {
                      .arg(sliceAxis)
                      .arg(currentSliceHeight)
                      .arg(currentSliceWidth));
-    size_t bufferLength = (getCurrentSliceWidth() * getCurrentSliceHeight());
-    currentSignalSliceBuffer = std::make_shared<std::vector<quint32>>(bufferLength, 0);
-    predictedSignalSliceBuffer = std::make_shared<std::vector<quint32>>(bufferLength, 0);
+    currentSignalSliceBuffer = std::make_shared<std::vector<quint32>>();
+    predictedSignalSliceBuffer = std::make_shared<std::vector<quint32>>();
 }
 
 void
@@ -50,6 +49,12 @@ SliceViewerITKSignal::getIsActive() {
 
 
 void SliceViewerITKSignal::calculateSliceQImages(bool reuseRawSlice) {
+    visibleSliceQImage = {};
+    if (pSignal->supportsVisibleLabelRendering()) {
+        // Filled labels are sampled when the visible region and device scale are known.
+        sliceQImage = {};
+        return;
+    }
     sliceQImage = pSignal->calculateSliceQImage(sliceIndex, sliceAxis, currentSignalSliceBuffer.get(), reuseRawSlice);
 }
 
@@ -148,7 +153,49 @@ unsigned long SliceViewerITKSignal::getPixMapIndex(itk::Index<3> coords) {
 }
 
 QImage *SliceViewerITKSignal::getAddressSliceQImage() {
+    if (sliceQImage.isNull())
+        sliceQImage = pSignal->calculateSliceQImage(sliceIndex, sliceAxis, currentSignalSliceBuffer.get());
     return &sliceQImage;
+}
+
+bool SliceViewerITKSignal::drawVisibleSlice(QPainter &painter, const QRect &targetRect,
+                                           const QRectF &visibleRect) {
+    const auto transform = painter.deviceTransform();
+    if (!pSignal->supportsVisibleLabelRendering() || transform.type() > QTransform::TxScale ||
+        transform.m11() <= 0 || transform.m22() <= 0 ||
+        painter.testRenderHint(QPainter::SmoothPixmapTransform)) return false;
+    const auto deviceTarget = transform.mapRect(QRectF(targetRect));
+    const auto deviceRect = deviceTarget.intersected(transform.mapRect(visibleRect)).toAlignedRect();
+    if (deviceRect.isEmpty()) return true;
+    const int width = getCurrentSliceWidth(), height = getCurrentSliceHeight();
+    if (qint64(deviceRect.width()) * deviceRect.height() >= qint64(width) * height ||
+        width >= 0xffffff || height >= 0xffffff) return false;
+    const auto relativeTarget = deviceTarget.translated(-deviceRect.topLeft());
+    if (visibleSliceQImage.size() != deviceRect.size() || visibleTargetRect != relativeTarget) {
+        // Let Qt select the source indices, preserving its nearest-neighbour rounding
+        // at fractional zoom/DPI. ARGB32 matches the full slice's raster path.
+        const auto coordinates = [](int sourceSize, int targetSize, qreal offset, qreal extent, bool vertical) {
+            QImage source(vertical ? 1 : sourceSize, vertical ? sourceSize : 1, QImage::Format_ARGB32);
+            QImage target(vertical ? 1 : targetSize, vertical ? targetSize : 1, QImage::Format_ARGB32);
+            for (int i = 0; i < sourceSize; ++i)
+                source.setPixel(vertical ? 0 : i, vertical ? i : 0, 0xff000000U | (i + 1));
+            target.fill(0);
+            QPainter mapping(&target);
+            mapping.setCompositionMode(QPainter::CompositionMode_Source);
+            mapping.drawImage(vertical ? QRectF(0, offset, 1, extent) : QRectF(offset, 0, extent, 1), source);
+            mapping.end();
+            std::vector<int> indices(targetSize);
+            for (int i = 0; i < targetSize; ++i)
+                indices[i] = int(target.pixel(vertical ? 0 : i, vertical ? i : 0) & 0xffffffU) - 1;
+            return indices;
+        };
+        const auto columns = coordinates(width, deviceRect.width(), relativeTarget.x(), relativeTarget.width(), false);
+        const auto rows = coordinates(height, deviceRect.height(), relativeTarget.y(), relativeTarget.height(), true);
+        visibleSliceQImage = pSignal->calculateVisibleLabelImage(sliceIndex, sliceAxis, columns, rows);
+        visibleTargetRect = relativeTarget;
+    }
+    painter.drawImage(transform.inverted().mapRect(QRectF(deviceRect)), visibleSliceQImage);
+    return true;
 }
 
 QString SliceViewerITKSignal::getName() {

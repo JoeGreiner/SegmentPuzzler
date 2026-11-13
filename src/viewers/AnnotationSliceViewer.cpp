@@ -219,7 +219,7 @@ void logAnnotationViewerState(const QString &key, const QString &message) {
     SP_LOG_DEBUG_CHANGED("viewer.render", key, message);
 }
 
-QString summarizeAnnotationSignalImageRects(const std::vector<SliceViewerITKSignal *> &signalList) {
+QString summarizeAnnotationSignalSliceSizes(const std::vector<SliceViewerITKSignal *> &signalList) {
     QStringList entries;
     entries.reserve(static_cast<int>(signalList.size()));
     for (auto *signal : signalList) {
@@ -227,13 +227,7 @@ QString summarizeAnnotationSignalImageRects(const std::vector<SliceViewerITKSign
             continue;
         }
 
-        const QImage *image = signal->getAddressSliceQImage();
-        if (image == nullptr) {
-            entries << "null";
-            continue;
-        }
-
-        entries << QString("%1x%2").arg(image->width()).arg(image->height());
+        entries << QString("%1x%2").arg(signal->getCurrentSliceWidth()).arg(signal->getCurrentSliceHeight());
     }
 
     if (entries.isEmpty()) {
@@ -360,6 +354,7 @@ void AnnotationSliceViewer::setLinkedToolModeAndNotify(std::vector<SliceViewer *
 
 void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
+    if (drawFrozenFrame()) return;
     std::lock_guard<std::mutex> lock(signalListMutex);
 
     if (verbose) {
@@ -442,7 +437,7 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
     const QString logKey = QString("AnnotationViewerPaint_%1").arg(planeName);
     const QString message = QString("[AnnotationViewerPaint %1] eventRect=%2,%3 %4x%5 widgetRect=%6,%7 %8x%9 "
                                     "widgetSize=%10x%11 zoom=%12 currentSlice=%13x%14 background=%15x%16 annotation=%17x%18 "
-                                    "sliceIndicator=%19x%20 scale=%21x%22 activeSignalImages=%23")
+                                    "sliceIndicator=%19x%20 scale=%21x%22 activeSignalSliceSizes=%23")
             .arg(planeName)
             .arg(event->rect().x()).arg(event->rect().y()).arg(event->rect().width()).arg(event->rect().height())
             .arg(targetRect.x()).arg(targetRect.y()).arg(targetRect.width()).arg(targetRect.height())
@@ -453,7 +448,7 @@ void AnnotationSliceViewer::paintEvent(QPaintEvent *event) {
             .arg(annotationImage.width()).arg(annotationImage.height())
             .arg(sliceIndicatorImage.width()).arg(sliceIndicatorImage.height())
             .arg(scaleX, 0, 'f', 6).arg(scaleY, 0, 'f', 6)
-            .arg(summarizeAnnotationSignalImageRects(signalList));
+            .arg(summarizeAnnotationSignalSliceSizes(signalList));
     logAnnotationViewerState(logKey, message);
 
     if (verbose) {

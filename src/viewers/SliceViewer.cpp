@@ -63,7 +63,7 @@ QColor sliceIndicatorColor(int sliceAxis) {
     }
 }
 
-QString summarizeActiveSignalImageRects(const std::vector<SliceViewerITKSignal *> &signalList) {
+QString summarizeActiveSignalSliceSizes(const std::vector<SliceViewerITKSignal *> &signalList) {
     QStringList entries;
     entries.reserve(static_cast<int>(signalList.size()));
     for (auto *signal : signalList) {
@@ -71,13 +71,7 @@ QString summarizeActiveSignalImageRects(const std::vector<SliceViewerITKSignal *
             continue;
         }
 
-        const QImage *image = signal->getAddressSliceQImage();
-        if (image == nullptr) {
-            entries << "null";
-            continue;
-        }
-
-        entries << QString("%1x%2").arg(image->width()).arg(image->height());
+        entries << QString("%1x%2").arg(signal->getCurrentSliceWidth()).arg(signal->getCurrentSliceHeight());
     }
 
     if (entries.isEmpty()) {
@@ -369,7 +363,26 @@ int SliceViewer::getCurrentSliceHeight() const {
     return slice_geometry::sliceHeight(sliceAxis, slice_geometry::makeDimensions(dimX, dimY, dimZ));
 }
 
+void SliceViewer::setRenderingFrozen(bool frozen) {
+    if (renderingFrozen == frozen) return;
+    if (frozen && isVisible()) {
+        const QRect visibleRect = visibleRegion().boundingRect();
+        if (!visibleRect.isEmpty()) frozenFrame = grab(visibleRect);
+    }
+    renderingFrozen = frozen;
+    if (!frozen) frozenFrame = {};
+    update();
+}
+
+bool SliceViewer::drawFrozenFrame() {
+    if (!renderingFrozen) return false;
+    QPainter painter(this);
+    painter.drawPixmap(visibleRegion().boundingRect().topLeft(), frozenFrame);
+    return true;
+}
+
 void SliceViewer::drawActiveSignalLayers(QPainter &painter, const QRect &targetRect) {
+    if (renderingFrozen) return;
     painter.save();
 
     for (auto *signal : signalList) {
@@ -387,17 +400,15 @@ void SliceViewer::drawActiveSignalLayers(QPainter &painter, const QRect &targetR
             continue;
         }
 
-        QImage *sliceImage = signal->getAddressSliceQImage();
-        if (sliceImage == nullptr) {
-            SP_LOG_WARNING("viewer.render",
-                           QStringLiteral("SliceViewer encountered an active signal without a slice image"));
-            continue;
-        }
-
         painter.setCompositionMode(
             sourceSignal->getBlendMode() == itkSignalBase::BlendMode::Additive
                 ? QPainter::CompositionMode_Plus
                 : QPainter::CompositionMode_SourceOver);
+        if (painter.device() == this && signal->drawVisibleSlice(
+                painter, targetRect, painter.worldTransform().inverted().mapRect(QRectF(visibleRegion().boundingRect())))) {
+            continue;
+        }
+        QImage *sliceImage = signal->getAddressSliceQImage();
         if (verbose) {
             SP_LOG_DEBUG("viewer.render", QStringLiteral("Painting active SliceViewer signal"));
         }
@@ -425,6 +436,7 @@ void SliceViewer::setOverlayOnlyMode(bool enabled) {
 
 void SliceViewer::paintEvent(QPaintEvent *event) {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
+    if (drawFrozenFrame()) return;
 
     if (verbose) {
         SP_LOG_DEBUG("viewer.render", QStringLiteral("SliceViewer paintEvent triggered"));
@@ -451,7 +463,7 @@ void SliceViewer::paintEvent(QPaintEvent *event) {
     const QString logKey = QString("SliceViewerPaint_%1").arg(planeName);
     const QString message = QString("[SliceViewerPaint %1] eventRect=%2,%3 %4x%5 widgetRect=%6,%7 %8x%9 "
                                     "widgetSize=%10x%11 fixedSize=%12x%13 zoom=%14 currentSlice=%15x%16 "
-                                    "background=%17x%18 sliceIndicator=%19x%20 activeSignalImages=%21")
+                                    "background=%17x%18 sliceIndicator=%19x%20 activeSignalSliceSizes=%21")
             .arg(planeName)
             .arg(eventRect.x()).arg(eventRect.y()).arg(eventRect.width()).arg(eventRect.height())
             .arg(targetRect.x()).arg(targetRect.y()).arg(targetRect.width()).arg(targetRect.height())
@@ -461,7 +473,7 @@ void SliceViewer::paintEvent(QPaintEvent *event) {
             .arg(getCurrentSliceWidth()).arg(getCurrentSliceHeight())
             .arg(backGroundImage.width()).arg(backGroundImage.height())
             .arg(sliceIndicatorImage.width()).arg(sliceIndicatorImage.height())
-            .arg(summarizeActiveSignalImageRects(signalList));
+            .arg(summarizeActiveSignalSliceSizes(signalList));
     logSliceViewerState(logKey, message);
 
     if (verbose) {

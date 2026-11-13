@@ -327,6 +327,13 @@ public:
     virtual QImage
     calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis, std::vector<quint32> *sliceBuffer, bool reuseRawSlice = false) = 0;
 
+    virtual bool supportsVisibleLabelRendering() const { return false; }
+    // Columns and rows are source slice indices: negative values are transparent,
+    // nonnegative values must be within the slice bounds.
+    virtual QImage calculateVisibleLabelImage(unsigned int sliceIndex, unsigned int sliceAxis,
+                                             const std::vector<int> &columns,
+                                             const std::vector<int> &rows) { return {}; }
+
     virtual QString getNumberOfXYZAsString(int x, int y, int z) = 0;
     // todo: make function return string? or double for xyz position for printout
     // or both? string better for printing, double would give universal useability, independent of data type

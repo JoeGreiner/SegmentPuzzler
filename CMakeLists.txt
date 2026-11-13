@@ -516,6 +516,7 @@ if (BUILD_TESTING)
     add_executable(test_SliceViewer examples/viewers/example_sliceviewer.cpp ${SRC_CORRECT_ORDER})
     add_executable(test_ITKSignalColorLookup
             examples/viewers/test_itk_signal_color_lookup.cpp
+            src/viewers/SliceViewerITKSignal.cpp
             src/utils/AppLogger.cpp)
     add_executable(test_SelectedSegmentationAutosave
             examples/viewers/test_selected_segmentation_autosave.cpp
@@ -648,10 +649,11 @@ if (BUILD_TESTING)
             COMMAND $<TARGET_FILE:test_ConnectedComponentSplit>)
     add_test(NAME NonOverlappingTransfer
             COMMAND $<TARGET_FILE:test_NonOverlappingTransfer>)
-    set_tests_properties(NonOverlappingTransfer PROPERTIES
+    add_test(NAME OrthoViewerZoom COMMAND $<TARGET_FILE:test_OrthoViewerZoom>)
+    set_tests_properties(NonOverlappingTransfer OrthoViewerZoom PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     if (TARGET ${SEGMENT_PUZZLER_QT_PACKAGE}::QOffscreenIntegrationPlugin)
-        set_property(TEST NonOverlappingTransfer APPEND PROPERTY ENVIRONMENT
+        set_property(TEST NonOverlappingTransfer OrthoViewerZoom APPEND PROPERTY ENVIRONMENT
                 "QT_QPA_PLATFORM_PLUGIN_PATH=$<TARGET_FILE_DIR:${SEGMENT_PUZZLER_QT_PACKAGE}::QOffscreenIntegrationPlugin>")
     endif ()
     add_test(NAME ITKSignalColorLookup

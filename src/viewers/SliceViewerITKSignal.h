@@ -5,6 +5,7 @@
 #include <itkImage.h>
 #include "itkSignal.h"
 #include <future>
+#include <QPainter>
 
 class SliceViewerITKSignal {
 
@@ -49,7 +50,10 @@ public:
 
     itkSignalBase *getSignal() const { return pSignal; }
 
+    // Lazily renders the full-resolution slice if needed; this can be expensive.
     QImage *getAddressSliceQImage();
+
+    bool drawVisibleSlice(QPainter &painter, const QRect &targetRect, const QRectF &visibleRect);
 
     bool isValidSliceIndex(unsigned int proposedSliceIndex);
 
@@ -77,6 +81,8 @@ protected:
 
     // holds the qImage for given sliceindex/sliceaxis
     QImage sliceQImage;
+    QImage visibleSliceQImage;
+    QRectF visibleTargetRect;
     std::future<QImage> predictedSliceQImage;
     bool isActive;
 };
