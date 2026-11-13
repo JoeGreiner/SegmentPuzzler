@@ -85,13 +85,7 @@ Plugins = plugins
 EOF
 # Replace linuxdeploy's launcher with a relative, self-contained entry point.
 rm -f "$appdir/AppRun"
-cat > "$appdir/AppRun" <<'EOF'
-#!/bin/sh
-appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH
-exec "$appdir/usr/bin/SegmentPuzzler" "$@"
-EOF
-chmod +x "$appdir/AppRun"
+install -m 755 "$repository/scripts/linux/AppRun" "$appdir/AppRun"
 patchelf --set-rpath '$ORIGIN/../lib' "$appdir/usr/bin/SegmentPuzzler"
 while IFS= read -r -d '' library; do
     patchelf --set-rpath '$ORIGIN' "$library"

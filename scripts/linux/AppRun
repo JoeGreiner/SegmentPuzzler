@@ -1,0 +1,79 @@
+#!/bin/sh
+appdir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
+unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH
+
+can_use_nvidia() {
+    case "$1" in wayland|wayland-egl|wayland:*|wayland-egl:*) return 0 ;; esac
+    # Xwayland can use NVIDIA without exposing RandR providers.
+    if [ "${XDG_SESSION_TYPE:-}" = wayland ] || [ "${WAYLAND_DISPLAY+x}" ]; then
+        return 0
+    fi
+    timeout -k 1s 2s xrandr --listproviders 2>/dev/null | grep -Eq 'name:[[:space:]]*NVIDIA'
+}
+
+prefer_discrete_gpu() {
+    # Set SEGMENTPUZZLER_GPU=system to keep the system's default GPU.
+    [ "${SEGMENTPUZZLER_GPU:-auto}" = auto ] || return
+
+    # Respect explicit settings (including empty values) without spawning utilities.
+    if [ "${DRI_PRIME+x}${__NV_PRIME_RENDER_OFFLOAD+x}${__NV_PRIME_RENDER_OFFLOAD_PROVIDER+x}" ] ||
+        [ "${__GLX_VENDOR_LIBRARY_NAME+x}${__EGL_VENDOR_LIBRARY_FILENAMES+x}${__EGL_VENDOR_LIBRARY_DIRS+x}" ] ||
+        [ "${LIBGL_ALWAYS_SOFTWARE+x}${LIBGL_ALWAYS_INDIRECT+x}${MESA_LOADER_DRIVER_OVERRIDE+x}" ] ||
+        [ "${GALLIUM_DRIVER+x}${QT_OPENGL+x}${VGL_DISPLAY+x}${VGL_ISACTIVE+x}${LD_PRELOAD+x}" ] ||
+        [ "${SSH_CONNECTION+x}${SSH_CLIENT+x}${XRDP_SESSION+x}" ]; then
+        return
+    fi
+    case "${XDG_SESSION_REMOTE:-}" in 1|true|yes) return ;; esac
+
+    # Qt command-line flags win; leave explicitly redirected displays untouched.
+    platform=${QT_QPA_PLATFORM:-}
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -display|--display) return ;;
+            -platform|--platform) [ "$#" -ge 2 ] || return; shift; platform=$1 ;;
+        esac
+        shift
+    done
+
+    if command -v switcherooctl >/dev/null 2>&1; then
+        # 2.x selects the non-default GPU, which may actually be the integrated GPU.
+        switcheroo_version=$(timeout -k 1s 2s switcherooctl version 2>/dev/null) || switcheroo_version=
+        if [ "${switcheroo_version%%.*}" -ge 3 ] 2>/dev/null; then
+            # Read only GPU settings, never parse unrelated multiline environment values.
+            # shellcheck disable=SC2016 # Expanded by the child shell after GPU selection.
+            gpu_environment=$(timeout -k 1s 2s switcherooctl launch sh -c '
+                printf "%s\n" "${DRI_PRIME:+DRI_PRIME=$DRI_PRIME}" \
+                    "${__NV_PRIME_RENDER_OFFLOAD:+__NV_PRIME_RENDER_OFFLOAD=$__NV_PRIME_RENDER_OFFLOAD}" \
+                    "${__NV_PRIME_RENDER_OFFLOAD_PROVIDER:+__NV_PRIME_RENDER_OFFLOAD_PROVIDER=$__NV_PRIME_RENDER_OFFLOAD_PROVIDER}" \
+                    "${__GLX_VENDOR_LIBRARY_NAME:+__GLX_VENDOR_LIBRARY_NAME=$__GLX_VENDOR_LIBRARY_NAME}"
+            ' 2>/dev/null) || gpu_environment=
+            # Validate NVIDIA's display before exporting any of the settings.
+            case "$gpu_environment" in
+                *__NV_PRIME_RENDER_OFFLOAD=*|*__NV_PRIME_RENDER_OFFLOAD_PROVIDER=*|*__GLX_VENDOR_LIBRARY_NAME=nvidia*)
+                    can_use_nvidia "$platform" || return ;;
+            esac
+            while IFS= read -r setting; do
+                case "$setting" in
+                    DRI_PRIME=*|__NV_PRIME_RENDER_OFFLOAD=*|__NV_PRIME_RENDER_OFFLOAD_PROVIDER=*|__GLX_VENDOR_LIBRARY_NAME=*)
+                        export "${setting?}"
+                        ;;
+                esac
+            done <<EOF
+$gpu_environment
+EOF
+            [ "${DRI_PRIME+x}${__NV_PRIME_RENDER_OFFLOAD+x}${__NV_PRIME_RENDER_OFFLOAD_PROVIDER+x}${__GLX_VENDOR_LIBRARY_NAME+x}" ] && return
+        fi
+    fi
+
+    for device in /sys/bus/pci/drivers/nvidia/*; do
+        [ -r "$device/class" ] || continue
+        IFS= read -r device_class < "$device/class" || continue
+        case "$device_class" in 0x03????) ;; *) continue ;; esac
+        can_use_nvidia "$platform" || return
+        export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia
+        return
+    done
+}
+
+prefer_discrete_gpu "$@"
+exec "$appdir/usr/bin/SegmentPuzzler" "$@"
