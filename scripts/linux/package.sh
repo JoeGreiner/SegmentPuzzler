@@ -6,6 +6,12 @@ repository=$(cd "$(dirname "$0")/../.." && pwd)
 app_source=${APP_SOURCE_DIR:-$repository}
 root=${CI_ROOT:?Set CI_ROOT}
 : "${QT_ROOT_DIR:?Set QT_ROOT_DIR}"
+: "${GLIBC_MAX:?Set GLIBC_MAX via scripts/linux/run.sh}"
+case "${LINUX_PROFILE:?Set LINUX_PROFILE via scripts/linux/run.sh}" in
+    standard) suffix= ;;
+    legacy) suffix=-legacy ;;
+    *) echo "Unknown Linux profile: $LINUX_PROFILE" >&2; exit 2 ;;
+esac
 mkdir -p "$root/tools" "$root/packages" "$root/logs"
 exec > >(tee "$root/logs/package.log") 2>&1
 test -x "$root/runtime/runtime-x86_64"
@@ -40,6 +46,8 @@ Exec=SegmentPuzzler
 Icon=SegmentPuzzler
 Terminal=false
 Categories=Science;Graphics;
+PrefersNonDefaultGPU=true
+X-KDE-RunOnDiscreteGpu=true
 EOF
 desktop-file-validate "$appdir/SegmentPuzzler.desktop"
 
@@ -102,12 +110,14 @@ while IFS= read -r -d '' binary; do
         echo 'Dependency escaped the AppDir' >&2; exit 1
     fi
     readelf --version-info "$binary" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^GLIBC_[0-9]/) print $i}' | sort -Vu > "$root/logs/glibc-current.txt"
-    if awk -F '[_.]' '$2 > 2 || ($2 == 2 && $3 > 28) {bad=1} END {exit !bad}' "$root/logs/glibc-current.txt"; then
-        echo 'Packaged library requires glibc newer than 2.28' >&2; exit 1
+    if awk -F '[_.]' -v limit="$GLIBC_MAX" \
+        'BEGIN {split(limit, max, ".")} $2 > max[1] || ($2 == max[1] && $3 > max[2]) {bad=1} END {exit !bad}' \
+        "$root/logs/glibc-current.txt"; then
+        echo "Packaged library requires glibc newer than $GLIBC_MAX" >&2; exit 1
     fi
 done < <(find "$appdir/usr" -type f -print0)
 
 version=$(sed -nE 's/^project\(.*VERSION ([0-9.]+)\).*/\1/p' "$app_source/CMakeLists.txt")
 test -n "$version"
 ARCH=x86_64 "$tool_dir/AppRun" --comp gzip --runtime-file "$root/runtime/runtime-x86_64" \
-    "$appdir" "$root/packages/SegmentPuzzler-$version-linux-x86_64.AppImage"
+    "$appdir" "$root/packages/SegmentPuzzler-$version-linux-x86_64$suffix.AppImage"

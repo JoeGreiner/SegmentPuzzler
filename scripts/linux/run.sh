@@ -6,12 +6,19 @@ repository=$(cd "$(dirname "$0")/../.." && pwd)
 app_source=${APP_SOURCE_DIR:-$repository}
 root=${CI_ROOT:?Set CI_ROOT to an absolute build directory on the host}
 [[ "$root" = /* ]] || { echo 'CI_ROOT must be absolute' >&2; exit 2; }
-image=segmentpuzzler-linux-ci
+profile=${LINUX_PROFILE:-standard}
+case "$profile" in standard|legacy) ;; *) echo "Unknown Linux profile: $profile" >&2; exit 2 ;; esac
+profiles="$repository/scripts/linux/profiles.json"
+almalinux=$(jq -er --arg profile "$profile" '.[$profile].almalinux' "$profiles")
+qt_version=$(jq -er --arg profile "$profile" '.[$profile].qt' "$profiles")
+glibc_max=$(jq -er --arg profile "$profile" '.[$profile].glibc' "$profiles")
+image="segmentpuzzler-linux-ci-$profile"
 if [[ "$stage" = image ]]; then
-    exec docker build --platform linux/amd64 -t "$image" -f "$repository/scripts/linux/Dockerfile" "$repository/scripts/linux"
+    exec docker build --platform linux/amd64 --build-arg "ALMALINUX_VERSION=$almalinux" \
+        -t "$image" -f "$repository/scripts/linux/Dockerfile" "$repository/scripts/linux"
 fi
-qt_version=$(jq -er '.qt.version' "$repository/scripts/ci/dependencies.json")
 mkdir -p "$root/logs"
+echo "Linux profile=$profile AlmaLinux=$almalinux Qt=$qt_version glibc<=$glibc_max"
 workdir=/source
 case "$stage" in
     toolchain)
@@ -36,5 +43,6 @@ exec docker run --rm --platform linux/amd64 \
     -v "$repository:/source:ro" -v "$root:/work" \
     -v "$app_source:/app-source:ro" -e APP_SOURCE_DIR=/app-source \
     -e HOME=/tmp -e "QT_ROOT_DIR=/work/qt/$qt_version/gcc_64" \
+    -e "LINUX_PROFILE=$profile" -e "GLIBC_MAX=$glibc_max" \
     -e "BUILD_PARALLEL=${BUILD_PARALLEL:-3}" \
     "$image" "${command[@]}"

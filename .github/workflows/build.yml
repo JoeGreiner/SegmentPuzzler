@@ -112,6 +112,7 @@ jobs:
             "packages/packages-windows-x64/SegmentPuzzler-$VERSION-windows-x64-portable.zip"
             "packages/packages-macos-arm64/SegmentPuzzler-$VERSION-macos-arm64.dmg"
             "packages/packages-linux-x86_64/SegmentPuzzler-$VERSION-linux-x86_64.AppImage"
+            "packages/packages-linux-x86_64-legacy/SegmentPuzzler-$VERSION-linux-x86_64-legacy.AppImage"
           )
           for file in "${files[@]}"; do test -s "$file"; done
           if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft'); then

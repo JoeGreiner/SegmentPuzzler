@@ -18,9 +18,15 @@ env:
 
 jobs:
   build:
-    name: Linux x86_64 AppImage
+    name: Linux x86_64 AppImage (${{ matrix.profile }})
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [standard, legacy]
+    env:
+      LINUX_PROFILE: ${{ matrix.profile }}
     defaults:
       run:
         shell: bash
@@ -35,7 +41,7 @@ jobs:
           ref: ${{ inputs.source_commit }}
           path: release-source
 
-      - name: Build AlmaLinux 8 environment
+      - name: Build Linux environment
         run: |
           mkdir -p "$CI_ROOT/logs"
           bash scripts/linux/run.sh image 2>&1 | tee "$CI_ROOT/logs/container.log"
@@ -70,7 +76,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/spci/qt
-          key: alma8-x64-qt-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
+          key: linux-${{ matrix.profile }}-x64-qt-${{ hashFiles('scripts/linux/profiles.json', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
 
       - name: Install Qt
         if: steps.qt-cache.outputs.cache-hit != 'true'
@@ -88,7 +94,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/spci/install/itk
-          key: alma8-x64-itk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
+          key: linux-${{ matrix.profile }}-x64-itk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
 
       - name: Build ITK
         if: steps.itk-cache.outputs.cache-hit != 'true'
@@ -106,7 +112,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/spci/install/vtk
-          key: alma8-x64-vtk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
+          key: linux-${{ matrix.profile }}-x64-vtk-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/linux/profiles.json', 'scripts/ci/dependencies.json', 'scripts/ci/build-dependency.sh', 'scripts/linux/Dockerfile', 'scripts/linux/run.sh') }}
 
       - name: Build VTK
         if: steps.vtk-cache.outputs.cache-hit != 'true'
@@ -126,7 +132,7 @@ jobs:
         timeout-minutes: 15
         run: bash scripts/linux/run.sh package
 
-      - name: Check packaged application on AlmaLinux 8
+      - name: Check packaged application
         timeout-minutes: 5
         run: bash scripts/linux/run.sh check-package
 
@@ -156,7 +162,7 @@ jobs:
       - name: Upload AppImage
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: packages-linux-x86_64
+          name: packages-linux-x86_64${{ matrix.profile == 'legacy' && '-legacy' || '' }}
           overwrite: true
           path: /tmp/spci/packages/*.AppImage
           if-no-files-found: error
@@ -168,7 +174,7 @@ jobs:
         timeout-minutes: 5
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: logs-linux-x86_64
+          name: logs-linux-x86_64${{ matrix.profile == 'legacy' && '-legacy' || '' }}
           overwrite: true
           path: |
             /tmp/spci/logs/
