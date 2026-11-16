@@ -88,6 +88,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <random>
 #include <set>
@@ -481,7 +482,6 @@ vtkStandardNewMacro(SharedPointsPolyData);
 constexpr bool kProfile3DViewExtraction = false;
 constexpr dataType::SegmentIdType kDenseLabelLookupLimit = 1'000'000;
 constexpr int kMaximumExplodePercent = 1000;
-constexpr auto kUnmappedPointId = std::numeric_limits<std::uint32_t>::max();
 
 void checkMeshBufferSize(vtkIdType count,
                          std::uint64_t bytesPerItem,
@@ -1417,37 +1417,32 @@ template <typename ConnectivityArray>
 vtkSmartPointer<vtkPoints> compactMeshPoints(
     const ExplodeSourceView &source,
     ConnectivityArray *connectivity,
-    std::vector<std::uint32_t> &sourceToLocalPointIds,
-    std::vector<vtkIdType> &usedSourcePointIds,
     std::uint64_t maximumBufferBytes,
     dataType::SegmentIdType labelId)
 {
     auto points = vtkSmartPointer<vtkPoints>::New();
     points->SetDataType(source.points->GetDataType());
-    // Keep one uint32 value reserved for points that have not been copied yet.
     const auto maximumPointBufferBytes = std::min(
-        maximumBufferBytes, static_cast<std::uint64_t>(kUnmappedPointId) * 3 * sizeof(float));
-    usedSourcePointIds.clear();
+        maximumBufferBytes,
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) * 3 * sizeof(float));
+    std::unordered_map<vtkIdType, std::uint32_t> sourceToLocalPointIds;
     auto *pointIds = connectivity->GetPointer(0);
-    for (vtkIdType offset = 0; offset < connectivity->GetNumberOfValues(); ++offset) {
+    const vtkIdType numberOfValues = connectivity->GetNumberOfValues();
+    for (vtkIdType offset = 0; offset < numberOfValues; ++offset) {
         const vtkIdType sourcePointId = pointIds[offset];
-        auto &localPointId = sourceToLocalPointIds[static_cast<std::size_t>(sourcePointId)];
-        if (localPointId == kUnmappedPointId) {
-            checkMeshBufferSize(points->GetNumberOfPoints() + 1, 3 * sizeof(float),
+        const auto [entry, inserted] = sourceToLocalPointIds.try_emplace(
+            sourcePointId, static_cast<std::uint32_t>(sourceToLocalPointIds.size()));
+        if (inserted) {
+            checkMeshBufferSize(sourceToLocalPointIds.size(), 3 * sizeof(float),
                                 maximumPointBufferBytes, labelId);
             double point[3];
             source.pointAt(sourcePointId, point);
-            localPointId = static_cast<std::uint32_t>(points->InsertNextPoint(point));
-            usedSourcePointIds.push_back(sourcePointId);
+            points->InsertNextPoint(point);
         }
-        pointIds[offset] = localPointId;
+        pointIds[offset] = entry->second;
     }
     connectivity->DataChanged();
     connectivity->Modified();
-    // Reset only used entries so the lookup can be reused for the next segment.
-    for (const vtkIdType sourcePointId : usedSourcePointIds) {
-        sourceToLocalPointIds[static_cast<std::size_t>(sourcePointId)] = kUnmappedPointId;
-    }
     points->Squeeze();
     return points;
 }
@@ -1461,50 +1456,56 @@ std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
 {
     const bool compactPoints = labels.size() == 1
         || static_cast<std::uint64_t>(source.pointCount) > maximumBufferBytes / (3 * sizeof(float));
-    std::vector<std::uint32_t> sourceToLocalPointIds;
-    std::vector<vtkIdType> usedSourcePointIds;
     if (compactPoints) {
         SP_LOG_INFO("viewer.three_d",
                     QStringLiteral("[3DView] compacting %1 shared points into per-label buffers "
                                    "(maximum upload=%2 bytes)")
                         .arg(source.pointCount).arg(maximumBufferBytes));
-        sourceToLocalPointIds.assign(static_cast<std::size_t>(source.pointCount), kUnmappedPointId);
     }
 
-    std::vector<Segment3DViewerDialog::PreparedMesh> meshes;
-    meshes.reserve(labels.size());
-    for (std::size_t labelIndex = 0; labelIndex < labels.size(); ++labelIndex) {
-        if (scan.labelCellCounts[labelIndex] == 0) {
-            continue;
-        }
+    std::vector<Segment3DViewerDialog::PreparedMesh> meshes(labels.size());
+    std::vector<std::exception_ptr> errors(labels.size());
+    vtkSMPTools::For(0, static_cast<vtkIdType>(labels.size()), [&](vtkIdType begin, vtkIdType end) {
+        for (vtkIdType labelIndex = begin; labelIndex < end; ++labelIndex) {
+            if (scan.labelCellCounts[labelIndex] == 0) {
+                continue;
+            }
+            try {
+                const auto labelId = labels[labelIndex].first;
+                vtkSmartPointer<vtkPoints> points = source.points;
+                if (compactPoints) {
+                    auto *connectivity = polys[labelIndex]->GetConnectivityArray();
+                    if (auto *values32 = vtkCellArray::AOSArray32::SafeDownCast(connectivity)) {
+                        points = compactMeshPoints(source, values32, maximumBufferBytes, labelId);
+                    } else {
+                        auto *values64 = vtkCellArray::AOSArray64::SafeDownCast(connectivity);
+                        points = compactMeshPoints(source, values64, maximumBufferBytes, labelId);
+                    }
+                }
 
-        const auto labelId = labels[labelIndex].first;
-        const auto lutColor = labels[labelIndex].second;
-        vtkSmartPointer<vtkPoints> points = source.points;
-        if (compactPoints) {
-            auto *connectivity = polys[labelIndex]->GetConnectivityArray();
-            if (auto *values32 = vtkCellArray::AOSArray32::SafeDownCast(connectivity)) {
-                points = compactMeshPoints(source, values32, sourceToLocalPointIds,
-                                           usedSourcePointIds, maximumBufferBytes, labelId);
-            } else {
-                auto *values64 = vtkCellArray::AOSArray64::SafeDownCast(connectivity);
-                points = compactMeshPoints(source, values64, sourceToLocalPointIds,
-                                           usedSourcePointIds, maximumBufferBytes, labelId);
+                auto polyData = vtkSmartPointer<SharedPointsPolyData>::New();
+                polyData->SetPoints(points);
+                polyData->SetPolys(polys[labelIndex]);
+                polyData->SetPrecomputedCellsBounds(scan.labelBounds[labelIndex]);
+
+                auto &mesh = meshes[labelIndex];
+                mesh.labelId = labelId;
+                mesh.polyData = polyData;
+                mesh.lutColor = labels[labelIndex].second;
+                mesh.centerWorld = centerOfBounds(scan.labelBounds[labelIndex]);
+            } catch (...) {
+                errors[labelIndex] = std::current_exception();
             }
         }
-
-        auto polyData = vtkSmartPointer<SharedPointsPolyData>::New();
-        polyData->SetPoints(points);
-        polyData->SetPolys(polys[labelIndex]);
-        polyData->SetPrecomputedCellsBounds(scan.labelBounds[labelIndex]);
-
-        Segment3DViewerDialog::PreparedMesh mesh;
-        mesh.labelId = labelId;
-        mesh.polyData = polyData;
-        mesh.lutColor = lutColor;
-        mesh.centerWorld = centerOfBounds(scan.labelBounds[labelIndex]);
-        meshes.push_back(std::move(mesh));
+    });
+    for (const auto &error : errors) {
+        if (error) {
+            std::rethrow_exception(error);
+        }
     }
+    meshes.erase(std::remove_if(meshes.begin(), meshes.end(), [](const auto &mesh) {
+        return mesh.polyData == nullptr;
+    }), meshes.end());
     return meshes;
 }
 
