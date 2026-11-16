@@ -28,6 +28,7 @@
 #include <vtkSMPTools.h>
 
 #include "src/qtUtils/WindowStats.h"
+#include "src/qtUtils/GraphicsSettings.h"
 #include "src/utils/AppLogger.h"
 #include "SegmentPuzzlerBuildInfo.h"
 
@@ -145,16 +146,44 @@ void configureVtkSmpBackend() {
 }
 
 int main(int argc, char *argv[]) {
+    QCoreApplication::setApplicationName("SegmentPuzzler");
+    QCoreApplication::setApplicationVersion(QString::fromUtf8(segment_puzzler::version));
+    QCoreApplication::setOrganizationName("JoeGreiner");
+    QCoreApplication::setOrganizationDomain("joegreiner.de");
+    QStringList arguments;
+    for (int i = 0; i < argc; ++i) {
+        arguments.append(QString::fromLocal8Bit(argv[i]));
+    }
+    const auto graphics = graphicsSettings::readStartupOptions(arguments);
+    if (graphics.reset) {
+        const QString error = graphicsSettings::resetSettings();
+        if (!error.isEmpty()) {
+            std::cerr << error.toStdString() << '\n';
+        }
+        return error.isEmpty() ? 0 : 1;
+    }
+    if (!graphics.error.isEmpty()) {
+        std::cerr << graphics.error.toStdString() << '\n';
+        return 1;
+    }
+    if (!graphics.warning.isEmpty()) {
+        std::cerr << graphics.warning.toStdString() << '\n';
+    }
+    if (graphics.printSettings) {
+        std::cout << graphics.mode.toStdString() << ' '
+                  << graphics.platform.toStdString() << '\n';
+        return 0;
+    }
+    graphicsSettings::applyStartupOptions(graphics);
     QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
     QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
     QApplication a(argc, argv);
 
     std::setlocale(LC_NUMERIC, "C");
 
-    QApplication::setApplicationName("SegmentPuzzler");
-    QApplication::setApplicationVersion(QString::fromUtf8(segment_puzzler::version));
-    QApplication::setOrganizationName("JoeGreiner");
-    QApplication::setOrganizationDomain("joegreiner.de");
+    if (graphics.test) {
+        return graphicsSettings::runRenderTest();
+    }
 
     std::optional<segment_puzzler::app_logging::LogLevel> logLevelOverride;
     for (int i = 1; i < argc; ++i) {
@@ -177,6 +206,9 @@ int main(int argc, char *argv[]) {
     }
 
     segment_puzzler::app_logging::AppLogger::initialize();
+    SP_LOG_INFO("app", QStringLiteral("Graphics mode=%1, source=%2, Qt platform=%3%4")
+                           .arg(graphics.mode, graphics.source, QGuiApplication::platformName(),
+                                graphics.warning.isEmpty() ? QString() : QStringLiteral("; ") + graphics.warning));
     QObject::connect(&a, &QGuiApplication::lastWindowClosed, &a, []() {
         SP_LOG_INFO("app",
                     QStringLiteral("QGuiApplication::lastWindowClosed emitted; %1")
@@ -268,6 +300,9 @@ int main(int argc, char *argv[]) {
                 std::cout << "\t\t [--boundary $path_to_boundary [$display_name_boundary]]\n";
                 std::cout << "\t\t [--refinement $path_to_refinement [$display_name_refinement]]\n";
                 std::cout << "\t\t [--log-level trace|debug|info|warning|error]\n";
+                std::cout << "\t\t [--graphics=auto|system] (Linux GPU preference; this launch only)\n";
+                std::cout << "\t\t [-platform xcb|wayland] (Linux window system; this launch only)\n";
+                std::cout << "\t\t [--reset-graphics] (reset graphics preferences and exit without GUI)\n";
             }
         }
     }

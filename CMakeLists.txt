@@ -328,6 +328,7 @@ file(GLOB_RECURSE SRCS
 # These dialogs are only used by the application.
 list(REMOVE_ITEM SRCS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/qtUtils/AboutDialog.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/qtUtils/GraphicsSettings.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/qtUtils/CitationDialog.cpp")
 
 set(SRC_VIEWERS
@@ -429,7 +430,8 @@ add_custom_target(segmentpuzzler_build_info
         VERBATIM)
 add_dependencies(SegmentPuzzler segmentpuzzler_build_info)
 target_include_directories(SegmentPuzzler PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_sources(SegmentPuzzler PRIVATE src/qtUtils/AboutDialog.cpp src/qtUtils/CitationDialog.cpp)
+target_sources(SegmentPuzzler PRIVATE src/qtUtils/AboutDialog.cpp src/qtUtils/CitationDialog.cpp
+        src/qtUtils/GraphicsSettings.cpp)
 
 target_link_libraries(SegmentPuzzler segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)
@@ -489,6 +491,18 @@ endif()
 
 if (BUILD_TESTING)
     enable_testing()
+
+    add_executable(test_GraphicsSettings examples/viewers/test_graphics_settings.cpp
+            src/qtUtils/GraphicsSettings.cpp src/utils/AppLogger.cpp)
+    target_include_directories(test_GraphicsSettings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_GraphicsSettings PRIVATE ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${VTK_LIBRARIES})
+    vtk_module_autoinit(TARGETS test_GraphicsSettings MODULES ${VTK_LIBRARIES})
+    add_test(NAME GraphicsSettings COMMAND test_GraphicsSettings)
+    set_tests_properties(GraphicsSettings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
+    if (UNIX)
+        add_test(NAME GraphicsAppRun COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/linux/test-apprun.sh)
+        set_tests_properties(GraphicsAppRun PROPERTIES TIMEOUT 15)
+    endif ()
 
     add_executable(test_WorkerThreads
             examples/benchmarks/test_worker_threads.cpp

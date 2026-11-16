@@ -42,6 +42,7 @@
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/qtUtils/LoggingSettingsDialog.h"
 #include "src/qtUtils/ImageNormalizationSettingsDialog.h"
+#include "src/qtUtils/GraphicsSettings.h"
 #include "src/qtUtils/VoxelSpacingDialog.h"
 #include "src/utils/AppLogger.h"
 
@@ -509,6 +510,13 @@ MainWindow::MainWindow() {
     QAction *loggingSettingsAction = new QAction(tr("Logging..."), this);
     settingsMenu->addAction(loggingSettingsAction);
     connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);
+
+#ifdef Q_OS_LINUX
+    auto *graphicsSettingsAction = settingsMenu->addAction(tr("Graphics..."));
+    connect(graphicsSettingsAction, &QAction::triggered, this, [this]() {
+        graphicsSettings::showDialog(this);
+    });
+#endif
 
 
     viewMenu->addSeparator();

@@ -1,5 +1,6 @@
 #!/bin/sh
 appdir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
+export APPDIR="$appdir"
 unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH
 
 can_use_nvidia() {
@@ -12,8 +13,7 @@ can_use_nvidia() {
 }
 
 prefer_discrete_gpu() {
-    # Set SEGMENTPUZZLER_GPU=system to keep the system's default GPU.
-    [ "${SEGMENTPUZZLER_GPU:-auto}" = auto ] || return
+    [ "$graphics_mode" = auto ] || return
 
     # Respect explicit settings (including empty values) without spawning utilities.
     if [ "${DRI_PRIME+x}${__NV_PRIME_RENDER_OFFLOAD+x}${__NV_PRIME_RENDER_OFFLOAD_PROVIDER+x}" ] ||
@@ -26,7 +26,7 @@ prefer_discrete_gpu() {
     case "${XDG_SESSION_REMOTE:-}" in 1|true|yes) return ;; esac
 
     # Qt command-line flags win; leave explicitly redirected displays untouched.
-    platform=${QT_QPA_PLATFORM:-}
+    platform=${QT_QPA_PLATFORM-$graphics_platform}
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -display|--display) return ;;
@@ -75,5 +75,15 @@ EOF
     done
 }
 
+# Configuration and recovery run before display/GPU setup.
+for argument in "$@"; do
+    case "$argument" in
+        --) break ;;
+        --reset-graphics|--print-graphics-settings) exec "$appdir/usr/bin/SegmentPuzzler" "$@" ;;
+    esac
+done
+graphics_settings=$("$appdir/usr/bin/SegmentPuzzler" --print-graphics-settings "$@") || exit "$?"
+graphics_mode=${graphics_settings%% *}
+graphics_platform=${graphics_settings#* }
 prefer_discrete_gpu "$@"
 exec "$appdir/usr/bin/SegmentPuzzler" "$@"

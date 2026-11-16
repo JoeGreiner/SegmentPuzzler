@@ -37,6 +37,10 @@ AppImages should be compatible across different Linux distributions, as long as 
   ``` bash
   ./SegmentPuzzler.AppImage
   ```
+
+Choose GPU and window system under **Settings → Graphics…** (requires restart).
+For one launch, use `./SegmentPuzzler.AppImage --graphics=system -platform xcb`.
+Use `--reset-graphics` to reset both saved preferences and exit.
 </details>
 
 ## Citation
