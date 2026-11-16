@@ -17,9 +17,14 @@
 #include <vtkAOSDataArrayTemplate.h>
 #include <vtkCellArray.h>
 #include <vtkCellData.h>
+#include <vtkExtractVOI.h>
+#include <vtkImageCast.h>
+#include <vtkImageConstantPad.h>
+#include <vtkImageImport.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
+#include <vtkSurfaceNets3D.h>
 
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/viewers/itkSignalBase.h"
@@ -533,10 +538,99 @@ int testAllLabelsSceneUsesSegmentMeshes() {
     return 0;
 }
 
+int testPreparedVolumeGeometry() {
+    for (const SegmentIdType neighbor : {2u, 65535u, 65536u, 1000003u}) {
+        auto image = dataType::SegmentsImageType::New();
+        image->SetRegions(dataType::SegmentsImageType::RegionType({{0, 0, 0}}, {{12, 10, 9}}));
+        image->SetSpacing(dataType::SegmentsImageType::SpacingType{{0.3, 0.7, 1.1}});
+        image->SetOrigin(dataType::SegmentsImageType::PointType{{10.0, -20.0, 30.0}});
+        auto direction = image->GetDirection();
+        direction[0][0] = direction[1][1] = 0;
+        direction[0][1] = -1;
+        direction[1][0] = 1;
+        image->SetDirection(direction);
+        image->Allocate();
+        image->FillBuffer(0);
+        for (int z = 3; z < 7; ++z)
+            for (int y = 2; y < 7; ++y)
+                for (int x = 4; x < 12; ++x)
+                    image->SetPixel({{x, y, z}}, x < 8 ? 1 : neighbor);
+
+        // Independent reference: the previous crop/cast/pad pipeline, with a
+        // nonzero ROI, a foreground image boundary, and rotated anisotropic voxels.
+        auto importer = vtkSmartPointer<vtkImageImport>::New();
+        importer->SetImportVoidPointer(image->GetBufferPointer());
+        importer->SetDataScalarType(VTK_UNSIGNED_INT);
+        importer->SetNumberOfScalarComponents(1);
+        importer->SetWholeExtent(0, 11, 0, 9, 0, 8);
+        importer->SetDataExtentToWholeExtent();
+        importer->SetDataSpacing(0.3, 0.7, 1.1);
+        importer->SetDataOrigin(10.0, -20.0, 30.0);
+        importer->SetDataDirection(direction.GetVnlMatrix().data_block());
+        auto extract = vtkSmartPointer<vtkExtractVOI>::New();
+        extract->SetInputConnection(importer->GetOutputPort());
+        extract->SetVOI(3, 11, 1, 7, 2, 7);
+        auto cast = vtkSmartPointer<vtkImageCast>::New();
+        cast->SetInputConnection(extract->GetOutputPort());
+        cast->SetOutputScalarType(neighbor <= 65535 ? VTK_UNSIGNED_SHORT : VTK_UNSIGNED_INT);
+        auto pad = vtkSmartPointer<vtkImageConstantPad>::New();
+        pad->SetInputConnection(cast->GetOutputPort());
+        pad->SetOutputWholeExtent(2, 12, 0, 8, 1, 8);
+        pad->SetConstant(0);
+        auto surface = vtkSmartPointer<vtkSurfaceNets3D>::New();
+        surface->SetInputConnection(pad->GetOutputPort());
+        surface->SetBackgroundLabel(0);
+        surface->SetOutputMeshTypeToTriangles();
+        surface->SetTriangulationStrategyToGreedy();
+        surface->SmoothingOn();
+        surface->SetNumberOfIterations(3);
+        surface->DataCachingOff();
+        surface->SetNumberOfLabels(2);
+        surface->SetLabel(0, 1);
+        surface->SetLabel(1, neighbor);
+        surface->Update();
+        const auto reference = Segment3DViewerDialog::prepareExplodedMeshes(surface->GetOutput(), {{1, 0}, {neighbor, 0}});
+        const auto actual = Segment3DViewerDialog::prepareAllLabelsScene(image, LabelColorSnapshot{});
+        if (actual.meshes.size() != 2 || reference.size() != 2) {
+            return failTest("Volume preparation lost a label.");
+        }
+        for (std::size_t i = 0; i < 2; ++i) {
+            const auto &mesh = actual.meshes[i];
+            auto *expected = reference[i].polyData.GetPointer();
+            if (mesh.voxelCount != 80 || mesh.touchesImageBoundary != (i == 1)
+                || mesh.polyData->GetNumberOfCells() != expected->GetNumberOfCells()
+                || mesh.polyData->GetNumberOfPoints() != expected->GetNumberOfPoints()
+                || mesh.centerWorld != reference[i].centerWorld) {
+                return failTest("Volume preparation changed counts, bounds or border labels.");
+            }
+            for (vtkIdType cell = 0; cell < expected->GetNumberOfCells(); ++cell) {
+                vtkIdType count, expectedCount;
+                const vtkIdType *ids, *expectedIds;
+                mesh.polyData->GetCellPoints(cell, count, ids);
+                expected->GetCellPoints(cell, expectedCount, expectedIds);
+                if (count != expectedCount || !std::equal(ids, ids + count, expectedIds)) {
+                    return failTest("Volume preparation changed triangle connectivity.");
+                }
+            }
+            for (vtkIdType point = 0; point < expected->GetNumberOfPoints(); ++point) {
+                double coordinates[3], expectedCoordinates[3];
+                mesh.polyData->GetPoint(point, coordinates);
+                expected->GetPoint(point, expectedCoordinates);
+                if (!std::equal(coordinates, coordinates + 3, expectedCoordinates)) {
+                    return failTest("Volume preparation changed world coordinates.");
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 int testSceneImageDirection() {
     auto image = makeSmallSegmentsImage(false);
     dataType::SegmentsImageType::SpacingType spacing;
-    spacing.Fill(2.0);
+    spacing[0] = 0.4;
+    spacing[1] = 0.8;
+    spacing[2] = 1.2;
     image->SetSpacing(spacing);
     const dataType::SegmentsImageType::PointType origin{{10.0, 20.0, 30.0}};
     image->SetOrigin(origin);
@@ -666,6 +760,7 @@ int main(int argc, char **argv) {
     if (const int directionTestResult = testSceneImageDirection(); directionTestResult != 0) {
         return directionTestResult;
     }
+    if (const int result = testPreparedVolumeGeometry(); result != 0) return result;
 
     if (options.sceneOnly) {
         std::cout << "Projected 3D scene tests passed\n";

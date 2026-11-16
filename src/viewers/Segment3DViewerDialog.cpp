@@ -60,12 +60,8 @@
 #include <vtkMatrix4x4.h>
 #include <vtkRenderer.h>
 #include <vtkInteractorStyleTrackballCamera.h>
-#include <vtkImageImport.h>
 #include <vtkImageData.h>
-#include <vtkExtractVOI.h>
 #include <vtkImageBinaryThreshold.h>
-#include <vtkImageCast.h>
-#include <vtkImageConstantPad.h>
 #include <vtkCellArray.h>
 #include <vtkBinnedDecimation.h>
 #include <vtkBoundingBox.h>
@@ -747,19 +743,10 @@ AllLabelsScanResult scanAllLabelsAndBounds(
     int dimY,
     int dimZ)
 {
-    struct LocalResult {
-        BoundsScanResult bounds;
-        std::unordered_map<dataType::SegmentIdType, LabelScanResult> statsByLabel;
-    };
-
     const BoundsScanResult emptyBounds{dimX, -1, dimY, -1, dimZ, -1};
-    std::vector<LocalResult> localResults;
-
     const int threadCount = segment_puzzler::workerThreadCount();
-    localResults.resize(static_cast<std::size_t>(threadCount));
-    for (auto &local : localResults) {
-        local.bounds = emptyBounds;
-    }
+    std::vector<std::unordered_map<dataType::SegmentIdType, LabelScanResult>> localResults(
+        static_cast<std::size_t>(threadCount));
 
 #ifdef USE_OMP
 #pragma omp parallel num_threads(threadCount)
@@ -778,18 +765,23 @@ AllLabelsScanResult scanAllLabelsAndBounds(
                 const auto rowOffset =
                     static_cast<std::size_t>(z) * dimX * dimY + static_cast<std::size_t>(y) * dimX;
                 const auto *row = buf + rowOffset;
-                for (int x = 0; x < dimX; ++x) {
+                for (int x = 0; x < dimX;) {
                     const auto labelId = row[x];
+                    const int first = x++;
+                    while (x < dimX && row[x] == labelId) {
+                        ++x;
+                    }
                     if (labelId == 0) {
                         continue;
                     }
-                    includeInBounds(local.bounds, x, y, z);
-                    const auto [labelStats, inserted] = local.statsByLabel.try_emplace(
-                        labelId, LabelScanResult{{x, x, y, y, z, z}, 0});
-                    ++labelStats->second.voxelCount;
-                    if (!inserted) {
-                        includeInBounds(labelStats->second.bounds, x, y, z);
+                    auto &stats = local[labelId];
+                    if (stats.voxelCount == 0) {
+                        stats.bounds = {first, x - 1, y, y, z, z};
+                    } else {
+                        includeInBounds(stats.bounds, first, y, z);
+                        includeInBounds(stats.bounds, x - 1, y, z);
                     }
+                    stats.voxelCount += x - first;
                 }
             }
         }
@@ -798,11 +790,7 @@ AllLabelsScanResult scanAllLabelsAndBounds(
     AllLabelsScanResult result;
     result.bounds = emptyBounds;
     for (const auto &local : localResults) {
-        if (local.bounds.maxX >= 0) {
-            includeInBounds(result.bounds, local.bounds.minX, local.bounds.minY, local.bounds.minZ);
-            includeInBounds(result.bounds, local.bounds.maxX, local.bounds.maxY, local.bounds.maxZ);
-        }
-        for (const auto &[labelId, localStats] : local.statsByLabel) {
+        for (const auto &[labelId, localStats] : local) {
             const auto [labelStats, inserted] = result.statsByLabel.try_emplace(
                 labelId, localStats);
             if (!inserted) {
@@ -821,6 +809,8 @@ AllLabelsScanResult scanAllLabelsAndBounds(
 
     result.labels.reserve(result.statsByLabel.size());
     for (const auto &[labelId, stats] : result.statsByLabel) {
+        includeInBounds(result.bounds, stats.bounds.minX, stats.bounds.minY, stats.bounds.minZ);
+        includeInBounds(result.bounds, stats.bounds.maxX, stats.bounds.maxY, stats.bounds.maxZ);
         result.labels.push_back(labelId);
     }
     std::sort(result.labels.begin(), result.labels.end());
@@ -873,9 +863,15 @@ BoundsScanResult scanBoundsForRequestedLabels(
         for (int z = 0; z < dimZ; ++z) {
             for (int y = 0; y < dimY; ++y) {
                 const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
-                for (int x = 0; x < dimX; ++x) {
-                    if (lookup.contains(row[x])) {
-                        includeInBounds(local, x, y, z);
+                for (int x = 0; x < dimX;) {
+                    const auto labelId = row[x];
+                    const int first = x++;
+                    while (x < dimX && row[x] == labelId) {
+                        ++x;
+                    }
+                    if (lookup.contains(labelId)) {
+                        includeInBounds(local, first, y, z);
+                        includeInBounds(local, x - 1, y, z);
                     }
                 }
             }
@@ -973,8 +969,12 @@ std::vector<dataType::SegmentIdType> collectLabelsInExtent(
         for (int z = minZ; z <= maxZ; ++z) {
             for (int y = minY; y <= maxY; ++y) {
                 const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
-                for (int x = minX; x <= maxX; ++x) {
-                    if (const auto labelId = row[x]; labelId != 0) {
+                for (int x = minX; x <= maxX;) {
+                    const auto labelId = row[x++];
+                    while (x <= maxX && row[x] == labelId) {
+                        ++x;
+                    }
+                    if (labelId != 0) {
                         localSet.insert(labelId);
                     }
                 }
@@ -2032,38 +2032,39 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
 
     QElapsedTimer t_voi;
     t_voi.start();
-    auto importer = vtkSmartPointer<vtkImageImport>::New();
-    importer->SetImportVoidPointer(const_cast<dataType::SegmentIdType *>(buf));
-    importer->SetDataScalarType(segmentIdVtkDataType());
-    importer->SetNumberOfScalarComponents(1);
-    importer->SetWholeExtent(0, dimX - 1, 0, dimY - 1, 0, dimZ - 1);
-    importer->SetDataExtentToWholeExtent();
-    importer->SetDataSpacing(spacing[0], spacing[1], spacing[2]);
-    importer->SetDataOrigin(origin[0], origin[1], origin[2]);
-    importer->SetDataDirection(segImage->GetDirection().GetVnlMatrix().data_block());
-
-    auto extractor = vtkSmartPointer<vtkExtractVOI>::New();
-    extractor->SetInputConnection(importer->GetOutputPort());
-    extractor->SetVOI(padX0, padX1, padY0, padY1, padZ0, padZ1);
-    extractor->ReleaseDataFlagOn();
-
-    auto padder = vtkSmartPointer<vtkImageConstantPad>::New();
-    padder->SetInputConnection(extractor->GetOutputPort());
+    auto paddedImage = vtkSmartPointer<vtkImageData>::New();
+    paddedImage->SetExtent(padX0 - 1, padX1 + 1, padY0 - 1, padY1 + 1, padZ0 - 1, padZ1 + 1);
+    paddedImage->SetSpacing(spacing[0], spacing[1], spacing[2]);
+    paddedImage->SetOrigin(origin[0], origin[1], origin[2]);
+    paddedImage->SetDirectionMatrix(segImage->GetDirection().GetVnlMatrix().data_block());
     // Neighbouring labels must also fit in uint16.
     const auto largestLabel = *std::max_element(surfaceNetLabels.begin(), surfaceNetLabels.end());
-    if (largestLabel <= std::numeric_limits<std::uint16_t>::max()) {
-        auto cast = vtkSmartPointer<vtkImageCast>::New();
-        cast->SetInputConnection(extractor->GetOutputPort());
-        cast->SetOutputScalarTypeToUnsignedShort();
-        cast->ReleaseDataFlagOn();
-        padder->SetInputConnection(cast->GetOutputPort());
+    const bool use16BitLabels = largestLabel <= std::numeric_limits<std::uint16_t>::max();
+    paddedImage->AllocateScalars(use16BitLabels ? VTK_UNSIGNED_SHORT : segmentIdVtkDataType(), 1);
+    const std::size_t width = padX1 - padX0 + 3;
+    const std::size_t height = padY1 - padY0 + 3;
+    const auto copyVolume = [&](auto *output) {
+        vtkSMPTools::For(padZ0 - 1, padZ1 + 2, [&](vtkIdType begin, vtkIdType end) {
+            for (auto z = begin; z < end; ++z) {
+                auto *slice = output + static_cast<std::size_t>(z - padZ0 + 1) * width * height;
+                for (int y = padY0 - 1; y <= padY1 + 1; ++y) {
+                    auto *row = slice + static_cast<std::size_t>(y - padY0 + 1) * width;
+                    if (z < padZ0 || z > padZ1 || y < padY0 || y > padY1) {
+                        std::fill_n(row, width, 0);
+                    } else {
+                        row[0] = row[width - 1] = 0;
+                        const auto *source = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX + padX0;
+                        std::copy_n(source, width - 2, row + 1);
+                    }
+                }
+            }
+        });
+    };
+    if (use16BitLabels) {
+        copyVolume(static_cast<std::uint16_t *>(paddedImage->GetScalarPointer()));
+    } else {
+        copyVolume(static_cast<dataType::SegmentIdType *>(paddedImage->GetScalarPointer()));
     }
-    padder->SetOutputWholeExtent(padX0 - 1, padX1 + 1,
-                                 padY0 - 1, padY1 + 1,
-                                 padZ0 - 1, padZ1 + 1);
-    padder->SetConstant(0);
-    padder->Update();
-    vtkImageData *paddedImage = padder->GetOutput();
     SP_LOG_3D_TIMER(t_voi, QStringLiteral("[3DView] [segmentpuzzler] VOI extract + pad (%1)")
                                .arg(paddedImage->GetScalarTypeAsString()));
 
