@@ -22,6 +22,8 @@
 #include <QLineF>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPointer>
@@ -43,6 +45,7 @@
 #include <QWindow>
 #include "src/qtUtils/TaskRunner.h"
 #include "src/utils/AppLogger.h"
+#include "src/utils/systemStats.h"
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkSmartPointer.h>
@@ -108,6 +111,18 @@ constexpr int kMaximumLineSamplingPixels = 100;
 constexpr int kMaximumSplitLineSeedPairs = 64;
 constexpr int kSmoothingSliderStepsPerPixel = 10;
 constexpr int kMaximumSmoothingSliderValue = 30;
+constexpr int kSlowRenderMilliseconds = 500;
+constexpr int kSlowRenderLogIntervalMilliseconds = 5000;
+
+QString gpuMemoryMiB(QOpenGLContext *context, GLenum parameter) {
+    if (context == nullptr || !context->hasExtension(QByteArrayLiteral("GL_NVX_gpu_memory_info"))) {
+        return QStringLiteral("unavailable");
+    }
+    GLint memoryKiB = -1;
+    context->functions()->glGetIntegerv(parameter, &memoryKiB);
+    return memoryKiB >= 0 ? QString::number(memoryKiB / 1024.0, 'f', 1)
+                          : QStringLiteral("unavailable");
+}
 
 class SurfaceOnlyTrackballCameraStyle : public vtkInteractorStyleTrackballCamera {
 public:
@@ -2016,7 +2031,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
             maximumCellCount = std::max(maximumCellCount, mesh.polyData->GetNumberOfCells());
             allMeshesSharePoints &= mesh.polyData->GetPoints() == sharedPoints;
         }
-        SP_LOG_DEBUG("viewer.three_d",
+        SP_LOG_INFO("viewer.three_d",
                      QStringLiteral("[3DView] segment meshes=%1 sharedPoints=%2 sharedPointCount=%3 cells=%4 "
                                     "largestPointBufferBytes=%5 largestIndexBufferBytes=%6")
                          .arg(preparedScene.meshes.size())
@@ -2665,6 +2680,116 @@ Segment3DViewerDialog::Segment3DViewerDialog(
     }
 
     updateSeededSplitUiState();
+    updateRenderDiagnostics("initial");
+    m_renderObserver = vtkSmartPointer<vtkCallbackCommand>::New();
+    m_renderObserver->SetClientData(this);
+    m_renderObserver->SetCallback([](vtkObject *, unsigned long eventId, void *clientData, void *) {
+        static_cast<Segment3DViewerDialog *>(clientData)->handleRenderEvent(eventId);
+    });
+    renWin->AddObserver(vtkCommand::StartEvent, m_renderObserver);
+    renWin->AddObserver(vtkCommand::EndEvent, m_renderObserver);
+}
+
+Segment3DViewerDialog::~Segment3DViewerDialog() {
+    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+        m_vtkWidget->renderWindow()->RemoveObserver(m_renderObserver);
+    }
+}
+
+void Segment3DViewerDialog::updateRenderDiagnostics(const char *reason) {
+    m_visibleSegmentCount = 0;
+    m_visibleTriangleCount = 0;
+    for (const auto &segment : m_segmentActors) {
+        if (segment.actor->GetVisibility()) {
+            ++m_visibleSegmentCount;
+            auto *mapper = vtkPolyDataMapper::SafeDownCast(segment.actor->GetMapper());
+            if (mapper != nullptr && mapper->GetInput() != nullptr) {
+                m_visibleTriangleCount += mapper->GetInput()->GetNumberOfPolys();
+            }
+        }
+    }
+    const char *selection = "all";
+    switch (m_cellSelection) {
+        case CellSelection::All: break;
+        case CellSelection::Largest: selection = "largest"; break;
+        case CellSelection::Smallest: selection = "smallest"; break;
+        case CellSelection::Random: selection = "random"; break;
+    }
+    m_renderLogReason = reason;
+    SP_LOG_INFO("viewer.three_d",
+                QStringLiteral("[3DView] scene view=%1 reason=%2 segments=%3 visible_segments=%4 "
+                               "visible_triangles=%5 selection=%6 hide_border=%7")
+                    .arg(reinterpret_cast<quintptr>(this), 0, 16)
+                    .arg(QString::fromLatin1(reason))
+                    .arg(static_cast<qulonglong>(m_segmentActors.size()))
+                    .arg(static_cast<qulonglong>(m_visibleSegmentCount))
+                    .arg(m_visibleTriangleCount)
+                    .arg(QString::fromLatin1(selection))
+                    .arg(m_hideImageBoundaryCellsCheckBox != nullptr
+                         && m_hideImageBoundaryCellsCheckBox->isChecked()));
+}
+
+void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
+    if (eventId == vtkCommand::StartEvent) {
+        auto *context = m_vtkWidget->context();
+        if (!m_renderContextLogged && context != nullptr && context == QOpenGLContext::currentContext()) {
+            auto *functions = context->functions();
+            const auto value = [functions](GLenum name) {
+                const auto *text = functions->glGetString(name);
+                return text ? QString::fromLatin1(reinterpret_cast<const char *>(text))
+                            : QStringLiteral("unavailable");
+            };
+            constexpr GLenum dedicatedVideoMemoryNVX = 0x9047;
+            SP_LOG_INFO("viewer.three_d",
+                        QStringLiteral("[3DView] context view=%1 renderer=\"%2\" vendor=\"%3\" "
+                                       "opengl=\"%4\" gpu_dedicated_mib=%5")
+                            .arg(reinterpret_cast<quintptr>(this), 0, 16)
+                            .arg(value(GL_RENDERER), value(GL_VENDOR), value(GL_VERSION),
+                                 gpuMemoryMiB(context, dedicatedVideoMemoryNVX)));
+            m_renderContextLogged = true;
+        }
+        m_renderTimer.start();
+        return;
+    }
+    if (eventId != vtkCommand::EndEvent || !m_renderTimer.isValid()) {
+        return;
+    }
+    // VTK render wall time, including driver waits.
+    const double renderMs = m_renderTimer.nsecsElapsed() / 1.0e6;
+    m_renderTimer.invalidate();
+    const bool sceneChanged = m_renderLogReason != nullptr;
+    if (!sceneChanged && (renderMs < kSlowRenderMilliseconds
+        || (m_slowRenderLogTimer.isValid()
+            && m_slowRenderLogTimer.elapsed() < kSlowRenderLogIntervalMilliseconds))) {
+        return;
+    }
+
+    auto *context = QOpenGLContext::currentContext();
+    if (context != m_vtkWidget->context()) {
+        context = nullptr;
+    }
+    const auto memory = systemStats::queryMemory();
+    constexpr GLenum currentAvailableVideoMemoryNVX = 0x9049;
+    const auto *size = m_vtkWidget->renderWindow()->GetSize();
+    const auto message = QStringLiteral("[3DView] render view=%1 reason=%2 render_ms=%3 size_px=%4x%5 "
+                                       "visible_segments=%6 visible_triangles=%7 rendered_props=%8 "
+                                       "process_rss_mib=%9 gpu_free_mib=%10")
+        .arg(reinterpret_cast<quintptr>(this), 0, 16)
+        .arg(QString::fromLatin1(sceneChanged ? m_renderLogReason : "slow"))
+        .arg(renderMs, 0, 'f', 1).arg(size[0]).arg(size[1])
+        .arg(static_cast<qulonglong>(m_visibleSegmentCount)).arg(m_visibleTriangleCount)
+        .arg(m_renderer->GetNumberOfPropsRendered())
+        .arg(memory.processResidentMemoryGB > 0.0
+                 ? QString::number(memory.processResidentMemoryGB * 1024.0, 'f', 1)
+                 : QStringLiteral("unavailable"))
+        .arg(gpuMemoryMiB(context, currentAvailableVideoMemoryNVX));
+    if (sceneChanged) {
+        SP_LOG_INFO("viewer.three_d", message);
+    } else {
+        SP_LOG_WARNING("viewer.three_d", message);
+        m_slowRenderLogTimer.start();
+    }
+    m_renderLogReason = nullptr;
 }
 
 std::optional<Segment3DViewerDialog::CameraOrientation>
@@ -2732,6 +2857,9 @@ void Segment3DViewerDialog::updateCellVisibility() {
     }
     if (visibleCount > 0 && m_renderer != nullptr) {
         m_renderer->ResetCameraClippingRange();
+    }
+    if (m_renderObserver != nullptr) {
+        updateRenderDiagnostics("filter");
     }
     if (m_initialFrameRendered && m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
@@ -3203,6 +3331,7 @@ bool Segment3DViewerDialog::replaceSegmentMeshes(const PreparedScene &preparedSc
         m_renderer->ResetCamera();
     }
     m_renderer->ResetCameraClippingRange();
+    updateRenderDiagnostics("meshes");
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
     }

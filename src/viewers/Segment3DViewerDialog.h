@@ -2,6 +2,7 @@
 #define SEGMENT3DVIEWERDIALOG_H
 
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QString>
 #include <array>
 #include <cstdint>
@@ -21,6 +22,7 @@
 #include "src/segment_handling/SeededWatershedSplit.h"
 #include "src/utils/roi.h"
 
+class vtkCallbackCommand;
 class vtkOrientationMarkerWidget;
 class QVTKOpenGLNativeWidget;
 class QEvent;
@@ -140,6 +142,7 @@ public:
                                    SplitSessionConfig splitSession,
                                    QWidget *parent = nullptr,
                                    int launchSliceAxis = -1);
+    ~Segment3DViewerDialog() override;
 
     void setNavigateToLabelHandler(NavigateToLabelHandler handler);
     void setDeleteLabelHandler(DeleteLabelHandler handler);
@@ -244,6 +247,16 @@ private:
     void raiseAndRequestActivation();
     void applyInitialCameraOrientation(int launchSliceAxis);
     void finishInitialRender();
+    void updateRenderDiagnostics(const char *reason);
+    void handleRenderEvent(unsigned long eventId);
+
+    vtkSmartPointer<vtkCallbackCommand> m_renderObserver;
+    QElapsedTimer m_renderTimer;
+    QElapsedTimer m_slowRenderLogTimer;
+    const char *m_renderLogReason = nullptr;
+    bool m_renderContextLogged = false;
+    std::size_t m_visibleSegmentCount = 0;
+    vtkIdType m_visibleTriangleCount = 0;
 
     vtkSmartPointer<vtkRenderer> m_renderer;
     std::vector<SegmentActorInfo> m_segmentActors;
