@@ -83,6 +83,7 @@
 #include <vtkOrientationMarkerWidget.h>
 #include <vtkObjectFactory.h>
 #include <vtkSMPTools.h>
+#include <vtkSMPThreadLocal.h>
 #include <vtkSphereSource.h>
 #include <vtkSurfaceNets3D.h>
 
@@ -96,6 +97,7 @@
 #include <random>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1448,37 +1450,88 @@ std::optional<std::vector<vtkSmartPointer<vtkCellArray>>> buildExplodePolys(
     return polys;
 }
 
+// Reuse scratch storage across a worker's segments until preparation finishes.
+// Grow by unique points instead of triangle corners.
+struct PointIdMap {
+    static constexpr auto empty = std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::uint32_t> entries = std::vector<std::uint32_t>(64, empty);
+    std::vector<vtkIdType> sourceIds;
+    int shift = 58;
+
+    void reset() {
+        std::fill(entries.begin(), entries.end(), empty);
+        sourceIds.clear();
+    }
+
+    std::size_t slot(vtkIdType id) const {
+        auto index = static_cast<std::size_t>((static_cast<std::uint64_t>(id)
+            * 11400714819323198485ULL) >> shift);
+        while (entries[index] != empty && sourceIds[entries[index]] != id) {
+            index = (index + 1) & (entries.size() - 1);
+        }
+        return index;
+    }
+
+    std::pair<std::uint32_t, bool> insert(vtkIdType id) {
+        auto index = slot(id);
+        if (entries[index] != empty) {
+            return {entries[index], false};
+        }
+        if (sourceIds.size() >= entries.size() / 2) {
+            entries.assign(entries.size() * 2, empty);
+            --shift;
+            for (std::size_t i = 0; i < sourceIds.size(); ++i) {
+                entries[slot(sourceIds[i])] = static_cast<std::uint32_t>(i);
+            }
+            index = slot(id);
+        }
+        const auto localId = static_cast<std::uint32_t>(sourceIds.size());
+        sourceIds.push_back(id);
+        entries[index] = localId;
+        return {localId, true};
+    }
+};
+
 template <typename ConnectivityArray>
 vtkSmartPointer<vtkPoints> compactMeshPoints(
     const ExplodeSourceView &source,
     ConnectivityArray *connectivity,
     std::uint64_t maximumBufferBytes,
-    dataType::SegmentIdType labelId)
+    dataType::SegmentIdType labelId,
+    PointIdMap &pointIdsMap)
 {
     auto points = vtkSmartPointer<vtkPoints>::New();
     points->SetDataType(source.points->GetDataType());
     const auto maximumPointBufferBytes = std::min(
         maximumBufferBytes,
         static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) * 3 * sizeof(float));
-    std::unordered_map<vtkIdType, std::uint32_t> sourceToLocalPointIds;
+    pointIdsMap.reset();
     auto *pointIds = connectivity->GetPointer(0);
     const vtkIdType numberOfValues = connectivity->GetNumberOfValues();
     for (vtkIdType offset = 0; offset < numberOfValues; ++offset) {
         const vtkIdType sourcePointId = pointIds[offset];
-        const auto [entry, inserted] = sourceToLocalPointIds.try_emplace(
-            sourcePointId, static_cast<std::uint32_t>(sourceToLocalPointIds.size()));
+        const auto [localId, inserted] = pointIdsMap.insert(sourcePointId);
         if (inserted) {
-            checkMeshBufferSize(sourceToLocalPointIds.size(), 3 * sizeof(float),
+            checkMeshBufferSize(pointIdsMap.sourceIds.size(), 3 * sizeof(float),
                                 maximumPointBufferBytes, labelId);
-            double point[3];
-            source.pointAt(sourcePointId, point);
-            points->InsertNextPoint(point);
         }
-        pointIds[offset] = entry->second;
+        pointIds[offset] = localId;
+    }
+    points->SetNumberOfPoints(static_cast<vtkIdType>(pointIdsMap.sourceIds.size()));
+    const auto copyPoints = [&](const auto *coordinates) {
+        using Coordinate = std::remove_const_t<std::remove_pointer_t<decltype(coordinates)>>;
+        auto *output = static_cast<Coordinate *>(points->GetData()->GetVoidPointer(0));
+        for (std::size_t i = 0; i < pointIdsMap.sourceIds.size(); ++i) {
+            std::copy_n(coordinates + 3 * pointIdsMap.sourceIds[i], 3, output + 3 * i);
+        }
+    };
+    if (source.floatPoints != nullptr) {
+        copyPoints(source.floatPoints);
+    } else {
+        copyPoints(source.doublePoints);
     }
     connectivity->DataChanged();
     connectivity->Modified();
-    points->Squeeze();
     // Cache coordinate ranges for the mapper while each mesh has its own worker.
     points->GetData()->GetRange(0);
     return points;
@@ -1486,7 +1539,8 @@ vtkSmartPointer<vtkPoints> compactMeshPoints(
 
 vtkSmartPointer<vtkPoints> compactMeshPoints(
     vtkPoints *points, vtkCellArray *polys,
-    std::uint64_t maximumBufferBytes, dataType::SegmentIdType labelId)
+    std::uint64_t maximumBufferBytes, dataType::SegmentIdType labelId,
+    PointIdMap &pointIdsMap)
 {
     ExplodeSourceView source;
     source.points = points;
@@ -1498,10 +1552,10 @@ vtkSmartPointer<vtkPoints> compactMeshPoints(
     }
     auto *connectivity = polys->GetConnectivityArray();
     if (auto *values = vtkCellArray::AOSArray32::SafeDownCast(connectivity)) {
-        return compactMeshPoints(source, values, maximumBufferBytes, labelId);
+        return compactMeshPoints(source, values, maximumBufferBytes, labelId, pointIdsMap);
     }
     return compactMeshPoints(source, vtkCellArray::AOSArray64::SafeDownCast(connectivity),
-                             maximumBufferBytes, labelId);
+                             maximumBufferBytes, labelId, pointIdsMap);
 }
 
 std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
@@ -1522,6 +1576,7 @@ std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
 
     std::vector<Segment3DViewerDialog::PreparedMesh> meshes(labels.size());
     std::vector<std::exception_ptr> errors(labels.size());
+    vtkSMPThreadLocal<PointIdMap> pointMaps;
     vtkSMPTools::For(0, static_cast<vtkIdType>(labels.size()), [&](vtkIdType begin, vtkIdType end) {
         for (vtkIdType labelIndex = begin; labelIndex < end; ++labelIndex) {
             if (scan.labelCellCounts[labelIndex] == 0) {
@@ -1531,7 +1586,8 @@ std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
                 const auto labelId = labels[labelIndex].first;
                 vtkSmartPointer<vtkPoints> points = source.points;
                 if (compactPoints) {
-                    points = compactMeshPoints(source.points, polys[labelIndex], maximumBufferBytes, labelId);
+                    points = compactMeshPoints(source.points, polys[labelIndex], maximumBufferBytes,
+                                               labelId, pointMaps.Local());
                 }
 
                 auto polyData = vtkSmartPointer<SharedPointsPolyData>::New();
@@ -1667,6 +1723,7 @@ void prepareReducedMeshes(std::vector<Segment3DViewerDialog::PreparedMesh> &mesh
     }
     const auto &sharedPoints = pointUses;
     std::vector<std::exception_ptr> errors(meshes.size());
+    vtkSMPThreadLocal<PointIdMap> pointMaps;
     vtkSMPTools::For(0, static_cast<vtkIdType>(meshes.size()), [&](vtkIdType begin, vtkIdType end) {
         for (auto i = begin; i < end; ++i) {
             try {
@@ -1677,7 +1734,7 @@ void prepareReducedMeshes(std::vector<Segment3DViewerDialog::PreparedMesh> &mesh
                     auto polys = vtkSmartPointer<vtkCellArray>::New();
                     polys->DeepCopy(input->GetPolys());
                     auto points = compactMeshPoints(input->GetPoints(), polys,
-                        Segment3DViewerDialog::kMaximumMeshBufferBytes, mesh.labelId);
+                        Segment3DViewerDialog::kMaximumMeshBufferBytes, mesh.labelId, pointMaps.Local());
                     input = vtkSmartPointer<vtkPolyData>::New();
                     input->SetPoints(points);
                     input->SetPolys(polys);

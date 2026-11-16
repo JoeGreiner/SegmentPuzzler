@@ -538,6 +538,66 @@ int testAllLabelsSceneUsesSegmentMeshes() {
     return 0;
 }
 
+int testCompactionGrowth() {
+    for (const bool useDouble : {false, true}) {
+        auto source = vtkSmartPointer<vtkPolyData>::New();
+        auto points = vtkSmartPointer<vtkPoints>::New();
+        points->SetDataType(useDouble ? VTK_DOUBLE : VTK_FLOAT);
+        for (int i = 0; i < 4096; ++i) {
+            points->InsertNextPoint(i * 0.123456789012345, i % 17, i % 29);
+        }
+        auto polys = vtkSmartPointer<vtkCellArray>::New();
+        auto labels = vtkSmartPointer<vtkAOSDataArrayTemplate<SegmentIdType>>::New();
+        labels->SetName("BoundaryLabels");
+        labels->SetNumberOfComponents(2);
+        const SegmentIdType pair[]{1, 0};
+        std::vector<vtkIdType> expectedIds;
+        std::vector<vtkIdType> expectedPoints;
+        std::unordered_map<vtkIdType, vtkIdType> reference;
+        for (int i = 0; i < 5000; ++i) {
+            const vtkIdType triangle[]{(37 * i) % 4096, (37 * i + 1) % 4096, (37 * i + 17) % 4096};
+            polys->InsertNextCell(3, triangle);
+            labels->InsertNextTypedTuple(pair);
+            for (auto id : triangle) {
+                const auto [entry, inserted] = reference.emplace(id, reference.size());
+                if (inserted) expectedPoints.push_back(id);
+                expectedIds.push_back(entry->second);
+            }
+        }
+        source->SetPoints(points);
+        source->SetPolys(polys);
+        source->GetCellData()->AddArray(labels);
+        for (const bool use64Bit : {false, true}) {
+            if (use64Bit) polys->ConvertTo64BitStorage();
+            else polys->ConvertTo32BitStorage();
+            const auto meshes = Segment3DViewerDialog::prepareExplodedMeshes(source, {{1, 0}});
+            if (meshes.size() != 1) return failTest("Compaction growth lost the mesh.");
+            auto *mesh = meshes.front().polyData.GetPointer();
+            if (mesh->GetNumberOfPoints() != static_cast<vtkIdType>(expectedPoints.size())
+                || mesh->GetPoints()->GetDataType() != points->GetDataType()) {
+                return failTest("Compaction changed unique points or coordinate precision.");
+            }
+            for (std::size_t i = 0; i < expectedPoints.size(); ++i) {
+                double actual[3], expected[3];
+                mesh->GetPoint(i, actual);
+                points->GetPoint(expectedPoints[i], expected);
+                if (!std::equal(actual, actual + 3, expected)) {
+                    return failTest("Compaction changed point coordinates or first-occurrence order.");
+                }
+            }
+            for (vtkIdType cell = 0; cell < polys->GetNumberOfCells(); ++cell) {
+                vtkIdType count;
+                const vtkIdType *ids;
+                mesh->GetCellPoints(cell, count, ids);
+                if (count != 3 || !std::equal(ids, ids + 3, expectedIds.begin() + 3 * cell)) {
+                    return failTest("Compaction changed connectivity after growing its lookup table.");
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 int testPreparedVolumeGeometry() {
     for (const SegmentIdType neighbor : {2u, 65535u, 65536u, 1000003u}) {
         auto image = dataType::SegmentsImageType::New();
@@ -760,6 +820,7 @@ int main(int argc, char **argv) {
     if (const int directionTestResult = testSceneImageDirection(); directionTestResult != 0) {
         return directionTestResult;
     }
+    if (const int result = testCompactionGrowth(); result != 0) return result;
     if (const int result = testPreparedVolumeGeometry(); result != 0) return result;
 
     if (options.sceneOnly) {
