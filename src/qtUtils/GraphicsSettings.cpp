@@ -2,6 +2,7 @@
 #include "src/utils/AppLogger.h"
 
 #include <QComboBox>
+#include <QCheckBox>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -17,23 +18,30 @@
 #include <QProcessEnvironment>
 #include <QPushButton>
 #include <QSettings>
+#include <QSpinBox>
 #include <QTextStream>
 #include <QTimer>
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkActor.h>
 #include <vtkNew.h>
+#include <vtkOpenGLRenderWindow.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
 #include <vtkSphereSource.h>
+#include <limits>
 
 namespace graphicsSettings {
 namespace {
 
 constexpr auto modeKey = "graphics/mode";
 constexpr auto platformKey = "graphics/platform";
+constexpr auto lodEnabledKey = "graphics/lodEnabled";
+constexpr auto lodThresholdKey = "graphics/lodTriangleThreshold";
+constexpr auto lodFactorKey = "graphics/lodReductionFactor";
+constexpr auto msaaKey = "graphics/forceMsaaOff";
 constexpr const char *gpuVariables[] = {
     "DRI_PRIME", "__NV_PRIME_RENDER_OFFLOAD", "__NV_PRIME_RENDER_OFFLOAD_PROVIDER",
     "__GLX_VENDOR_LIBRARY_NAME", "__EGL_VENDOR_LIBRARY_FILENAMES", "__EGL_VENDOR_LIBRARY_DIRS"
@@ -50,10 +58,14 @@ bool validPlatform(const QString &platform) {
            platform == QStringLiteral("wayland");
 }
 
-QString writeSettings(const QVariant &mode, const QVariant &platform) {
+QString writeSettings(const QVariant &mode, const QVariant &platform, const LodSettings &lod, bool forceMsaaOff) {
     QSettings settings;
     const QVariant previousMode = settings.value(QLatin1String(modeKey));
     const QVariant previousPlatform = settings.value(QLatin1String(platformKey));
+    const QVariant previousMsaa = settings.value(QLatin1String(msaaKey));
+    const QVariant previousLodEnabled = settings.value(QLatin1String(lodEnabledKey));
+    const QVariant previousLodThreshold = settings.value(QLatin1String(lodThresholdKey));
+    const QVariant previousLodFactor = settings.value(QLatin1String(lodFactorKey));
     const auto writeValue = [&](const char *key, const QVariant &value) {
         if (value.isValid()) {
             settings.setValue(QLatin1String(key), value);
@@ -63,6 +75,10 @@ QString writeSettings(const QVariant &mode, const QVariant &platform) {
     };
     writeValue(modeKey, mode);
     writeValue(platformKey, platform);
+    writeValue(msaaKey, mode.isValid() ? QVariant(forceMsaaOff) : QVariant());
+    writeValue(lodEnabledKey, mode.isValid() ? QVariant(lod.enabled) : QVariant());
+    writeValue(lodThresholdKey, mode.isValid() ? QVariant(lod.triangleThreshold) : QVariant());
+    writeValue(lodFactorKey, mode.isValid() ? QVariant(lod.reductionFactor) : QVariant());
     settings.sync();
     if (settings.status() == QSettings::NoError) {
         return {};
@@ -70,6 +86,10 @@ QString writeSettings(const QVariant &mode, const QVariant &platform) {
     // Restore previous values before QSettings retries a sync.
     writeValue(modeKey, previousMode);
     writeValue(platformKey, previousPlatform);
+    writeValue(msaaKey, previousMsaa);
+    writeValue(lodEnabledKey, previousLodEnabled);
+    writeValue(lodThresholdKey, previousLodThreshold);
+    writeValue(lodFactorKey, previousLodFactor);
     return QObject::tr("Could not save graphics settings to %1.").arg(settings.fileName());
 }
 
@@ -177,14 +197,18 @@ StartupOptions readStartupOptions(const QStringList &arguments) {
 
 QString saveSettings(const QString &mode, const QString &platform) {
     return validMode(mode) && validPlatform(platform)
-        ? writeSettings(mode, platform) : QObject::tr("Invalid graphics settings.");
+        ? writeSettings(mode, platform, lodSettings(), QSettings().value(QLatin1String(msaaKey), true).toBool())
+        : QObject::tr("Invalid graphics settings.");
 }
 
 QString resetSettings() {
-    return writeSettings(QVariant(), QVariant());
+    return writeSettings(QVariant(), QVariant(), {}, true);
 }
 
 void applyStartupOptions(const StartupOptions &options) {
+    if (QSettings().value(QLatin1String(msaaKey), true).toBool()) {
+        vtkOpenGLRenderWindow::SetGlobalMaximumNumberOfMultiSamples(0);
+    }
     probeQtArguments = options.qtArguments;
     startupEnvironment = QProcessEnvironment::systemEnvironment();
 #ifdef Q_OS_LINUX
@@ -254,6 +278,39 @@ void showDialog(QWidget *parent) {
         "Changes are tested before saving and take effect after restarting SegmentPuzzler."), &dialog);
     description->setWordWrap(true);
     layout->addRow(description);
+#ifndef Q_OS_LINUX
+    layout->setRowVisible(mode, false);
+    layout->setRowVisible(platform, false);
+    layout->setRowVisible(description, false);
+#endif
+    const auto initialLod = lodSettings();
+    auto *lodEnabled = new QCheckBox(QObject::tr("Reduce 3D detail (LOD)"), &dialog);
+    lodEnabled->setObjectName(QStringLiteral("lodEnabled"));
+    lodEnabled->setChecked(initialLod.enabled);
+    lodEnabled->setToolTip(QObject::tr("Applies to newly prepared 3D views. Split tools keep full detail."));
+    layout->addRow(lodEnabled);
+    auto *lodThreshold = new QSpinBox(&dialog);
+    lodThreshold->setObjectName(QStringLiteral("lodTriangleThreshold"));
+    lodThreshold->setRange(1, std::numeric_limits<int>::max());
+    lodThreshold->setGroupSeparatorShown(true);
+    lodThreshold->setValue(initialLod.triangleThreshold);
+    lodThreshold->setEnabled(initialLod.enabled);
+    QObject::connect(lodEnabled, &QCheckBox::toggled, lodThreshold, &QWidget::setEnabled);
+    layout->addRow(QObject::tr("LOD from (triangles per scene):"), lodThreshold);
+    auto *lodFactor = new QSpinBox(&dialog);
+    lodFactor->setObjectName(QStringLiteral("lodReductionFactor"));
+    lodFactor->setRange(1, 64);
+    lodFactor->setValue(initialLod.reductionFactor);
+    lodFactor->setEnabled(initialLod.enabled);
+    lodFactor->setToolTip(QObject::tr("Higher values produce coarser surfaces. Applies to newly prepared 3D views."));
+    QObject::connect(lodEnabled, &QCheckBox::toggled, lodFactor, &QWidget::setEnabled);
+    layout->addRow(QObject::tr("LOD reduction factor:"), lodFactor);
+    auto *forceMsaaOff = new QCheckBox(QObject::tr("Force MSAA off"), &dialog);
+    forceMsaaOff->setObjectName(QStringLiteral("forceMsaaOff"));
+    forceMsaaOff->setChecked(QSettings().value(QLatin1String(msaaKey), true).toBool());
+    forceMsaaOff->setToolTip(QObject::tr("Disable multisample anti-aliasing. Takes effect after restarting SegmentPuzzler."));
+    layout->addRow(forceMsaaOff);
+#ifdef Q_OS_LINUX
     if (qEnvironmentVariableIsSet("SEGMENTPUZZLER_GPU") || startupEnvironment.contains("QT_QPA_PLATFORM") ||
         probeQtArguments.contains(QStringLiteral("-platform")) || probeQtArguments.contains(QStringLiteral("--platform"))) {
         auto *overrideNotice = new QLabel(QObject::tr(
@@ -261,12 +318,29 @@ void showDialog(QWidget *parent) {
         overrideNotice->setWordWrap(true);
         layout->addRow(overrideNotice);
     }
+#endif
     auto *status = new QLabel(&dialog);
     status->setObjectName(QStringLiteral("graphicsTestStatus"));
     status->setWordWrap(true);
     layout->addRow(status);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto *restoreDefaults = buttons->addButton(QObject::tr("Restore defaults"), QDialogButtonBox::ResetRole);
+    QObject::connect(restoreDefaults, &QPushButton::clicked, &dialog, [&]() {
+        mode->setCurrentIndex(0);
+        platform->setCurrentIndex(0);
+        const LodSettings defaults;
+        lodEnabled->setChecked(defaults.enabled);
+        lodThreshold->setValue(defaults.triangleThreshold);
+        lodFactor->setValue(defaults.reductionFactor);
+        forceMsaaOff->setChecked(true);
+        status->clear();
+    });
     layout->addRow(buttons);
+    const auto save = [&](const QString &gpu, const QString &windowSystem) {
+        return writeSettings(gpu, windowSystem,
+                             {lodEnabled->isChecked(), lodThreshold->value(), lodFactor->value()},
+                             forceMsaaOff->isChecked());
+    };
 
     auto *process = new QProcess;
     auto environment = QProcessEnvironment::systemEnvironment();
@@ -290,6 +364,7 @@ void showDialog(QWidget *parent) {
         timedOut = false;
         mode->setEnabled(false);
         platform->setEnabled(false);
+        restoreDefaults->setEnabled(false);
         buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
         status->setText(QObject::tr("Testing graphics (%1, %2)…").arg(choice, platformChoice));
         QStringList arguments{QStringLiteral("--test-graphics"), QStringLiteral("--graphics=") + choice};
@@ -331,7 +406,7 @@ void showDialog(QWidget *parent) {
             return;
         }
         if (success) {
-            const QString error = saveSettings(testedMode, testedPlatform);
+            const QString error = save(testedMode, testedPlatform);
             if (error.isEmpty()) {
                 SP_LOG_INFO("app", QStringLiteral("Saved graphics mode=%1, platform=%2; applies after restart")
                                        .arg(testedMode, testedPlatform));
@@ -352,6 +427,7 @@ void showDialog(QWidget *parent) {
         }
         mode->setEnabled(true);
         platform->setEnabled(true);
+        restoreDefaults->setEnabled(true);
         buttons->button(QDialogButtonBox::Ok)->setEnabled(true);
     };
     QObject::connect(process, &QProcess::finished, &dialog,
@@ -372,7 +448,9 @@ void showDialog(QWidget *parent) {
     });
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
         if (mode->currentData().toString() == initialMode && platform->currentData().toString() == initialPlatform) {
-            dialog.accept();
+            const auto error = save(initialMode, initialPlatform);
+            if (error.isEmpty()) dialog.accept();
+            else status->setText(error);
         } else {
             fallback = false;
             startTest(mode->currentData().toString(), platform->currentData().toString());

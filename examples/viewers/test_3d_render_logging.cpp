@@ -1,5 +1,6 @@
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/utils/AppLogger.h"
+#include "src/viewers/itkSignalBase.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -7,6 +8,9 @@
 #include <QImage>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QSlider>
+#include <QSettings>
+#include <QTemporaryDir>
 #include <QSurfaceFormat>
 #include <QTimer>
 #include <QVTKOpenGLNativeWidget.h>
@@ -17,10 +21,14 @@
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkNew.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkProperty.h>
+#include <vtkPropPicker.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRendererCollection.h>
 #include <vtkSphereSource.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -45,6 +53,119 @@ bool waitUntil(const std::function<bool()> &ready) {
     return ready();
 }
 
+void testReducedDetail() {
+    auto image = dataType::SegmentsImageType::New();
+    image->SetRegions(dataType::SegmentsImageType::RegionType({{0, 0, 0}}, {{64, 24, 24}}));
+    const double spacing[] = {0.4, 0.8, 1.2};
+    const double origin[] = {10.0, 20.0, 30.0};
+    image->SetSpacing(spacing);
+    image->SetOrigin(origin);
+    image->Allocate();
+    image->FillBuffer(0);
+    for (int z = 4; z < 20; ++z) {
+        for (int y = 4; y < 20; ++y) {
+            for (int x = 2; x < 18; ++x) {
+                image->SetPixel({{x, y, z}}, 1);
+                image->SetPixel({{x + 42, y, z}}, 2);
+            }
+        }
+    }
+    image->SetPixel({{30, 12, 12}}, 3);
+    const std::vector<Segment3DViewerDialog::LabelWithColor> labels{
+        {1, 0xFFFF0000}, {2, 0xFF00FF00}, {3, 0xFF0000FF}};
+    QSettings settings;
+    settings.setValue("graphics/lodEnabled", false);
+    auto original = Segment3DViewerDialog::prepareScene(image, labels);
+    require(original.meshes.size() == 3, "Preparation lost a segment");
+    require(original.meshes[0].polyData->GetPoints() == original.meshes[1].polyData->GetPoints(),
+            "Shared-point fixture no longer exercises shared points");
+    vtkIdType originalTriangles = 0;
+    for (const auto &mesh : original.meshes) originalTriangles += mesh.polyData->GetNumberOfPolys();
+    settings.setValue("graphics/lodEnabled", true);
+    settings.setValue("graphics/lodTriangleThreshold", originalTriangles + 1);
+    auto belowThreshold = Segment3DViewerDialog::prepareScene(image, labels);
+    for (std::size_t i = 0; i < labels.size(); ++i)
+        require(belowThreshold.meshes[i].polyData->GetNumberOfPolys() == original.meshes[i].polyData->GetNumberOfPolys(),
+                "Scene below threshold was simplified");
+    settings.setValue("graphics/lodTriangleThreshold", originalTriangles);
+    auto scene = Segment3DViewerDialog::prepareScene(image, labels);
+    require(scene.meshes.size() == 3, "LOD preparation lost a segment");
+    require(scene.meshes[2].polyData->GetNumberOfPolys() == original.meshes[2].polyData->GetNumberOfPolys(),
+            "Tiny segment did not retain its geometry");
+    require(scene.meshes[2].polyData->GetNumberOfPoints() < original.meshes[2].polyData->GetNumberOfPoints(),
+            "Tiny segment retained the shared original point buffer");
+    for (int i = 0; i < 2; ++i) {
+        const auto &mesh = scene.meshes[i];
+        require(mesh.polyData->GetNumberOfPolys() > 0 &&
+                    mesh.polyData->GetNumberOfPolys() < mesh.originalTriangleCount &&
+                    mesh.originalTriangleCount == original.meshes[i].polyData->GetNumberOfPolys(),
+                "LOD did not replace the full mesh");
+        require(mesh.polyData->GetActualMemorySize() < original.meshes[i].polyData->GetActualMemorySize(),
+                "LOD did not reduce mesh memory");
+        double bounds[6];
+        original.meshes[i].polyData->GetCellsBounds(bounds);
+        for (vtkIdType p = 0; p < mesh.polyData->GetNumberOfPoints(); ++p) {
+            const auto *point = mesh.polyData->GetPoint(p);
+            for (int axis = 0; axis < 3; ++axis)
+                require(point[axis] >= bounds[2 * axis] - 1e-5 && point[axis] <= bounds[2 * axis + 1] + 1e-5,
+                        "LOD included another segment's unused points");
+        }
+    }
+    settings.setValue("graphics/lodReductionFactor", 8);
+    const auto coarser = Segment3DViewerDialog::prepareScene(image, labels);
+    require(coarser.meshes[0].polyData->GetNumberOfPolys() > 0 &&
+                coarser.meshes[0].polyData->GetNumberOfPolys() < scene.meshes[0].polyData->GetNumberOfPolys(),
+            "Increasing the LOD factor did not produce coarser geometry");
+    settings.remove("graphics/lodReductionFactor");
+    settings.setValue("graphics/lodTriangleThreshold", 1);
+    settings.setValue("graphics/lodEnabled", false);
+    auto disabled = Segment3DViewerDialog::prepareScene(image, labels);
+    require(disabled.meshes[0].polyData->GetNumberOfPolys() == original.meshes[0].polyData->GetNumberOfPolys(),
+            "Disabled LOD still simplified geometry");
+    settings.setValue("graphics/lodEnabled", true);
+    auto splitScene = Segment3DViewerDialog::prepareScene(image, labels, Roi(), false);
+    require(splitScene.meshes[0].polyData->GetNumberOfPolys() == original.meshes[0].polyData->GetNumberOfPolys(),
+            "Split preparation used reduced geometry");
+    auto allLabels = Segment3DViewerDialog::prepareAllLabelsScene(image, LabelColorSnapshot{});
+    require(allLabels.meshes.size() == scene.meshes.size(), "LOD lost labels in the full scene");
+    for (std::size_t i = 0; i < scene.meshes.size(); ++i)
+        require(allLabels.meshes[i].polyData->GetNumberOfPolys() == scene.meshes[i].polyData->GetNumberOfPolys(),
+                "Full scene used different LOD geometry");
+
+    scene.meshes[0].touchesImageBoundary = true;
+    auto dialog = std::make_unique<Segment3DViewerDialog>(scene);
+    require(!dialog->findChild<QCheckBox *>("reducedDetailCheckBox"), "Viewer retained the LOD switch");
+    auto *widget = dialog->findChild<QVTKOpenGLNativeWidget *>();
+    auto *renderer = widget->interactor()->GetInteractorStyle()->GetDefaultRenderer();
+    std::vector<vtkSmartPointer<vtkActor>> actors;
+    auto *collection = renderer->GetActors();
+    collection->InitTraversal();
+    while (auto *actor = collection->GetNextActor()) actors.push_back(actor);
+    require(actors.size() == 3, "Unexpected LOD actor count");
+    for (std::size_t i = 0; i < actors.size(); ++i)
+        require(vtkPolyDataMapper::SafeDownCast(actors[i]->GetMapper())->GetInput() == scene.meshes[i].polyData,
+                "Viewer did not use the prepared mesh");
+    int swaps = 0;
+    QObject::connect(widget, &QOpenGLWidget::frameSwapped, dialog.get(), [&] { ++swaps; });
+    require(widget->renderWindow()->GetNeverRendered(), "LOD rendered before initialization");
+    dialog->show();
+    require(waitUntil([&] { return swaps > 0; }), "LOD initial frame was not presented");
+    dialog->findChild<QSlider *>("explodeSlider")->setValue(20);
+    dialog->findChild<QCheckBox *>("hideImageBoundarySegmentsCheckBox")->setChecked(true);
+    require(!actors[0]->GetVisibility() && actors[1]->GetVisibility(), "LOD filtering failed");
+    const auto *position = actors[1]->GetPosition();
+    renderer->SetWorldPoint(scene.meshes[1].centerWorld[0] + position[0],
+                           scene.meshes[1].centerWorld[1] + position[1],
+                           scene.meshes[1].centerWorld[2] + position[2], 1.0);
+    renderer->WorldToDisplay();
+    const auto *display = renderer->GetDisplayPoint();
+    vtkNew<vtkPropPicker> picker;
+    require(picker->Pick(display[0], display[1], 0, renderer) && picker->GetViewProp() == actors[1],
+            "Picking an exploded LOD segment failed");
+    settings.remove("graphics/lodEnabled");
+    settings.remove("graphics/lodTriangleThreshold");
+}
+
 } // namespace
 
 // frameSwapped requires a native Qt display.
@@ -54,6 +175,10 @@ int main(int argc, char **argv) {
     app.setQuitOnLastWindowClosed(false);
     QCoreApplication::setOrganizationName(QStringLiteral("SegmentPuzzlerTests"));
     QCoreApplication::setApplicationName(QStringLiteral("RenderLogging"));
+    QTemporaryDir settingsDirectory;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settingsDirectory.path());
     try {
         using segment_puzzler::app_logging::AppLogger;
         auto settings = AppLogger::defaultSettings();
@@ -171,7 +296,8 @@ int main(int argc, char **argv) {
             simpleDialog->show();
             require(waitUntil([&] { return simpleSwaps > 0; }), "Empty or single-segment scene did not finish");
             require(renders == 2 && sceneRenders == segmentCount, "Single batch rendered geometry repeatedly");
-            require(simpleDialog->findChild<QProgressDialog *>() == nullptr, "Single batch retained its loading dialog");
+            require(waitUntil([&] { return simpleDialog->findChild<QProgressDialog *>() == nullptr; }),
+                    "Single batch retained its loading dialog");
             simpleWidget->renderWindow()->RemoveObserver(countRenders);
         }
 
@@ -280,6 +406,7 @@ int main(int argc, char **argv) {
         destroyed->show();
         require(waitUntil([&] { return destroyed == nullptr; }), "Viewer was not destroyed between groups");
         QApplication::processEvents();
+        testReducedDetail();
         std::cout << "3D render logging tests passed\n";
     } catch (const std::exception &error) {
         std::cerr << "FAIL: " << error.what() << '\n';

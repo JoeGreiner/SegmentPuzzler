@@ -1018,7 +1018,7 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
             prepared.scene = Segment3DViewerDialog::prepareScene(
                 selectedImage,
                 {{prepared.selectedLabel, color}},
-                prepared.session->sourceRoi);
+                prepared.session->sourceRoi, false);
             prepared.scene.windowTitle = QStringLiteral("3D Split - Segment %1")
                                              .arg(prepared.selectedLabel);
             if (prepared.scene.meshes.empty()) {

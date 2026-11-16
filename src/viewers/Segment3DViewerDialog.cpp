@@ -1,5 +1,6 @@
 #include "src/utils/WorkerThreads.h"
 #include "Segment3DViewerDialog.h"
+#include "src/qtUtils/GraphicsSettings.h"
 #include "src/viewers/itkSignalBase.h"
 
 #include <QAbstractSlider>
@@ -52,6 +53,7 @@
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkSmartPointer.h>
+#include <vtkNew.h>
 #include <vtkType.h>
 #include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -65,6 +67,8 @@
 #include <vtkImageCast.h>
 #include <vtkImageConstantPad.h>
 #include <vtkCellArray.h>
+#include <vtkBinnedDecimation.h>
+#include <vtkBoundingBox.h>
 #include <vtkPoints.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkPolyData.h>
@@ -1481,6 +1485,26 @@ vtkSmartPointer<vtkPoints> compactMeshPoints(
     return points;
 }
 
+vtkSmartPointer<vtkPoints> compactMeshPoints(
+    vtkPoints *points, vtkCellArray *polys,
+    std::uint64_t maximumBufferBytes, dataType::SegmentIdType labelId)
+{
+    ExplodeSourceView source;
+    source.points = points;
+    auto *data = points->GetData();
+    if (data->GetDataType() == VTK_FLOAT) {
+        source.floatPoints = static_cast<const float *>(data->GetVoidPointer(0));
+    } else {
+        source.doublePoints = static_cast<const double *>(data->GetVoidPointer(0));
+    }
+    auto *connectivity = polys->GetConnectivityArray();
+    if (auto *values = vtkCellArray::AOSArray32::SafeDownCast(connectivity)) {
+        return compactMeshPoints(source, values, maximumBufferBytes, labelId);
+    }
+    return compactMeshPoints(source, vtkCellArray::AOSArray64::SafeDownCast(connectivity),
+                             maximumBufferBytes, labelId);
+}
+
 std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
     const ExplodeSourceView &source,
     const std::vector<Segment3DViewerDialog::LabelWithColor> &labels,
@@ -1508,13 +1532,7 @@ std::vector<Segment3DViewerDialog::PreparedMesh> makeExplodeMeshes(
                 const auto labelId = labels[labelIndex].first;
                 vtkSmartPointer<vtkPoints> points = source.points;
                 if (compactPoints) {
-                    auto *connectivity = polys[labelIndex]->GetConnectivityArray();
-                    if (auto *values32 = vtkCellArray::AOSArray32::SafeDownCast(connectivity)) {
-                        points = compactMeshPoints(source, values32, maximumBufferBytes, labelId);
-                    } else {
-                        auto *values64 = vtkCellArray::AOSArray64::SafeDownCast(connectivity);
-                        points = compactMeshPoints(source, values64, maximumBufferBytes, labelId);
-                    }
+                    points = compactMeshPoints(source.points, polys[labelIndex], maximumBufferBytes, labelId);
                 }
 
                 auto polyData = vtkSmartPointer<SharedPointsPolyData>::New();
@@ -1629,6 +1647,89 @@ std::vector<Segment3DViewerDialog::PreparedMesh> extractSingleLabelMeshes(
     return preparedMeshes;
 }
 
+void prepareReducedMeshes(std::vector<Segment3DViewerDialog::PreparedMesh> &meshes,
+                          const dataType::SegmentsImageType::SpacingType &spacing) {
+    const auto lod = graphicsSettings::lodSettings();
+    if (!lod.enabled) return;
+    vtkIdType originalTriangles = 0;
+    for (auto &mesh : meshes) {
+        mesh.originalTriangleCount = mesh.polyData->GetNumberOfPolys();
+        originalTriangles += mesh.originalTriangleCount;
+    }
+    if (originalTriangles < lod.triangleThreshold) return;
+    const double binWidth = lod.reductionFactor * std::min({spacing[0], spacing[1], spacing[2]});
+    QElapsedTimer timer;
+    timer.start();
+    std::map<vtkPoints *, int> pointUses;
+    for (const auto &mesh : meshes) {
+        ++pointUses[mesh.polyData->GetPoints()];
+    }
+    const auto &sharedPoints = pointUses;
+    std::vector<std::exception_ptr> errors(meshes.size());
+    vtkSMPTools::For(0, static_cast<vtkIdType>(meshes.size()), [&](vtkIdType begin, vtkIdType end) {
+        for (auto i = begin; i < end; ++i) {
+            try {
+                auto &mesh = meshes[i];
+                vtkSmartPointer<vtkPolyData> input = mesh.polyData;
+                // BinnedDecimation averages every input point, including unused ones.
+                if (sharedPoints.at(input->GetPoints()) > 1) {
+                    auto polys = vtkSmartPointer<vtkCellArray>::New();
+                    polys->DeepCopy(input->GetPolys());
+                    auto points = compactMeshPoints(input->GetPoints(), polys,
+                        Segment3DViewerDialog::kMaximumMeshBufferBytes, mesh.labelId);
+                    input = vtkSmartPointer<vtkPolyData>::New();
+                    input->SetPoints(points);
+                    input->SetPolys(polys);
+                }
+                // Retain only the segment's points even if it is too small to simplify.
+                mesh.polyData = input;
+                vtkNew<vtkBinnedDecimation> decimator;
+                decimator->SetInputData(input);
+                decimator->SetPointGenerationModeToBinAverages();
+                decimator->AutoAdjustNumberOfDivisionsOff();
+                const auto *bounds = input->GetBounds();
+                int divisions[3];
+                for (int axis = 0; axis < 3; ++axis) {
+                    divisions[axis] = static_cast<int>(std::clamp(
+                        std::ceil((bounds[2 * axis + 1] - bounds[2 * axis]) / binWidth),
+                        1.0, static_cast<double>(std::numeric_limits<int>::max())));
+                }
+                vtkBoundingBox::ClampDivisions(std::numeric_limits<int>::max(), divisions);
+                decimator->SetNumberOfDivisions(divisions);
+                decimator->Update();
+                auto *output = decimator->GetOutput();
+                if (output->GetNumberOfPolys() > 0
+                    && output->GetNumberOfPolys() < input->GetNumberOfPolys()) {
+                    mesh.polyData = vtkSmartPointer<vtkPolyData>::New();
+                    mesh.polyData->ShallowCopy(output);
+                    mesh.polyData->GetPolys()->ConvertToFixedSize32BitStorage();
+                    mesh.polyData->DeleteCells();
+                    mesh.polyData->Squeeze();
+                    mesh.polyData->GetPoints()->GetData()->GetRange(0);
+                    mesh.polyData->ComputeBounds();
+                }
+            } catch (...) {
+                errors[i] = std::current_exception();
+            }
+        }
+    });
+    vtkIdType reducedTriangles = 0;
+    std::size_t reducedSegments = 0;
+    for (std::size_t i = 0; i < meshes.size(); ++i) {
+        if (errors[i]) {
+            std::rethrow_exception(errors[i]);
+        }
+        const auto &mesh = meshes[i];
+        reducedTriangles += mesh.polyData->GetNumberOfPolys();
+        reducedSegments += mesh.polyData->GetNumberOfPolys() < mesh.originalTriangleCount;
+    }
+    SP_LOG_INFO("viewer.three_d",
+                QStringLiteral("[3DView] LOD generation_ms=%1 bin_width=%2 original_triangles=%3 "
+                               "reduced_triangles=%4 reduced_segments=%5 segments=%6")
+                    .arg(timer.nsecsElapsed() / 1.0e6, 0, 'f', 1).arg(binWidth)
+                    .arg(originalTriangles).arg(reducedTriangles).arg(reducedSegments).arg(meshes.size()));
+}
+
 vtkSmartPointer<vtkActor> createMeshActor(
     const Segment3DViewerDialog::PreparedMesh &mesh)
 {
@@ -1696,15 +1797,20 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     dataType::SegmentsImageType::Pointer segImage,
     std::vector<LabelWithColor> labels)
 {
-    return prepareScene(segImage, std::move(labels), Roi(), false);
+    return prepareScene(segImage, std::move(labels), Roi());
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     dataType::SegmentsImageType::Pointer segImage,
     std::vector<LabelWithColor> labels,
-    Roi requestedBounds)
+    Roi requestedBounds,
+    bool allowReducedDetail)
 {
-    return prepareScene(segImage, std::move(labels), requestedBounds, false);
+    auto scene = extractScene(segImage, std::move(labels), requestedBounds, false);
+    if (allowReducedDetail && segImage != nullptr) {
+        prepareReducedMeshes(scene.meshes, segImage->GetSpacing());
+    }
+    return scene;
 }
 
 Segment3DViewerDialog::PreparedScene
@@ -1733,7 +1839,7 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
     const auto requestedStats = scan.statsByLabel.find(label.first);
     if (requestedStats != scan.statsByLabel.end()) {
         const Roi bounds = roiFromBounds(requestedStats->second.bounds);
-        preparedScene = prepareScene(segImage, requestedLabels, bounds, false);
+        preparedScene = prepareScene(segImage, requestedLabels, bounds);
     } else {
         preparedScene.targetLabelId = label.first;
         preparedScene.windowTitle =
@@ -1803,7 +1909,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
     bounds.maxY = scan.bounds.maxY;
     bounds.minZ = scan.bounds.minZ;
     bounds.maxZ = scan.bounds.maxZ;
-    auto preparedScene = prepareScene(segImage, std::move(labels), bounds, true);
+    auto preparedScene = extractScene(segImage, std::move(labels), bounds, true);
     for (auto &mesh : preparedScene.meshes) {
         const auto labelStats = scan.statsByLabel.find(mesh.labelId);
         if (labelStats != scan.statsByLabel.end()) {
@@ -1815,10 +1921,11 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
                 static_cast<int>(size[2]));
         }
     }
+    prepareReducedMeshes(preparedScene.meshes, segImage->GetSpacing());
     return preparedScene;
 }
 
-Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
+Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
     dataType::SegmentsImageType::Pointer segImage,
     std::vector<LabelWithColor> labels,
     Roi requestedBounds,
@@ -2134,7 +2241,8 @@ Segment3DViewerDialog::Segment3DViewerDialog(
         auto actor = createMeshActor(mesh);
         m_renderer->AddActor(actor);
         m_segmentActors.push_back(
-            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount});
+            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount,
+             mesh.originalTriangleCount});
     }
 
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
@@ -2735,12 +2843,15 @@ Segment3DViewerDialog::~Segment3DViewerDialog() {
 void Segment3DViewerDialog::updateRenderDiagnostics(const char *reason) {
     m_visibleSegmentCount = 0;
     m_visibleTriangleCount = 0;
+    vtkIdType originalTriangles = 0;
     for (const auto &segment : m_segmentActors) {
         if (segment.actor->GetVisibility()) {
             ++m_visibleSegmentCount;
             auto *mapper = vtkPolyDataMapper::SafeDownCast(segment.actor->GetMapper());
             if (mapper != nullptr && mapper->GetInput() != nullptr) {
                 m_visibleTriangleCount += mapper->GetInput()->GetNumberOfPolys();
+                originalTriangles += segment.originalTriangleCount > 0
+                    ? segment.originalTriangleCount : mapper->GetInput()->GetNumberOfPolys();
             }
         }
     }
@@ -2754,7 +2865,8 @@ void Segment3DViewerDialog::updateRenderDiagnostics(const char *reason) {
     m_renderLogReason = reason;
     SP_LOG_INFO("viewer.three_d",
                 QStringLiteral("[3DView] scene view=%1 reason=%2 segments=%3 visible_segments=%4 "
-                               "visible_triangles=%5 selection=%6 hide_border=%7")
+                               "visible_triangles=%5 selection=%6 hide_border=%7 "
+                               "visible_original_triangles=%8 reduced_detail=%9")
                     .arg(reinterpret_cast<quintptr>(this), 0, 16)
                     .arg(QString::fromLatin1(reason))
                     .arg(static_cast<qulonglong>(m_segmentActors.size()))
@@ -2762,7 +2874,9 @@ void Segment3DViewerDialog::updateRenderDiagnostics(const char *reason) {
                     .arg(m_visibleTriangleCount)
                     .arg(QString::fromLatin1(selection))
                     .arg(m_hideImageBoundaryCellsCheckBox != nullptr
-                         && m_hideImageBoundaryCellsCheckBox->isChecked()));
+                         && m_hideImageBoundaryCellsCheckBox->isChecked())
+                    .arg(originalTriangles)
+                    .arg(m_visibleTriangleCount < originalTriangles));
 }
 
 void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
@@ -3350,7 +3464,8 @@ bool Segment3DViewerDialog::replaceSegmentMeshes(const PreparedScene &preparedSc
         }
         auto actor = createMeshActor(mesh);
         newActors.push_back(
-            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount});
+            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount,
+             mesh.originalTriangleCount});
     }
 
     if (newActors.empty() || m_renderer == nullptr) {
@@ -3904,9 +4019,9 @@ void Segment3DViewerDialog::previewProjectedCut() {
         auto result = computeProjected3DCut(mask, request);
         PreparedScene scene;
         if (result.valid()) {
-            scene = Segment3DViewerDialog::prepareScene(
+            scene = extractScene(
                 result.partition,
-                splitPreviewLabels(result.componentVoxelCounts.size()));
+                splitPreviewLabels(result.componentVoxelCounts.size()), Roi(), false);
         }
         m_seededSplitBusy = false;
         if (!result.valid() || !replaceSegmentMeshes(scene, false)) {
@@ -4609,8 +4724,8 @@ void Segment3DViewerDialog::previewSeededSplit() {
             *session, seeds, options);
         PreparedScene scene;
         if (result.valid()) {
-            scene = Segment3DViewerDialog::prepareScene(
-                result.partition, {{1, 0xF2483D}, {2, 0x26A6FF}});
+            scene = extractScene(
+                result.partition, {{1, 0xF2483D}, {2, 0x26A6FF}}, Roi(), false);
         }
         m_seededSplitBusy = false;
         m_lastSeededSplitResult = result;
@@ -5028,8 +5143,7 @@ void Segment3DViewerDialog::previewErosionSplit() {
         PreparedScene partitionScene;
         if (result.valid()) {
             const auto labels = splitPreviewLabels(result.voxelCounts.size());
-            partitionScene = Segment3DViewerDialog::prepareScene(
-                result.partition, labels);
+            partitionScene = extractScene(result.partition, labels, Roi(), false);
         }
         return std::make_pair(std::move(result), std::move(partitionScene));
     };

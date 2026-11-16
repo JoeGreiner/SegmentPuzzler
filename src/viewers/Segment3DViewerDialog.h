@@ -66,6 +66,7 @@ public:
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
         bool touchesImageBoundary = false;
         std::uint64_t voxelCount = 0;
+        vtkIdType originalTriangleCount = 0;
     };
 
     struct PreparedScene {
@@ -87,7 +88,8 @@ public:
     static PreparedScene prepareScene(
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<LabelWithColor> labels,
-        Roi requestedBounds);
+        Roi requestedBounds,
+        bool allowReducedDetail = true);
     static PreparedScene prepareSingleLabelSlideshowScene(
         dataType::SegmentsImageType::Pointer segImage,
         LabelWithColor label);
@@ -158,7 +160,7 @@ protected:
     void showEvent(QShowEvent *event) override;
 
 private:
-    static PreparedScene prepareScene(
+    static PreparedScene extractScene(
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<LabelWithColor> labels,
         Roi requestedBounds,
@@ -170,6 +172,7 @@ private:
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
         bool touchesImageBoundary = false;
         std::uint64_t voxelCount = 0;
+        vtkIdType originalTriangleCount = 0;
     };
 
     struct SeedRayHit {

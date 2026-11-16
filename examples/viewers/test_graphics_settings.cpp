@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
@@ -10,9 +11,12 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QSpinBox>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkNew.h>
 
 #include <csignal>
 #include <iostream>
@@ -85,6 +89,10 @@ void checkDialog(const QByteArray &behavior, const QString &initialMode, const Q
                  const QString &expectedPlatform = "auto") {
     QSettings().setValue(QStringLiteral("graphics/mode"), initialMode);
     QSettings().setValue(QStringLiteral("graphics/platform"), initialPlatform);
+    QSettings().setValue(QStringLiteral("graphics/lodEnabled"), true);
+    QSettings().setValue(QStringLiteral("graphics/lodTriangleThreshold"), 50'000'000);
+    QSettings().setValue(QStringLiteral("graphics/lodReductionFactor"), 4);
+    QSettings().setValue(QStringLiteral("graphics/forceMsaaOff"), true);
     QFile::remove(qEnvironmentVariable("SP_GRAPHICS_TEST_CALLS"));
     qputenv("SP_GRAPHICS_TEST_BEHAVIOR", behavior);
     QElapsedTimer elapsed;
@@ -114,6 +122,26 @@ void checkDialog(const QByteArray &behavior, const QString &initialMode, const Q
         auto *status = dialog->findChild<QLabel *>(QStringLiteral("graphicsTestStatus"));
         if (!clicked) {
             clicked = true;
+            auto *lod = dialog->findChild<QCheckBox *>(QStringLiteral("lodEnabled"));
+            auto *threshold = dialog->findChild<QSpinBox *>(QStringLiteral("lodTriangleThreshold"));
+            auto *factor = dialog->findChild<QSpinBox *>(QStringLiteral("lodReductionFactor"));
+            auto *msaa = dialog->findChild<QCheckBox *>(QStringLiteral("forceMsaaOff"));
+            require(lod && threshold && lod->isChecked() && threshold->value() == 50'000'000,
+                    "LOD controls did not load settings");
+            require(lod->isVisible() && threshold->isVisible(), "LOD controls are hidden");
+            require(factor && factor->isVisible() && factor->value() == 4 &&
+                        msaa && msaa->isVisible() && msaa->isChecked(), "Graphics options did not load settings");
+#ifdef Q_OS_LINUX
+            require(combo->isVisible() && platform->isVisible(), "Linux graphics controls are hidden");
+#else
+            require(!combo->isVisible() && !platform->isVisible(), "Linux graphics controls appear on another OS");
+#endif
+            threshold->setValue(123456);
+            factor->setValue(8);
+            msaa->setChecked(false);
+            lod->setChecked(false);
+            require(!threshold->isEnabled() && !factor->isEnabled() && msaa->isEnabled(),
+                    "LOD disabled the wrong controls");
             combo->setCurrentIndex(combo->findData(choice));
             platform->setCurrentIndex(platform->findData(choicePlatform));
             buttons->button(QDialogButtonBox::Ok)->click();
@@ -131,6 +159,13 @@ void checkDialog(const QByteArray &behavior, const QString &initialMode, const Q
     require(QSettings().value(QStringLiteral("graphics/platform")).toString() == expectedPlatform,
             "Dialog persisted an unexpected platform");
     require(readCalls() == expectedCalls, "Unexpected number/order of graphics tests");
+    const bool saved = !cancel && behavior != "fail";
+    require(graphicsSettings::lodSettings().enabled == !saved &&
+                graphicsSettings::lodSettings().triangleThreshold == (saved ? 123456 : 50'000'000) &&
+                graphicsSettings::lodSettings().reductionFactor == (saved ? 8 : 4),
+            "LOD settings were not saved or cancelled with the dialog");
+    require(QSettings().value(QStringLiteral("graphics/forceMsaaOff")).toBool() == !saved,
+            "MSAA setting was not saved or cancelled with the dialog");
     require(!cancel || elapsed.elapsed() < 5000, "Cancelling the render test blocked");
     if (behavior == "fallback" || behavior == "crash" || behavior == "timeout" || behavior == "platform-fail") {
         require(fallbackNotice, "Fallback was not explained to the user");
@@ -161,9 +196,29 @@ int main(int argc, char **argv) {
 
     try {
         require(directory.isValid(), "Could not create isolated settings directory");
+        require(graphicsSettings::lodSettings().enabled && graphicsSettings::lodSettings().triangleThreshold == 50'000'000 &&
+                    graphicsSettings::lodSettings().reductionFactor == 4,
+                "Wrong LOD defaults");
+        QSettings().setValue(QStringLiteral("graphics/lodReductionFactor"), 0);
+        require(graphicsSettings::lodSettings().reductionFactor == 1, "LOD factor did not respect its minimum");
+        QSettings().setValue(QStringLiteral("graphics/lodReductionFactor"), 100);
+        require(graphicsSettings::lodSettings().reductionFactor == 64, "LOD factor did not respect its maximum");
+        QSettings().remove(QStringLiteral("graphics/lodReductionFactor"));
         const QStringList command{QStringLiteral("SegmentPuzzler")};
         auto options = graphicsSettings::readStartupOptions(command);
         require(options.mode == "auto" && options.source == "default" && options.platform == "auto", "Wrong defaults");
+        // Simulate a platform with MSAA enabled by default before creating any render window.
+        const int defaultSamples = vtkOpenGLRenderWindow::GetGlobalMaximumNumberOfMultiSamples();
+        vtkOpenGLRenderWindow::SetGlobalMaximumNumberOfMultiSamples(8);
+        graphicsSettings::applyStartupOptions(options);
+        vtkNew<vtkGenericOpenGLRenderWindow> withoutMsaa;
+        require(withoutMsaa->GetMultiSamples() == 0, "MSAA was not disabled by default");
+        QSettings().setValue(QStringLiteral("graphics/forceMsaaOff"), false);
+        vtkOpenGLRenderWindow::SetGlobalMaximumNumberOfMultiSamples(8);
+        graphicsSettings::applyStartupOptions(options);
+        vtkNew<vtkGenericOpenGLRenderWindow> withMsaa;
+        require(withMsaa->GetMultiSamples() == 8, "Disabling the override changed the VTK default");
+        vtkOpenGLRenderWindow::SetGlobalMaximumNumberOfMultiSamples(defaultSamples);
         require(graphicsSettings::saveSettings("system", "xcb").isEmpty(), "Saving settings failed");
         options = graphicsSettings::readStartupOptions(command);
         require(options.mode == "system" && options.source == "settings" && options.platform == "xcb",
@@ -195,8 +250,12 @@ int main(int argc, char **argv) {
                 "Missing graphics argument accepted");
         QSettings().setValue(QStringLiteral("other/preference"), 42);
         require(graphicsSettings::resetSettings().isEmpty(), "Reset failed");
+        require(!QSettings().contains(QStringLiteral("graphics/forceMsaaOff")), "Reset retained MSAA override");
         require(!QSettings().contains(QStringLiteral("graphics/mode")) &&
                     !QSettings().contains(QStringLiteral("graphics/platform")), "Reset retained graphics keys");
+        require(!QSettings().contains(QStringLiteral("graphics/lodEnabled")) &&
+                    !QSettings().contains(QStringLiteral("graphics/lodTriangleThreshold")) &&
+                    !QSettings().contains(QStringLiteral("graphics/lodReductionFactor")), "Reset retained LOD settings");
         require(QSettings().value(QStringLiteral("other/preference")).toInt() == 42, "Reset changed other preferences");
         const QString blockedPath = directory.filePath(QStringLiteral("not-a-directory"));
         QFile blocker(blockedPath);

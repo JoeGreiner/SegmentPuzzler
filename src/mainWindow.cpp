@@ -511,12 +511,10 @@ MainWindow::MainWindow() {
     settingsMenu->addAction(loggingSettingsAction);
     connect(loggingSettingsAction, &QAction::triggered, this, &MainWindow::showLoggingSettings);
 
-#ifdef Q_OS_LINUX
     auto *graphicsSettingsAction = settingsMenu->addAction(tr("Graphics..."));
     connect(graphicsSettingsAction, &QAction::triggered, this, [this]() {
         graphicsSettings::showDialog(this);
     });
-#endif
 
 
     viewMenu->addSeparator();
