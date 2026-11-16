@@ -244,7 +244,11 @@ SystemStats query() {
 // ---------------------------------------------------------------------------
 #elif defined(_WIN32)
 
+// Use the Kernel32 entry points available on all Windows versions supported by Qt 6.
+#undef PSAPI_VERSION
+#define PSAPI_VERSION 2
 #include <windows.h>
+#include <psapi.h>
 
 namespace {
 static ULONGLONG sPrevIdle = 0, sPrevKernel = 0, sPrevUser = 0;
@@ -263,6 +267,11 @@ MemoryStats queryMemory() {
         stats.availableSystemMemoryGB = static_cast<double>(memory.ullAvailPhys) * bytesToGB;
         stats.swapTotalGB = static_cast<double>(memory.ullTotalPageFile) * bytesToGB;
         stats.swapUsedGB = static_cast<double>(memory.ullTotalPageFile - memory.ullAvailPageFile) * bytesToGB;
+    }
+    PROCESS_MEMORY_COUNTERS process{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &process, sizeof(process))) {
+        stats.processResidentMemoryGB = static_cast<double>(process.WorkingSetSize) * bytesToGB;
+        stats.peakProcessResidentMemoryGB = static_cast<double>(process.PeakWorkingSetSize) * bytesToGB;
     }
     return stats;
 }

@@ -1,5 +1,7 @@
 #include "AboutDialog.h"
 #include "SegmentPuzzlerBuildInfo.h"
+#include "src/utils/WorkerThreads.h"
+#include "src/utils/systemStats.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -16,6 +18,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QStringList>
 #include <QSysInfo>
 #include <QTimer>
@@ -23,16 +26,51 @@
 #include <QVBoxLayout>
 #include <QVersionNumber>
 #include <QVTKOpenGLNativeWidget.h>
+#include <itkMultiThreaderBase.h>
 #include <itkVersion.h>
+#include <itksys/SystemInformation.hxx>
 #include <vtkNew.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
+#include <vtkSMPTools.h>
 #include <vtkVersion.h>
+
+#ifdef USE_OMP
+#include <omp.h>
+#endif
 
 namespace {
 
+QString cpuInfoText() {
+    static const QString info = [] {
+        itksys::SystemInformation system;
+        system.RunCPUCheck();
+        QString model = QString::fromStdString(system.GetModelName()).simplified();
+        if (model.isEmpty()) {
+            model = QString::fromLatin1(system.GetExtendedProcessorName()).simplified();
+        }
+        const auto count = [](unsigned int value) {
+            return value > 0 ? QString::number(value) : AboutDialog::tr("unavailable");
+        };
+        return QStringLiteral("CPU: %1\nCPU cores: %2 physical, %3 logical")
+            .arg(model.isEmpty() ? AboutDialog::tr("unavailable") : model,
+                 count(system.GetNumberOfPhysicalCPU()), count(system.GetNumberOfLogicalCPU()));
+    }();
+    return info;
+}
+
 QString renderInfoText() {
     static const QString info = []() {
+        auto *previousContext = QOpenGLContext::currentContext();
+        auto *previousSurface = previousContext ? previousContext->surface() : nullptr;
+        const auto restoreContext = qScopeGuard([previousContext, previousSurface] {
+            if (previousContext && previousSurface) {
+                previousContext->makeCurrent(previousSurface);
+            } else if (auto *current = QOpenGLContext::currentContext()) {
+                current->doneCurrent();
+            }
+        });
+
         // Use the viewer's Qt/VTK path and retain only the result, once per process.
         QVTKOpenGLNativeWidget probe;
         probe.resize(1, 1);
@@ -49,14 +87,27 @@ QString renderInfoText() {
             return text ? QString::fromLatin1(reinterpret_cast<const char *>(text))
                         : AboutDialog::tr("unavailable");
         };
-        return AboutDialog::tr("3D context: automatic test context\n"
-                               "Renderer: %1\nOpenGL vendor: %2\nOpenGL version: %3")
-            .arg(value(GL_RENDERER), value(GL_VENDOR), value(GL_VERSION));
+        GLint dedicatedMemoryKiB = 0;
+        if (probe.context()->hasExtension(QByteArrayLiteral("GL_NVX_gpu_memory_info"))) {
+            constexpr GLenum dedicatedVideoMemoryNVX = 0x9047;
+            functions->glGetIntegerv(dedicatedVideoMemoryNVX, &dedicatedMemoryKiB);
+        }
+        return AboutDialog::tr("Renderer: %1\nOpenGL vendor: %2\nOpenGL version: %3\n"
+                              "Dedicated GPU memory: %4")
+            .arg(value(GL_RENDERER), value(GL_VENDOR), value(GL_VERSION),
+                 dedicatedMemoryKiB > 0
+                     ? QStringLiteral("%1 GiB").arg(dedicatedMemoryKiB / (1024.0 * 1024.0), 0, 'f', 2)
+                     : AboutDialog::tr("unavailable"));
     }();
     return info;
 }
 
 QString buildInfoText() {
+    const auto memory = systemStats::queryMemory();
+    const auto gib = [](double value) {
+        return value > 0.0 ? QStringLiteral("%1 GiB").arg(value, 0, 'f', 2)
+                           : AboutDialog::tr("unavailable");
+    };
     QStringList lines{
         QStringLiteral("SegmentPuzzler %1").arg(QApplication::applicationVersion()),
         QStringLiteral("Git: %1").arg(QString::fromUtf8(segment_puzzler::gitDescription)),
@@ -66,6 +117,21 @@ QString buildInfoText() {
         QStringLiteral("System: %1 (%2)")
             .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture()),
         QStringLiteral("Kernel: %1 %2").arg(QSysInfo::kernelType(), QSysInfo::kernelVersion()),
+        cpuInfoText(),
+        QStringLiteral("System RAM: %1").arg(gib(memory.totalSystemMemoryGB)),
+        QStringLiteral("Process resident RAM: %1 (peak: %2)")
+            .arg(gib(memory.processResidentMemoryGB), gib(memory.peakProcessResidentMemoryGB)),
+        QStringLiteral("VTK SMP: %1 (estimated threads: %2)")
+            .arg(QString::fromLatin1(vtkSMPTools::GetBackend()))
+            .arg(vtkSMPTools::GetEstimatedNumberOfThreads()),
+        QStringLiteral("ITK default threads: %1")
+            .arg(itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads()),
+#ifdef USE_OMP
+        QStringLiteral("OpenMP threads: %1 runtime default, %2 app default")
+            .arg(omp_get_max_threads()).arg(segment_puzzler::workerThreadCount()),
+#else
+        QStringLiteral("OpenMP: disabled"),
+#endif
         QStringLiteral("Qt platform: %1").arg(QGuiApplication::platformName())
     };
     if (QString::fromLatin1(qVersion()) != QStringLiteral(QT_VERSION_STR)) {
@@ -86,13 +152,18 @@ QString buildInfoText() {
     lines.append(renderInfoText());
 
     QStringList environment;
-    // Only collect graphics/session settings, never the full environment.
+    // Environment variables relevant to rendering and threading.
     for (const auto *name : {"QT_QPA_PLATFORM", "QT_XCB_GL_INTEGRATION", "QT_OPENGL",
                              "LIBGL_ALWAYS_SOFTWARE", "LIBGL_ALWAYS_INDIRECT",
                              "MESA_LOADER_DRIVER_OVERRIDE", "GALLIUM_DRIVER", "DRI_PRIME",
                              "__NV_PRIME_RENDER_OFFLOAD", "__NV_PRIME_RENDER_OFFLOAD_PROVIDER",
                              "__GLX_VENDOR_LIBRARY_NAME", "VGL_DISPLAY", "VGL_TRANSPORT",
-                             "XRDP_SESSION", "XDG_SESSION_REMOTE", "LD_PRELOAD", "LD_LIBRARY_PATH"}) {
+                             "XRDP_SESSION", "XDG_SESSION_REMOTE", "LD_PRELOAD", "LD_LIBRARY_PATH",
+                             "SEGMENTPUZZLER_GPU", "__EGL_VENDOR_LIBRARY_FILENAMES",
+                             "OMP_NUM_THREADS", "OMP_THREAD_LIMIT", "OMP_DYNAMIC",
+                             "OMP_PROC_BIND", "OMP_PLACES", "OMP_MAX_ACTIVE_LEVELS",
+                             "ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", "ITK_GLOBAL_DEFAULT_THREADER",
+                             "VTK_SMP_MAX_THREADS", "VTK_SMP_BACKEND_IN_USE"}) {
         if (qEnvironmentVariableIsSet(name)) {
             environment.append(QStringLiteral("%1=%2")
                 .arg(QString::fromLatin1(name), qEnvironmentVariable(name)));
@@ -100,7 +171,7 @@ QString buildInfoText() {
     }
     if (!environment.isEmpty()) {
         lines.append(QString());
-        lines.append(AboutDialog::tr("Graphics/session environment:"));
+        lines.append(AboutDialog::tr("Environment:"));
         lines.append(environment);
     }
     return lines.join(QLatin1Char('\n'));
