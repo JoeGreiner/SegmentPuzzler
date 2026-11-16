@@ -2217,6 +2217,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
 {
     setWindowTitle(preparedScene.windowTitle);
     resize(600, 600);
+    setWindowState(Qt::WindowMaximized);
     qApp->installEventFilter(this);
 
     if (preparedScene.targetLabelId != 0 && preparedScene.meshes.size() == 1) {
