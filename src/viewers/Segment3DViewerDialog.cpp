@@ -515,7 +515,6 @@ private:
 
 vtkStandardNewMacro(SharedPointsPolyData);
 
-constexpr bool kProfile3DViewExtraction = false;
 constexpr dataType::SegmentIdType kDenseLabelLookupLimit = 1'000'000;
 constexpr int kMaximumExplodePercent = 1000;
 
@@ -648,14 +647,11 @@ double safeCameraDistance(double cameraDistance, double sceneExtent)
                : std::max(1.5 * safeExtent, 1.0);
 }
 
-#define SP_LOG_3D_TIMER(startedAtMs, label) \
+#define SP_LOG_3D_TIMER(timer, label) \
     do { \
-        if ((startedAtMs) != 0) { \
-            SP_LOG_DEBUG("viewer.three_d", \
-                         QStringLiteral("%1 finished in %2 ms") \
-                             .arg(label) \
-                             .arg(QDateTime::currentMSecsSinceEpoch() - (startedAtMs))); \
-        } \
+        SP_LOG_DEBUG("viewer.three_d", \
+                     QStringLiteral("%1 finished in %2 ms") \
+                         .arg(label).arg((timer).nsecsElapsed() / 1.0e6, 0, 'f', 1)); \
     } while (false)
 
 constexpr int segmentIdVtkDataType() {
@@ -1024,7 +1020,10 @@ Segment3DViewerDialog::PreparedMesh extractSelectedLabelMesh(
     if (surfaceNet == nullptr) {
         return {};
     }
+    QElapsedTimer timer;
+    timer.start();
     surfaceNet->Update();
+    SP_LOG_3D_TIMER(timer, QStringLiteral("[3DView] [vtksurfacenets] selected-label extraction"));
     auto polyData = detachPolyData(surfaceNet->GetOutput());
     surfaceNet = nullptr;
     inputData->ReleaseData();
@@ -1567,8 +1566,8 @@ std::vector<Segment3DViewerDialog::PreparedMesh> splitMultiLabelMesh(
     const std::vector<Segment3DViewerDialog::LabelWithColor> &labels,
     std::uint64_t maximumBufferBytes)
 {
-    const qint64 startedAt =
-        kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
+    QElapsedTimer stageTimer;
+    stageTimer.start();
     const auto source = makeExplodeSourceView(combinedPolyData, boundaryLabels);
     const auto labelLookup = buildLabelIndexLookup(labels);
     if (!source || !labelLookup) {
@@ -1591,8 +1590,10 @@ std::vector<Segment3DViewerDialog::PreparedMesh> splitMultiLabelMesh(
         return {};
     }
 
+    SP_LOG_3D_TIMER(stageTimer, QStringLiteral("[3DView] [segmentpuzzler] split triangles by label"));
+    stageTimer.restart();
     auto meshes = makeExplodeMeshes(*source, labels, *scan, std::move(*polys), maximumBufferBytes);
-    SP_LOG_3D_TIMER(startedAt, QStringLiteral("[3DView] [segmentpuzzler] split multi-label mesh"));
+    SP_LOG_3D_TIMER(stageTimer, QStringLiteral("[3DView] [segmentpuzzler] assemble meshes (including compaction)"));
     return meshes;
 }
 
@@ -1806,10 +1807,13 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
     Roi requestedBounds,
     bool allowReducedDetail)
 {
+    QElapsedTimer timer;
+    timer.start();
     auto scene = extractScene(segImage, std::move(labels), requestedBounds, false);
     if (allowReducedDetail && segImage != nullptr) {
         prepareReducedMeshes(scene.meshes, segImage->GetSpacing());
     }
+    SP_LOG_3D_TIMER(timer, QStringLiteral("[3DView] preparation including LOD"));
     return scene;
 }
 
@@ -1825,7 +1829,8 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
     const auto &size = segImage->GetLargestPossibleRegion().GetSize();
     const std::vector<LabelWithColor> requestedLabels{label};
     const auto boundsModifiedTime = segImage->GetMTime();
-    const auto scanStartedAt = QDateTime::currentMSecsSinceEpoch();
+    QElapsedTimer scanStartedAt;
+    scanStartedAt.start();
     auto scan = scanAllLabelsAndBounds(
         segImage->GetBufferPointer(),
         static_cast<int>(size[0]),
@@ -1883,8 +1888,11 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
         return {};
     }
 
+    QElapsedTimer timer;
+    timer.start();
     const auto &size = segImage->GetLargestPossibleRegion().GetSize();
-    const auto scanStartedAt = QDateTime::currentMSecsSinceEpoch();
+    QElapsedTimer scanStartedAt;
+    scanStartedAt.start();
     const auto scan = scanAllLabelsAndBounds(
         segImage->GetBufferPointer(),
         static_cast<int>(size[0]),
@@ -1922,6 +1930,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
         }
     }
     prepareReducedMeshes(preparedScene.meshes, segImage->GetSpacing());
+    SP_LOG_3D_TIMER(timer, QStringLiteral("[3DView] preparation including scan and LOD"));
     return preparedScene;
 }
 
@@ -1965,19 +1974,22 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
                     .arg(origin[2], 0, 'g', 6)
                     .arg(labels.size()));
 
-    const qint64 t_total = QDateTime::currentMSecsSinceEpoch();
+    QElapsedTimer t_total;
+    t_total.start();
     BoundsScanResult bounds;
     const bool haveRequestedBounds = requestedBounds.maxX >= requestedBounds.minX &&
                                      requestedBounds.maxY >= requestedBounds.minY &&
                                      requestedBounds.maxZ >= requestedBounds.minZ;
     const bool useRequestedBounds = haveRequestedBounds && (allLabelsInImage || labels.size() == 1);
     if (useRequestedBounds) {
-        const qint64 t_bbox = QDateTime::currentMSecsSinceEpoch();
+        QElapsedTimer t_bbox;
+        t_bbox.start();
         bounds = clampBoundsToImage(requestedBounds, dimX, dimY, dimZ);
         SP_LOG_3D_TIMER(t_bbox, QStringLiteral("[3DView] [segmentpuzzler] bbox from requested ROI"));
     } else {
         const auto requestedLabelLookup = buildRequestedLabelLookup(labels);
-        const qint64 t_bbox = QDateTime::currentMSecsSinceEpoch();
+        QElapsedTimer t_bbox;
+        t_bbox.start();
         bounds = scanBoundsForRequestedLabels(buf, dimX, dimY, dimZ, requestedLabelLookup);
         SP_LOG_3D_TIMER(t_bbox, QStringLiteral("[3DView] [segmentpuzzler] bbox scan"));
     }
@@ -1999,12 +2011,15 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
     const int padZ0 = std::max(0, minZ - 1), padZ1 = std::min(dimZ - 1, maxZ + 1);
 
     const auto requestedLabels = collectRequestedLabels(labels);
+    QElapsedTimer labelTimer;
+    labelTimer.start();
     auto surfaceNetLabels = allLabelsInImage
         ? requestedLabels
         : collectLabelsInExtent(buf, dimX, dimY, padX0, padX1, padY0, padY1, padZ0, padZ1);
     if (surfaceNetLabels.empty()) {
         surfaceNetLabels = requestedLabels;
     }
+    SP_LOG_3D_TIMER(labelTimer, QStringLiteral("[3DView] [segmentpuzzler] labels in ROI"));
 
     SP_LOG_DEBUG("viewer.three_d",
                  QStringLiteral("[3DView] union bbox x=[%1,%2] y=[%3,%4] z=[%5,%6]")
@@ -2015,7 +2030,8 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
                      .arg(minZ)
                      .arg(maxZ));
 
-    const qint64 t_voi = QDateTime::currentMSecsSinceEpoch();
+    QElapsedTimer t_voi;
+    t_voi.start();
     auto importer = vtkSmartPointer<vtkImageImport>::New();
     importer->SetImportVoidPointer(const_cast<dataType::SegmentIdType *>(buf));
     importer->SetDataScalarType(segmentIdVtkDataType());
@@ -2051,7 +2067,8 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
     SP_LOG_3D_TIMER(t_voi, QStringLiteral("[3DView] [segmentpuzzler] VOI extract + pad (%1)")
                                .arg(paddedImage->GetScalarTypeAsString()));
 
-    const qint64 t_surfaces = QDateTime::currentMSecsSinceEpoch();
+    QElapsedTimer t_surfaces;
+    t_surfaces.start();
     if (labels.size() == 1) {
         SP_LOG_INFO("viewer.three_d", QStringLiteral("[3DView] using vtkSurfaceNets3D selected-label extraction"));
 
@@ -2067,7 +2084,8 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
                 ? QStringLiteral("[3DView] using vtkSurfaceNets3D default all-label extraction")
                 : QStringLiteral("[3DView] using vtkSurfaceNets3D selected multi-label extraction"));
 
-        const qint64 t_extraction = kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
+        QElapsedTimer t_extraction;
+        t_extraction.start();
         auto surfaceNet = createSurfaceNet(paddedImage, surfaceNetLabels);
         surfaceNet->Update();
         auto combinedPolyData = detachPolyData(surfaceNet->GetOutput());
@@ -2075,13 +2093,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
         if (allLabelsInImage) {
             paddedImage->ReleaseData();
         }
-        if (kProfile3DViewExtraction) {
-            SP_LOG_3D_TIMER(
-                t_extraction,
-                allLabelsInImage
-                    ? QStringLiteral("[3DView] [vtksurfacenets] default all-label extraction")
-                    : QStringLiteral("[3DView] [vtksurfacenets] selected extraction"));
-        }
+        SP_LOG_3D_TIMER(t_extraction, QStringLiteral("[3DView] [vtksurfacenets] surface nets"));
         SP_LOG_DEBUG("viewer.three_d",
                      QStringLiteral("[3DView] SurfaceNets source mesh labelsInVOI=%1 requested=%2 points=%3 cells=%4 indexBits=%5")
                          .arg(surfaceNetLabels.size())
@@ -2109,13 +2121,12 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
             fallbackSurfaceNet->SetInputData(paddedImage);
             configureSurfaceNet(fallbackSurfaceNet);
             setSurfaceNetLabels(fallbackSurfaceNet, requestedLabels);
-            const qint64 t_legacyExtraction = kProfile3DViewExtraction ? QDateTime::currentMSecsSinceEpoch() : 0;
+            QElapsedTimer t_legacyExtraction;
+            t_legacyExtraction.start();
             fallbackSurfaceNet->Update();
             auto polyData = detachPolyData(fallbackSurfaceNet->GetOutput());
             fallbackSurfaceNet = nullptr;
-            if (kProfile3DViewExtraction) {
-                SP_LOG_3D_TIMER(t_legacyExtraction, QStringLiteral("[3DView] [vtksurfacenets] legacy extraction"));
-            }
+            SP_LOG_3D_TIMER(t_legacyExtraction, QStringLiteral("[3DView] [vtksurfacenets] legacy extraction"));
             SP_LOG_DEBUG("viewer.three_d",
                          QStringLiteral("[3DView] legacy multi-label mesh points=%1 cells=%2")
                              .arg(polyData->GetNumberOfPoints())
