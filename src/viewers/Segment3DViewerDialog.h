@@ -31,6 +31,8 @@ class QDoubleSpinBox;
 class QHBoxLayout;
 class QLabel;
 class QPushButton;
+class QProgressBar;
+class QProgressDialog;
 class QShowEvent;
 class QSlider;
 class QSpinBox;
@@ -246,9 +248,12 @@ private:
     void handleInteractorLeftButtonPress();
     void raiseAndRequestActivation();
     void applyInitialCameraOrientation(int launchSliceAxis);
-    void finishInitialRender();
+    void startInitialRender();
+    void renderNextInitialBatch();
+    void clearInitialRenderProgress();
     void updateRenderDiagnostics(const char *reason);
     void handleRenderEvent(unsigned long eventId);
+    void handleFrameSwapped();
 
     vtkSmartPointer<vtkCallbackCommand> m_renderObserver;
     QElapsedTimer m_renderTimer;
@@ -330,6 +335,10 @@ private:
     int m_launchSliceAxis = -1;
     bool m_initialFrameScheduled = false;
     bool m_initialFrameRendered = false;
+    std::vector<vtkSmartPointer<vtkActor>> m_initialRenderActors;
+    std::size_t m_initialRenderIndex = 0;
+    QProgressDialog *m_initialRenderProgress = nullptr;
+    QProgressBar *m_initialRenderProgressBar = nullptr;
     int m_activeSeed = -1;
     SplitMethod m_activeSplitMethod = SplitMethod::SeededWatershed;
     bool m_seededSplitBusy = false;

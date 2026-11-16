@@ -29,7 +29,10 @@
 #include <QPointer>
 #include <QPolygonF>
 #include <QPushButton>
+#include <QProgressBar>
+#include <QProgressDialog>
 #include <QRandomGenerator>
+#include <QScopeGuard>
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSignalBlocker>
@@ -107,6 +110,8 @@ namespace {
 constexpr int kDefaultSeedDistancePixels = 10;
 constexpr int kMaximumSeedDistancePixels = 80;
 constexpr int kDefaultLineSamplingPixels = 30;
+constexpr vtkIdType kInitialRenderBatchTriangles = 4'000'000;
+constexpr std::size_t kInitialRenderBatchActors = 256;
 constexpr int kMinimumLineSamplingPixels = 5;
 constexpr int kMaximumLineSamplingPixels = 100;
 constexpr int kMaximumSplitLineSeedPairs = 64;
@@ -130,12 +135,39 @@ public:
     static SurfaceOnlyTrackballCameraStyle *New();
     vtkTypeMacro(SurfaceOnlyTrackballCameraStyle, vtkInteractorStyleTrackballCamera);
 
+    void OnMouseWheelForward() override { zoomWithMouseWheel(true); }
+    void OnMouseWheelBackward() override { zoomWithMouseWheel(false); }
+
     void OnChar() override {
         const char key = Interactor != nullptr ? Interactor->GetKeyCode() : '\0';
         if (key == 'w' || key == 'W') {
             return;
         }
         Superclass::OnChar();
+    }
+
+private:
+    void zoomWithMouseWheel(bool forward) {
+        auto *interactor = this->Interactor;
+        if (interactor == nullptr) {
+            return;
+        }
+        const bool renderEnabled = interactor->GetEnableRender();
+        {
+            const auto restoreRender = qScopeGuard([interactor, renderEnabled] {
+                interactor->SetEnableRender(renderEnabled);
+            });
+            // VTK renders in both Dolly() and EndDolly(); present the final state once.
+            interactor->EnableRenderOff();
+            if (forward) {
+                Superclass::OnMouseWheelForward();
+            } else {
+                Superclass::OnMouseWheelBackward();
+            }
+        }
+        if (renderEnabled && this->CurrentRenderer != nullptr) {
+            interactor->Render();
+        }
     }
 };
 
@@ -1444,6 +1476,8 @@ vtkSmartPointer<vtkPoints> compactMeshPoints(
     connectivity->DataChanged();
     connectivity->Modified();
     points->Squeeze();
+    // Cache coordinate ranges for the mapper while each mesh has its own worker.
+    points->GetData()->GetRange(0);
     return points;
 }
 
@@ -2689,6 +2723,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
     });
     renWin->AddObserver(vtkCommand::StartEvent, m_renderObserver);
     renWin->AddObserver(vtkCommand::EndEvent, m_renderObserver);
+    connect(m_vtkWidget, &QOpenGLWidget::frameSwapped, this, &Segment3DViewerDialog::handleFrameSwapped);
 }
 
 Segment3DViewerDialog::~Segment3DViewerDialog() {
@@ -2791,6 +2826,12 @@ void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
         m_slowRenderLogTimer.start();
     }
     m_renderLogReason = nullptr;
+}
+
+void Segment3DViewerDialog::handleFrameSwapped() {
+    if (m_initialFrameRendered && m_initialRenderProgress != nullptr) {
+        clearInitialRenderProgress();
+    }
 }
 
 std::optional<Segment3DViewerDialog::CameraOrientation>
@@ -3462,7 +3503,7 @@ void Segment3DViewerDialog::showEvent(QShowEvent *event) {
     }
 
     m_initialFrameScheduled = true;
-    QTimer::singleShot(0, this, [this]() { finishInitialRender(); });
+    QTimer::singleShot(0, this, &Segment3DViewerDialog::startInitialRender);
 }
 
 void Segment3DViewerDialog::applyInitialCameraOrientation(int launchSliceAxis) {
@@ -3497,7 +3538,7 @@ void Segment3DViewerDialog::applyInitialCameraOrientation(int launchSliceAxis) {
                      .arg(distance, 0, 'g', 6));
 }
 
-void Segment3DViewerDialog::finishInitialRender() {
+void Segment3DViewerDialog::startInitialRender() {
     if (m_initialFrameRendered) {
         return;
     }
@@ -3506,8 +3547,6 @@ void Segment3DViewerDialog::finishInitialRender() {
         m_initialFrameScheduled = false;
         return;
     }
-
-    m_initialFrameRendered = true;
 
     if (m_vtkWidget != nullptr && m_vtkWidget->interactor() != nullptr) {
         m_vtkWidget->interactor()->Initialize();
@@ -3520,13 +3559,95 @@ void Segment3DViewerDialog::finishInitialRender() {
         m_renderer->ResetCameraClippingRange();
     }
 
-    if (m_vtkWidget != nullptr) {
+    for (const auto &segment : m_segmentActors) {
+        if (segment.actor->GetVisibility()) {
+            m_initialRenderActors.push_back(segment.actor);
+            segment.actor->VisibilityOff();
+        }
+    }
+    m_initialRenderIndex = 0;
+    m_renderLogReason = "initialization";
+    m_visibleSegmentCount = 0;
+    m_visibleTriangleCount = 0;
+    m_initialRenderProgress = new QProgressDialog(
+        tr("Initializing 3D view..."), tr("Cancel"), 0,
+        static_cast<int>(m_initialRenderActors.size()), this);
+    m_initialRenderProgress->setObjectName(QStringLiteral("initialRenderProgress"));
+    m_initialRenderProgress->setWindowModality(Qt::WindowModal);
+    m_initialRenderProgressBar = new QProgressBar(m_initialRenderProgress);
+    m_initialRenderProgress->setBar(m_initialRenderProgressBar);
+    m_initialRenderProgressBar->setRange(0, static_cast<int>(m_initialRenderActors.size()));
+    m_initialRenderProgressBar->setValue(0);
+    connect(m_initialRenderProgress, &QProgressDialog::canceled, this, &QDialog::close);
+
+    // Enable rendering while Qt initializes the display framebuffer.
+    auto *interactor = m_vtkWidget->interactor();
+    const bool renderEnabled = interactor->GetEnableRender();
+    {
+        const auto restoreRender = qScopeGuard([interactor, renderEnabled] {
+            interactor->SetEnableRender(renderEnabled);
+        });
+        interactor->EnableRenderOn();
         m_vtkWidget->show();
     }
-
-    if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
+    if (m_vtkWidget->renderWindow()->GetNeverRendered()) {
         m_vtkWidget->renderWindow()->Render();
     }
+    renderNextInitialBatch();
+}
+
+void Segment3DViewerDialog::clearInitialRenderProgress() {
+    m_initialRenderProgress->hide();
+    m_initialRenderProgress->deleteLater();
+    m_initialRenderProgress = nullptr;
+    m_initialRenderProgressBar = nullptr;
+}
+
+void Segment3DViewerDialog::renderNextInitialBatch() {
+    if (isVisible() && m_initialRenderIndex < m_initialRenderActors.size()) {
+        const auto first = m_initialRenderIndex;
+        vtkIdType triangles = 0;
+        do {
+            auto *actor = m_initialRenderActors[m_initialRenderIndex++].GetPointer();
+            actor->VisibilityOn();
+            triangles += vtkPolyDataMapper::SafeDownCast(actor->GetMapper())->GetInput()->GetNumberOfPolys();
+        } while (m_initialRenderIndex < m_initialRenderActors.size()
+                 && m_initialRenderIndex - first < kInitialRenderBatchActors
+                 && triangles < kInitialRenderBatchTriangles);
+
+        if (m_initialRenderIndex < m_initialRenderActors.size()) {
+            // Warm this group without presenting it. The last group joins the final scene render.
+            m_initialRenderProgress->show();
+            m_visibleSegmentCount = m_initialRenderIndex - first;
+            m_visibleTriangleCount = triangles;
+            auto *window = m_vtkWidget->renderWindow();
+            const bool swapBuffers = window->GetSwapBuffers();
+            window->SwapBuffersOff();
+            window->Render();
+            window->SetSwapBuffers(swapBuffers);
+            for (auto index = first; index < m_initialRenderIndex; ++index) {
+                m_initialRenderActors[index]->VisibilityOff();
+            }
+            // Updating the bar directly avoids QProgressDialog::setValue's nested event loop.
+            m_initialRenderProgressBar->setValue(static_cast<int>(m_initialRenderIndex));
+            QTimer::singleShot(0, this, &Segment3DViewerDialog::renderNextInitialBatch);
+            return;
+        }
+    }
+
+    for (const auto &actor : m_initialRenderActors) {
+        actor->VisibilityOn();
+    }
+    m_initialRenderActors.clear();
+    updateRenderDiagnostics("initial");
+    if (!isVisible()) {
+        clearInitialRenderProgress();
+        m_initialFrameScheduled = false;
+        return;
+    }
+    m_initialRenderProgressBar->setValue(m_initialRenderProgressBar->maximum());
+    m_initialFrameRendered = true;
+    m_vtkWidget->renderWindow()->Render();
 
     if (m_controlsWidget != nullptr) {
         m_controlsWidget->raise();
@@ -3562,6 +3683,9 @@ bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
         const bool eventBelongsToDialog =
             watchedWidget != nullptr
             && (watchedWidget == this || isAncestorOf(watchedWidget));
+        if (eventBelongsToDialog && m_initialRenderProgress != nullptr) {
+            return QDialog::eventFilter(watched, event);
+        }
         if (eventBelongsToDialog && event->type() == QEvent::KeyPress) {
             auto *keyEvent = static_cast<QKeyEvent *>(event);
             if (keyEvent->key() == Qt::Key_Escape) {
