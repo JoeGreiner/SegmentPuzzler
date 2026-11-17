@@ -36,6 +36,9 @@ install -m 755 "$root/runtime/mksquashfs" "$tool_dir/usr/bin/mksquashfs"
 
 appdir=$(mktemp -d "$root/SegmentPuzzler.AppDir.XXXXXX")
 mkdir -p "$appdir/usr/bin" "$appdir/usr/plugins"
+if [[ -f "$app_source/cmake/ZlibNg.cmake" ]]; then
+    install -Dm644 -t "$appdir/usr/share/licenses/SegmentPuzzler" "$app_source/licenses/"{streamvbyte,zlib-ng}.txt
+fi
 cp "$app_source/resources/images/icon-appimage.png" "$appdir/SegmentPuzzler.png"
 cat > "$appdir/SegmentPuzzler.desktop" <<'EOF'
 [Desktop Entry]

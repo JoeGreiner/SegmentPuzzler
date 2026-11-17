@@ -106,6 +106,12 @@ try {
     }
 
     if ($Stage -eq 'app') {
+        $targets = @('SegmentPuzzler')
+        $testing = 'OFF'
+        if (Test-Path "$appSource/cmake/ZlibNg.cmake") {
+            $targets += 'check_volume_storage'
+            $testing = 'ON'
+        }
         $prefixes = "$QtRoot;$Root/install/itk;$Root/install/vtk"
         Invoke-Checked cmake @(
             '-S', $appSource, '-B', $appBuild, '-G', 'Ninja',
@@ -114,9 +120,9 @@ try {
             '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW',
             '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL',
             '-DSEGMENT_PUZZLER_QT_MAJOR=6', '-DDEPLOY=ON',
-            '-DBUILD_TESTING=OFF', '-DBUILD_BENCHMARKS=OFF', '-DUSE_OMP=ON'
+            "-DBUILD_TESTING=$testing", '-DBUILD_BENCHMARKS=OFF', '-DUSE_OMP=ON'
         )
-        Invoke-Checked cmake @('--build', $appBuild, '--target', 'SegmentPuzzler', '--parallel', "$Parallel")
+        Invoke-Checked cmake (@('--build', $appBuild, '--parallel', "$Parallel", '--target') + $targets)
     }
 
     if ($Stage -eq 'package') {

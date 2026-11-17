@@ -137,6 +137,6 @@ set(CPACK_PACKAGE_CONTACT "joe@joegreiner.de")
 
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_NSIS_LICENSE_FILE "${CMAKE_SOURCE_DIR}/LICENSE")
-install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION "licenses")
+install(FILES LICENSE licenses/streamvbyte.txt licenses/zlib-ng.txt DESTINATION "licenses")
 
 include(CPack)

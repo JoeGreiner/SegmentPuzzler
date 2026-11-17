@@ -751,6 +751,11 @@ if (BUILD_TESTING)
     target_link_libraries(test_VoxelList PRIVATE segmentpuzzler_image_storage)
     add_test(NAME RleImageStorage COMMAND test_RleImageStorage)
     add_test(NAME VoxelList COMMAND test_VoxelList)
+
+    add_custom_target(check_volume_storage
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R "^(VolumeRegionIO|RleImageStorage|VoxelList)$"
+        DEPENDS test_VolumeRegionIO test_RleImageStorage test_VoxelList
+        VERBATIM)
 endif()
 
 if (BUILD_BENCHMARKS)
