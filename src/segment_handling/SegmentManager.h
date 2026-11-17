@@ -75,7 +75,7 @@ public:
 
     void computeOneSidedEdgesOnInitialNode(InitialNode *pInitialNode);
 
-    void computeOneSidedEdgesOnAllInitialNodes();
+    void computeOneSidedEdgesOnAllInitialNodes(const dataType::SegmentsStorage &image);
 
 //    void removeOneSidedInitialEdge();
     void registerTwoSidedInitialEdge(std::unique_ptr<TwoSidedInitialEdge> edgeToRegister, bool updateImage = true);

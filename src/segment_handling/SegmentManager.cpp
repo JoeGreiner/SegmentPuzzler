@@ -3,6 +3,8 @@
 
 
 #include "SegmentManager.h"
+#include "LabelContacts.h"
+#include <itkMultiThreaderBase.h>
 #include <QElapsedTimer>
 #include <QStringList>
 #include "src/utils/AppLogger.h"
@@ -538,90 +540,48 @@ void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInit
 }
 
 
-void SegmentManager::computeOneSidedEdgesOnAllInitialNodes() {
+void SegmentManager::computeOneSidedEdgesOnAllInitialNodes(const dataType::SegmentsStorage &image) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges on all initial nodes"));
+    if (pInitialNodes->empty()) return;
+    const auto full = image.GetLargestPossibleRegion();
+    const auto depth = full.GetSize()[2];
+    const auto workers = std::min<itk::SizeValueType>(depth, segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK));
+    using ContactRuns = std::map<EdgePairIdType, std::vector<VoxelList::Run>>;
+    std::vector<ContactRuns> contacts(workers);
+    auto parallel = itk::MultiThreaderBase::New();
+    parallel->SetMaximumNumberOfThreads(workers);
+    parallel->SetNumberOfWorkUnits(workers);
+    parallel->ParallelizeArray(0, workers, [&](itk::SizeValueType worker) {
+        const auto first = full.GetIndex()[2] + static_cast<itk::IndexValueType>(depth * worker / workers);
+        const auto count = depth * (worker + 1) / workers - depth * worker / workers;
+        auto region = full;
+        // The preceding plane supplies Z contacts across the worker boundary.
+        region.SetIndex(2, first - (worker != 0));
+        region.SetSize(2, count + (worker != 0));
+        auto &local = contacts[worker];
+        segment_puzzler::visitLabelContacts(image, region, first,
+            [&](SegmentIdType a, SegmentIdType b, const itk::Index<3> &left, const itk::Index<3> &right, std::size_t length) {
+                if (a == b || isIgnoredId(a) || isIgnoredId(b)) return;
+                local[{a, b}].push_back({Voxel(left[0], left[1], left[2]), static_cast<std::uint32_t>(length)});
+                local[{b, a}].push_back({Voxel(right[0], right[1], right[2]), static_cast<std::uint32_t>(length)});
+            });
+    }, nullptr);
 
-    std::vector<std::shared_ptr<InitialNode>> initialNodes;
-    initialNodes.reserve(pInitialNodes->size());
-    long double totalRoiVoxels = 0.0L;
-    long double maxNodeRoiVoxels = 0.0L;
-    for (const auto &entry : *pInitialNodes) {
-        initialNodes.push_back(entry.second);
-        const Roi &roi = entry.second->roi;
-        if (roi.minX >= 0 && roi.minY >= 0 && roi.minZ >= 0 &&
-            roi.minX <= roi.maxX && roi.minY <= roi.maxY && roi.minZ <= roi.maxZ) {
-            const long double roiVoxels =
-                static_cast<long double>(static_cast<std::int64_t>(roi.maxX) - roi.minX + 1) *
-                static_cast<long double>(static_cast<std::int64_t>(roi.maxY) - roi.minY + 1) *
-                static_cast<long double>(static_cast<std::int64_t>(roi.maxZ) - roi.minZ + 1);
-            totalRoiVoxels += roiVoxels;
-            maxNodeRoiVoxels = std::max(maxNodeRoiVoxels, roiVoxels);
+    ContactRuns combined;
+    for (auto &local : contacts) {
+        combined.merge(local);
+        for (auto &[pair, runs] : local) {
+            auto &all = combined.at(pair);
+            all.insert(all.end(), runs.begin(), runs.end());
         }
+        local.clear();
     }
-
-    const std::vector<SegmentIdType> ignoredSegmentLabels = *pIgnoredSegmentLabels;
-    const int requestedThreadCount = segment_puzzler::workerThreadCount();
-    QElapsedTimer scanTimer;
-    scanTimer.start();
-    int usedThreadCount = 1;
-    std::exception_ptr firstException;
-    std::mutex exceptionMutex;
-    std::atomic<bool> stopRequested{false};
-#ifdef USE_OMP
-#pragma omp parallel num_threads(requestedThreadCount) default(none) \
-    shared(initialNodes, ignoredSegmentLabels, firstException, exceptionMutex, stopRequested, usedThreadCount)
-#endif
-    {
-#ifdef USE_OMP
-#pragma omp single
-        usedThreadCount = omp_get_num_threads();
-#pragma omp for schedule(dynamic, 1)
-#endif
-        for (long long i = 0; i < static_cast<long long>(initialNodes.size()); ++i) {
-            if (stopRequested.load(std::memory_order_relaxed)) {
-                continue;
-            }
-            try {
-                initialNodes[static_cast<std::size_t>(i)]->computeOneSidedEdges(ignoredSegmentLabels);
-            } catch (...) {
-                std::lock_guard<std::mutex> guard(exceptionMutex);
-                if (!firstException) {
-                    firstException = std::current_exception();
-                }
-                stopRequested.store(true, std::memory_order_relaxed);
-            }
-        }
+    for (auto &[label, node] : *pInitialNodes) node->neighborLabelToOneSidedInitialEdge.clear();
+    for (auto &[pair, runs] : combined) {
+        auto edge = segment_puzzler::makeContactEdge(pair.first, pair.second, runs);
+        pInitialNodes->at(pair.first)->neighborLabelToOneSidedInitialEdge.emplace(pair.second, std::move(edge));
     }
-    if (firstException) {
-        std::rethrow_exception(firstException);
-    }
-    const double scanMs = static_cast<double>(scanTimer.nsecsElapsed()) / 1000000.0;
-
-    QElapsedTimer edgeCountTimer;
-    edgeCountTimer.start();
-    std::size_t oneSidedEdgeCount = 0;
-    for (const auto &initialNode : initialNodes) {
-        oneSidedEdgeCount += initialNode->neighborLabelToOneSidedInitialEdge.size();
-    }
-    const double edgeCountMs = static_cast<double>(edgeCountTimer.nsecsElapsed()) / 1000000.0;
-
-    logSegmentManagerDebugIf(
-        verbose,
-        __func__,
-        QStringLiteral(
-            "One-sided edge scan nodes=%1 requested_threads=%2 used_threads=%3 parallel=%4 "
-            "roi_voxels=%5 max_node_roi=%6 edges=%7 scan_ms=%8 edge_count_ms=%9")
-            .arg(static_cast<qulonglong>(initialNodes.size()))
-            .arg(requestedThreadCount)
-            .arg(usedThreadCount)
-            .arg(usedThreadCount > 1 ? QStringLiteral("yes") : QStringLiteral("no"))
-            .arg(static_cast<double>(totalRoiVoxels), 0, 'g', 12)
-            .arg(static_cast<double>(maxNodeRoiVoxels), 0, 'g', 12)
-            .arg(static_cast<qulonglong>(oneSidedEdgeCount))
-            .arg(scanMs, 0, 'f', 3)
-            .arg(edgeCountMs, 0, 'f', 3));
 }
-
 
 void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(bool veryVerbose) {
     const bool logTiming = verbose || veryVerbose;
@@ -744,14 +704,17 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(bool very
 
     phaseTimer.restart();
     const auto size = graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion().GetSize();
+    const auto origin = graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion().GetIndex();
+    const bool updatingExistingEdges = !pInitialLabelPairToTwoSidedInitialEdge->empty();
     using EdgePixel = std::pair<std::size_t, dataType::MappedEdgeIdType>;
-    std::vector<std::vector<EdgePixel>> planes(size[2]);
+    std::vector<std::vector<EdgePixel>> planes(updatingExistingEdges ? 0 : size[2]);
     for (auto &twoSidedInitialEdge : twoSidedInitialEdgesToRegister) {
         auto *edge = twoSidedInitialEdge.get();
-        registerTwoSidedInitialEdge(std::move(twoSidedInitialEdge), false);
+        registerTwoSidedInitialEdge(std::move(twoSidedInitialEdge), updatingExistingEdges);
+        if (updatingExistingEdges) continue;
         for (const auto *list : edge->getVoxelLists())
             for (const auto &voxel : *list)
-                planes[voxel.z].emplace_back(voxel.y * size[0] + voxel.x, edge->numId);
+                planes.at(voxel.z - origin[2]).emplace_back((voxel.y - origin[1]) * size[0] + (voxel.x - origin[0]), edge->numId);
     }
     std::vector<dataType::MappedEdgeIdType> pixels;
     constexpr std::size_t planesPerBatch = 16;

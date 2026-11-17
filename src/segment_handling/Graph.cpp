@@ -687,7 +687,7 @@ void Graph::constructFromVolume(dataType::SegmentsStorage::Pointer pImage, std::
     if (logGraphStorage) {
         logStorageAfterGraphPhase(*this, QStringLiteral("initial_nodes"));
     }
-    segmentManager.computeOneSidedEdgesOnAllInitialNodes();
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes(*pImage);
     if (logGraphStorage) {
         logStorageAfterGraphPhase(*this, QStringLiteral("one_sided_initial_edges"));
     }
@@ -1696,7 +1696,7 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
 
     initializeEdgeVolumeAndEdgeStatus();
     constructInitialNodes(graphBase->pWorkingSegmentsImage);
-    segmentManager.computeOneSidedEdgesOnAllInitialNodes();
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes(*graphBase->pWorkingSegmentsImage);
     segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
 
     std::unordered_set<SegmentIdType> assignedInitialLabels;
@@ -2624,20 +2624,18 @@ void Graph::transferSegmentsWithRefinementOverlap(double overlapThreshold) {
 
 void Graph::transferSegmentsWithVolumeCriterion(double volumeThreshold) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Transferring segments by volume threshold"));
-    if (graphBase->pSelectedSegmentation != nullptr) {
-        NumberOfVoxels volumeFeature = NumberOfVoxels();
-        for (auto &node : workingNodes) {
-            volumeFeature.compute(node.second->getVoxelLists());
-            logGraphDebugIf(verbose,
-                            __func__,
-                            QStringLiteral("Working node %1 volume=%2")
-                                .arg(node.first)
-                                .arg(QString::number(volumeFeature.values[0], 'g', 6)));
-            if (volumeFeature.values[0] > volumeThreshold) {
-                transferWorkingNodeToSegmentation(node.first);
-            }
-        }
+    if (!graphBase->pSelectedSegmentation) return;
+    const bool logVolumes = isGraphDebugLoggingEnabled(verbose);
+    std::vector<SegmentIdType> labels;
+    for (const auto &[label, node] : workingNodes) {
+        if (label == backgroundId || (pIgnoredSegmentLabels && isIgnoredId(label))) continue;
+        std::size_t voxelCount = 0;
+        for (const auto &entry : node->subInitialNodes) voxelCount += entry.second->voxels.size();
+        if (logVolumes) logGraph(LogLevel::Debug, __func__,
+            QStringLiteral("Working node %1 volume=%2").arg(label).arg(static_cast<qulonglong>(voxelCount)));
+        if (voxelCount > volumeThreshold) labels.push_back(label);
     }
+    transferWorkingNodesToSegmentation(labels);
 }
 
 void Graph::transferNonOverlappingSegments(
@@ -2814,20 +2812,26 @@ std::size_t Graph::deleteSegmentationLabels(
     QElapsedTimer timer;
     timer.start();
     std::size_t deletedVoxelCount = 0;
-    auto slice = graphBase->pSelectedSegmentation->GetLargestPossibleRegion();
+    const auto background = selectedBackground();
+    dataType::SegmentsStorage::LabelStatistics selected;
+    for (const auto &[label, statistics] : graphBase->pSelectedSegmentation->labelStatistics())
+        if (label != background && labels.count(label)) selected.include(statistics.bounds, statistics.voxelCount);
+    if (!selected.voxelCount) return 0;
+    auto slice = selected.bounds;
     const auto firstZ = slice.GetIndex()[2];
     const auto endZ = firstZ + static_cast<itk::IndexValueType>(slice.GetSize()[2]);
-    slice.SetSize(2, 1);
-    const auto background = selectedBackground();
-    for (auto z = firstZ; z < endZ; ++z) {
+    std::vector<dataType::SegmentsStorage::VoxelRange> ranges;
+    for (auto z = firstZ; z < endZ; z += 16) {
         slice.SetIndex(2, z);
-        VoxelList voxels;
+        slice.SetSize(2, std::min<itk::IndexValueType>(16, endZ - z));
         graphBase->pSelectedSegmentation->forEachRun(slice, [&](const auto &index, std::size_t length, SegmentIdType label) {
-            if (label != background && labels.count(label))
-                voxels.appendRun(Voxel(index[0], index[1], index[2]), length);
+            if (label != background && labels.count(label)) {
+                ranges.push_back({index, length, background});
+                deletedVoxelCount += length;
+            }
         });
-        segment_puzzler::setVoxelLists(*graphBase->pSelectedSegmentation, {&voxels}, background);
-        deletedVoxelCount += voxels.size();
+        graphBase->pSelectedSegmentation->fillVoxelRanges(ranges);
+        ranges.clear();
     }
 
     logGraphDebugIf(
@@ -2856,20 +2860,9 @@ std::vector<Graph::SegmentIdType> Graph::selectedSegmentationLabelsBelowVoxelCou
             if (label != backgroundId) ignoredLabels.insert(label);
     }
 
-    std::unordered_map<SegmentIdType, std::size_t> voxelCountByLabel;
-    graphBase->pSelectedSegmentation->forEachRun([&](const auto &, std::size_t length, SegmentIdType label) {
-        if (!ignoredLabels.count(label)) {
-            auto &count = voxelCountByLabel[label];
-            count += std::min(length, exclusiveVoxelThreshold - count);
-        }
-    });
-
-    labels.reserve(voxelCountByLabel.size());
-    for (const auto &[label, count] : voxelCountByLabel) {
-        if (count < exclusiveVoxelThreshold) {
+    for (const auto &[label, statistics] : graphBase->pSelectedSegmentation->labelStatistics())
+        if (!ignoredLabels.count(label) && statistics.voxelCount < exclusiveVoxelThreshold)
             labels.push_back(label);
-        }
-    }
     std::sort(labels.begin(), labels.end());
 
     logGraphDebugIf(
@@ -4086,6 +4079,7 @@ Graph::transferWorkingNodesToSegmentation(
     std::unordered_set<SegmentIdType> seenWorkingLabels;
     seenWorkingLabels.reserve(workingLabelsToTransfer.size());
     const auto selectedRegion = graphBase->pSelectedSegmentation->GetBufferedRegion();
+    dataType::SegmentsStorage::LabelStatistics transferBounds;
 
     for (const SegmentIdType workingLabel : workingLabelsToTransfer) {
         if (!seenWorkingLabels.insert(workingLabel).second) {
@@ -4110,31 +4104,32 @@ Graph::transferWorkingNodesToSegmentation(
                      QStringLiteral("Working label %1 is missing from workingNodes").arg(workingLabel));
             return {};
         }
-        bool hasVoxelsToTransfer = !preserveExistingSegmentation;
-        for (const auto &voxelList : workingNodeIt->second->getVoxelLists()) {
-            if (voxelList == nullptr) {
-                logGraph(LogLevel::Error,
-                         __func__,
-                         QStringLiteral("Working label %1 contains a null voxel list").arg(workingLabel));
-                return {};
+        const auto lists = workingNodeIt->second->getVoxelLists();
+        dataType::SegmentsStorage::LabelStatistics nodeBounds;
+        for (const auto *list : lists) {
+            if (!list) return {};
+            for (const auto &run : list->getRuns()) {
+                const SegmentsImageType::RegionType region({run.start.x, run.start.y, run.start.z}, {run.length, 1, 1});
+                if (!selectedRegion.IsInside(region)) return {};
+                nodeBounds.include(region, run.length);
             }
-            for (const Voxel &voxel : *voxelList) {
-                SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
-                if (!selectedRegion.IsInside(index)) {
-                    logGraph(LogLevel::Error,
-                             __func__,
-                             QStringLiteral("Working label %1 lies outside the selected segmentation")
-                                 .arg(workingLabel));
-                    return {};
-                }
-                if (preserveExistingSegmentation &&
-                    graphBase->pSelectedSegmentation->GetPixel(index) == selectedBackground()) {
-                    hasVoxelsToTransfer = true;
+        }
+        bool hasVoxelsToTransfer = !preserveExistingSegmentation;
+        if (preserveExistingSegmentation) {
+            for (const auto *list : lists) {
+                if (hasVoxelsToTransfer) break;
+                for (const auto &run : list->getRuns()) {
+                    if (hasVoxelsToTransfer) break;
+                    const SegmentsImageType::RegionType region({run.start.x, run.start.y, run.start.z}, {run.length, 1, 1});
+                    graphBase->pSelectedSegmentation->forEachRun(region, [&](const auto &, std::size_t, SegmentIdType value) {
+                        hasVoxelsToTransfer |= value == selectedBackground();
+                    });
                 }
             }
         }
         if (hasVoxelsToTransfer) {
             nodesToTransfer.push_back(workingNodeIt->second);
+            transferBounds.include(nodeBounds.bounds, nodeBounds.voxelCount);
         }
     }
 
@@ -4155,18 +4150,35 @@ Graph::transferWorkingNodesToSegmentation(
             static_cast<SegmentIdType>(std::uint64_t(firstLabel) + nodeIndex));
     }
 
-    for (std::size_t nodeIndex = 0; nodeIndex < nodesToTransfer.size(); ++nodeIndex) {
-        const SegmentIdType segmentationLabel = assignedSegmentationLabels[nodeIndex];
-        std::vector<SegmentsImageType::IndexType> indices;
-        for (const auto &voxelList : nodesToTransfer[nodeIndex]->getVoxelLists()) {
-            for (const Voxel &voxel : *voxelList) {
-                const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
-                if (!preserveExistingSegmentation || graphBase->pSelectedSegmentation->GetPixel(index) == selectedBackground()) {
-                    indices.push_back(index);
+    std::unordered_map<SegmentIdType, SegmentIdType> targetLabels;
+    for (std::size_t i = 0; i < nodesToTransfer.size(); ++i)
+        targetLabels.emplace(nodesToTransfer[i]->getLabel(), assignedSegmentationLabels[i]);
+    if (transferBounds.voxelCount) {
+        auto region = transferBounds.bounds;
+        const auto firstZ = region.GetIndex()[2], endZ = region.GetUpperIndex()[2] + 1;
+        std::vector<dataType::SegmentsStorage::VoxelRange> ranges;
+        for (auto z = firstZ; z < endZ; z += 16) {
+            region.SetIndex(2, z);
+            region.SetSize(2, std::min<itk::IndexValueType>(16, endZ - z));
+            const auto target = preserveExistingSegmentation ? graphBase->pSelectedSegmentation->denseRegion(region) : nullptr;
+            graphBase->pWorkingSegmentsImage->forEachRun(region, [&](const auto &index, std::size_t length, SegmentIdType label) {
+                const auto found = targetLabels.find(label);
+                if (found == targetLabels.end()) return;
+                if (!target) { ranges.push_back({index, length, found->second}); return; }
+                const auto *pixels = target->GetBufferPointer() + target->ComputeOffset(index);
+                for (std::size_t begin = 0; begin < length;) {
+                    auto end = begin + 1;
+                    while (end < length && pixels[end] == pixels[begin]) ++end;
+                    if (pixels[begin] == selectedBackground()) {
+                        auto start = index; start[0] += begin;
+                        ranges.push_back({start, end - begin, found->second});
+                    }
+                    begin = end;
                 }
-            }
+            });
+            graphBase->pSelectedSegmentation->fillVoxelRanges(ranges);
+            ranges.clear();
         }
-        graphBase->pSelectedSegmentation->setVoxelValues(indices, segmentationLabel);
     }
 
     graphBase->pSelectedSegmentation->Modified();

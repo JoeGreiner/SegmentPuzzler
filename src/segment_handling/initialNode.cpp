@@ -1,4 +1,5 @@
 #include "initialNode.h"
+#include "LabelContacts.h"
 #include "workingNode.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/ConnectedComponentLabelSplitter.h"
@@ -127,12 +128,6 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
          static_cast<itk::SizeValueType>(roi.maxY - roi.minY + 3),
          static_cast<itk::SizeValueType>(roi.maxZ - roi.minZ + 3)});
     readRegion.Crop(pSegments->GetLargestPossibleRegion());
-    struct RowRun { itk::IndexValueType begin, end; SegmentIdType label; };
-    using Row = std::vector<RowRun>;
-    const auto origin = readRegion.GetIndex();
-    const auto height = readRegion.GetSize()[1];
-    const auto endZ = origin[2] + static_cast<itk::IndexValueType>(readRegion.GetSize()[2]);
-    std::vector<Row> previous(height), current(height);
     std::unordered_map<SegmentIdType, std::vector<VoxelList::Run>> contacts;
     const auto addContact = [&](SegmentIdType a, SegmentIdType b, SegmentIdImageType::IndexType first,
                                 SegmentIdImageType::IndexType second, std::size_t length) {
@@ -145,55 +140,10 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
         const auto end = std::min<itk::IndexValueType>(index[0] + length, std::int64_t(roi.maxX) + 1);
         if (begin < end) contacts[neighbor].push_back({Voxel(begin, index[1], index[2]), static_cast<std::uint32_t>(end - begin)});
     };
-    const auto compareRows = [&](const Row &a, const Row &b, SegmentIdImageType::IndexType first,
-                                 SegmentIdImageType::IndexType second) {
-        std::size_t i = 0, j = 0;
-        while (i < a.size() && j < b.size()) {
-            const auto begin = std::max(a[i].begin, b[j].begin);
-            const auto end = std::min(a[i].end, b[j].end);
-            first[0] = second[0] = begin;
-            if (begin < end) addContact(a[i].label, b[j].label, first, second, end - begin);
-            const auto endA = a[i].end, endB = b[j].end;
-            if (endA <= endB) ++i;
-            if (endB <= endA) ++j;
-        }
-    };
-    readRegion.SetSize(2, 1);
-    for (auto z = origin[2]; z < endZ; ++z) {
-        for (auto &row : current) row.clear();
-        readRegion.SetIndex(2, z);
-        pSegments->forEachRun(readRegion, [&](const auto &index, std::size_t length, SegmentIdType value) {
-            current[index[1] - origin[1]].push_back({index[0], index[0] + static_cast<itk::IndexValueType>(length), value});
-        });
-        for (std::size_t row = 0; row < height; ++row) {
-            const auto y = origin[1] + static_cast<itk::IndexValueType>(row);
-            const auto &runs = current[row];
-            for (std::size_t i = 1; i < runs.size(); ++i)
-                addContact(runs[i - 1].label, runs[i].label, {runs[i].begin - 1, y, z}, {runs[i].begin, y, z}, 1);
-            if (row) compareRows(current[row - 1], runs, {0, y - 1, z}, {0, y, z});
-            if (z > origin[2]) compareRows(previous[row], runs, {0, y, z - 1}, {0, y, z});
-        }
-        previous.swap(current);
-    }
-    for (auto &[neighbor, runs] : contacts) {
-        std::sort(runs.begin(), runs.end(), [](const auto &a, const auto &b) {
-            return std::tie(a.start.z, a.start.y, a.start.x) < std::tie(b.start.z, b.start.y, b.start.x);
-        });
-        auto end = runs.begin();
-        for (const auto &run : runs) {
-            if (end != runs.begin() && (end - 1)->start.z == run.start.z && (end - 1)->start.y == run.start.y &&
-                std::int64_t((end - 1)->start.x) + (end - 1)->length >= run.start.x) {
-                auto &last = *(end - 1);
-                last.length = std::max<std::int64_t>(last.length, std::int64_t(run.start.x) + run.length - last.start.x);
-            } else *end++ = run;
-        }
-        auto edge = std::make_shared<OneSidedInitialEdge>(neighbor, label);
-        for (auto it = runs.begin(); it != end; ++it) edge->addRun(it->start, it->length);
-        neighborLabelToOneSidedInitialEdge.emplace(neighbor, std::move(edge));
-    }
-
+    segment_puzzler::visitLabelContacts(*pSegments, readRegion, readRegion.GetIndex()[2], addContact);
+    for (auto &[neighbor, runs] : contacts)
+        neighborLabelToOneSidedInitialEdge.emplace(neighbor, segment_puzzler::makeContactEdge(label, neighbor, runs));
 }
-
 
 // given a onesided edge, it will find the other, corrosponding onesided edge to form a twosided edge
 // useful function when refining
