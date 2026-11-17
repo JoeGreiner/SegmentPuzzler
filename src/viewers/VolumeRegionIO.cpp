@@ -13,10 +13,11 @@
 #include <QTemporaryDir>
 #include <itkImageFileWriter.h>
 #include <QtEndian>
-#include <itk_zlib.h>
+#include <zlib-ng.h>
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <future>
 #include <set>
 
 namespace volume_io {
@@ -46,10 +47,10 @@ public:
                 hash.addData(bytes);
                 remaining -= bytes.size();
             }
-            if (inflateInit2(&stream, 15 + 16) != Z_OK) fail("Cannot initialize gzip decompression.");
+            if (zng_inflateInit2(&stream, 15 + 16) != Z_OK) fail("Cannot initialize gzip decompression.");
         }
     }
-    ~ByteReader() { if (compressed) inflateEnd(&stream); }
+    ~ByteReader() { if (compressed) zng_inflateEnd(&stream); }
     std::size_t read(unsigned char *destination, std::size_t count) {
         if (!compressed) {
             const qint64 bytes = file.read(reinterpret_cast<char *>(destination), count);
@@ -68,9 +69,9 @@ public:
                 stream.avail_in = bytes;
             }
             stream.next_out = destination + produced;
-            stream.avail_out = static_cast<uInt>(std::min<std::size_t>(count - produced, std::numeric_limits<uInt>::max()));
+            stream.avail_out = static_cast<std::uint32_t>(std::min<std::size_t>(count - produced, std::numeric_limits<std::uint32_t>::max()));
             const auto available = stream.avail_out;
-            const int status = inflate(&stream, Z_NO_FLUSH);
+            const int status = zng_inflate(&stream, Z_NO_FLUSH);
             produced += available - stream.avail_out;
             if (status == Z_STREAM_END) {
                 ended = true;
@@ -102,7 +103,7 @@ private:
     bool ended = false;
     qint64 initialSize;
     QDateTime initialModified;
-    z_stream stream{};
+    zng_stream stream{};
     std::array<unsigned char, 128 * 1024> input{};
 };
 
@@ -110,14 +111,15 @@ class ByteWriter {
 public:
     ByteWriter(QSaveFile &destination, bool gzip, QCryptographicHash &outputHash)
         : file(destination), hash(outputHash), compressed(gzip) {
-        if (compressed && deflateInit2(&stream, 1, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        if (compressed && zng_deflateInit2(&stream, 1, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
             fail("Cannot initialize gzip compression.");
     }
-    ~ByteWriter() { if (compressed) deflateEnd(&stream); }
+    qint64 deflateNs=0, writeNs=0, hashNs=0;
+    ~ByteWriter() { if (compressed) zng_deflateEnd(&stream); }
     void write(const unsigned char *data, std::size_t size) {
         if (!compressed) { raw(data, size); return; }
-        stream.next_in = const_cast<Bytef *>(data);
-        stream.avail_in = static_cast<uInt>(size);
+        stream.next_in = data;
+        stream.avail_in = static_cast<std::uint32_t>(size);
         while (stream.avail_in) pump(Z_NO_FLUSH);
     }
     void finish() {
@@ -125,21 +127,25 @@ public:
     }
 private:
     void raw(const unsigned char *data, std::size_t size) {
+        QElapsedTimer stage; stage.start();
         if (file.write(reinterpret_cast<const char *>(data), size) != static_cast<qint64>(size)) fail(file.errorString());
-        hash.addData(reinterpret_cast<const char *>(data), size);
+        writeNs+=stage.nsecsElapsed(); stage.start();
+        hash.addData(reinterpret_cast<const char *>(data), size); hashNs+=stage.nsecsElapsed();
     }
     int pump(int flush) {
         stream.next_out = output.data();
         stream.avail_out = output.size();
-        const int status = deflate(&stream, flush);
+        QElapsedTimer stage;stage.start();
+        const int status = zng_deflate(&stream, flush);
         if (status != Z_OK && status != Z_STREAM_END) fail("Failed to compress volume.");
+        deflateNs+=stage.nsecsElapsed();
         raw(output.data(), output.size() - stream.avail_out);
         return status;
     }
     QSaveFile &file;
     QCryptographicHash &hash;
     bool compressed;
-    z_stream stream{};
+    zng_stream stream{};
     std::array<unsigned char, 128 * 1024> output{};
 };
 
@@ -469,18 +475,50 @@ LoadedVolume<dataType::SegmentsStorage> readLabelStorage(const QString &path, Im
     if (!context) context = makeContext(path, *layout->info, options);
     clearImageContext(image->GetMetaDataDictionary());
 
-    constexpr std::uint64_t planesPerBatch = 16;
+    constexpr std::uint64_t planesPerBatch = 4;
     const auto totalPixels = voxelCount(crop.size);
     const auto planePixels = multiply(crop.size[0], crop.size[1]);
     const auto batchPixels = multiply(planePixels, std::min(planesPerBatch, crop.size[2]));
-    std::vector<Label> pixels(batchPixels), values;
+    std::vector<Label> pixels(batchPixels), buildPixels(batchPixels), values;
     Label minimum = std::numeric_limits<Label>::max(), maximum = 0;
     qint64 buildNs = 0;
-    const auto fingerprint = visitPayload(path, *layout, [&](unsigned char *block, std::uint64_t first, std::size_t count) {
+    // Outstanding work finishes before its buffers are destroyed.
+    std::future<qint64> pendingBuild;
+    const auto submitBatch = [&](std::uint64_t start, std::uint64_t end) {
+        auto region = image->GetLargestPossibleRegion();
+        region.SetIndex(2, start / planePixels);
+        region.SetSize(2, (end - start) / planePixels);
+        if (pendingBuild.valid()) buildNs += pendingBuild.get();
+        pixels.swap(buildPixels);
+        pendingBuild = std::async(std::launch::async, [image, &buildPixels, region, pixelCount = end - start] {
+            QElapsedTimer buildTimer;
+            buildTimer.start();
+            image->writeRegion(region, buildPixels.data(), pixelCount);
+            return buildTimer.nsecsElapsed();
+        });
+    };
+    const auto readNativeLabels = [&] {
+        ByteReader input(path, layout->compressedOffset);
+        std::uint64_t remaining = layout->payloadOffset;
+        while (remaining) {
+            const auto bytes = std::min<std::uint64_t>(remaining, pixels.size() * sizeof(Label));
+            input.exact(reinterpret_cast<unsigned char *>(pixels.data()), bytes);
+            remaining -= bytes;
+        }
+        for (std::uint64_t first = 0; first < totalPixels;) {
+            const auto count = std::min<std::uint64_t>(totalPixels - first, batchPixels);
+            input.exact(reinterpret_cast<unsigned char *>(pixels.data()), count * sizeof(Label));
+            submitBatch(first, first + count);
+            first += count;
+        }
+        while (input.read(reinterpret_cast<unsigned char *>(pixels.data()), pixels.size() * sizeof(Label))) {}
+        return input.fingerprint();
+    };
+    const bool nativeLabels = layout->pixelBytes == sizeof(Label) && !layout->signedInteger && !layout->swapBytes;
+    const auto storeBlock = [&](unsigned char *block, std::uint64_t first, std::size_t count) {
         values.resize(count);
-        if (layout->pixelBytes == sizeof(Label) && !layout->signedInteger && !layout->swapBytes) {
-            std::memcpy(values.data(), block, count * sizeof(Label));
-        } else for (std::size_t i = 0; i < count; ++i) {
+        if (nativeLabels) std::memcpy(values.data(), block, count * sizeof(Label));
+        else for (std::size_t i = 0; i < count; ++i) {
             const auto value = integerValue(block + i * layout->pixelBytes, *layout);
             if (value > std::numeric_limits<Label>::max()) fail("Label values exceed the supported 32-bit range.");
             values[i] = static_cast<Label>(value);
@@ -496,15 +534,11 @@ LoadedVolume<dataType::SegmentsStorage> readLabelStorage(const QString &path, Im
             const auto end = to + length;
             if (end % batchPixels && end != totalPixels) return;
             const auto start = to / batchPixels * batchPixels;
-            auto region = image->GetLargestPossibleRegion();
-            region.SetIndex(2, start / planePixels);
-            region.SetSize(2, (end - start) / planePixels);
-            QElapsedTimer buildTimer;
-            buildTimer.start();
-            image->writeRegion(region, pixels.data(), end - start);
-            buildNs += buildTimer.nsecsElapsed();
+            submitBatch(start, end);
         });
-    });
+    };
+    const auto fingerprint = nativeLabels && !options.crop ? readNativeLabels() : visitPayload(path, *layout, storeBlock);
+    if (pendingBuild.valid()) buildNs += pendingBuild.get();
     const auto loadNs = timer.nsecsElapsed();
     timer.restart();
     std::unordered_set<Label> labels;
@@ -520,11 +554,12 @@ LoadedVolume<dataType::SegmentsStorage> readLabelStorage(const QString &path, Im
     if (!context->background) context->background = 0;
     for (auto label : labels) useLabel(*context, label);
     if (!recovered) context->originalLabels = std::move(labels);
-    SP_LOG_INFO("io", QStringLiteral("volume_load path=\"%1\" streaming_read_ms=%2 rle_build_ms=%3 "
+    // Reading and RLE construction overlap within streaming_load_ms.
+    SP_LOG_INFO("io", QStringLiteral("volume_load path=\"%1\" streaming_load_ms=%2 rle_build_ms=%3 "
                                     "label_init_ms=%4 stored_bytes=%5 buffer_bytes=%6 recovered=%7")
-        .arg(path).arg((loadNs - buildNs) / 1e6, 0, 'f', 1).arg(buildNs / 1e6, 0, 'f', 1)
+        .arg(path).arg(loadNs / 1e6, 0, 'f', 1).arg(buildNs / 1e6, 0, 'f', 1)
         .arg(timer.elapsed()).arg(image->storedBytes())
-        .arg(pixels.size() * sizeof(Label)).arg(recovered));
+        .arg((pixels.size() + buildPixels.size()) * sizeof(Label)).arg(recovered));
     return {image, context};
 }
 
@@ -588,18 +623,20 @@ QByteArray writeLabelVolume(const dataType::SegmentsStorage &image, const QStrin
     hash.addData(header);
     ByteWriter output(file, compressed, hash);
     const auto rows = std::max<std::size_t>(1, std::min<std::size_t>(size[1], (16 * 1024 * 1024 / sizeof(Label)) / size[0]));
+    qint64 decodeNs=0;
     std::vector<Label> pixels(rows * size[0]);
     for (std::size_t z = 0; z < size[2]; ++z) for (std::size_t y = 0; y < size[1]; y += rows) {
         auto region = full;
         region.SetIndex(1, full.GetIndex()[1] + y); region.SetIndex(2, full.GetIndex()[2] + z);
         region.SetSize(1, std::min(rows, size[1] - y)); region.SetSize(2, 1);
         const auto count = region.GetNumberOfPixels();
-        image.readRegion(region, pixels.data(), count);
+        QElapsedTimer decode; decode.start(); image.readRegion(region, pixels.data(), count); decodeNs+=decode.nsecsElapsed();
         const auto *bytes = reinterpret_cast<const unsigned char *>(pixels.data());
         for (std::size_t offset = 0; offset < count * sizeof(Label); offset += blockBytes)
             output.write(bytes + offset, std::min(blockBytes, count * sizeof(Label) - offset));
     }
     output.finish();
+    fprintf(stderr,"PROFILE decode=%.1f deflate=%.1f write=%.1f hash=%.1f ms\n",decodeNs/1e6,output.deflateNs/1e6,output.writeNs/1e6,output.hashNs/1e6);
     if (image.GetMTime() != modifiedTime) fail("The image changed while it was being saved.");
     if (!file.commit()) fail(file.errorString());
     SP_LOG_INFO("io", QStringLiteral("volume_save path=\"%1\" elapsed_ms=%2 buffer_bytes=%3")

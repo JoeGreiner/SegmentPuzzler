@@ -229,12 +229,15 @@ set(SEGMENT_PUZZLER_ITK_LIBRARIES
         ${ITK_INTERFACE_LIBRARIES}
         ITK::ITKImageIO)
 
+include(cmake/ZlibNg.cmake)
+
 add_library(segmentpuzzler_volume_io STATIC src/viewers/VolumeRegionIO.cpp src/utils/AppLogger.cpp)
 set_target_properties(segmentpuzzler_volume_io PROPERTIES
         AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
 target_include_directories(segmentpuzzler_volume_io PUBLIC ${CMAKE_SOURCE_DIR})
 target_link_libraries(segmentpuzzler_volume_io PUBLIC ${SEGMENT_PUZZLER_ITK_LIBRARIES}
-        ${SEGMENT_PUZZLER_QT_CORE_LIBRARY} ITK::zlib)
+        ${SEGMENT_PUZZLER_QT_CORE_LIBRARY}
+        PRIVATE zlib-ng::zlib)
 list(APPEND SEGMENT_PUZZLER_ITK_LIBRARIES segmentpuzzler_volume_io)
 
 add_library(segmentpuzzler_worker_threads STATIC src/utils/WorkerThreads.cpp)

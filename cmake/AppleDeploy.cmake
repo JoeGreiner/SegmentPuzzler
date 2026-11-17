@@ -43,7 +43,7 @@ install(TARGETS ${PROJECT_NAME}
 set(APPS "\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${PROJECT_NAME}.app")
 
 # Directories to look for dependencies
-set(DIRS "${CMAKE_BINARY_DIR}")
+set(DIRS "${CMAKE_BINARY_DIR}" "$<TARGET_FILE_DIR:zlib-ng>")
 
 # Path used for searching by FIND_XXX(), with appropriate suffixes added
 if(CMAKE_PREFIX_PATH)
