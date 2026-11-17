@@ -504,6 +504,15 @@ if (BUILD_TESTING)
         set_tests_properties(GraphicsAppRun PROPERTIES TIMEOUT 15)
     endif ()
 
+    add_executable(test_LabelScan examples/viewers/test_label_scan.cpp)
+    set_target_properties(test_LabelScan PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_LabelScan PRIVATE segmentpuzzler_worker_threads)
+    if (USE_OMP)
+        target_compile_definitions(test_LabelScan PRIVATE USE_OMP)
+        target_link_libraries(test_LabelScan PRIVATE OpenMP::OpenMP_CXX)
+    endif ()
+    add_test(NAME LabelScan COMMAND test_LabelScan)
+
     add_executable(test_WorkerThreads
             examples/benchmarks/test_worker_threads.cpp
             src/utils/DistanceMapFH3D.cpp

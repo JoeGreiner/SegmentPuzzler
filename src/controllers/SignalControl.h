@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <QColor>
+#include <QElapsedTimer>
 #include <cstddef>
 #include <deque>
 #include <type_traits>
@@ -487,7 +488,12 @@ private:
             return false;
         }
 
+        QElapsedTimer timer;
+        timer.start();
         std::unique_ptr<itkSignal<T>> pSignal(new itkSignal<T>(pImage));
+        SP_LOG_INFO("io", QStringLiteral("volume_load signal_setup_ms=%1 voxels=%2")
+            .arg(timer.nsecsElapsed() / 1.0e6, 0, 'f', 1)
+            .arg(static_cast<qulonglong>(pImage->GetBufferedRegion().GetNumberOfPixels())));
         if (dimensionsMatchExpectedDimensions(
                 pSignal->getDimX(),
                 pSignal->getDimY(),

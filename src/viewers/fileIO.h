@@ -6,6 +6,7 @@
 #include <vector>
 #include <iostream>
 #include <qstring.h>
+#include <QElapsedTimer>
 #include <itkImage.h>
 #include <itkImageFileReader.h>
 #include <itkImageFileWriter.h>
@@ -42,13 +43,18 @@ typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
     using ReaderType = itk::ImageFileReader<ImageType>;
     SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
 
+    QElapsedTimer timer;
+    timer.start();
     validateScalarImageFile(fileName);
+    const auto validationMs = timer.restart();
 
     typename ReaderType::Pointer reader = ReaderType::New();
     reader->SetFileName(fileName.toStdString());
 
     typename ImageType::Pointer pImage = reader->GetOutput();
     reader->Update();
+    SP_LOG_INFO("io", QStringLiteral("volume_load path=\"%1\" validation_ms=%2 read_ms=%3")
+        .arg(fileName).arg(validationMs).arg(timer.elapsed()));
 
     auto spacing = pImage->GetSpacing();
     auto origin = pImage->GetOrigin();
