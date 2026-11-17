@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.18)
 project(SegmentPuzzler LANGUAGES CXX VERSION 0.4.3)
 string(TOLOWER "${PROJECT_NAME}" PROJECT_NAME_LOWER)
 set(CMAKE_CXX_STANDARD 17)
@@ -444,7 +444,10 @@ target_include_directories(SegmentPuzzler PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/g
 target_sources(SegmentPuzzler PRIVATE src/qtUtils/AboutDialog.cpp src/qtUtils/CitationDialog.cpp
         src/qtUtils/GraphicsSettings.cpp)
 
-target_link_libraries(SegmentPuzzler segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+add_subdirectory(src/image_storage)
+target_link_libraries(segmentpuzzler_volume_io PUBLIC segmentpuzzler_image_storage)
+list(APPEND SEGMENT_PUZZLER_ITK_LIBRARIES segmentpuzzler_image_storage)
+target_link_libraries(SegmentPuzzler segmentpuzzler_image_storage segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
 if (USE_OMP)
     target_compile_definitions(SegmentPuzzler PRIVATE USE_OMP)
     target_link_libraries(SegmentPuzzler OpenMP::OpenMP_CXX)
