@@ -38,9 +38,6 @@ namespace {
 
 constexpr auto modeKey = "graphics/mode";
 constexpr auto platformKey = "graphics/platform";
-constexpr auto lodEnabledKey = "graphics/lodEnabled";
-constexpr auto lodThresholdKey = "graphics/lodTriangleThreshold";
-constexpr auto lodFactorKey = "graphics/lodReductionFactor";
 constexpr auto msaaKey = "graphics/forceMsaaOff";
 constexpr const char *gpuVariables[] = {
     "DRI_PRIME", "__NV_PRIME_RENDER_OFFLOAD", "__NV_PRIME_RENDER_OFFLOAD_PROVIDER",
@@ -60,12 +57,16 @@ bool validPlatform(const QString &platform) {
 
 QString writeSettings(const QVariant &mode, const QVariant &platform, const LodSettings &lod, bool forceMsaaOff) {
     QSettings settings;
-    const QVariant previousMode = settings.value(QLatin1String(modeKey));
-    const QVariant previousPlatform = settings.value(QLatin1String(platformKey));
-    const QVariant previousMsaa = settings.value(QLatin1String(msaaKey));
-    const QVariant previousLodEnabled = settings.value(QLatin1String(lodEnabledKey));
-    const QVariant previousLodThreshold = settings.value(QLatin1String(lodThresholdKey));
-    const QVariant previousLodFactor = settings.value(QLatin1String(lodFactorKey));
+    struct Setting {
+        const char *key;
+        QVariant value;
+        QVariant previous;
+    };
+    Setting changes[] = {
+        {modeKey, mode, {}}, {platformKey, platform, {}}, {msaaKey, forceMsaaOff, {}},
+        {lodEnabledKey, lod.enabled, {}}, {lodThresholdKey, lod.voxelThreshold, {}},
+        {lodFactorKey, lod.reductionFactor, {}}
+    };
     const auto writeValue = [&](const char *key, const QVariant &value) {
         if (value.isValid()) {
             settings.setValue(QLatin1String(key), value);
@@ -73,23 +74,18 @@ QString writeSettings(const QVariant &mode, const QVariant &platform, const LodS
             settings.remove(QLatin1String(key));
         }
     };
-    writeValue(modeKey, mode);
-    writeValue(platformKey, platform);
-    writeValue(msaaKey, mode.isValid() ? QVariant(forceMsaaOff) : QVariant());
-    writeValue(lodEnabledKey, mode.isValid() ? QVariant(lod.enabled) : QVariant());
-    writeValue(lodThresholdKey, mode.isValid() ? QVariant(lod.triangleThreshold) : QVariant());
-    writeValue(lodFactorKey, mode.isValid() ? QVariant(lod.reductionFactor) : QVariant());
+    for (auto &change : changes) {
+        change.previous = settings.value(QLatin1String(change.key));
+        writeValue(change.key, mode.isValid() ? change.value : QVariant());
+    }
     settings.sync();
     if (settings.status() == QSettings::NoError) {
         return {};
     }
     // Restore previous values before QSettings retries a sync.
-    writeValue(modeKey, previousMode);
-    writeValue(platformKey, previousPlatform);
-    writeValue(msaaKey, previousMsaa);
-    writeValue(lodEnabledKey, previousLodEnabled);
-    writeValue(lodThresholdKey, previousLodThreshold);
-    writeValue(lodFactorKey, previousLodFactor);
+    for (const auto &change : changes) {
+        writeValue(change.key, change.previous);
+    }
     return QObject::tr("Could not save graphics settings to %1.").arg(settings.fileName());
 }
 
@@ -290,21 +286,21 @@ void showDialog(QWidget *parent) {
     lodEnabled->setToolTip(QObject::tr("Applies to newly prepared 3D views. Split tools keep full detail."));
     layout->addRow(lodEnabled);
     auto *lodThreshold = new QSpinBox(&dialog);
-    lodThreshold->setObjectName(QStringLiteral("lodTriangleThreshold"));
+    lodThreshold->setObjectName(QStringLiteral("lodVoxelThreshold"));
     lodThreshold->setRange(1, std::numeric_limits<int>::max());
     lodThreshold->setGroupSeparatorShown(true);
-    lodThreshold->setValue(initialLod.triangleThreshold);
+    lodThreshold->setValue(initialLod.voxelThreshold);
     lodThreshold->setEnabled(initialLod.enabled);
     QObject::connect(lodEnabled, &QCheckBox::toggled, lodThreshold, &QWidget::setEnabled);
-    layout->addRow(QObject::tr("LOD from (triangles per scene):"), lodThreshold);
+    layout->addRow(QObject::tr("LOD from (voxels in ROI):"), lodThreshold);
     auto *lodFactor = new QSpinBox(&dialog);
     lodFactor->setObjectName(QStringLiteral("lodReductionFactor"));
     lodFactor->setRange(1, 64);
     lodFactor->setValue(initialLod.reductionFactor);
     lodFactor->setEnabled(initialLod.enabled);
-    lodFactor->setToolTip(QObject::tr("Higher values produce coarser surfaces. Applies to newly prepared 3D views."));
+    lodFactor->setToolTip(QObject::tr("Sample every Nth voxel along each axis. Applies to newly prepared 3D views."));
     QObject::connect(lodEnabled, &QCheckBox::toggled, lodFactor, &QWidget::setEnabled);
-    layout->addRow(QObject::tr("LOD reduction factor:"), lodFactor);
+    layout->addRow(QObject::tr("LOD downsample factor:"), lodFactor);
     auto *forceMsaaOff = new QCheckBox(QObject::tr("Force MSAA off"), &dialog);
     forceMsaaOff->setObjectName(QStringLiteral("forceMsaaOff"));
     forceMsaaOff->setChecked(QSettings().value(QLatin1String(msaaKey), true).toBool());
@@ -330,7 +326,7 @@ void showDialog(QWidget *parent) {
         platform->setCurrentIndex(0);
         const LodSettings defaults;
         lodEnabled->setChecked(defaults.enabled);
-        lodThreshold->setValue(defaults.triangleThreshold);
+        lodThreshold->setValue(defaults.voxelThreshold);
         lodFactor->setValue(defaults.reductionFactor);
         forceMsaaOff->setChecked(true);
         status->clear();

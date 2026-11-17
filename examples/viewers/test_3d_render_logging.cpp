@@ -19,6 +19,7 @@
 #include <vtkCamera.h>
 #include <vtkCommand.h>
 #include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkFeatureEdges.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkNew.h>
 #include <vtkPolyDataMapper.h>
@@ -79,15 +80,14 @@ void testReducedDetail() {
     require(original.meshes.size() == 3, "Preparation lost a segment");
     require(original.meshes[0].polyData->GetPoints() == original.meshes[1].polyData->GetPoints(),
             "Shared-point fixture no longer exercises shared points");
-    vtkIdType originalTriangles = 0;
-    for (const auto &mesh : original.meshes) originalTriangles += mesh.polyData->GetNumberOfPolys();
+    constexpr int roiVoxels = 60 * 18 * 18;
     settings.setValue("graphics/lodEnabled", true);
-    settings.setValue("graphics/lodTriangleThreshold", originalTriangles + 1);
+    settings.setValue("graphics/lodVoxelThreshold", roiVoxels + 1);
     auto belowThreshold = Segment3DViewerDialog::prepareScene(image, labels);
     for (std::size_t i = 0; i < labels.size(); ++i)
         require(belowThreshold.meshes[i].polyData->GetNumberOfPolys() == original.meshes[i].polyData->GetNumberOfPolys(),
                 "Scene below threshold was simplified");
-    settings.setValue("graphics/lodTriangleThreshold", originalTriangles);
+    settings.setValue("graphics/lodVoxelThreshold", roiVoxels);
     auto scene = Segment3DViewerDialog::prepareScene(image, labels);
     require(scene.meshes.size() == 3, "LOD preparation lost a segment");
     require(scene.meshes[2].polyData->GetNumberOfPolys() == original.meshes[2].polyData->GetNumberOfPolys(),
@@ -97,18 +97,18 @@ void testReducedDetail() {
     for (int i = 0; i < 2; ++i) {
         const auto &mesh = scene.meshes[i];
         require(mesh.polyData->GetNumberOfPolys() > 0 &&
-                    mesh.polyData->GetNumberOfPolys() < mesh.originalTriangleCount &&
-                    mesh.originalTriangleCount == original.meshes[i].polyData->GetNumberOfPolys(),
+                    mesh.polyData->GetNumberOfPolys() < original.meshes[i].polyData->GetNumberOfPolys() &&
+                    mesh.lodFactor == 4,
                 "LOD did not replace the full mesh");
         require(mesh.polyData->GetActualMemorySize() < original.meshes[i].polyData->GetActualMemorySize(),
                 "LOD did not reduce mesh memory");
-        double bounds[6];
+        double bounds[6], reducedBounds[6];
         original.meshes[i].polyData->GetCellsBounds(bounds);
-        for (vtkIdType p = 0; p < mesh.polyData->GetNumberOfPoints(); ++p) {
-            const auto *point = mesh.polyData->GetPoint(p);
-            for (int axis = 0; axis < 3; ++axis)
-                require(point[axis] >= bounds[2 * axis] - 1e-5 && point[axis] <= bounds[2 * axis + 1] + 1e-5,
-                        "LOD included another segment's unused points");
+        mesh.polyData->GetCellsBounds(reducedBounds);
+        for (int axis = 0; axis < 3; ++axis) {
+            require(std::abs(reducedBounds[2 * axis] - bounds[2 * axis]) <= 4 * spacing[axis] &&
+                        std::abs(reducedBounds[2 * axis + 1] - bounds[2 * axis + 1]) <= 4 * spacing[axis],
+                    "Downsampling shifted the mesh out of its physical region");
         }
     }
     settings.setValue("graphics/lodReductionFactor", 8);
@@ -117,7 +117,7 @@ void testReducedDetail() {
                 coarser.meshes[0].polyData->GetNumberOfPolys() < scene.meshes[0].polyData->GetNumberOfPolys(),
             "Increasing the LOD factor did not produce coarser geometry");
     settings.remove("graphics/lodReductionFactor");
-    settings.setValue("graphics/lodTriangleThreshold", 1);
+    settings.setValue("graphics/lodVoxelThreshold", 1);
     settings.setValue("graphics/lodEnabled", false);
     auto disabled = Segment3DViewerDialog::prepareScene(image, labels);
     require(disabled.meshes[0].polyData->GetNumberOfPolys() == original.meshes[0].polyData->GetNumberOfPolys(),
@@ -131,6 +131,63 @@ void testReducedDetail() {
     for (std::size_t i = 0; i < scene.meshes.size(); ++i)
         require(allLabels.meshes[i].polyData->GetNumberOfPolys() == scene.meshes[i].polyData->GetNumberOfPolys(),
                 "Full scene used different LOD geometry");
+
+    settings.setValue("graphics/lodReductionFactor", 1);
+    const auto factorOne = Segment3DViewerDialog::prepareScene(image, labels);
+    for (std::size_t i = 0; i < labels.size(); ++i)
+        require(factorOne.meshes[i].polyData->GetNumberOfPolys() == original.meshes[i].polyData->GetNumberOfPolys(),
+                "Factor one changed full-detail geometry");
+    settings.setValue("graphics/lodReductionFactor", 4);
+
+    auto direction = image->GetDirection();
+    direction[0][0] = direction[1][1] = 0;
+    direction[0][1] = -1;
+    direction[1][0] = 1;
+    image->SetDirection(direction);
+    const auto rotated = Segment3DViewerDialog::prepareScene(image, labels);
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        double bounds[6], rotatedBounds[6];
+        scene.meshes[i].polyData->GetCellsBounds(bounds);
+        rotated.meshes[i].polyData->GetCellsBounds(rotatedBounds);
+        const double expected[] = {origin[0] - bounds[3] + origin[1], origin[0] - bounds[2] + origin[1],
+                                   origin[1] + bounds[0] - origin[0], origin[1] + bounds[1] - origin[0],
+                                   bounds[4], bounds[5]};
+        for (int j = 0; j < 6; ++j)
+            require(std::abs(rotatedBounds[j] - expected[j]) < 1e-4, "LOD lost the image direction or origin");
+    }
+
+    auto borderImage = dataType::SegmentsImageType::New();
+    borderImage->SetRegions(dataType::SegmentsImageType::RegionType({{0, 0, 0}}, {{9, 10, 11}}));
+    borderImage->Allocate();
+    borderImage->FillBuffer(70000);
+    auto borderScene = Segment3DViewerDialog::prepareScene(borderImage, {{70000, 0xFFFFFFFF}});
+    require(borderScene.meshes.size() == 1 && borderScene.meshes[0].lodFactor == 4,
+            "LOD lost a high label ID at the image boundary");
+    vtkNew<vtkFeatureEdges> edges;
+    edges->SetInputData(borderScene.meshes[0].polyData);
+    edges->BoundaryEdgesOn();
+    edges->NonManifoldEdgesOn();
+    edges->FeatureEdgesOff();
+    edges->ManifoldEdgesOff();
+    edges->Update();
+    require(edges->GetOutput()->GetNumberOfCells() == 0, "Downsampled boundary mesh is not closed");
+
+    borderImage->FillBuffer(0);
+    borderImage->SetPixel({{2, 2, 2}}, 70000);
+    borderImage->SetPixel({{5, 5, 5}}, 2);
+    settings.setValue("graphics/lodReductionFactor", 64);
+    const auto allMissing = Segment3DViewerDialog::prepareScene(borderImage, {{70000, 0xFFFFFFFF}, {2, 0xFFFFFFFF}});
+    require(allMissing.meshes.size() == 2 && allMissing.meshes[0].labelId == 70000 &&
+                allMissing.meshes[1].labelId == 2 && allMissing.meshes[0].lodFactor == 1 &&
+                allMissing.meshes[1].lodFactor == 1, "Fallback did not restore missing labels in order");
+    borderImage->SetPixel({{8, 8, 8}}, 70000);
+    Roi roi;
+    roi.minX = roi.minY = roi.minZ = 1;
+    roi.maxX = roi.maxY = roi.maxZ = 3;
+    const auto clipped = Segment3DViewerDialog::prepareScene(borderImage, {{70000, 0xFFFFFFFF}}, roi);
+    require(clipped.meshes.size() == 1 && clipped.meshes[0].polyData->GetBounds()[1] < 4,
+            "Fallback restored geometry outside the requested ROI");
+    settings.remove("graphics/lodReductionFactor");
 
     scene.meshes[0].touchesImageBoundary = true;
     auto dialog = std::make_unique<Segment3DViewerDialog>(scene);
@@ -163,7 +220,7 @@ void testReducedDetail() {
     require(picker->Pick(display[0], display[1], 0, renderer) && picker->GetViewProp() == actors[1],
             "Picking an exploded LOD segment failed");
     settings.remove("graphics/lodEnabled");
-    settings.remove("graphics/lodTriangleThreshold");
+    settings.remove("graphics/lodVoxelThreshold");
 }
 
 } // namespace

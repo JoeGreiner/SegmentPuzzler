@@ -11,17 +11,22 @@ namespace graphicsSettings {
 
 struct LodSettings {
     bool enabled = true;
-    int triangleThreshold = 50'000'000;
+    int voxelThreshold = 50'000'000;
     int reductionFactor = 4;
 };
 
+inline constexpr char lodEnabledKey[] = "graphics/lodEnabled";
+inline constexpr char lodThresholdKey[] = "graphics/lodVoxelThreshold";
+inline constexpr char lodFactorKey[] = "graphics/lodReductionFactor";
+
 inline LodSettings lodSettings() {
     QSettings settings;
-    return {settings.value(QStringLiteral("graphics/lodEnabled"), true).toBool(),
-            std::max(1, settings.value(QStringLiteral("graphics/lodTriangleThreshold"),
-                                      LodSettings{}.triangleThreshold).toInt()),
-            std::clamp(settings.value(QStringLiteral("graphics/lodReductionFactor"),
-                                      LodSettings{}.reductionFactor).toInt(), 1, 64)};
+    const LodSettings defaults;
+    return {settings.value(QLatin1String(lodEnabledKey), defaults.enabled).toBool(),
+            std::max(1, settings.value(QLatin1String(lodThresholdKey),
+                                      defaults.voxelThreshold).toInt()),
+            std::clamp(settings.value(QLatin1String(lodFactorKey),
+                                      defaults.reductionFactor).toInt(), 1, 64)};
 }
 
 struct StartupOptions {

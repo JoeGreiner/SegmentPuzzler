@@ -66,7 +66,7 @@ public:
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
         bool touchesImageBoundary = false;
         std::uint64_t voxelCount = 0;
-        vtkIdType originalTriangleCount = 0;
+        int lodFactor = 1;
     };
 
     struct PreparedScene {
@@ -164,7 +164,8 @@ private:
         dataType::SegmentsImageType::Pointer segImage,
         std::vector<LabelWithColor> labels,
         Roi requestedBounds,
-        bool allLabelsInImage);
+        bool allLabelsInImage,
+        bool allowReducedDetail);
 
     struct SegmentActorInfo {
         vtkSmartPointer<vtkActor> actor;
@@ -172,7 +173,7 @@ private:
         std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
         bool touchesImageBoundary = false;
         std::uint64_t voxelCount = 0;
-        vtkIdType originalTriangleCount = 0;
+        int lodFactor = 1;
     };
 
     struct SeedRayHit {

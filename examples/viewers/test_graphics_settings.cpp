@@ -90,7 +90,7 @@ void checkDialog(const QByteArray &behavior, const QString &initialMode, const Q
     QSettings().setValue(QStringLiteral("graphics/mode"), initialMode);
     QSettings().setValue(QStringLiteral("graphics/platform"), initialPlatform);
     QSettings().setValue(QStringLiteral("graphics/lodEnabled"), true);
-    QSettings().setValue(QStringLiteral("graphics/lodTriangleThreshold"), 50'000'000);
+    QSettings().setValue(QStringLiteral("graphics/lodVoxelThreshold"), 50'000'000);
     QSettings().setValue(QStringLiteral("graphics/lodReductionFactor"), 4);
     QSettings().setValue(QStringLiteral("graphics/forceMsaaOff"), true);
     QFile::remove(qEnvironmentVariable("SP_GRAPHICS_TEST_CALLS"));
@@ -123,7 +123,7 @@ void checkDialog(const QByteArray &behavior, const QString &initialMode, const Q
         if (!clicked) {
             clicked = true;
             auto *lod = dialog->findChild<QCheckBox *>(QStringLiteral("lodEnabled"));
-            auto *threshold = dialog->findChild<QSpinBox *>(QStringLiteral("lodTriangleThreshold"));
+            auto *threshold = dialog->findChild<QSpinBox *>(QStringLiteral("lodVoxelThreshold"));
             auto *factor = dialog->findChild<QSpinBox *>(QStringLiteral("lodReductionFactor"));
             auto *msaa = dialog->findChild<QCheckBox *>(QStringLiteral("forceMsaaOff"));
             require(lod && threshold && lod->isChecked() && threshold->value() == 50'000'000,
@@ -161,7 +161,7 @@ void checkDialog(const QByteArray &behavior, const QString &initialMode, const Q
     require(readCalls() == expectedCalls, "Unexpected number/order of graphics tests");
     const bool saved = !cancel && behavior != "fail";
     require(graphicsSettings::lodSettings().enabled == !saved &&
-                graphicsSettings::lodSettings().triangleThreshold == (saved ? 123456 : 50'000'000) &&
+                graphicsSettings::lodSettings().voxelThreshold == (saved ? 123456 : 50'000'000) &&
                 graphicsSettings::lodSettings().reductionFactor == (saved ? 8 : 4),
             "LOD settings were not saved or cancelled with the dialog");
     require(QSettings().value(QStringLiteral("graphics/forceMsaaOff")).toBool() == !saved,
@@ -196,7 +196,7 @@ int main(int argc, char **argv) {
 
     try {
         require(directory.isValid(), "Could not create isolated settings directory");
-        require(graphicsSettings::lodSettings().enabled && graphicsSettings::lodSettings().triangleThreshold == 50'000'000 &&
+        require(graphicsSettings::lodSettings().enabled && graphicsSettings::lodSettings().voxelThreshold == 50'000'000 &&
                     graphicsSettings::lodSettings().reductionFactor == 4,
                 "Wrong LOD defaults");
         QSettings().setValue(QStringLiteral("graphics/lodReductionFactor"), 0);
@@ -254,7 +254,7 @@ int main(int argc, char **argv) {
         require(!QSettings().contains(QStringLiteral("graphics/mode")) &&
                     !QSettings().contains(QStringLiteral("graphics/platform")), "Reset retained graphics keys");
         require(!QSettings().contains(QStringLiteral("graphics/lodEnabled")) &&
-                    !QSettings().contains(QStringLiteral("graphics/lodTriangleThreshold")) &&
+                    !QSettings().contains(QStringLiteral("graphics/lodVoxelThreshold")) &&
                     !QSettings().contains(QStringLiteral("graphics/lodReductionFactor")), "Reset retained LOD settings");
         require(QSettings().value(QStringLiteral("other/preference")).toInt() == 42, "Reset changed other preferences");
         const QString blockedPath = directory.filePath(QStringLiteral("not-a-directory"));
