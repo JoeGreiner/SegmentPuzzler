@@ -1,3 +1,4 @@
+#include <climits>
 #include "utils.h"
 #include <cmath>
 #include <limits>
@@ -189,5 +190,45 @@ std::unordered_set<utils::SegmentIdType> utils::findPresentLabels(
         present.insert(*found);
         remaining.erase(found);
     }
+    return present;
+}
+
+std::tuple<long, long, long, long, long, long> utils::calculateBoundingBoxForLabel(
+        dataType::SegmentsStorage::Pointer image, dataType::SegmentIdType label) {
+    long fx = LONG_MAX, fy = LONG_MAX, fz = LONG_MAX, tx = LONG_MIN, ty = LONG_MIN, tz = LONG_MIN;
+    if (const auto stats = image->labelStatistics(label)) {
+        const auto first = stats->bounds.GetIndex(), last = stats->bounds.GetUpperIndex();
+        return {first[0], first[1], first[2], last[0], last[1], last[2]};
+    }
+    return {fx, fy, fz, tx, ty, tz};
+}
+
+bool utils::findRepresentativeVoxelForLabel(dataType::SegmentsStorage::Pointer image,
+        dataType::SegmentIdType label, itk::Index<3> &indexOut, const Roi &cachedBounds,
+        std::uint64_t boundsModifiedTime) {
+    if (!image || !label) return false;
+    auto bounds = cachedBounds;
+    if (boundsModifiedTime != image->GetMTime() || bounds.minX > bounds.maxX ||
+        bounds.minY > bounds.maxY || bounds.minZ > bounds.maxZ) {
+        const auto [fx, fy, fz, tx, ty, tz] = calculateBoundingBoxForLabel(image, label);
+        if (fx > tx) return false;
+        bounds.minX = fx; bounds.minY = fy; bounds.minZ = fz;
+        bounds.maxX = tx; bounds.maxY = ty; bounds.maxZ = tz;
+    }
+    dataType::SegmentsImageType::RegionType region;
+    region.SetIndex({bounds.minX, bounds.minY, bounds.minZ});
+    region.SetUpperIndex({bounds.maxX, bounds.maxY, bounds.maxZ});
+    if (!region.Crop(image->GetLargestPossibleRegion())) return false;
+    return findRepresentativeVoxelForLabel(image->denseRegion(region), label, indexOut);
+}
+
+std::unordered_set<utils::SegmentIdType> utils::findPresentLabels(
+        const dataType::SegmentsStorage::Pointer &image,
+        const std::unordered_set<SegmentIdType> &candidates) {
+    if (!image) throw std::invalid_argument("Cannot search labels in a null image.");
+    std::unordered_set<SegmentIdType> present;
+    if (!candidates.empty()) image->forEachRun([&](const auto &, std::size_t, auto label) {
+        if (candidates.count(label)) present.insert(label);
+    });
     return present;
 }

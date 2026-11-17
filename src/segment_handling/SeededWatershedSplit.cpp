@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include "SeededWatershedSplit.h"
 
 #include "src/utils/ConnectedComponentLabelSplitter.h"
@@ -313,7 +314,13 @@ MarkerBuildResult buildSeededSplitMarkers(
 } // namespace
 
 SeededWatershedSplitSession prepareSeededWatershedSplit(
-    dataType::SegmentsImageType::Pointer segments,
+    dataType::SegmentsImageType::Pointer segments, dataType::SegmentIdType label,
+    SplitLandscapePreparation landscapePreparation) {
+    return prepareSeededWatershedSplit(DenseImageStorage<dataType::SegmentIdType>::fromImage(segments), label, landscapePreparation);
+}
+
+SeededWatershedSplitSession prepareSeededWatershedSplit(
+    dataType::SegmentsStorage::Pointer segments,
     dataType::SegmentIdType label,
     SplitLandscapePreparation landscapePreparation)
 {
@@ -326,34 +333,10 @@ SeededWatershedSplitSession prepareSeededWatershedSplit(
     session.sourceModifiedTime = static_cast<std::uint64_t>(segments->GetMTime());
 
     const auto maskStartedAt = Clock::now();
-    std::vector<Index> targetVoxels;
-    bool found = false;
-    Index globalMin{};
-    Index globalMax{};
-    itk::ImageRegionConstIterator<dataType::SegmentsImageType> sourceIt(
-        segments, segments->GetLargestPossibleRegion());
-    for (sourceIt.GoToBegin(); !sourceIt.IsAtEnd(); ++sourceIt) {
-        if (sourceIt.Get() != label) {
-            continue;
-        }
-        const Index index = sourceIt.GetIndex();
-        targetVoxels.push_back(index);
-        if (!found) {
-            globalMin = index;
-            globalMax = index;
-            found = true;
-        } else {
-            for (unsigned int axis = 0; axis < 3; ++axis) {
-                globalMin[axis] = std::min(globalMin[axis], index[axis]);
-                globalMax[axis] = std::max(globalMax[axis], index[axis]);
-            }
-        }
-    }
-    if (!found) {
-        throw std::runtime_error("The selected label is no longer present.");
-    }
-
-    session.voxelCount = targetVoxels.size();
+    const auto statistics = segments->labelStatistics(label);
+    if (!statistics) throw std::runtime_error("The selected label is no longer present.");
+    const auto globalMin = statistics->bounds.GetIndex(), globalMax = statistics->bounds.GetUpperIndex();
+    session.voxelCount = statistics->voxelCount;
     session.sourceRoi.minX = static_cast<int>(globalMin[0]);
     session.sourceRoi.minY = static_cast<int>(globalMin[1]);
     session.sourceRoi.minZ = static_cast<int>(globalMin[2]);
@@ -383,13 +366,12 @@ SeededWatershedSplitSession prepareSeededWatershedSplit(
     session.mask->Allocate();
     session.mask->FillBuffer(0);
 
-    for (const Index &globalIndex : targetVoxels) {
+    segments->forEachRun(statistics->bounds, [&](const Index &start, std::size_t length, auto value) {
+        if (value != label) return;
         Index localIndex;
-        for (unsigned int axis = 0; axis < 3; ++axis) {
-            localIndex[axis] = globalIndex[axis] - session.globalOffset[axis];
-        }
-        session.mask->SetPixel(localIndex, 1);
-    }
+        for (unsigned axis = 0; axis < 3; ++axis) localIndex[axis] = start[axis] - session.globalOffset[axis];
+        std::fill_n(session.mask->GetBufferPointer() + session.mask->ComputeOffset(localIndex), length, 1);
+    });
     session.maskHash = imageValueHash(session.mask.GetPointer());
     dataType::SegmentsImageType::SizeType sourceSize;
     for (unsigned int axis = 0; axis < 3; ++axis) {

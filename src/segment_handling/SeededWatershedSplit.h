@@ -126,6 +126,11 @@ SeededWatershedSplitSession prepareSeededWatershedSplit(
     dataType::SegmentIdType label,
     SplitLandscapePreparation landscapePreparation = SplitLandscapePreparation::Immediate);
 
+SeededWatershedSplitSession prepareSeededWatershedSplit(
+    dataType::SegmentsStorage::Pointer segments,
+    dataType::SegmentIdType label,
+    SplitLandscapePreparation landscapePreparation = SplitLandscapePreparation::Immediate);
+
 void updateSeededWatershedSplitLandscape(
     SeededWatershedSplitSession &session,
     double smoothingSigmaPixels);

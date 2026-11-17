@@ -39,6 +39,21 @@ namespace utils {
             const dataType::SegmentsImageType::Pointer &segmentationImage,
             const std::unordered_set<SegmentIdType> &candidateLabels);
 
+    std::tuple<long, long, long, long, long, long> calculateBoundingBoxForLabel(
+            typename dataType::SegmentsStorage::Pointer segmentationImage,
+            dataType::SegmentIdType labelValue);
+
+    bool findRepresentativeVoxelForLabel(
+            typename dataType::SegmentsStorage::Pointer segmentationImage,
+            dataType::SegmentIdType labelValue,
+            itk::Index<3> &indexOut,
+            const Roi &cachedBounds = {},
+            std::uint64_t boundsModifiedTime = 0);
+
+    std::unordered_set<SegmentIdType> findPresentLabels(
+            const dataType::SegmentsStorage::Pointer &segmentationImage,
+            const std::unordered_set<SegmentIdType> &candidateLabels);
+
 
     template<typename keyType, typename targetType>
     std::vector<keyType> getKeyVecOfSharedPtrMap(
