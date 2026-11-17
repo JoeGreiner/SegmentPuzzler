@@ -12,6 +12,7 @@
 
 using namespace volume_io;
 using Image = dataType::SegmentsImageType;
+void checkStoredLabels(const QString &path, const ImageLoadOptions &options);
 
 void require(bool condition, const char *message) { if (!condition) throw std::runtime_error(message); }
 template<typename Action> void rejects(Action action, const char *message) {
@@ -202,6 +203,8 @@ void bigEndianRoundtrip(const QString &directory) {
         ImageLoadOptions options;
         options.labelImage = true;
         options.crop = CropRegion{{{1, 0, 0}}, {{1, 2, 1}}};
+        checkStoredLabels(path, options);
+        checkStoredLabels(path, ImageLoadOptions{std::nullopt, true, true});
         auto loaded = readImage<Label>(path, options);
         require(loaded.image->GetPixel({{0, 0, 0}}) == 7 && loaded.image->GetPixel({{0, 1, 0}}) == 0,
                 "Big-endian crop was decoded incorrectly");
@@ -223,6 +226,7 @@ void rejectedWrites(const QString &directory) {
     file.resize(file.size() - 4); file.close();
     const auto before = fileFingerprint(path);
     rejects([&] { writeRegionToVolume(crop, path, {{0, 0, 0}}, {}); }, "Corrupt gzip was accepted");
+    rejects([&] { readLabelStorage(path, {}); }, "Streaming accepted corrupt gzip");
     require(fileFingerprint(path) == before, "Failed gzip read modified the target");
 
     const auto target = directory + "/locked.nrrd";
@@ -306,6 +310,39 @@ void labelInitialization() {
     }
 }
 
+void checkStoredLabels(const QString &path, const ImageLoadOptions &options) {
+    const auto dense = readImage<Label>(path, options);
+    const auto stored = readLabelStorage(path, options);
+    const auto decoded = stored.image->denseRegion(stored.image->GetLargestPossibleRegion());
+    require(decoded->GetBufferedRegion() == dense.image->GetBufferedRegion() &&
+            decoded->GetOrigin() == dense.image->GetOrigin() && decoded->GetSpacing() == dense.image->GetSpacing() &&
+            decoded->GetDirection() == dense.image->GetDirection(), "Streaming load changed geometry");
+    require(std::equal(dense.image->GetBufferPointer(), dense.image->GetBufferPointer() +
+            dense.image->GetBufferedRegion().GetNumberOfPixels(), decoded->GetBufferPointer()), "Streaming load changed pixels");
+    require(serializeContext(*dense.context) == serializeContext(*stored.context), "Streaming load changed provenance or labels");
+    require(!imageContext(stored.image->GetMetaDataDictionary()), "Streaming storage retained duplicate context");
+}
+
+void streamingLabels(const QString &directory) {
+    auto image = makeImage({{131, 137, 35}});
+    const auto count = image->GetBufferedRegion().GetNumberOfPixels();
+    for (std::size_t i = 0; i < count; ++i) image->GetBufferPointer()[i] = 1 + (i / 97) % 19;
+    image->GetBufferPointer()[0] = 0;
+    image->GetBufferPointer()[count - 1] = 4000000000U;
+    for (const auto &suffix : {".nrrd", ".nii", ".nii.gz", ".mha"}) {
+        for (bool compressed : {false, true}) {
+            const auto path = directory + "/streaming" + suffix;
+            save<Label>(image, path, compressed);
+            ImageLoadOptions options; options.labelImage = true; options.allowFullRead = true;
+            checkStoredLabels(path, options);
+            options.crop = CropRegion{{{3, 5, 1}}, {{127, 129, 33}}};
+            checkStoredLabels(path, options);
+            options.backgroundIsHighest = true;
+            checkStoredLabels(path, options);
+        }
+    }
+}
+
 void fullLoadContextAndValidation(const QString &directory) {
     const auto path = directory + "/full-labels.nrrd";
     auto image = makeImage({{4, 2, 1}});
@@ -318,6 +355,8 @@ void fullLoadContextAndValidation(const QString &directory) {
     require(!imageContext(loaded.image->GetMetaDataDictionary()), "Live image retains a second context");
     auto highestOptions = options;
     highestOptions.backgroundIsHighest = true;
+    checkStoredLabels(path, options);
+    checkStoredLabels(path, highestOptions);
     auto highest = readImage<Label>(path, highestOptions);
     require(highest.context->background == 9 && highest.context->nextLabel == 1 &&
             highest.context->originalLabels == loaded.context->originalLabels,
@@ -331,6 +370,7 @@ void fullLoadContextAndValidation(const QString &directory) {
             !imageContext(recovered.image->GetMetaDataDictionary()), "Recovery did not extract the authoritative context");
     image->SetPixel({{2, 0, 0}}, 20);
     save<Label>(image, recoveryPath);
+    checkStoredLabels(recoveryPath, highestOptions);
     recovered = readImage<Label>(recoveryPath, highestOptions);
     require(recovered.context->background == 0 && recovered.context->nextLabel == 21 &&
             recovered.context->originalLabels == loaded.context->originalLabels,
@@ -342,11 +382,13 @@ void fullLoadContextAndValidation(const QString &directory) {
     for (const auto value : {-1LL, static_cast<long long>(std::numeric_limits<Label>::max()) + 1}) {
         invalid->FillBuffer(value); save<long long>(invalid, invalidPath);
         rejects([&] { readImage<Label>(invalidPath, options); }, "Full loading silently narrowed invalid labels");
+        rejects([&] { readLabelStorage(invalidPath, options); }, "Streaming silently narrowed invalid labels");
     }
     using Float = itk::Image<float, 3>;
     auto fractional = Float::New(); fractional->SetRegions(Float::SizeType{{2, 1, 1}}); fractional->Allocate(); fractional->FillBuffer(1.5f);
     save<float>(fractional, invalidPath);
     rejects([&] { readImage<Label>(invalidPath, options); }, "Full loading truncated fractional labels");
+    rejects([&] { readLabelStorage(invalidPath, options); }, "Streaming truncated fractional labels");
 
     VolumeContext labels; labels.background = 11; labels.nextLabel = 10;
     require(reserveLabels(labels, 2) == 12 && labels.nextLabel == 14, "Allocator did not skip the background");
@@ -397,6 +439,7 @@ int main(int argc, char **argv) {
         roundtrip(directory.path(), ".nrrd", true);
         roundtrip(directory.path(), ".nii", false);
         roundtrip(directory.path(), ".nii.gz", true);
+        streamingLabels(directory.path());
         fullLoadContextAndValidation(directory.path());
         independentTarget(directory.path());
         largeBlockRead(directory.path());

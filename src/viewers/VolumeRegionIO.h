@@ -29,6 +29,12 @@ struct LoadedVolume {
     std::shared_ptr<VolumeContext> context;
 };
 
+LoadedVolume<dataType::SegmentsStorage> readLabelStorage(const QString &path, ImageLoadOptions options);
+// The caller keeps the image unchanged until writing completes.
+QByteArray writeLabelVolume(const dataType::SegmentsStorage &image, const QString &path,
+                           const VolumeContext *recoveryContext = nullptr, bool compressed = true);
+void configureImageRegion(itk::ImageBase<3> &image, const itk::ImageIOBase &info, const CropRegion &region);
+
 QString canonicalPath(const QString &path);
 QByteArray fileFingerprint(const QString &path);
 itk::ImageIOBase::Pointer imageInformation(const QString &path);
@@ -67,6 +73,10 @@ struct RegionWriteResult {
 };
 
 RegionWriteResult writeRegionToVolume(const dataType::SegmentsImageType *image,
+                                      const QString &targetPath,
+                                      const Coordinates &targetStart,
+                                      const RegionWriteOptions &options);
+RegionWriteResult writeRegionToVolume(const dataType::SegmentsStorage *image,
                                       const QString &targetPath,
                                       const Coordinates &targetStart,
                                       const RegionWriteOptions &options);
@@ -164,24 +174,7 @@ LoadedVolume<itk::Image<Pixel, 3>> readImage(const QString &path, const ImageLoa
     const auto readMs = timer.restart();
     auto image = Image::New();
     {
-        typename Image::SizeType size;
-        typename Image::SpacingType spacing;
-        typename Image::PointType origin;
-        typename Image::DirectionType direction;
-        for (unsigned int axis = 0; axis < 3; ++axis) {
-            size[axis] = data->region.size[axis];
-            spacing[axis] = data->information->GetSpacing(axis);
-            origin[axis] = data->information->GetOrigin(axis);
-            for (unsigned int column = 0; column < 3; ++column) {
-                direction[axis][column] = data->information->GetDirection(column)[axis];
-                origin[axis] += direction[axis][column] * data->information->GetSpacing(column) * data->region.start[column];
-            }
-        }
-        image->SetRegions(size);
-        image->SetSpacing(spacing);
-        image->SetOrigin(origin);
-        image->SetDirection(direction);
-        image->SetMetaDataDictionary(data->information->GetMetaDataDictionary());
+        configureImageRegion(*image, *data->information, data->region);
         image->Allocate();
         auto *destination = image->GetBufferPointer();
         using Type = itk::IOComponentEnum;

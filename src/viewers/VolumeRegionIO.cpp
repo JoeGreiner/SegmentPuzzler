@@ -1,3 +1,4 @@
+#include "src/image_storage/LabelImageStorage.h"
 #include "VolumeRegionIO.h"
 #include "src/utils/LabelScan.h"
 #include <QCryptographicHash>
@@ -9,6 +10,8 @@
 #include <QJsonObject>
 #include <QLockFile>
 #include <QSaveFile>
+#include <QTemporaryDir>
+#include <itkImageFileWriter.h>
 #include <QtEndian>
 #include <itk_zlib.h>
 #include <algorithm>
@@ -422,6 +425,188 @@ std::shared_ptr<VolumeContext> makeContext(const QString &path, const itk::Image
     return context;
 }
 
+void configureImageRegion(itk::ImageBase<3> &image, const itk::ImageIOBase &info, const CropRegion &region) {
+    itk::ImageBase<3>::SizeType size;
+    itk::ImageBase<3>::SpacingType spacing;
+    itk::ImageBase<3>::PointType origin;
+    itk::ImageBase<3>::DirectionType direction;
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        size[axis] = region.size[axis];
+        spacing[axis] = info.GetSpacing(axis);
+        origin[axis] = info.GetOrigin(axis);
+        for (unsigned column = 0; column < 3; ++column) {
+            direction[axis][column] = info.GetDirection(column)[axis];
+            origin[axis] += direction[axis][column] * info.GetSpacing(column) * region.start[column];
+        }
+    }
+    image.SetRegions(size);
+    image.SetSpacing(spacing);
+    image.SetOrigin(origin);
+    image.SetDirection(direction);
+    image.SetMetaDataDictionary(info.GetMetaDataDictionary());
+}
+
+LoadedVolume<dataType::SegmentsStorage> readLabelStorage(const QString &path, ImageLoadOptions options) {
+    options.labelImage = true;
+    const auto info = imageInformation(path);
+    if ((info->GetNumberOfDimensions() != 2 && info->GetNumberOfDimensions() != 3) ||
+        info->GetPixelType() != itk::IOPixelEnum::SCALAR || info->GetNumberOfComponents() != 1)
+        fail("Labels require a scalar 2D or 3D image.");
+    const auto layout = inspectLayout(path);
+    if (!layout || !layout->integer || layout->scaled) {
+        auto loaded = readImage<Label>(path, options);
+        return {segment_puzzler::storeLabels(*loaded.image), loaded.context};
+    }
+    QElapsedTimer timer;
+    timer.start();
+    const auto crop = options.crop.value_or(CropRegion{{{0, 0, 0}}, layout->size});
+    validateRegion(crop, layout->size);
+    auto geometry = itk::ImageBase<3>::New();
+    configureImageRegion(*geometry, *layout->info, crop);
+    auto image = segment_puzzler::StreamVByteImageStorage<Label>::create(*geometry);
+    auto context = options.crop ? nullptr : imageContext(layout->info->GetMetaDataDictionary());
+    const bool recovered = context != nullptr;
+    if (!context) context = makeContext(path, *layout->info, options);
+    clearImageContext(image->GetMetaDataDictionary());
+
+    constexpr std::uint64_t planesPerBatch = 16;
+    const auto totalPixels = voxelCount(crop.size);
+    const auto planePixels = multiply(crop.size[0], crop.size[1]);
+    const auto batchPixels = multiply(planePixels, std::min(planesPerBatch, crop.size[2]));
+    std::vector<Label> pixels(batchPixels), values;
+    Label minimum = std::numeric_limits<Label>::max(), maximum = 0;
+    qint64 buildNs = 0;
+    const auto fingerprint = visitPayload(path, *layout, [&](unsigned char *block, std::uint64_t first, std::size_t count) {
+        values.resize(count);
+        if (layout->pixelBytes == sizeof(Label) && !layout->signedInteger && !layout->swapBytes) {
+            std::memcpy(values.data(), block, count * sizeof(Label));
+        } else for (std::size_t i = 0; i < count; ++i) {
+            const auto value = integerValue(block + i * layout->pixelBytes, *layout);
+            if (value > std::numeric_limits<Label>::max()) fail("Label values exceed the supported 32-bit range.");
+            values[i] = static_cast<Label>(value);
+        }
+        if (options.crop) for (std::size_t i = 0; i < count;) {
+            const auto value = values[i++];
+            while (i < count && values[i] == value) ++i;
+            minimum = std::min(minimum, value);
+            maximum = std::max(maximum, value);
+        }
+        intersectRows(first, count, layout->size, crop, [&](std::size_t from, std::uint64_t to, std::size_t length) {
+            std::copy_n(values.data() + from, length, pixels.data() + to % batchPixels);
+            const auto end = to + length;
+            if (end % batchPixels && end != totalPixels) return;
+            const auto start = to / batchPixels * batchPixels;
+            auto region = image->GetLargestPossibleRegion();
+            region.SetIndex(2, start / planePixels);
+            region.SetSize(2, (end - start) / planePixels);
+            QElapsedTimer buildTimer;
+            buildTimer.start();
+            image->writeRegion(region, pixels.data(), end - start);
+            buildNs += buildTimer.nsecsElapsed();
+        });
+    });
+    const auto loadNs = timer.nsecsElapsed();
+    timer.restart();
+    std::unordered_set<Label> labels;
+    for (const auto &[label, statistics] : image->labelStatistics()) labels.insert(label);
+    if (!options.crop) for (auto label : labels) {
+        minimum = std::min(minimum, label);
+        maximum = std::max(maximum, label);
+    }
+    if (!recovered) {
+        context->sourceFingerprint = fingerprint;
+        context->background = options.backgroundIsHighest ? maximum : minimum;
+    }
+    if (!context->background) context->background = 0;
+    for (auto label : labels) useLabel(*context, label);
+    if (!recovered) context->originalLabels = std::move(labels);
+    SP_LOG_INFO("io", QStringLiteral("volume_load path=\"%1\" streaming_read_ms=%2 rle_build_ms=%3 "
+                                    "label_init_ms=%4 stored_bytes=%5 buffer_bytes=%6 recovered=%7")
+        .arg(path).arg((loadNs - buildNs) / 1e6, 0, 'f', 1).arg(buildNs / 1e6, 0, 'f', 1)
+        .arg(timer.elapsed()).arg(image->storedBytes())
+        .arg(pixels.size() * sizeof(Label)).arg(recovered));
+    return {image, context};
+}
+
+QByteArray writeLabelVolume(const dataType::SegmentsStorage &image, const QString &path,
+                           const VolumeContext *recoveryContext, bool compressed) {
+    auto metadata = image.GetMetaDataDictionary();
+    clearImageContext(metadata);
+    if (recoveryContext) setImageContext(metadata, *recoveryContext);
+    if (!path.endsWith(".nrrd", Qt::CaseInsensitive)) {
+        auto dense = image.denseRegion(image.GetLargestPossibleRegion());
+        dense->SetMetaDataDictionary(metadata);
+        auto writer = itk::ImageFileWriter<dataType::SegmentsImageType>::New();
+        writer->SetFileName(path.toStdString()); writer->SetInput(dense);
+        writer->SetUseCompression(compressed); writer->SetCompressionLevel(1);
+        writer->Update();
+        return fileFingerprint(path);
+    }
+    QElapsedTimer timer;
+    timer.start();
+    const auto modifiedTime = image.GetMTime();
+    const auto full = image.GetLargestPossibleRegion();
+    const auto size = full.GetSize();
+    dataType::SegmentsImageType::PointType origin;
+    image.TransformIndexToPhysicalPoint(full.GetIndex(), origin);
+    for (const auto &key : metadata.GetKeys()) {
+        if (key.empty() || key.find(":=") != std::string::npos || key.find('\r') != std::string::npos)
+            fail("Metadata cannot be represented in a NRRD header.");
+    }
+    // Let ITK encode geometry and metadata using a one-voxel image, then replace its dimensions.
+    QTemporaryDir temporary;
+    if (!temporary.isValid()) fail("Cannot create a temporary NRRD header.");
+    auto sample = dataType::SegmentsImageType::New();
+    sample->CopyInformation(image.imageInformation());
+    sample->SetOrigin(origin); sample->SetMetaDataDictionary(metadata);
+    sample->SetRegions(dataType::SegmentsImageType::SizeType{{1, 1, 1}});
+    sample->Allocate(true);
+    const auto headerPath = temporary.filePath("header.nrrd");
+    auto writer = itk::ImageFileWriter<dataType::SegmentsImageType>::New();
+    writer->SetFileName(headerPath.toStdString()); writer->SetInput(sample);
+    writer->SetUseCompression(compressed); writer->SetCompressionLevel(1);
+    writer->Update();
+    QFile headerFile(headerPath);
+    if (!headerFile.open(QIODevice::ReadOnly)) fail(headerFile.errorString());
+    QByteArray header;
+    bool foundDimensions = false, complete = false;
+    while (!headerFile.atEnd()) {
+        auto line = headerFile.readLine();
+        if (line.startsWith("sizes:") && !line.contains(":=")) {
+            line = QStringLiteral("sizes: %1 %2 %3\n").arg(size[0]).arg(size[1]).arg(size[2]).toUtf8();
+            foundDimensions = true;
+        }
+        header += line;
+        if (line.trimmed().isEmpty()) { complete = true; break; }
+    }
+    if (!foundDimensions || !complete) fail("Invalid NRRD header generated by ITK.");
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) fail(file.errorString());
+    if (file.write(header) != header.size()) fail(file.errorString());
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(header);
+    ByteWriter output(file, compressed, hash);
+    const auto rows = std::max<std::size_t>(1, std::min<std::size_t>(size[1], (16 * 1024 * 1024 / sizeof(Label)) / size[0]));
+    std::vector<Label> pixels(rows * size[0]);
+    for (std::size_t z = 0; z < size[2]; ++z) for (std::size_t y = 0; y < size[1]; y += rows) {
+        auto region = full;
+        region.SetIndex(1, full.GetIndex()[1] + y); region.SetIndex(2, full.GetIndex()[2] + z);
+        region.SetSize(1, std::min(rows, size[1] - y)); region.SetSize(2, 1);
+        const auto count = region.GetNumberOfPixels();
+        image.readRegion(region, pixels.data(), count);
+        const auto *bytes = reinterpret_cast<const unsigned char *>(pixels.data());
+        for (std::size_t offset = 0; offset < count * sizeof(Label); offset += blockBytes)
+            output.write(bytes + offset, std::min(blockBytes, count * sizeof(Label) - offset));
+    }
+    output.finish();
+    if (image.GetMTime() != modifiedTime) fail("The image changed while it was being saved.");
+    if (!file.commit()) fail(file.errorString());
+    SP_LOG_INFO("io", QStringLiteral("volume_save path=\"%1\" elapsed_ms=%2 buffer_bytes=%3")
+        .arg(path).arg(timer.elapsed()).arg(pixels.size() * sizeof(Label)));
+    return hash.result().toHex();
+}
+
 std::optional<RegionData> readRegion(const QString &path, const ImageLoadOptions &options) {
     auto layout = inspectLayout(path);
     if (!layout) return std::nullopt;
@@ -579,8 +764,13 @@ const TargetBinding *findBinding(const VolumeContext &context, const QString &pa
 
 RegionWriteResult writeRegionToVolume(const dataType::SegmentsImageType *image, const QString &targetPath,
                                       const Coordinates &targetStart, const RegionWriteOptions &options) {
-    if (!image || !image->GetBufferPointer() || image->GetBufferedRegion() != image->GetLargestPossibleRegion())
-        fail("An independently buffered image is required for region export.");
+    auto storage = segment_puzzler::DenseImageStorage<Label>::fromImage(const_cast<dataType::SegmentsImageType *>(image));
+    return writeRegionToVolume(storage, targetPath, targetStart, options);
+}
+
+RegionWriteResult writeRegionToVolume(const dataType::SegmentsStorage *image, const QString &targetPath,
+                                      const Coordinates &targetStart, const RegionWriteOptions &options) {
+    if (!image) fail("An image is required for region export.");
     const QString path = canonicalPath(targetPath);
     QLockFile lock(path + ".segmentpuzzler.lock");
     if (!lock.tryLock(0)) fail("Another SegmentPuzzler operation is writing this volume.");
@@ -613,10 +803,11 @@ RegionWriteResult writeRegionToVolume(const dataType::SegmentsImageType *image, 
     RegionWriteResult result;
     result.binding = {path, targetStart, options.labelPolicy, options.targetBackground, {}, {}};
     if (previous) result.binding.labels = previous->labels;
-    const auto *source = image->GetBufferPointer();
-    const auto count = image->GetBufferedRegion().GetNumberOfPixels();
     std::unordered_set<Label> uniqueLabels;
-    segment_puzzler::scanLabels(source, count, context->background.value_or(0), &uniqueLabels);
+    image->forEachRun([&](const auto &, std::size_t, Label label) {
+        if (label != context->background.value_or(0)) uniqueLabels.insert(label);
+    });
+    uniqueLabels.insert(context->background.value_or(0));
     std::vector<Label> labels(uniqueLabels.begin(), uniqueLabels.end());
     std::sort(labels.begin(), labels.end());
     const auto isBackground = [&](Label label) { return label == context->background.value_or(0); };
@@ -656,8 +847,15 @@ RegionWriteResult writeRegionToVolume(const dataType::SegmentsImageType *image, 
     if (!destination.open(QIODevice::WriteOnly)) fail(destination.errorString());
     const auto copiedFingerprint = visitPayload(path, *layout, [&](unsigned char *block, std::uint64_t first, std::size_t length) {
         intersectRows(first, length, layout->size, crop, [&](std::size_t blockIndex, std::uint64_t cropIndex, std::size_t rowLength) {
-            for (std::size_t index = 0; index < rowLength; ++index)
-                storeInteger(block + (blockIndex + index) * layout->pixelBytes, result.binding.labels.at(source[cropIndex + index]), *layout);
+            const auto size = image->GetLargestPossibleRegion().GetSize();
+            auto index = image->GetLargestPossibleRegion().GetIndex();
+            index[0] += cropIndex % size[0];
+            index[1] += (cropIndex / size[0]) % size[1];
+            index[2] += cropIndex / (size[0] * size[1]);
+            std::vector<Label> row(rowLength);
+            image->readRegion({index, {rowLength, 1, 1}}, row.data(), row.size());
+            for (std::size_t x = 0; x < rowLength; ++x)
+                storeInteger(block + (blockIndex + x) * layout->pixelBytes, result.binding.labels.at(row[x]), *layout);
         });
     }, &destination, &result.binding.fingerprint);
     if (copiedFingerprint != fingerprint || fileFingerprint(path) != fingerprint)

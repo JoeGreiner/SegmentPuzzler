@@ -38,8 +38,8 @@ void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut
 
 void validateScalarImageFile(const QString &fileName);
 
-template<typename dType>
-volume_io::LoadedVolume<itk::Image<dType, 3>> loadVolume(QString &fileName, const volume_io::ImageLoadOptions &options = {}) {
+template<typename dType, typename Image = itk::Image<dType, 3>>
+volume_io::LoadedVolume<Image> loadVolume(QString &fileName, const volume_io::ImageLoadOptions &options = {}) {
     SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
 
     QElapsedTimer timer;
@@ -47,7 +47,11 @@ volume_io::LoadedVolume<itk::Image<dType, 3>> loadVolume(QString &fileName, cons
     validateScalarImageFile(fileName);
     const auto validationMs = timer.restart();
 
-    auto loaded = volume_io::readImage<dType>(fileName, options);
+    auto loaded = [&] {
+        if constexpr (std::is_same_v<Image, dataType::SegmentsStorage>)
+            return volume_io::readLabelStorage(fileName, options);
+        else return volume_io::readImage<dType>(fileName, options);
+    }();
     const auto pImage = loaded.image;
     SP_LOG_INFO("io", QStringLiteral("volume_load path=\"%1\" validation_ms=%2 read_ms=%3")
         .arg(fileName).arg(validationMs).arg(timer.elapsed()));
@@ -75,6 +79,10 @@ volume_io::LoadedVolume<itk::Image<dType, 3>> loadVolume(QString &fileName, cons
                     .arg(direction[2][2], 0, 'g', 6));
 
     return loaded;
+}
+
+inline auto loadLabelVolume(QString &fileName, const volume_io::ImageLoadOptions &options) {
+    return loadVolume<dataType::SegmentIdType, dataType::SegmentsStorage>(fileName, options);
 }
 
 template<typename Pixel>
