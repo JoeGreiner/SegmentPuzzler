@@ -1,3 +1,4 @@
+#include "src/image_storage/StreamVByteImageStorage.h"
 #include <QCoreApplication>
 #include <QEventLoop>
 
@@ -635,6 +636,38 @@ int testVisibleLabelRendering() {
 
 } // namespace
 
+int testCompressedSlices() {
+    using Pixel = dataType::SegmentIdType;
+    auto image = itk::Image<Pixel, 3>::New();
+    image->SetRegions({17, 11, 7});
+    image->Allocate();
+    for (int z = 0; z < 7; ++z)
+        for (int y = 0; y < 11; ++y)
+            for (int x = 0; x < 17; ++x) image->SetPixel({x, y, z}, (x / 3 + y + 2 * z) % 9);
+    dataType::SegmentsStorage::Pointer storage = segment_puzzler::StreamVByteImageStorage<Pixel>::fromImage(*image);
+    itkSignal<Pixel> dense(image, false), compressed(storage, false);
+    dense.setCategoricalColorMode(); compressed.setCategoricalColorMode();
+    dense.setValueColorToTransparent(0); compressed.setValueColorToTransparent(0);
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        for (unsigned slice = 0; slice < image->GetLargestPossibleRegion().GetSize()[axis]; ++slice) {
+            std::vector<quint32> left, right;
+            const auto reference = dense.calculateSliceQImage(slice, axis, &left).copy();
+            const auto actual = compressed.calculateSliceQImage(slice, axis, &right);
+            if (actual != reference) return fail("Compressed slice differs on axis " + std::to_string(axis));
+            const std::vector<int> columns{0, reference.width() - 1}, rows{0, reference.height() - 1};
+            if (dense.calculateVisibleLabelImage(slice, axis, columns, rows) !=
+                compressed.calculateVisibleLabelImage(slice, axis, columns, rows))
+                return fail("Compressed sampled slice differs");
+        }
+    }
+    storage->SetPixel({3, 5, 2}, 27);
+    image->SetPixel({3, 5, 2}, 27);
+    std::vector<quint32> left, right;
+    if (dense.calculateSliceQImage(2, 2, &left).copy() != compressed.calculateSliceQImage(2, 2, &right))
+        return fail("Compressed slice did not refresh after an edit");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
 
@@ -642,6 +675,7 @@ int main(int argc, char **argv) {
 
     if (int result = testSliderUpdateTimer()) return result;
     if (int result = testRawSliceCache()) return result;
+    if (int result = testCompressedSlices()) return result;
     if (int result = testContinuousRendering<unsigned char>()) return result;
     if (int result = testContinuousRendering<signed char>()) return result;
     if (int result = testContinuousRendering<unsigned short>()) return result;

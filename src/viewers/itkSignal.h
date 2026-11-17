@@ -9,6 +9,7 @@
 #include <QRandomGenerator>
 #include <QTreeWidget>
 #include "itkSignalBase.h"
+#include "src/image_storage/DenseImageStorage.h"
 #include "itkImageRegionConstIteratorWithIndex.h"
 #include <unordered_map>
 #include "VolumeContext.h"
@@ -44,6 +45,7 @@ public:
     //TODO: Add virtual mother class to nicely manage signals
     static const int Dimension = 3;
     using SignalImageType = typename itk::Image<dType, Dimension>;
+    using Storage = segment_puzzler::ImageStorage<dType>;
     using SignalImagePointerType = typename itk::Image<dType, Dimension>::Pointer;
     using SignalImageIndexType = typename itk::Image<dType, Dimension>::IndexType;
     using SignalImageSizeType = typename itk::Image<dType, Dimension>::SizeType;
@@ -58,6 +60,14 @@ public:
     itkSignal(SignalImagePointerType pointerToImage, QTreeWidget *motherTreeWidget, size_t signalIndex,
               QString fileName, bool verboseIn = true);
 
+    explicit itkSignal(typename Storage::Pointer storage, bool verboseIn = true)
+        : imageStorage(std::move(storage)), verbose(verboseIn) {
+        calculateImageSize();
+        computeExtrema();
+        normLower = minimumValue;
+        normUpper = maximumValue;
+    }
+
     itkSignal() = default;
 
     ~itkSignal() override;
@@ -69,7 +79,15 @@ public:
         if (pImage.IsNull()) {
             throw std::runtime_error("itkSignal::updateImage: Invalid image type.");
         }
+        imageStorage = segment_puzzler::DenseImageStorage<dType>::fromImage(pImage);
         volumeContext.reset();
+        calculateImageSize();
+        computeExtrema();
+    }
+
+    void updateStorage(typename Storage::Pointer storage) {
+        pImage = nullptr;
+        imageStorage = std::move(storage);
         calculateImageSize();
         computeExtrema();
     }
@@ -81,6 +99,7 @@ public:
             slice.source = nullptr;
         }
         pImage = nullptr;
+        imageStorage = nullptr;
         dimX = 0;
         dimY = 0;
         dimZ = 0;
@@ -178,7 +197,10 @@ public:
 
     void setName(QString name) override;
 
-    itk::ImageBase<3>::Pointer getImageBase() const override { return pImage; }
+    itk::ImageBase<3>::Pointer getImageBase() const override {
+        if (pImage) return pImage;
+        return imageStorage ? imageStorage->imageInformation() : nullptr;
+    }
 
     bool isShapeMatched(itkSignalBase *otherSignal);
 
@@ -194,6 +216,8 @@ public:
     dType q95;
 
     SignalImagePointerType pImage;
+    typename Storage::Pointer imageStorage;
+    itk::ModifiedTimeType initialEmptyMTime = 0;
 
     long unsigned int dimX, dimY, dimZ;
 
@@ -275,10 +299,19 @@ template<typename dType>
 void itkSignal<dType>::computeExtrema() {
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
 
-    const auto extrema = segment_puzzler::minMaxValues(
-        pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels());
-    minimumValue = extrema.first;
-    maximumValue = extrema.second;
+    if (pImage) {
+        const auto extrema = segment_puzzler::minMaxValues(
+            pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels());
+        minimumValue = extrema.first;
+        maximumValue = extrema.second;
+    } else {
+        minimumValue = std::numeric_limits<dType>::max();
+        maximumValue = std::numeric_limits<dType>::lowest();
+        imageStorage->forEachRun([&](const auto &, std::size_t, dType value) {
+            minimumValue = std::min(minimumValue, value);
+            maximumValue = std::max(maximumValue, value);
+        });
+    }
 
     SP_LOG_DEBUG("viewer.render",
                  QStringLiteral("Computed extrema in %1 ms min=%2 max=%3")
@@ -331,7 +364,7 @@ QString itkSignal<dType>::displayDataTypeName() {
 
 template<typename dType>
 itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, bool verboseIn):
-        pImage{pointerToImage}, verbose{verboseIn} {
+        pImage{pointerToImage}, imageStorage(segment_puzzler::DenseImageStorage<dType>::fromImage(pointerToImage)), verbose{verboseIn} {
     // sets dimX, dimY, dimZ
 
     calculateImageSize();
@@ -344,7 +377,7 @@ itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, bool verboseI
 template<typename dType>
 itkSignal<dType>::itkSignal(SignalImagePointerType pointerToImage, QTreeWidget *motherTreeWidget, size_t signalIndex,
                             QString fileName, bool verboseIn)
-    : pImage{pointerToImage}, verbose{verboseIn} {
+    : pImage{pointerToImage}, imageStorage(segment_puzzler::DenseImageStorage<dType>::fromImage(pointerToImage)), verbose{verboseIn} {
     // sets dimX, dimY, dimZ
     calculateImageSize();
     computeExtrema();
@@ -377,7 +410,7 @@ void itkSignal<dType>::setupTreeWidget(QTreeWidget *motherTreeWidget, size_t sig
 
 template<typename dType>
 void itkSignal<dType>::calculateImageSize() {
-    auto &size = pImage->GetLargestPossibleRegion().GetSize();
+    auto &size = getImageBase()->GetLargestPossibleRegion().GetSize();
     if (verbose) {
         SP_LOG_DEBUG("viewer.render",
                      QStringLiteral("Signal image size=%1x%2x%3")
@@ -773,14 +806,18 @@ QImage itkSignal<dType>::calculateVisibleLabelImage(unsigned int sliceIndex, uns
                                                   const std::vector<int> &columns,
                                                   const std::vector<int> &rows) {
     if constexpr (std::is_integral_v<dType>) {
-        if (!supportsVisibleLabelRendering() || pImage.IsNull() || columns.empty() || rows.empty()) return {};
+        if (!supportsVisibleLabelRendering() || (!pImage && !imageStorage) || columns.empty() || rows.empty()) return {};
         const auto dims = slice_geometry::makeDimensions(dimX, dimY, dimZ);
         if (sliceIndex >= slice_geometry::sliceLimit(sliceAxis, dims))
             throw std::out_of_range("sliceIndex lies outside the image");
-        const unsigned long rowStride = sliceAxis == 1 ? dimX * dimY : dimX;
-        const unsigned long columnStride = sliceAxis == 0 ? dimX * dimY : 1;
-        const unsigned long baseOffset = sliceIndex * (sliceAxis == 0 ? 1 : sliceAxis == 1 ? dimX : dimX * dimY);
-        const auto *input = pImage->GetBufferPointer() + baseOffset;
+        unsigned int width, height;
+        const auto region = slice_geometry::makeSliceRegion<SignalImageIndexType, SignalImageSizeType, SignalImageRegionType>(
+            sliceIndex, sliceAxis, dims, width, height);
+        const auto image = pImage ? typename SignalImageType::ConstPointer(pImage) : imageStorage->readImageRegion(region);
+        const auto size = image->GetBufferedRegion().GetSize();
+        const std::size_t rowStride = sliceAxis == 1 ? size[0] * size[1] : size[0];
+        const std::size_t columnStride = sliceAxis == 0 ? size[0] * size[1] : 1;
+        const auto *input = image->GetBufferPointer() + image->ComputeOffset(region.GetIndex());
         const auto colors = labelColorSnapshot();
         QImage result(static_cast<int>(columns.size()), static_cast<int>(rows.size()), QImage::Format_ARGB32);
         auto *output = reinterpret_cast<QRgb *>(result.bits());
@@ -822,7 +859,7 @@ QImage itkSignal<dType>::calculateVisibleLabelImage(unsigned int sliceIndex, uns
 template<typename dType>
 QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned int sliceAxis,
                                               std::vector<quint32> *sliceBuffer, bool reuseRawSlice) {
-    if (pImage.IsNull() || sliceBuffer == nullptr) {
+    if ((!pImage && !imageStorage) || sliceBuffer == nullptr) {
         return {};
     }
 
@@ -839,28 +876,14 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
         sliceBuffer->resize(requiredPixelCount);
     }
 
-    unsigned long baseOffset = 0;
-    unsigned long columnStride = 0;
-    unsigned long rowStride = 0;
-    switch (sliceAxis) {
-        case 0:
-            baseOffset = sliceIndex;
-            columnStride = dimX * dimY;
-            rowStride = dimX;
-            break;
-        case 1:
-            baseOffset = sliceIndex * dimX;
-            columnStride = 1;
-            rowStride = dimX * dimY;
-            break;
-        case 2:
-            baseOffset = sliceIndex * dimX * dimY;
-            columnStride = 1;
-            rowStride = dimX;
-            break;
-        default:
-            throw std::logic_error("sliceAxis not implemented!");
-    }
+    unsigned int width, height;
+    const auto region = slice_geometry::makeSliceRegion<SignalImageIndexType, SignalImageSizeType, SignalImageRegionType>(
+        sliceIndex, sliceAxis, dims, width, height);
+    const auto image = pImage ? typename SignalImageType::ConstPointer(pImage) : imageStorage->readImageRegion(region);
+    const auto size = image->GetBufferedRegion().GetSize();
+    const auto baseOffset = image->ComputeOffset(region.GetIndex());
+    const std::size_t columnStride = sliceAxis == 0 ? size[0] * size[1] : 1;
+    const std::size_t rowStride = sliceAxis == 1 ? size[0] * size[1] : size[0];
 
     // A local table bounds memory to 256 KiB and always reflects current display settings.
     // Small slices and wide label types keep their existing rendering path.
@@ -872,12 +895,12 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
                 colors[index] = makeContinuousPixel(
                     static_cast<double>(index) + std::numeric_limits<dType>::lowest());
             }
-            const dType *pixels = pImage->GetBufferPointer();
+            const dType *pixels = image->GetBufferPointer();
             auto &cached = rawSlices[sliceAxis];
             std::lock_guard<std::mutex> lock(cached.mutex);
             // Only display-only refreshes may reuse raw data. Full refreshes
             // reread even in-place voxel edits that did not call ITK Modified().
-            if (!reuseRawSlice || cached.source != pixels || cached.modified != pImage->GetMTime() ||
+            if (!reuseRawSlice || cached.source != pixels || cached.modified != image->GetMTime() ||
                 cached.index != sliceIndex || cached.pixels.size() != requiredPixelCount) {
                 cached.pixels.resize(requiredPixelCount);
                 const auto writePixel = [&](unsigned long row, unsigned long column) {
@@ -906,7 +929,7 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
                     }
                 }
                 cached.source = pixels;
-                cached.modified = pImage->GetMTime();
+                cached.modified = image->GetMTime();
                 cached.index = sliceIndex;
             }
             quint32 *output = sliceBuffer->data();
@@ -920,7 +943,7 @@ QImage itkSignal<dType>::calculateSliceQImage(unsigned int sliceIndex, unsigned 
         }
     }
 
-    const dType *imageBuffer = pImage->GetBufferPointer();
+    const dType *imageBuffer = image->GetBufferPointer();
     quint32 *sliceBufferPtr = sliceBuffer->data();
     const bool renderLabels = isCategorical || isEdge;
     const bool renderLabelBoundaries =
@@ -1129,7 +1152,7 @@ QString itkSignal<dType>::getNumberOfXYZAsString(int x, int y, int z) {
     QString value2String = "";
     if (x >= 0 && y >= 0 && z >= 0) {
         if (x < static_cast<int>(dimX) && y < static_cast<int>(dimY) && z < static_cast<int>(dimZ)) {
-            auto value = static_cast<long int>(pImage->GetPixel({x, y, z}));
+            auto value = static_cast<long int>((pImage ? pImage->GetPixel({x, y, z}) : imageStorage->GetPixel({x, y, z})));
             value2String = QString("%1").arg(value);
         }
     }
@@ -1141,7 +1164,7 @@ inline QString itkSignal<float>::getNumberOfXYZAsString(int x, int y, int z) {
     QString value2String = "";
     if (x >= 0 && y >= 0 && z >= 0) {
         if (x < static_cast<int>(dimX) && y < static_cast<int>(dimY) && z < static_cast<int>(dimZ)) {
-            auto value = static_cast<long int>(pImage->GetPixel({x, y, z}));
+            auto value = static_cast<long int>((pImage ? pImage->GetPixel({x, y, z}) : imageStorage->GetPixel({x, y, z})));
             value2String = QString::number(value, 'g', 3);
         }
     }
@@ -1153,7 +1176,7 @@ inline QString itkSignal<double>::getNumberOfXYZAsString(int x, int y, int z) {
     QString value2String = "";
     if (x >= 0 && y >= 0 && z >= 0) {
         if (x < static_cast<int>(dimX) && y < static_cast<int>(dimY) && z < static_cast<int>(dimZ)) {
-            auto value = static_cast<long int>(pImage->GetPixel({x, y, z}));
+            auto value = static_cast<long int>((pImage ? pImage->GetPixel({x, y, z}) : imageStorage->GetPixel({x, y, z})));
             value2String = QString::number(value, 'g', 3);
         }
     }
