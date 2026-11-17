@@ -61,13 +61,15 @@ inline ImageGeometry geometryForRegion(
     return geometry;
 }
 
-inline ImageGeometry geometryForImage(
-    const dataType::SegmentsImageType::Pointer &image) {
+template<typename TImage>
+ImageGeometry geometryForImage(
+    const itk::SmartPointer<TImage> &image) {
     if (image.IsNull()) {
         throw std::invalid_argument("Cannot traverse components in a null label image.");
     }
-    if (image->GetBufferPointer() == nullptr) {
-        throw std::invalid_argument("Cannot traverse components in an unallocated label image.");
+    if constexpr (std::is_same_v<TImage, dataType::SegmentsImageType>) {
+        if (image->GetBufferPointer() == nullptr)
+            throw std::invalid_argument("Cannot traverse components in an unallocated label image.");
     }
     return geometryForRegion(image->GetLargestPossibleRegion());
 }
@@ -139,9 +141,9 @@ void forEachNeighbor(std::ptrdiff_t index,
 // Visits the connected component carrying the seed's label. The visitor
 // returns false to stop early. Storage grows with the visited component rather
 // than with the full image volume.
-template<typename Visitor>
+template<typename TImage, typename Visitor>
 ConnectedComponentVisitResult visitLabelComponent(
-    const dataType::SegmentsImageType::Pointer &image,
+    const itk::SmartPointer<TImage> &image,
     const dataType::SegmentsImageType::IndexType &seed,
     ConnectivityStencil connectivity,
     Visitor &&visitor) {
@@ -151,9 +153,12 @@ ConnectedComponentVisitResult visitLabelComponent(
         throw std::invalid_argument("Connected-component seed is outside the label image.");
     }
 
-    const auto *buffer = image->GetBufferPointer();
+    const auto valueAt = [&](std::ptrdiff_t index) {
+        if constexpr (std::is_same_v<TImage, dataType::SegmentsImageType>) return image->GetBufferPointer()[index];
+        else return image->GetPixel(detail::imageIndex(index, geometry));
+    };
     const std::ptrdiff_t seedLinear = detail::linearIndex(seed, geometry);
-    const dataType::SegmentIdType componentLabel = buffer[seedLinear];
+    const dataType::SegmentIdType componentLabel = valueAt(seedLinear);
 
     std::unordered_set<std::ptrdiff_t> visited;
     std::vector<std::ptrdiff_t> open;
@@ -172,7 +177,7 @@ ConnectedComponentVisitResult visitLabelComponent(
         }
 
         detail::forEachNeighbor(current, geometry, connectivity, [&](std::ptrdiff_t neighbor) {
-            if (buffer[neighbor] == componentLabel && visited.insert(neighbor).second) {
+            if (valueAt(neighbor) == componentLabel && visited.insert(neighbor).second) {
                 open.push_back(neighbor);
             }
         });
@@ -220,6 +225,13 @@ std::unordered_map<dataType::SegmentIdType, std::size_t> countConnectedComponent
 ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
     const dataType::SegmentsImageType::Pointer &image,
     const ConnectedComponentSplitOptions &options);
+
+std::unordered_map<dataType::SegmentIdType, std::size_t> countConnectedComponentsByLabelInRegions(
+    const dataType::SegmentsStorage::Pointer &image,
+    const std::unordered_map<dataType::SegmentIdType, dataType::SegmentsImageType::RegionType> &regionsByLabel,
+    ConnectivityStencil connectivity);
+ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
+    const dataType::SegmentsStorage::Pointer &image, const ConnectedComponentSplitOptions &options);
 
 } // namespace segment_puzzler::connected_components
 

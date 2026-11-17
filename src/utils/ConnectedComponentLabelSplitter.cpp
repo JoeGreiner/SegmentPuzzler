@@ -315,4 +315,41 @@ ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
     return stats;
 }
 
+std::unordered_map<dataType::SegmentIdType, std::size_t> countConnectedComponentsByLabelInRegions(
+    const dataType::SegmentsStorage::Pointer &image,
+    const std::unordered_map<dataType::SegmentIdType, dataType::SegmentsImageType::RegionType> &regionsByLabel,
+    ConnectivityStencil connectivity) {
+    std::unordered_map<dataType::SegmentIdType, std::size_t> counts;
+    for (const auto &[label, region] : regionsByLabel)
+        counts[label] = countLabelComponentsInRegion(image->denseRegion(region), label, region, connectivity);
+    return counts;
+}
+
+ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
+    const dataType::SegmentsStorage::Pointer &image, const ConnectedComponentSplitOptions &options) {
+    auto region = image->GetLargestPossibleRegion();
+    auto localOptions = options;
+    SegmentIdType maximum = 0;
+    if (!options.includedLabels.empty()) {
+        dataType::SegmentsStorage::LabelStatistics selected;
+        for (const auto &[label, statistics] : image->labelStatistics()) {
+            if (options.ignoredLabels.count(label)) continue;
+            maximum = std::max(maximum, label);
+            if (options.includedLabels.count(label)) selected.include(statistics.bounds, statistics.voxelCount);
+        }
+        localOptions.nextFreeLabel = std::max(options.nextFreeLabel, std::uint64_t(maximum) + 1);
+        if (!selected.voxelCount) {
+            ConnectedComponentSplitStats result;
+            result.maxLabel = maximum; result.nextFreeLabel = localOptions.nextFreeLabel;
+            return result;
+        }
+        region = selected.bounds;
+    }
+    auto dense = image->denseRegion(region);
+    auto result = splitDisconnectedLabelComponentsInPlace(dense, localOptions);
+    result.maxLabel = std::max(result.maxLabel, maximum);
+    if (result.changed()) image->writeRegion(region, dense->GetBufferPointer(), region.GetNumberOfPixels());
+    return result;
+}
+
 } // namespace segment_puzzler::connected_components
