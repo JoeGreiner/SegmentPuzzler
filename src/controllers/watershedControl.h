@@ -89,6 +89,7 @@ public:
 
     //TODO: make union
     itk::Image<unsigned short, 3>::Pointer pBoundaries;
+    std::shared_ptr<volume_io::VolumeContext> inputVolumeContext;
     itkSignalThresholdPreview<dataType::BoundaryVoxelType> *pThresholdPreviewSignal;
     itk::Image<unsigned char, 3>::Pointer pThresholdedMembrane;
     itk::Image<float, 3>::Pointer pDistanceMap;
@@ -102,7 +103,8 @@ public:
 
     bool loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
                size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
-               bool forceSegmentDataType = false);
+               bool forceSegmentDataType = false, volume_io::ImageLoadOptions options = {});
+    CropLoadDefaults cropLoadDefaults;
 
 signals:
     void sendClosingSignal();
@@ -113,10 +115,10 @@ public slots:
     void forwardValueChangedSignal(int value);
     void addImagePressed();
 
-    void addBoundariesFromFile(QString fileName);
-    void addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn);
+    void addBoundariesFromFile(QString fileName, volume_io::ImageLoadOptions options = {});
+    void addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn, std::shared_ptr<volume_io::VolumeContext> context = {});
     void addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn,
-            int fxIn, int txIn, int fyIn, int tyIn, int fzIn, int tzIn);
+            int fxIn, int txIn, int fyIn, int tyIn, int fzIn, int tzIn, std::shared_ptr<volume_io::VolumeContext> context = {});
 
     void setWatershedAlgorithm(WatershedAlgorithm algorithm);
 
@@ -140,7 +142,7 @@ public slots:
     void inspectSegmentsPressed();
     void finalizeOutputPressed();
 
-    void addImage(QString fileName);
+    void addImage(QString fileName, volume_io::ImageLoadOptions options = {});
 
     void treeDoubleClicked(QTreeWidgetItem *item, int index);
 
@@ -359,9 +361,11 @@ private:
     bool insertTypedImage(
         typename itk::Image<T, 3>::Pointer  pImage,
         size_t                             &signalIndexGlobalOut,
-        bool                                forceShapeOfSegments)
+        bool                                forceShapeOfSegments,
+        std::shared_ptr<volume_io::VolumeContext> context = {})
     {
         std::unique_ptr<itkSignal<T>> pSignal(new itkSignal<T>(pImage));
+        pSignal->volumeContext = std::move(context);
         const bool shapeCheckPassed =
             !forceShapeOfSegments || itkSignalSegmentsGraph == nullptr || pSignal->isShapeMatched(itkSignalSegmentsGraph);
         if (shapeCheckPassed) {

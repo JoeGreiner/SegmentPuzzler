@@ -366,7 +366,7 @@ int testUtilityPreflightsLabelExhaustion() {
     options.connectivity = ConnectivityStencil::SixConnected;
     options.includedLabels.insert(1);
     options.ignoredLabels.insert(0);
-    options.nextFreeLabel = maximumLabel - 1;
+    options.nextFreeLabel = maximumLabel;
     bool threw = false;
     try {
         static_cast<void>(splitDisconnectedLabelComponentsInPlace(image, options));
@@ -784,7 +784,7 @@ int testAutomaticSixConnected3DSplitPreparation() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 10;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
 
     ConnectedComponentSplitOptions options;
     options.connectivity = ConnectivityStencil::SixConnected;
@@ -920,7 +920,7 @@ int testNeighborMergeChoosesSmallestExactNeighbor() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
     options.neighborSelection = Graph::SegmentationNeighborSelection::Smallest;
@@ -964,7 +964,7 @@ int testNeighborMergeChoosesLargestExactNeighbor() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
     options.neighborSelection = Graph::SegmentationNeighborSelection::Largest;
@@ -1009,7 +1009,7 @@ int testNeighborMergeDefaultsToMostConnectedNeighbor() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 40;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(40) + 1;
 
     const Graph::SegmentationNeighborMergeOptions options;
     if (options.neighborSelection != Graph::SegmentationNeighborSelection::MostConnected) {
@@ -1054,7 +1054,7 @@ int testMostConnectedMergeRefreshesSparseColorPresentation() {
     fixture.graphBase->pWorkingSegments = &workingSignal;
     fixture.graphBase->pSelectedSegmentation = selectedImage;
     fixture.graphBase->pSelectedSegmentationSignal = &selectedSignal;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     // Reproduce the reported presentation boundary without constructing
     // thousands of intermediate graph edits.
@@ -1109,7 +1109,7 @@ int testMostConnectedNeighborUsesStableLabelTieBreak() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
         {20}, Graph::SegmentationNeighborMergeOptions{});
@@ -1134,7 +1134,7 @@ int testNeighborMergeRejectsInvalidSelectionWithoutMutation() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
     const auto workingBefore = copyImageBuffer(workingImage);
     const auto selectedBefore = copyImageBuffer(selectedImage);
     const auto nextFreeIdBefore = fixture.graph->nextFreeId;
@@ -1175,7 +1175,7 @@ int testNeighborMergeRequiresConfirmationBeforeInsertion() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
     const auto workingBefore = copyImageBuffer(workingImage);
     const auto selectedBefore = copyImageBuffer(selectedImage);
     const auto nextFreeIdBefore = fixture.graph->nextFreeId;
@@ -1228,7 +1228,7 @@ int testNeighborMergeRepairsWorkingNodeSplitByInsertion() {
     selectedImage->SetPixel({4, 2, 1}, 20);
     selectedImage->SetPixel({5, 2, 1}, 30);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
     options.allowInsertion = true;
@@ -1265,7 +1265,7 @@ int testNeighborMergeCountPreflightRejectsDifferentVoxelSet() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
     const auto workingBefore = copyImageBuffer(workingImage);
     const auto selectedBefore = copyImageBuffer(selectedImage);
 
@@ -1298,7 +1298,7 @@ int testNeighborMergeCombinesSelectedChainsOnce() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 30;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
     options.neighborSelection = Graph::SegmentationNeighborSelection::Smallest;
@@ -1330,7 +1330,7 @@ int testNeighborMergeDeduplicatesMutualSelection() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
 
     const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
         {10, 20}, Graph::SegmentationNeighborMergeOptions{});
@@ -1357,7 +1357,7 @@ int testNeighborMergePropagatesOnlyNewSmallLabels() {
 
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 50;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(50) + 1;
 
     constexpr std::size_t threshold = 6;
     auto candidates = fixture.graph->selectedSegmentationLabelsBelowVoxelCount(threshold);
@@ -1404,7 +1404,7 @@ int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
         selectedImage->SetPixel({3, 0, 0}, 20);
         auto fixture = buildGraphFixture(workingImage);
         fixture.graphBase->pSelectedSegmentation = selectedImage;
-        fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+        fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
         const auto selectedBefore = copyImageBuffer(selectedImage);
 
         const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
@@ -1425,7 +1425,7 @@ int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
         selectedImage->SetPixel({2, 0, 0}, 10);
         auto fixture = buildGraphFixture(workingImage);
         fixture.graphBase->pSelectedSegmentation = selectedImage;
-        fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+        fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
         const auto workingBefore = copyImageBuffer(workingImage);
         const auto selectedBefore = copyImageBuffer(selectedImage);
 
@@ -1464,7 +1464,7 @@ int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
         selectedImage->SetPixel({3, 0, 0}, 20);
         auto fixture = buildGraphFixture(workingImage);
         fixture.graphBase->pSelectedSegmentation = selectedImage;
-        fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+        fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
 
         auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
             {10}, Graph::SegmentationNeighborMergeOptions{});
@@ -1558,13 +1558,13 @@ int testRefinementOverlapTransferTransfersAllAboveThreshold() {
     auto fixture = buildGraphFixture(workingImage);
     fixture.graphBase->pSelectedRefinement = refinementImage;
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 0;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(0) + 1;
 
     fixture.graph->transferSegmentsWithRefinementOverlap();
     if (countLabel(selectedImage, 0) != 12 ||
         countLabel(selectedImage, 1) != 10 ||
         countLabel(selectedImage, 2) != 10 ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 2 ||
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 2 ||
         selectedImage->GetPixel({0, 0, 0}) != 1 ||
         selectedImage->GetPixel({11, 0, 0}) != 2 ||
         selectedImage->GetPixel({22, 0, 0}) != 0) {
@@ -1574,10 +1574,10 @@ int testRefinementOverlapTransferTransfersAllAboveThreshold() {
     }
 
     selectedImage->FillBuffer(0);
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 0;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(0) + 1;
     fixture.graph->transferSegmentsWithRefinementOverlap(0.6);
     if (countLabel(selectedImage, 0) != 22 || countLabel(selectedImage, 1) != 10 ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 1 ||
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 1 ||
         selectedImage->GetPixel({0, 0, 0}) != 1 ||
         selectedImage->GetPixel({11, 0, 0}) != 0) {
         return failTest("An 80% overlap should pass a 60% threshold, but an exact 60% overlap should not.");
@@ -1585,22 +1585,22 @@ int testRefinementOverlapTransferTransfersAllAboveThreshold() {
 
     fixture.graph->transferSegmentsWithRefinementOverlap(0.8);
     if (countLabel(selectedImage, 0) != 22 || countLabel(selectedImage, 1) != 10 ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 1) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 1) {
         return failTest("A transfer with no matches should leave the selected segmentation unchanged.");
     }
 
     refinementImage->FillBuffer(0);
     for (int x = 0; x < 4; ++x) refinementImage->SetPixel({x, 0, 0}, 100);
     selectedImage->FillBuffer(0);
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 0;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(0) + 1;
     fixture.graph->transferSegmentsWithRefinementOverlap(0.4);
     if (countLabel(selectedImage, 0) != 32 ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 0) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 0) {
         return failTest("40% refinement overlap plus 60% background must not exceed a 40% threshold.");
     }
     fixture.graph->transferSegmentsWithRefinementOverlap(0.3);
     if (countLabel(selectedImage, 0) != 22 || countLabel(selectedImage, 1) != 10 ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 1 ||
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 1 ||
         selectedImage->GetPixel({9, 0, 0}) != 1) {
         return failTest("40% refinement overlap plus 60% background should transfer the full supervoxel "
                         "at a 30% threshold, while background-only supervoxels remain excluded.");
@@ -1659,7 +1659,7 @@ int testNonOverlappingTransferThresholdAndPriority() {
     for (const double threshold : {0.0, 0.2}) {
         for (const bool preserve : {true, false}) {
             std::copy(selectedBefore.begin(), selectedBefore.end(), selectedImage->GetBufferPointer());
-            fixture.graphBase->selectedSegmentationMaxSegmentId = 80;
+            fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(80) + 1;
             fixture.graph->transferNonOverlappingSegments(threshold, 0, preserve);
 
             auto expected = selectedBefore;
@@ -1672,7 +1672,7 @@ int testNonOverlappingTransferThresholdAndPriority() {
             const SegmentIdType lastLabel = threshold == 0.2 ? 83 : 82;
             expected[34] = lastLabel;
             if (copyImageBuffer(selectedImage) != expected ||
-                fixture.graphBase->selectedSegmentationMaxSegmentId != lastLabel ||
+                (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != lastLabel ||
                 copyImageBuffer(workingImage) != workingBefore) {
                 return failTest("Non-overlapping transfer must sum overlaps across labels, include equality "
                                 "and single voxels, respect priority, and exclude ignored working labels.");
@@ -1683,7 +1683,7 @@ int testNonOverlappingTransferThresholdAndPriority() {
     for (const bool preserve : {true, false}) {
         selectedImage->FillBuffer(80);
         selectedImage->SetPixel({34, 0, 0}, 0);
-        fixture.graphBase->selectedSegmentationMaxSegmentId = 80;
+        fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(80) + 1;
         fixture.graph->transferNonOverlappingSegments(1.0, 0, preserve);
         std::vector<SegmentIdType> expected(40, 80);
         if (preserve) {
@@ -1695,14 +1695,14 @@ int testNonOverlappingTransferThresholdAndPriority() {
             expected[34] = 84;
         }
         if (copyImageBuffer(selectedImage) != expected ||
-            fixture.graphBase->selectedSegmentationMaxSegmentId != (preserve ? 81 : 84)) {
+            (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != (preserve ? 81 : 84)) {
             return failTest("At 100% overlap, fully occupied nodes should only transfer when overwriting.");
         }
         const auto modifiedBefore = selectedImage->GetMTime();
-        const auto maximumBefore = fixture.graphBase->selectedSegmentationMaxSegmentId;
+        const auto maximumBefore = (fixture.graphBase->selectedSegmentationContext->nextLabel - 1);
         fixture.graph->transferNonOverlappingSegments(1.0);
         if (copyImageBuffer(selectedImage) != expected || selectedImage->GetMTime() != modifiedBefore ||
-            fixture.graphBase->selectedSegmentationMaxSegmentId != maximumBefore) {
+            (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != maximumBefore) {
             return failTest("Preserving a fully occupied segmentation must not modify it or consume labels.");
         }
     }
@@ -1723,7 +1723,7 @@ int testNonOverlappingTransferDecimalThresholds() {
             for (const bool bulk : {false, true}) {
                 selectedImage->FillBuffer(0);
                 for (int x = 1; x <= occupied; ++x) selectedImage->SetPixel({x, 0, 0}, 10);
-                fixture.graphBase->selectedSegmentationMaxSegmentId = 10;
+                fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
                 const bool shouldTransfer = occupied == tenthsOfPercent;
                 if (bulk) {
                     fixture.graph->transferNonOverlappingSegments(limit);
@@ -1735,7 +1735,7 @@ int testNonOverlappingTransferDecimalThresholds() {
                 }
                 if (countLabel(selectedImage, 11) != (shouldTransfer ? 1000U - occupied : 0U) ||
                     countLabel(selectedImage, 10) != static_cast<std::size_t>(occupied) ||
-                    fixture.graphBase->selectedSegmentationMaxSegmentId != (shouldTransfer ? 11 : 10)) {
+                    (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != (shouldTransfer ? 11 : 10)) {
                     return failTest("Single and bulk transfer must honor decimal limits without widening zero overlap.");
                 }
             }
@@ -1757,18 +1757,18 @@ int testNonOverlappingTransferUsesEntireWorkingNodeVolume() {
     auto selectedImage = makeImage(7, 1, 1);
     selectedImage->SetPixel({1, 0, 0}, 10);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 10;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     const auto selectedBefore = copyImageBuffer(selectedImage);
 
     fixture.graph->transferNonOverlappingSegments(0.25, 4);
     if (copyImageBuffer(selectedImage) != selectedBefore ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 10) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Volume must be strictly greater than the threshold.");
     }
     fixture.graph->transferNonOverlappingSegments(0.25, 3);
     const std::vector<SegmentIdType> expected{0, 10, 11, 11, 11, 0, 0};
     if (copyImageBuffer(selectedImage) != expected ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 11 ||
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 11 ||
         copyImageBuffer(workingImage) != workingBefore || fixture.graph->workingNodes.size() != 2) {
         return failTest("Volume and overlap must use all initial nodes in a working node before clipping.");
     }
@@ -1791,11 +1791,11 @@ int testNonOverlappingTransferUsesZeroAsSelectedBackground() {
     auto selectedImage = makeImage(4, 1, 1);
     selectedImage->SetPixel({2, 0, 0}, 9);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 9;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(9) + 1;
 
     fixture.graph->transferNonOverlappingSegments(0.0);
     if (copyImageBuffer(selectedImage) != std::vector<SegmentIdType>{0, 10, 9, 0} ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 10) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Selected label zero is free; a non-zero working background ID is occupied in the target.");
     }
     return 0;
@@ -1808,7 +1808,7 @@ int testNonOverlappingTransferRejectsInvalidInputWithoutMutation() {
     auto fixture = buildGraphFixture(workingImage);
     auto selectedImage = makeImage(4, 1, 1);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 10;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     const auto selectedBefore = copyImageBuffer(selectedImage);
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double infinity = std::numeric_limits<double>::infinity();
@@ -1822,7 +1822,7 @@ int testNonOverlappingTransferRejectsInvalidInputWithoutMutation() {
             threw = true;
         }
         if (!threw || copyImageBuffer(selectedImage) != selectedBefore ||
-            fixture.graphBase->selectedSegmentationMaxSegmentId != 10) {
+            (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
             return failTest("Invalid thresholds must be rejected without mutation.");
         }
     }
@@ -1832,7 +1832,7 @@ int testNonOverlappingTransferRejectsInvalidInputWithoutMutation() {
     auto incompatibleImage = makeImage(3, 1, 1);
     fixture.graphBase->pSelectedSegmentation = incompatibleImage;
     fixture.graph->transferNonOverlappingSegments(0.0);
-    if (countLabel(incompatibleImage, 0) != 3 || fixture.graphBase->selectedSegmentationMaxSegmentId != 10) {
+    if (countLabel(incompatibleImage, 0) != 3 || (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Missing or incompatible target images must not consume labels or change pixels.");
     }
     fixture.graphBase->pSelectedSegmentation = selectedImage;
@@ -1840,18 +1840,18 @@ int testNonOverlappingTransferRejectsInvalidInputWithoutMutation() {
     fixture.graph->transferNonOverlappingSegments(0.0);
     fixture.graphBase->pWorkingSegmentsImage = workingImage;
     if (copyImageBuffer(selectedImage) != selectedBefore ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 10) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Missing working image must leave segmentation unchanged.");
     }
 
-    fixture.graphBase->selectedSegmentationMaxSegmentId = std::numeric_limits<SegmentIdType>::max() - 1;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(std::numeric_limits<SegmentIdType>::max() - 1) + 1;
     fixture.graph->transferNonOverlappingSegments(0.0);
     if (copyImageBuffer(selectedImage) != selectedBefore ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != std::numeric_limits<SegmentIdType>::max() - 1) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != std::numeric_limits<SegmentIdType>::max() - 1) {
         return failTest("Insufficient label IDs must fail before any non-overlapping node is transferred.");
     }
 
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 10;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     fixture.graph->initialNodes.at(2)->voxels.emplace_back(100, 0, 0);
     bool threw = false;
     try {
@@ -1860,7 +1860,7 @@ int testNonOverlappingTransferRejectsInvalidInputWithoutMutation() {
         threw = true;
     }
     if (!threw || copyImageBuffer(selectedImage) != selectedBefore ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 10) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Invalid voxel coordinates must be rejected before image access or batch writes.");
     }
     return 0;
@@ -1880,7 +1880,7 @@ int testNonOverlappingTransferAtPosition() {
     auto selectedImage = makeImage(7, 1, 1);
     selectedImage->SetPixel({1, 0, 0}, 10);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 10;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     const auto before = copyImageBuffer(selectedImage);
 
     for (const auto &position : std::array<std::array<int, 3>, 4>{{
@@ -1893,7 +1893,7 @@ int testNonOverlappingTransferAtPosition() {
     }
     if (fixture.graph->transferNonOverlappingWorkingNodeToSegmentation(4, 0, 0, 0.24, true, &rejection) ||
         rejection != Rejection::OverlapExceeded ||
-        copyImageBuffer(selectedImage) != before || fixture.graphBase->selectedSegmentationMaxSegmentId != 10) {
+        copyImageBuffer(selectedImage) != before || (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Rejected single-node transfers must not consume labels or transfer other candidates.");
     }
     for (const double invalid : {-0.1, 1.1, std::numeric_limits<double>::quiet_NaN()}) {
@@ -1919,7 +1919,7 @@ int testNonOverlappingTransferAtPosition() {
     for (const double threshold : {0.0, 1.0}) {
         if (fixture.graph->transferNonOverlappingWorkingNodeToSegmentation(4, 0, 0, threshold, true, &rejection) ||
             rejection != Rejection::NoEmptyVoxels || copyImageBuffer(selectedImage) != preserved ||
-            fixture.graphBase->selectedSegmentationMaxSegmentId != 11) {
+            (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 11) {
             return failTest("Full nodes must report no empty voxels before overlap, without mutation or consumed labels.");
         }
     }
@@ -1932,7 +1932,7 @@ int testNonOverlappingTransferAtPosition() {
     fixture.graphBase->ignoredSegmentLabels.push_back(3);
     if (fixture.graph->transferNonOverlappingWorkingNodeToSegmentation(6, 0, 0, 0.0, true, &rejection) ||
         rejection != Rejection::None ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 12) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 12) {
         return failTest("Single-node transfer must skip ignored source labels.");
     }
     return 0;
@@ -1948,16 +1948,16 @@ int testBatchTransferPreservesExistingSegmentation() {
     selectedImage->SetPixel({1, 0, 0}, 10);
     selectedImage->SetPixel({2, 0, 0}, 20);
     fixture.graphBase->pSelectedSegmentation = selectedImage;
-    fixture.graphBase->selectedSegmentationMaxSegmentId = 20;
+    fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
 
     const auto assigned = fixture.graph->transferWorkingNodesToSegmentation({1, 2}, true);
     const std::vector<SegmentIdType> expected{0, 10, 20, 21, 0};
     if (assigned != std::vector<SegmentIdType>{21} || copyImageBuffer(selectedImage) != expected ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 21) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 21) {
         return failTest("Preserving batch transfer must skip occupied nodes and label only free voxels.");
     }
     if (!fixture.graph->transferWorkingNodesToSegmentation({1, 2}, true).empty() ||
-        fixture.graphBase->selectedSegmentationMaxSegmentId != 21) {
+        (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 21) {
         return failTest("A preserving batch with no free voxels must not consume labels.");
     }
     const auto overwritten = fixture.graph->transferWorkingNodesToSegmentation({1, 2});

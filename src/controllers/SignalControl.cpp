@@ -279,25 +279,18 @@ bool hasConfirmedDifferentlySizedTiffPages(const QString &fileName) {
 }
 
 template<typename ComponentType>
-std::array<typename itk::Image<ComponentType, 3>::Pointer, 3>
-loadRgbChannels(const QString &fileName, bool firstTiffPageOnly) {
+std::array<volume_io::LoadedVolume<itk::Image<ComponentType, 3>>, 3>
+loadRgbChannels(const QString &fileName, bool firstTiffPageOnly, const volume_io::ImageLoadOptions &options) {
     using VectorImageType = itk::VectorImage<ComponentType, 3>;
     using ScalarImageType = itk::Image<ComponentType, 3>;
-    using ReaderType = itk::ImageFileReader<VectorImageType>;
     using ChannelFilterType =
         itk::VectorIndexSelectionCastImageFilter<VectorImageType, ScalarImageType>;
 
     SP_LOG_INFO("io", QStringLiteral("Reading RGB image %1").arg(fileName));
 
-    typename ReaderType::Pointer reader = ReaderType::New();
-    if (firstTiffPageOnly) {
-        reader->SetImageIO(FirstPageTIFFImageIO::New());
-    }
-    reader->SetFileName(fileName.toStdString());
-    reader->Update();
-
-    typename VectorImageType::Pointer vectorImage = reader->GetOutput();
-    vectorImage->DisconnectPipeline();
+    auto customIO = firstTiffPageOnly ? FirstPageTIFFImageIO::New() : nullptr;
+    auto loaded = volume_io::readWithITK<VectorImageType>(fileName, options, customIO);
+    auto vectorImage = loaded.image;
     if (firstTiffPageOnly) {
         SP_LOG_WARNING(
             "io",
@@ -311,16 +304,17 @@ loadRgbChannels(const QString &fileName, bool firstTiffPageOnly) {
             "Expected an RGB image with exactly three components: " + fileName.toStdString());
     }
 
-    std::array<typename ScalarImageType::Pointer, 3> channels;
+    std::array<volume_io::LoadedVolume<ScalarImageType>, 3> channels;
     for (unsigned int channelIndex = 0; channelIndex < channels.size(); ++channelIndex) {
         typename ChannelFilterType::Pointer channelFilter = ChannelFilterType::New();
         channelFilter->SetInput(vectorImage);
         channelFilter->SetIndex(channelIndex);
         channelFilter->Update();
 
-        channels[channelIndex] = channelFilter->GetOutput();
-        channels[channelIndex]->SetMetaDataDictionary(vectorImage->GetMetaDataDictionary());
-        channels[channelIndex]->DisconnectPipeline();
+        channels[channelIndex].image = channelFilter->GetOutput();
+        channels[channelIndex].context = std::make_shared<volume_io::VolumeContext>(*loaded.context);
+        channels[channelIndex].image->SetMetaDataDictionary(vectorImage->GetMetaDataDictionary());
+        channels[channelIndex].image->DisconnectPipeline();
     }
     return channels;
 }
@@ -368,6 +362,7 @@ dataType::BoundaryImageType::Pointer convertFloatBoundaryImage(
     convertedImage->SetSpacing(sourceImage->GetSpacing());
     convertedImage->SetOrigin(sourceImage->GetOrigin());
     convertedImage->SetDirection(sourceImage->GetDirection());
+    convertedImage->SetMetaDataDictionary(sourceImage->GetMetaDataDictionary());
     convertedImage->Allocate();
 
     const double targetMax = static_cast<double>(std::numeric_limits<dataType::BoundaryVoxelType>::max());
@@ -581,6 +576,8 @@ QString layerToolTipText(itkSignalBase *signal) {
     }
 
     QString toolTip = QString("Type: %1").arg(signal->getDisplayDataTypeName());
+    if (signal->volumeContext && signal->volumeContext->crop)
+        toolTip += "\n\n" + volume_io::contextDescription(*signal->volumeContext);
     if (signal->usesEdgeStatusColors()) {
         toolTip += "\nEdge colors are fixed: white, red, green.";
     } else if (signal->usesCategoricalColors()) {
@@ -655,14 +652,14 @@ SignalControl::~SignalControl() {
 
 }
 
-void SignalControl::prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage) {
+void SignalControl::prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background) {
     graphBase->ignoredSegmentLabels.clear();
     graphBase->edgeStatus.clear();
     graphBase->colorLookUpEdgesStatus.clear();
     graphBase->pGraph->setBackgroundIdStrategy("backgroundIsLowestId");
     graphBase->pWorkingSegmentsImage = workingSegmentsImage;
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graphBase->pGraph->constructFromVolume(workingSegmentsImage);
+    graphBase->pGraph->constructFromVolume(workingSegmentsImage, background);
 }
 
 void SignalControl::showInfoMessage(const QString &message) const {
@@ -1115,7 +1112,7 @@ void SignalControl::refreshLayerWidget(QTreeWidget *tree, QTreeWidgetItem *item)
     item->setText(1, QString());
 
     SignalLayerWidget::Presentation presentation;
-    presentation.layerName = name;
+    presentation.layerName = name + (signal->volumeContext && signal->volumeContext->crop ? QStringLiteral(" [Crop]") : QString());
     presentation.layerColor = QColor::fromRgba(signal->getColor());
     presentation.usesCategoricalPalette = signal->usesCategoricalColors();
     presentation.usesEdgeStatusColors = signal->usesEdgeStatusColors();
@@ -1395,10 +1392,12 @@ void SignalControl::selectLoadedItemIfAppropriate(QTreeWidget *tree,
 void SignalControl::selectBoundaryItem(QTreeWidgetItem *item) {
     if (signal_tree::topLevelSignalItem(item) == nullptr) {
         graphBase->pSelectedBoundary = nullptr;
+        graphBase->pSelectedBoundarySignal = nullptr;
         return;
     }
 
     const size_t signalIndex = signalIndexForItem(item);
+    graphBase->pSelectedBoundarySignal = allSignalList[signalIndex];
     graphBase->pSelectedBoundary = dynamic_cast<dataType::BoundaryImageType *>(
         allSignalList[signalIndex]->getImageBase().GetPointer());
 }
@@ -1423,7 +1422,7 @@ void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
     if (signal_tree::topLevelSignalItem(item) == nullptr) {
         graphBase->pSelectedSegmentation = nullptr;
         graphBase->pSelectedSegmentationSignal = nullptr;
-        graphBase->selectedSegmentationMaxSegmentId = 0;
+        graphBase->selectedSegmentationContext = std::make_shared<volume_io::VolumeContext>();
         if (orthoViewer != nullptr) {
             orthoViewer->resetPaintSelection();
         }
@@ -1439,8 +1438,7 @@ void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
         allSignalList[signalIndex]->getImageBase().GetPointer());
     graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
         allSignalList[signalIndex]);
-    graphBase->selectedSegmentationMaxSegmentId =
-        graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
+    graphBase->selectedSegmentationContext = graphBase->pSelectedSegmentationSignal->volumeContext;
     if (orthoViewer != nullptr) {
         orthoViewer->resetPaintSelection();
     }
@@ -1719,7 +1717,8 @@ void SignalControl::invokeLoadCallbackOnce(
 
 SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
                                                             bool forceSegmentDataTypeUInt,
-                                                            itk::ImageIOBase::IOComponentType forcedDataType) {
+                                                            itk::ImageIOBase::IOComponentType forcedDataType,
+                                                            const volume_io::ImageLoadOptions &options) {
     LoadedImageData loadedImage;
     if (fileName.isEmpty()) {
         return loadedImage;
@@ -1789,17 +1788,17 @@ SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
                       std::is_same_v<ComponentType, unsigned short>) {
             if (isRgb) {
                 const auto channels =
-                    loadRgbChannels<ComponentType>(fileName, firstTiffPageOnly);
+                    loadRgbChannels<ComponentType>(fileName, firstTiffPageOnly, options);
                 loadedImage.layers = {
-                    {channels[0].GetPointer(), QStringLiteral(" [R]"), QColor(255, 0, 0)},
-                    {channels[1].GetPointer(), QStringLiteral(" [G]"), QColor(0, 255, 0)},
-                    {channels[2].GetPointer(), QStringLiteral(" [B]"), QColor(0, 0, 255)}
+                    {channels[0].image.GetPointer(), QStringLiteral(" [R]"), QColor(255, 0, 0), channels[0].context},
+                    {channels[1].image.GetPointer(), QStringLiteral(" [G]"), QColor(0, 255, 0), channels[1].context},
+                    {channels[2].image.GetPointer(), QStringLiteral(" [B]"), QColor(0, 0, 255), channels[2].context}
                 };
                 return;
             }
         }
-        loadedImage.layers.push_back(
-            {ITKImageLoader<ComponentType>(fileName).GetPointer(), {}, std::nullopt});
+        auto loaded = loadVolume<ComponentType>(fileName, options);
+        loadedImage.layers.push_back({loaded.image.GetPointer(), {}, std::nullopt, loaded.context});
     };
 
     switch (loadedImage.dataType) {
@@ -1871,62 +1870,62 @@ bool SignalControl::insertLoadedImage(const LoadedImageLayer &loadedLayer,
             return insertTypedImage<unsigned char>(
                 dynamic_cast<itk::Image<unsigned char, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::CHAR:
             return insertTypedImage<char>(
                 dynamic_cast<itk::Image<char, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::USHORT:
             return insertTypedImage<unsigned short>(
                 dynamic_cast<itk::Image<unsigned short, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::SHORT:
             return insertTypedImage<short>(
                 dynamic_cast<itk::Image<short, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::UINT:
             return insertTypedImage<unsigned int>(
                 dynamic_cast<itk::Image<unsigned int, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::INT:
             return insertTypedImage<int>(
                 dynamic_cast<itk::Image<int, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::ULONG:
             return insertTypedImage<unsigned long>(
                 dynamic_cast<itk::Image<unsigned long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::LONG:
             return insertTypedImage<long>(
                 dynamic_cast<itk::Image<long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::ULONGLONG:
             return insertTypedImage<unsigned long long>(
                 dynamic_cast<itk::Image<unsigned long long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::LONGLONG:
             return insertTypedImage<long long>(
                 dynamic_cast<itk::Image<long long, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::FLOAT:
             return insertTypedImage<float>(
                 dynamic_cast<itk::Image<float, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::DOUBLE:
             return insertTypedImage<double>(
                 dynamic_cast<itk::Image<double, 3> *>(loadedLayer.image.GetPointer()),
                 signalIndexGlobalOut,
-                forceShapeOfSegments);
+                forceShapeOfSegments, loadedLayer.context);
         case itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE:
         default:
             throw std::logic_error("SignalControl::insertLoadedImage unknown component type encountered.");
@@ -1958,9 +1957,15 @@ void SignalControl::registerImageSignal(
 }
 
 void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const QString &name) {
+    auto *signal = allSignalList[signalIndexGlobal];
+    if (!signal->volumeContext) {
+        signal->volumeContext = std::make_shared<volume_io::VolumeContext>();
+        auto *image = dynamic_cast<GraphSegmentImageType *>(signal->getImageBase().GetPointer());
+        volume_io::initializeLabels(*signal->volumeContext, image->GetBufferPointer(), image->GetBufferedRegion().GetNumberOfPixels(), false);
+    }
     allSignalList[signalIndexGlobal]->setCategoricalColorMode();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
-    allSignalList[signalIndexGlobal]->setValueColorToTransparent(0);
+    allSignalList[signalIndexGlobal]->setValueColorToTransparent(signal->volumeContext->background.value_or(0));
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(true);
     attachLayerWidgetToLastItem(segmentationTreeWidget);
@@ -2030,23 +2035,24 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     refreshUiState();
 }
 
-void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadCallback then) {
+void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
+    if (!prepareLoadOptions(fileName, options)) { invokeLoadCallbackLater(std::move(then), std::nullopt); return; }
     const auto spacingDecision = askForLoadedFileSpacing(fileName);
     if (!spacingDecision.shouldLoad) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
-    const auto completion = std::make_shared<LoadCallback>(std::move(then));
+    const auto completion = loadCompletion(options, std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading image..."),
-        [this, fileName, spacingOverride = spacingDecision.spacingOverride]() {
-            auto loadedImage = loadImageData(fileName);
+        [this, fileName, options, spacingOverride = spacingDecision.spacingOverride]() {
+            auto loadedImage = loadImageData(fileName, false, kSegmentLoadIOType, options);
             for (auto &layer : loadedImage.layers) {
                 applyVoxelSpacingOverride(
                     dynamic_cast<itk::ImageBase<3> *>(layer.image.GetPointer()),
@@ -2108,13 +2114,13 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
 }
 
 SignalControl::GraphSegmentImageType::Pointer SignalControl::duplicateSegmentationAndBuildWorkingSegments(
-    const GraphSegmentImageType::Pointer &segmentationImage) {
+    const GraphSegmentImageType::Pointer &segmentationImage, std::optional<GraphSegmentType> background) {
     auto workingSegmentsImage = duplicateSegmentsImage(segmentationImage);
-    prepareWorkingSegmentsGraph(workingSegmentsImage);
+    prepareWorkingSegmentsGraph(workingSegmentsImage, background);
     return workingSegmentsImage;
 }
 
-void SignalControl::loadSegmentationVolume(QString fileName, QString displayedName, LoadCallback then) {
+void SignalControl::loadSegmentationVolume(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
@@ -2131,18 +2137,21 @@ void SignalControl::loadSegmentationVolume(QString fileName, QString displayedNa
         createWorkingSegments = reply == QMessageBox::Yes;
     }
 
-    loadSegmentationVolumeAsync(fileName, displayedName, createWorkingSegments, std::move(then));
+    loadSegmentationVolumeAsync(fileName, displayedName, createWorkingSegments, std::move(then), options);
 }
 
 void SignalControl::loadSegmentationVolumeAsync(QString fileName,
                                                 QString displayedName,
                                                 bool createWorkingSegments,
-                                                LoadCallback then) {
+                                                LoadCallback then, volume_io::ImageLoadOptions options) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
+    options.labelImage = true;
+    options.backgroundIsHighest = graphBase->pGraph->backgroundIdStrategy == "backgroundIsHighestId";
+    if (!prepareLoadOptions(fileName, options)) { invokeLoadCallbackLater(std::move(then), std::nullopt); return; }
     const auto spacingDecision = askForLoadedFileSpacing(fileName);
     if (!spacingDecision.shouldLoad) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
@@ -2151,7 +2160,7 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
 
     const bool hadWorkingSegments = hasWorkingSegments();
     const auto expectedDimensions = expectedDimensionsForNewSignal(hadWorkingSegments);
-    const auto completion = std::make_shared<LoadCallback>(std::move(then));
+    const auto completion = loadCompletion(options, std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading segmentation..."),
         [this,
@@ -2159,19 +2168,22 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
          createWorkingSegments,
          hadWorkingSegments,
          expectedDimensions,
+         options,
          spacingOverride = spacingDecision.spacingOverride]() mutable {
             SegmentationLoadResultData result;
-            result.segmentationImage = ITKImageLoader<GraphSegmentType>(fileName);
+            auto loaded = loadVolume<GraphSegmentType>(fileName, options);
+            result.segmentationImage = loaded.image;
+            result.context = loaded.context;
             applyVoxelSpacingOverride(result.segmentationImage.GetPointer(), spacingOverride);
             if (expectedDimensions && !imageMatchesDimensions(result.segmentationImage, *expectedDimensions)) {
                 result.dimensionMismatch = true;
                 return result;
             }
             if (!hadWorkingSegments) {
-                graphBase->pGraph->updateBackgroundIdFromVolume(result.segmentationImage);
+                graphBase->pGraph->updateBackgroundIdFromVolume(result.segmentationImage, result.context->background);
             }
             if (createWorkingSegments) {
-                result.workingSegmentsImage = duplicateSegmentationAndBuildWorkingSegments(result.segmentationImage);
+                result.workingSegmentsImage = duplicateSegmentationAndBuildWorkingSegments(result.segmentationImage, result.context->background);
             }
             return result;
         },
@@ -2184,14 +2196,14 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
             }
 
             size_t signalIndexGlobal = 0;
-            bool ok = insertImageSegmenttype(result.segmentationImage, signalIndexGlobal, hadWorkingSegments);
+            bool ok = insertImageSegmenttype(result.segmentationImage, signalIndexGlobal, hadWorkingSegments, result.context);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
                 allSignalList[signalIndexGlobal]->sourceFilePath =
                     graphBase->lastLoadedSourcePath;
                 if (result.workingSegmentsImage != nullptr) {
                     size_t segmentIndexGlobal = 0;
-                    const bool insertedSegments = insertImageSegmenttype(result.workingSegmentsImage, segmentIndexGlobal, false);
+                    const bool insertedSegments = insertImageSegmenttype(result.workingSegmentsImage, segmentIndexGlobal, false, std::make_shared<volume_io::VolumeContext>(*result.context));
                     if (insertedSegments) {
                         allSignalList[segmentIndexGlobal]->sourceFilePath =
                             graphBase->lastLoadedSourcePath;
@@ -2205,29 +2217,32 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
         [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
-void SignalControl::loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then) {
+void SignalControl::loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
+    options.labelImage = true;
+    options.backgroundIsHighest = graphBase->pGraph->backgroundIdStrategy == "backgroundIsHighestId";
+    if (!prepareLoadOptions(fileName, options)) { invokeLoadCallbackLater(std::move(then), std::nullopt); return; }
     const auto spacingDecision = askForLoadedFileSpacing(fileName);
     if (!spacingDecision.shouldLoad) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
-    const auto completion = std::make_shared<LoadCallback>(std::move(then));
+    const auto completion = loadCompletion(options, std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading refinement..."),
-        [fileName, spacingOverride = spacingDecision.spacingOverride]() mutable {
-            auto image = ITKImageLoader<GraphSegmentType>(fileName);
-            applyVoxelSpacingOverride(image.GetPointer(), spacingOverride);
-            return image;
+        [fileName, options, spacingOverride = spacingDecision.spacingOverride]() mutable {
+            auto loaded = loadVolume<GraphSegmentType>(fileName, options);
+            applyVoxelSpacingOverride(loaded.image.GetPointer(), spacingOverride);
+            return loaded;
         },
-        [this, fileName, displayedName, completion](GraphSegmentImageType::Pointer pImage) {
+        [this, fileName, displayedName, completion](volume_io::LoadedVolume<GraphSegmentImageType> loaded) {
             size_t signalIndexGlobal = 0;
-            bool ok = insertImageSegmenttype(pImage, signalIndexGlobal, true);
+            bool ok = insertImageSegmenttype(loaded.image, signalIndexGlobal, true, loaded.context);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
                 registerRefinementSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
@@ -2237,12 +2252,15 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
         [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
-void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
+void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, volume_io::ImageLoadOptions options) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
+    options.labelImage = true;
+    options.backgroundIsHighest = graphBase->pGraph->backgroundIdStrategy == "backgroundIsHighestId";
+    if (!prepareLoadOptions(fileName, options)) { invokeLoadCallbackLater(std::move(then), std::nullopt); return; }
     const auto spacingDecision = askForLoadedFileSpacing(fileName);
     if (!spacingDecision.shouldLoad) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
@@ -2251,21 +2269,25 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
 
     struct SegmentsGraphLoadResult {
         GraphSegmentImageType::Pointer image;
+        std::shared_ptr<volume_io::VolumeContext> context;
         bool dimensionMismatch = false;
     };
 
     const auto expectedDimensions = expectedDimensionsForNewSignal(false);
-    const auto completion = std::make_shared<LoadCallback>(std::move(then));
+    const auto completion = loadCompletion(options, std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading supervoxels and building graph..."),
         [this,
          fileName,
          expectedDimensions,
+         options,
          spacingOverride = spacingDecision.spacingOverride]() mutable {
             SegmentsGraphLoadResult result;
             // Modifies graphBase on the worker thread. Safe only because
             // one task runs at a time and the owning window is blocked.
-            auto pImage = ITKImageLoader<GraphSegmentType>(fileName);
+            auto loaded = loadVolume<GraphSegmentType>(fileName, options);
+            auto pImage = loaded.image;
+            result.context = loaded.context;
             applyVoxelSpacingOverride(pImage.GetPointer(), spacingOverride);
             result.image = pImage;
             if (expectedDimensions && !imageMatchesDimensions(pImage, *expectedDimensions)) {
@@ -2277,7 +2299,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             graphBase->colorLookUpEdgesStatus.clear();
             graphBase->pWorkingSegmentsImage = pImage;
             graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-            graphBase->pGraph->constructFromVolume(pImage);
+            graphBase->pGraph->constructFromVolume(pImage, loaded.context->background);
             return result;
         },
         [this, fileName, completion](SegmentsGraphLoadResult result) {
@@ -2289,7 +2311,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then) {
             }
 
             size_t signalIndexGlobal = 0;
-            bool ok = insertImageSegmenttype(result.image, signalIndexGlobal, false);
+            bool ok = insertImageSegmenttype(result.image, signalIndexGlobal, false, result.context);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
                 allSignalList[signalIndexGlobal]->sourceFilePath =
@@ -2307,12 +2329,13 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                                                  QString displayedName,
                                                  BoundaryLoadMode loadMode,
                                                  FloatBoundaryConversionMode floatConversionMode,
-                                                 LoadCallback then) {
+                                                 LoadCallback then, volume_io::ImageLoadOptions options) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
+    if (!prepareLoadOptions(fileName, options)) { invokeLoadCallbackLater(std::move(then), std::nullopt); return; }
     const auto spacingDecision = askForLoadedFileSpacing(fileName);
     if (!spacingDecision.shouldLoad) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
@@ -2321,7 +2344,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
 
     const bool createEmptySegments = loadMode == BoundaryLoadMode::CreateEmptySegments;
     const auto expectedDimensions = expectedDimensionsForNewSignal(false);
-    const auto completion = std::make_shared<LoadCallback>(std::move(then));
+    const auto completion = loadCompletion(options, std::move(then));
     taskRunner->runWithLabel(
         QStringLiteral("Loading boundaries..."),
         [this,
@@ -2329,26 +2352,25 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
          createEmptySegments,
          floatConversionMode,
          expectedDimensions,
+         options,
          spacingOverride = spacingDecision.spacingOverride]() mutable {
             BoundaryLoadResult result;
             unsigned int dimension = 0;
             itk::ImageIOBase::IOComponentType boundaryDataType = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
             getDimensionAndDataTypeOfFile(fileName, dimension, boundaryDataType);
 
+            auto loadBoundary = [&](auto pixel) {
+                using Pixel = decltype(pixel);
+                auto loaded = loadVolume<Pixel>(fileName, options);
+                result.context = loaded.context;
+                if constexpr (std::is_floating_point_v<Pixel>)
+                    result.boundaryImage = convertFloatBoundaryImage<Pixel>(loaded.image, floatConversionMode);
+                else result.boundaryImage = loaded.image;
+            };
             switch (boundaryDataType) {
-                case itk::ImageIOBase::FLOAT:
-                    result.boundaryImage = convertFloatBoundaryImage<float>(
-                        ITKImageLoader<float>(fileName),
-                        floatConversionMode);
-                    break;
-                case itk::ImageIOBase::DOUBLE:
-                    result.boundaryImage = convertFloatBoundaryImage<double>(
-                        ITKImageLoader<double>(fileName),
-                        floatConversionMode);
-                    break;
-                default:
-                    result.boundaryImage = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
-                    break;
+                case itk::ImageIOBase::FLOAT: loadBoundary(float{}); break;
+                case itk::ImageIOBase::DOUBLE: loadBoundary(double{}); break;
+                default: loadBoundary(dataType::BoundaryVoxelType{}); break;
             }
             applyVoxelSpacingOverride(result.boundaryImage.GetPointer(), spacingOverride);
             if (createEmptySegments) {
@@ -2360,6 +2382,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                 result.emptySegmentsImage->SetRegions(result.boundaryImage->GetLargestPossibleRegion());
                 result.emptySegmentsImage->SetSpacing(result.boundaryImage->GetSpacing());
                 result.emptySegmentsImage->SetOrigin(result.boundaryImage->GetOrigin());
+                result.emptySegmentsImage->SetDirection(result.boundaryImage->GetDirection());
                 result.emptySegmentsImage->Allocate(true);
 
                 // Modifies graphBase on the worker thread. Safe only because
@@ -2374,12 +2397,12 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
             bool ok = insertTypedImage<dataType::BoundaryVoxelType>(
                 result.boundaryImage,
                 signalIndexGlobal,
-                !createEmptySegments);
+                !createEmptySegments, result.context);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
                 if (result.createdEmptySegments) {
                     size_t segmentIndexGlobal = 0;
-                    const bool insertedSegments = insertImageSegmenttype(result.emptySegmentsImage, segmentIndexGlobal, false);
+                    const bool insertedSegments = insertImageSegmenttype(result.emptySegmentsImage, segmentIndexGlobal, false, volume_io::derivedContext(result.context));
                     if (insertedSegments) {
                         registerSegmentsGraphSignal(segmentIndexGlobal);
                     }
@@ -2391,9 +2414,9 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
         [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
-void SignalControl::addImage(QString fileName, QString displayedName) {
+void SignalControl::addImage(QString fileName, QString displayedName, volume_io::ImageLoadOptions options) {
     SP_LOG_INFO("io", QStringLiteral("Adding image file %1").arg(fileName));
-    addImageAsync(fileName, displayedName);
+    addImageAsync(fileName, displayedName, {}, options);
 }
 
 QMenu *SignalControl::populateDataMenu(QMenu *menu, QAction *loadSampleDataAction) {
@@ -2837,7 +2860,7 @@ void SignalControl::processNextDroppedFile() {
     if (batch.applyToRemaining) {
         loadChoice = *batch.applyToRemaining;
     } else {
-        QImageSelectionRadioButtons chooser(this, batch.files.size() > 1);
+        QImageSelectionRadioButtons chooser(this, batch.files.size() > 1, batch.files.front(), cropLoadDefaults);
         if (chooser.exec() != QDialog::Accepted) {
             droppedFileBatches.pop_front();
             processingDroppedFile = false;
@@ -2845,22 +2868,24 @@ void SignalControl::processNextDroppedFile() {
             return;
         }
         loadChoice = chooser.selectedChoice();
+        batch.options = chooser.loadOptions();
         if (imageLoadChoiceSupportsApplyToAll(loadChoice) && chooser.applyToAll()) {
             batch.applyToRemaining = loadChoice;
         }
     }
 
     const QString fileName = batch.files.takeFirst();
+    const auto options = batch.options;
     if (batch.files.isEmpty()) {
         droppedFileBatches.pop_front();
     }
     SP_LOG_INFO("io", QStringLiteral("Handling dropped file %1").arg(fileName));
-    loadDroppedFileAs(fileName, loadChoice);
+    loadDroppedFileAs(fileName, loadChoice, options);
     processingDroppedFile = false;
     scheduleDroppedFileProcessing();
 }
 
-void SignalControl::loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice) {
+void SignalControl::loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice, volume_io::ImageLoadOptions options) {
     if (loadChoiceRequiresWorkingSegments(loadChoice) && !hasWorkingSegments()) {
         showInfoMessage("Please load supervoxels first.");
         return;
@@ -2869,23 +2894,23 @@ void SignalControl::loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoi
     switch (loadChoice) {
         case ImageLoadChoice::Supervoxels:
             askForBackgroundStrategy();
-            addSegmentsGraph(fileName);
+            addSegmentsGraph(fileName, options);
             break;
         case ImageLoadChoice::Image:
-            addImage(fileName, QString(""));
+            addImage(fileName, QString(""), options);
             break;
         case ImageLoadChoice::Boundaries:
             if (!hasWorkingSegments()) {
-                loadMembraneProbability(fileName);
+                loadMembraneProbability(fileName, {}, options);
             } else {
-                loadMembraneProbability(fileName, QString(""));
+                loadMembraneProbability(fileName, QString(""), options);
             }
             break;
         case ImageLoadChoice::Refinement:
-            loadRefinement(fileName, QString(""));
+            loadRefinement(fileName, QString(""), options);
             break;
         case ImageLoadChoice::Segmentation:
-            loadSegmentationVolume(fileName, QString(""));
+            loadSegmentationVolume(fileName, QString(""), {}, options);
             break;
     }
 }
@@ -3194,7 +3219,7 @@ void SignalControl::setTransparentLabelIdInRefinement() {
 void SignalControl::segmentationClicked(QTreeWidgetItem *item, int index) {
     treeClicked(item, index);
     selectSegmentationItem(item);
-    SP_LOG_DEBUG("segmentation", QStringLiteral("Selected segmentation maxId=%1").arg(graphBase->selectedSegmentationMaxSegmentId));
+    SP_LOG_DEBUG("segmentation", QStringLiteral("Selected segmentation maxId=%1").arg(graphBase->pGraph->selectedLabelHighWaterMark()));
     refreshUiState();
 }
 
@@ -3271,14 +3296,52 @@ void SignalControl::exportSelectedSegmentation() {
     const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
     const QString defaultSavePath = MySettings.value(DEFAULT_SAVE_DIR_KEY).toString();
     const QString suggestedPath = suggestedSegmentationExportPath(defaultSavePath);
-    QString path =
-            QFileDialog::getSaveFileName(this, "Export Selected Segmentation", suggestedPath,
-                                         "Same Type as Watershed!!! (*.nrrd *.shlat *.uilat)");
+    const auto exportedImage = graphBase->pSelectedSegmentation;
+    auto *exportedSignal = graphBase->pSelectedSegmentationSignal;
+    volume_io::Coordinates size{};
+    for (unsigned int axis = 0; axis < 3; ++axis) size[axis] = exportedImage->GetBufferedRegion().GetSize(axis);
+    const auto context = exportedSignal && exportedSignal->volumeContext
+        ? std::make_shared<volume_io::VolumeContext>(*exportedSignal->volumeContext)
+        : std::make_shared<volume_io::VolumeContext>();
+    VolumeExportDialog dialog(this, suggestedPath, size, context);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString path = dialog.selectedFiles().front();
+    if (dialog.insertsIntoVolume()) {
+        const auto options = dialog.writeOptions();
+        const auto start = dialog.targetStart();
+        const auto savedMTime = exportedImage->GetMTime();
+        taskRunner->runWithLabel(tr("Inserting region into volume..."),
+            [exportedImage, path, start, options] {
+                return volume_io::writeRegionToVolume(exportedImage, path, start, options);
+            },
+            [this, exportedImage, exportedSignal, savedMTime](volume_io::RegionWriteResult result) {
+                if (exportedSignal) {
+                    if (!exportedSignal->volumeContext) exportedSignal->volumeContext = std::make_shared<volume_io::VolumeContext>();
+                    volume_io::recordWrite(*exportedSignal->volumeContext, result);
+                }
+                graphBase->lastExportPathThisSession = result.binding.path;
+                emit selectedSegmentationSaved(reinterpret_cast<quintptr>(exportedImage.GetPointer()),
+                    reinterpret_cast<quintptr>(exportedSignal), static_cast<quint64>(savedMTime), result.binding.path);
+            });
+        return;
+    }
+    const auto canonical = volume_io::canonicalPath(path);
+    for (const auto *signal : allSignalList) {
+        if (!signal->volumeContext) continue;
+        if ((signal->volumeContext->crop || context->crop) && canonical == signal->volumeContext->sourcePath) {
+            showInfoMessage(tr("This path belongs to a loaded full volume. Use 'Insert into existing volume' to update only the crop."));
+            return;
+        }
+        for (const auto &target : signal->volumeContext->targets) {
+            if (canonical == target.path) {
+                showInfoMessage(tr("This file is an insertion target. Use 'Insert into existing volume' to preserve its surrounding voxels."));
+                return;
+            }
+        }
+    }
     SP_LOG_INFO("io", QStringLiteral("Export selected segmentation dialog returned path=%1").arg(path));
     if (!path.isEmpty()) {
         const QString absolutePath = QFileInfo(path).absoluteFilePath();
-        const auto exportedImage = graphBase->pSelectedSegmentation;
-        auto *exportedSignal = graphBase->pSelectedSegmentationSignal;
         try {
             {
                 auto spacing = exportedImage->GetSpacing();
@@ -3294,8 +3357,16 @@ void SignalControl::exportSelectedSegmentation() {
                                 .arg(direction[2][0]).arg(direction[2][1]).arg(direction[2][2])
                                 .arg(QString::fromUtf8(std::setlocale(LC_NUMERIC, nullptr))));
             }
-            graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(exportedImage,
+            auto exportImage = dataType::SegmentsImageType::New();
+            exportImage->Graft(exportedImage);
+            auto metadata = exportedImage->GetMetaDataDictionary();
+            volume_io::clearImageContext(metadata);
+            exportImage->SetMetaDataDictionary(metadata);
+            graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(exportImage,
                                                                            path.toStdString());
+            if (exportedSignal && exportedSignal->volumeContext &&
+                volume_io::canonicalPath(path) == exportedSignal->volumeContext->sourcePath)
+                exportedSignal->volumeContext->sourceFingerprint = volume_io::fileFingerprint(path);
             graphBase->lastExportPathThisSession = absolutePath;
             MySettings.setValue(DEFAULT_SAVE_DIR_KEY, absolutePath);
             if (exportedSignal != nullptr) {
@@ -3306,8 +3377,8 @@ void SignalControl::exportSelectedSegmentation() {
                 reinterpret_cast<quintptr>(exportedSignal),
                 static_cast<quint64>(exportedImage->GetMTime()),
                 absolutePath);
-        } catch (itk::ExceptionObject &err) {
-            SP_LOG_ERROR("io", QStringLiteral("Failed to export selected segmentation to %1: %2").arg(path, QString::fromStdString(err.GetDescription())));
+        } catch (const std::exception &err) {
+            SP_LOG_ERROR("io", QStringLiteral("Failed to export selected segmentation to %1: %2").arg(path, QString::fromUtf8(err.what())));
         }
 
     }
@@ -3318,18 +3389,26 @@ void SignalControl::setPaintId(){
         showInfoMessage("Please load or create a segmentation first.");
         return;
     }
-    auto maxId = std::numeric_limits<dataType::SegmentIdType>::max();
-    //    cast to int max
-    if (maxId > std::numeric_limits<int>::max()) {
-        maxId = std::numeric_limits<int>::max();
+    const auto suggested = graphBase->pGraph->nextSelectedLabel();
+    bool ok = false;
+    const QString text = QInputDialog::getText(this, tr("Set Paint Label ID"),
+        tr("Existing object ID, or a new ID of at least %1:").arg(suggested), QLineEdit::Normal,
+        QString::number(suggested <= std::numeric_limits<dataType::SegmentIdType>::max() ? suggested : 0), &ok);
+    if (!ok) return;
+    const auto value = text.toULongLong(&ok);
+    if (!ok || value > std::numeric_limits<dataType::SegmentIdType>::max()) {
+        showInfoMessage(tr("Enter a non-negative 32-bit label ID.")); return;
     }
-    bool ok;
-    int paintId = QInputDialog::getInt(this, "Set Paint Label ID", "Set Paint Label ID",
-                                       graphBase->pGraph->getNextFreeId(graphBase->pSelectedSegmentation),
-                                       0, static_cast<int>(maxId), 1, &ok);
-    if (!ok) {
-        return;
+    const auto paintId = static_cast<dataType::SegmentIdType>(value);
+    const auto context = graphBase->pSelectedSegmentationSignal->volumeContext;
+    const auto *pixels = graphBase->pSelectedSegmentation->GetBufferPointer();
+    const auto count = graphBase->pSelectedSegmentation->GetBufferedRegion().GetNumberOfPixels();
+    const bool known = paintId == context->background.value_or(0) ||
+        context->originalLabels.count(paintId) || std::find(pixels, pixels + count, paintId) != pixels + count;
+    if (!known && value < context->nextLabel) {
+        showInfoMessage(tr("This ID is not an existing object in the loaded region. Choose a new ID of at least %1.").arg(context->nextLabel)); return;
     }
+    if (!known) volume_io::useLabel(*context, paintId);
     SP_LOG_INFO("segmentation", QStringLiteral("Setting paint id to %1").arg(paintId));
     orthoViewer->setPaintId(paintId);
 }
@@ -3761,17 +3840,11 @@ void SignalControl::runConnectedComponentSplit() {
     }
 
     std::unordered_set<dataType::SegmentIdType> ignoredLabels;
-    ignoredLabels.insert(0);
-    if (graphBase->pGraph != nullptr) {
-        ignoredLabels.insert(graphBase->pGraph->backgroundId);
-    }
-    ignoredLabels.insert(graphBase->ignoredSegmentLabels.begin(), graphBase->ignoredSegmentLabels.end());
+    ignoredLabels.insert(graphBase->pGraph->selectedBackground());
 
     const auto selectedSegmentation = graphBase->pSelectedSegmentation;
-    const dataType::SegmentIdType nextFreeLabel =
-        graphBase->pGraph != nullptr
-            ? graphBase->pGraph->getNextFreeId(selectedSegmentation)
-            : static_cast<dataType::SegmentIdType>(graphBase->selectedSegmentationMaxSegmentId + 1);
+    const auto context = graphBase->selectedSegmentationContext;
+    const auto nextFreeLabel = context->nextLabel;
 
     taskRunner->runWithLabel(
         tr("Splitting disconnected segmentation labels..."),
@@ -3786,9 +3859,8 @@ void SignalControl::runConnectedComponentSplit() {
             }
             return stats;
         },
-        [this, connectivityName](ConnectedComponentSplitStats stats) {
-            graphBase->selectedSegmentationMaxSegmentId =
-                graphBase->pGraph->getLargestIdInSegmentVolume(graphBase->pSelectedSegmentation);
+        [this, connectivityName, context](ConnectedComponentSplitStats stats) {
+            context->nextLabel = stats.nextFreeLabel;
             SP_LOG_INFO("segmentation",
                         QStringLiteral("Connected component split on selected segmentation used %1 connectivity, split %2 labels into %3 new components")
                             .arg(connectivityName)
@@ -3846,8 +3918,8 @@ void SignalControl::setSignalNormAndRefresh(size_t signalIndex, double lower, do
 }
 
 
-void SignalControl::addSegmentsGraph(QString fileName) {
-    addSegmentsGraphAsync(fileName);
+void SignalControl::addSegmentsGraph(QString fileName, volume_io::ImageLoadOptions options) {
+    addSegmentsGraphAsync(fileName, {}, options);
 }
 
 void SignalControl::addEmptySegmentsFromBoundary() {
@@ -3859,6 +3931,8 @@ void SignalControl::addEmptySegmentsFromBoundary() {
     pImage->SetRegions(graphBase->pSelectedBoundary->GetLargestPossibleRegion());
     pImage->SetSpacing(graphBase->pSelectedBoundary->GetSpacing());
     pImage->SetOrigin(graphBase->pSelectedBoundary->GetOrigin());
+    pImage->SetDirection(graphBase->pSelectedBoundary->GetDirection());
+    const auto context = volume_io::derivedContext(graphBase->pSelectedBoundarySignal ? graphBase->pSelectedBoundarySignal->volumeContext : nullptr);
     pImage->Allocate(true);
 
     {
@@ -3871,6 +3945,7 @@ void SignalControl::addEmptySegmentsFromBoundary() {
     }
 
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
+    pSignal2->volumeContext = context;
     size_t signalIndexGlobal = allSignalList.size();
     itkSignalBase *pRaw = pSignal2.get();
     ownedSignals.push_back(std::move(pSignal2));
@@ -3906,10 +3981,10 @@ void SignalControl::runWatershed() {
         myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary,
                                                         graphBase->ROI_fx, graphBase->ROI_tx,
                                                         graphBase->ROI_fy, graphBase->ROI_ty,
-                                                        graphBase->ROI_fz, graphBase->ROI_tz);
+                                                        graphBase->ROI_fz, graphBase->ROI_tz, graphBase->pSelectedBoundarySignal->volumeContext);
         myMainWindow->show();
     } else {
-        myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary);
+        myMainWindow->myWatershedControl->addBoundaries(graphBase->pSelectedBoundary, graphBase->pSelectedBoundarySignal->volumeContext);
         myMainWindow->show();
 
     }
@@ -3917,9 +3992,9 @@ void SignalControl::runWatershed() {
     setROISelectionActive(false);
 }
 
-void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage) {
+void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage, std::shared_ptr<volume_io::VolumeContext> context) {
     size_t signalIndexGlobal;
-    bool loadSuccessFull = insertImageSegmenttype(pImage, signalIndexGlobal);
+    bool loadSuccessFull = insertImageSegmenttype(pImage, signalIndexGlobal, true, std::move(context));
     if (loadSuccessFull) {
         auto *typedSignal = dynamic_cast<itkSignal<GraphSegmentType>*>(allSignalList[signalIndexGlobal]);
         allSignalList[signalIndexGlobal]->setCategoricalColorMode();
@@ -3951,14 +4026,14 @@ void SignalControl::receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>:
 }
 
 void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImage,
-                                            const QString &name) {
+                                            const QString &name, std::shared_ptr<volume_io::VolumeContext> context) {
     if (pImage == nullptr) {
         showInfoMessage("No watershed segments available for import.");
         return;
     }
 
     size_t signalIndexGlobal = 0;
-    if (!insertImageSegmenttype(pImage, signalIndexGlobal, false)) {
+    if (!insertImageSegmenttype(pImage, signalIndexGlobal, false, std::move(context))) {
         showInfoMessage("Failed to import generated segments.");
         return;
     }
@@ -3972,7 +4047,7 @@ void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImag
 }
 
 
-void SignalControl::loadMembraneProbability(QString fileName, QString displayedName) {
+void SignalControl::loadMembraneProbability(QString fileName, QString displayedName, volume_io::ImageLoadOptions options) {
     SP_LOG_INFO("io", QStringLiteral("Loading boundaries from %1").arg(fileName));
     unsigned int dimension = 0;
     itk::ImageIOBase::IOComponentType boundaryDataType = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
@@ -3988,7 +4063,7 @@ void SignalControl::loadMembraneProbability(QString fileName, QString displayedN
     }
 
     if (hasWorkingSegments()) {
-        loadMembraneProbabilityAsync(fileName, displayedName, BoundaryLoadMode::BoundaryOnly, floatConversionMode);
+        loadMembraneProbabilityAsync(fileName, displayedName, BoundaryLoadMode::BoundaryOnly, floatConversionMode, {}, options);
         return;
     }
 
@@ -4005,7 +4080,7 @@ void SignalControl::loadMembraneProbability(QString fileName, QString displayedN
             fileName,
             displayedName,
             BoundaryLoadMode::CreateEmptySegments,
-            floatConversionMode);
+            floatConversionMode, {}, options);
         return;
     }
 
@@ -4020,7 +4095,7 @@ void SignalControl::loadMembraneProbability(QString fileName, QString displayedN
                     return;
                 }
                 runWatershed();
-            });
+            }, options);
     }
 }
 
@@ -4039,6 +4114,8 @@ void SignalControl::createEmptySegmentation() {
     pImage->SetRegions(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
     pImage->SetSpacing(graphBase->pWorkingSegmentsImage->GetSpacing());
     pImage->SetOrigin(graphBase->pWorkingSegmentsImage->GetOrigin());
+    pImage->SetDirection(graphBase->pWorkingSegmentsImage->GetDirection());
+    const auto context = volume_io::derivedContext(graphBase->pWorkingSegments ? graphBase->pWorkingSegments->volumeContext : nullptr);
     pImage->Allocate(true);
 
     {
@@ -4057,6 +4134,7 @@ void SignalControl::createEmptySegmentation() {
     }
 
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
+    pSignal2->volumeContext = context;
     auto *typedSignal = pSignal2.get();
     size_t signalIndexGlobal = allSignalList.size();
     allSignalList.push_back(typedSignal);
@@ -4077,18 +4155,9 @@ void SignalControl::createEmptySegmentation() {
 }
 
 void SignalControl::loadSegmentationVolumePressed() {
-    SP_LOG_INFO("segmentation", QStringLiteral("Opening the load segmentation dialog"));
-    QSettings MySettings;
-    const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
-    QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
-
-    QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Load Segmentation"), default_load_dir);
-    if (!fileName.isEmpty()) {
-        QDir CurrentDir;
-        MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        loadSegmentationVolume(fileName); //TODO: add Progressbar?
-    }
+    QString path;
+    volume_io::ImageLoadOptions options;
+    if (chooseVolumeFile(tr("Load Segmentation"), path, options)) loadSegmentationVolume(path, {}, {}, options);
 }
 
 void SignalControl::addSegmentsPressed() {
@@ -4096,32 +4165,19 @@ void SignalControl::addSegmentsPressed() {
         showInfoMessage("Supervoxels are already loaded, please restart SegmentPuzzler for a new project.");
         return;
     }
-    QSettings MySettings;
-    const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
-    QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
-    QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Load Supervoxels"), default_load_dir);
-    if (!fileName.isEmpty()) {
+    QString fileName;
+    volume_io::ImageLoadOptions options;
+    if (chooseVolumeFile(tr("Load Supervoxels"), fileName, options)) {
         askForBackgroundStrategy();
-
-        QDir CurrentDir;
-        MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        addSegmentsGraph(fileName);
+        addSegmentsGraph(fileName, options);
     }
 }
 
 
 void SignalControl::loadRefinementPressed() {
-    QSettings MySettings;
-    const QString DEFAULT_LOAD_DIR_KEY("default_save_dir");
-    QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
-    QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Load Refinement"), default_load_dir);
-    if (!fileName.isEmpty()) {
-        QDir CurrentDir;
-        MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        loadRefinement(fileName);
-    }
+    QString path;
+    volume_io::ImageLoadOptions options;
+    if (chooseVolumeFile(tr("Load Refinement"), path, options)) loadRefinement(path, {}, options);
 }
 
 void SignalControl::mergeSupervoxelsByRefinementLabel() {
@@ -4143,12 +4199,12 @@ void SignalControl::loadRefinement(QString fileName) {
     loadRefinement(fileName, "");
 }
 
-void SignalControl::loadRefinement(QString fileName, QString displayedName) {
+void SignalControl::loadRefinement(QString fileName, QString displayedName, volume_io::ImageLoadOptions options) {
     if (!hasWorkingSegments()) {
         showInfoMessage("Please load supervoxels first.");
         return;
     }
-    loadRefinementAsync(fileName, displayedName);
+    loadRefinementAsync(fileName, displayedName, {}, options);
 }
 
 void SignalControl::askForBackgroundStrategy() {
@@ -4159,151 +4215,45 @@ void SignalControl::askForBackgroundStrategy() {
 
 bool SignalControl::insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
                                            size_t &signalIndexGlobalOut,
-                                           bool forceShapeOfSegments) {
-    return insertTypedImage<dataType::SegmentIdType>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
-}
-
-bool SignalControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
-                              size_t &signalIndexGlobalOut, bool forceShapeOfSegments,
-                              bool forceSegmentDataTypeUInt, itk::ImageIOBase::IOComponentType forcedDataType) {
-    bool loadingWasSuccessful = false;
-    if (!fileName.isEmpty()) {
-        unsigned int dimension;
-        SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
-        getDimensionAndDataTypeOfFile(fileName, dimension, dataTypeOut);
-        SP_LOG_INFO("io", QStringLiteral("Detected image dimension=%1 for %2").arg(dimension).arg(fileName));
-
-        QSettings MySettings;
-        QDir CurrentDir;
-        const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
-        MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        SP_LOG_DEBUG("io", QStringLiteral("Updated default save dir from %1").arg(fileName));
-
-        if (dimension == 2 || dimension == 3) {
-            if (forceSegmentDataTypeUInt) {
-                dataTypeOut = forcedDataType;
-            }
-
-            const auto spacingDecision = askForLoadedFileSpacing(fileName);
-            if (!spacingDecision.shouldLoad) {
-                return false;
-            }
-            const auto loadAndInsert = [&](auto valueOfPixelType) {
-                using PixelType = decltype(valueOfPixelType);
-                auto image = ITKImageLoader<PixelType>(fileName);
-                applyVoxelSpacingOverride(
-                    image.GetPointer(), spacingDecision.spacingOverride);
-                return insertTypedImage<PixelType>(
-                    image, signalIndexGlobalOut, forceShapeOfSegments);
-            };
-
-            switch (dataTypeOut) {
-                case itk::ImageIOBase::IOComponentType::UNKNOWNCOMPONENTTYPE: {
-                    throw std::logic_error("Unknown datatype");
-                }
-
-                case itk::ImageIOBase::IOComponentType::UCHAR: {
-                    loadingWasSuccessful = loadAndInsert(static_cast<unsigned char>(0));
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::CHAR: {
-                    loadingWasSuccessful = loadAndInsert(static_cast<char>(0));
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::USHORT: {
-                    loadingWasSuccessful = loadAndInsert(static_cast<unsigned short>(0));
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::SHORT: {
-                    loadingWasSuccessful = loadAndInsert(static_cast<short>(0));
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::UINT: {
-                    loadingWasSuccessful = loadAndInsert(0U);
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::INT: {
-                    loadingWasSuccessful = loadAndInsert(0);
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::ULONG: {
-                    loadingWasSuccessful = loadAndInsert(0UL);
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::LONG: {
-                    loadingWasSuccessful = loadAndInsert(0L);
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::ULONGLONG: {
-                    loadingWasSuccessful = loadAndInsert(0ULL);
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::LONGLONG: {
-                    loadingWasSuccessful = loadAndInsert(0LL);
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::FLOAT: {
-                    loadingWasSuccessful = loadAndInsert(0.0F);
-                    break;
-                }
-
-                case itk::ImageIOBase::IOComponentType::DOUBLE: {
-                    loadingWasSuccessful = loadAndInsert(0.0);
-                    break;
-                }
-
-                default: {
-                    throw std::logic_error("SignalControl::loadImage Unknown component type encountered.");
-                }
-            }
-
-
-        } else {
-            throw std::logic_error("Only 2D and 3D images are supported.");
-        }
-
-        if (loadingWasSuccessful) {
-            rememberLoadedSourceFile(fileName);
-        }
-    }
-    return loadingWasSuccessful;
+                                           bool forceShapeOfSegments, std::shared_ptr<volume_io::VolumeContext> context) {
+    return insertTypedImage<dataType::SegmentIdType>(pImage, signalIndexGlobalOut, forceShapeOfSegments, std::move(context));
 }
 
 void SignalControl::addImagePressed() {
-    QSettings MySettings;
-    const QString DEFAULT_LOAD_DIR_KEY("default_load_dir");
-    QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
-    QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Load Image"), default_load_dir);
-    if (!fileName.isEmpty()) {
-        QDir CurrentDir;
-        MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        addImage(fileName);
-    }
+    QString path;
+    volume_io::ImageLoadOptions options;
+    if (chooseVolumeFile(tr("Load Image"), path, options)) addImage(path, {}, options);
 }
 
 
 void SignalControl::loadMembraneProbabilityPressed() {
-    QSettings MySettings;
-    const QString DEFAULT_LOAD_DIR_KEY("default_save_dir");
-    QString default_load_dir = MySettings.value(DEFAULT_LOAD_DIR_KEY).toString();
-    QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Load Boundaries"), default_load_dir);
-    if (!fileName.isEmpty()) {
-        QDir CurrentDir;
-        MySettings.setValue(DEFAULT_LOAD_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
-        loadMembraneProbability(fileName);
-    }
+    QString path;
+    volume_io::ImageLoadOptions options;
+    if (chooseVolumeFile(tr("Load Boundaries"), path, options)) loadMembraneProbability(path, {}, options);
+}
+
+bool SignalControl::chooseVolumeFile(const QString &title, QString &path, volume_io::ImageLoadOptions &options) {
+    VolumeLoadDialog dialog(this, title, QSettings().value("default_load_dir").toString(), cropLoadDefaults);
+    if (dialog.exec() != QDialog::Accepted) return false;
+    path = dialog.selectedFiles().front();
+    options = dialog.loadOptions();
+    QSettings().setValue("default_load_dir", QFileInfo(path).absolutePath());
+    return true;
+}
+
+bool SignalControl::prepareLoadOptions(const QString &path, volume_io::ImageLoadOptions &options) {
+    return prepareVolumeLoad(this, path, options);
+}
+
+std::shared_ptr<SignalControl::LoadCallback> SignalControl::loadCompletion(
+    const volume_io::ImageLoadOptions &options, LoadCallback then) {
+    return std::make_shared<LoadCallback>([this, options, then = std::move(then)](LoadResult result) {
+        if (result) {
+            cropLoadDefaults.enabled = options.crop.has_value();
+            if (options.crop) cropLoadDefaults.region = options.crop;
+        }
+        if (then) then(result);
+    });
 }
 
 size_t SignalControl::signalIndexForItem(QTreeWidgetItem *item) const {

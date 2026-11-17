@@ -32,6 +32,10 @@ namespace {
 
 constexpr double kKeyboardZoomFactor = 1.25;
 
+dataType::SegmentIdType selectedBackground(const std::shared_ptr<GraphBase> &base) {
+    return base->pGraph->selectedBackground();
+}
+
 int brushWidthForNumberKey(int key) {
     // Index 0 represents key 0; keys 1-9 follow their numeric index.
     static constexpr std::array<int, 10> brushWidths{101, 1, 3, 5, 9, 15, 21, 31, 51, 75};
@@ -940,7 +944,7 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
     const auto y = selectedIndex[1];
     const auto z = selectedIndex[2];
     const auto selectedLabel = selectedImage->GetPixel(selectedIndex);
-    if (selectedLabel == graphBase->pGraph->backgroundId) {
+    if (selectedLabel == graphBase->pGraph->selectedBackground()) {
         sendStatusMessage(QStringLiteral("3D split: clicked background."));
         return false;
     }
@@ -952,9 +956,7 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
     Graph *const graph = graphBase->pGraph;
     const auto graphState = graphBase;
     std::unordered_set<dataType::SegmentIdType> reservedLabels;
-    reservedLabels.insert(graph->backgroundId);
-    reservedLabels.insert(graphBase->ignoredSegmentLabels.begin(),
-                          graphBase->ignoredSegmentLabels.end());
+    reservedLabels.insert(graph->selectedBackground());
     reservedLabels.erase(selectedLabel);
     // Intentional exception to TaskRunner's preferred read-only compute phase:
     // repair the selected image and working graph in place to avoid allocating
@@ -968,15 +970,13 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
         prepared.requestedLabel = selectedLabel;
         prepared.selectedLabel = selectedLabel;
         try {
-            prepared.componentSplitStats.maxLabel =
-                segment_puzzler::connected_components::maxLabelInImage(
-                    selectedImage);
+            prepared.componentSplitStats.maxLabel = graph->selectedLabelHighWaterMark();
             segment_puzzler::connected_components::ConnectedComponentSplitOptions options;
             options.connectivity = segment_puzzler::connected_components::
                 ConnectivityStencil::SixConnected;
             options.includedLabels.insert(selectedLabel);
             options.ignoredLabels = reservedLabels;
-            options.nextFreeLabel = prepared.componentSplitStats.maxLabel;
+            options.nextFreeLabel = graph->nextSelectedLabel();
             prepared.componentSplitStats =
                 segment_puzzler::connected_components::
                     splitDisconnectedLabelComponentsInPlace(selectedImage, options);
@@ -985,10 +985,9 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
             if (prepared.componentSplitStats.changed()) {
                 selectedImage->Modified();
             }
-            graphState->selectedSegmentationMaxSegmentId =
-                prepared.componentSplitStats.maxLabel;
+            graphState->selectedSegmentationContext->nextLabel = prepared.componentSplitStats.nextFreeLabel;
 
-            if (prepared.selectedLabel == graph->backgroundId) {
+            if (prepared.selectedLabel == graph->selectedBackground()) {
                 prepared.error = QStringLiteral(
                     "The clicked component became background while preparing the 3D split.");
                 return prepared;
@@ -1050,8 +1049,6 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
 
             if (graphBase != nullptr
                 && graphBase->pSelectedSegmentation == selectedImage) {
-                graphBase->selectedSegmentationMaxSegmentId =
-                    prepared.componentSplitStats.maxLabel;
                 using Status = Graph::WorkingSegmentResolution::Status;
                 if (prepared.workingResolution.status == Status::Inserted) {
                     refreshWorkingGraphPresentationAfterInsertion();
@@ -1256,13 +1253,6 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
             connect(dialog, &QDialog::finished, this, [this, graph](int result) {
                 if (result != QDialog::Accepted) {
                     return;
-                }
-                if (graphBase != nullptr && graphBase->pGraph == graph) {
-                    if (graphBase->pSelectedSegmentation != nullptr) {
-                        graphBase->selectedSegmentationMaxSegmentId =
-                            graph->getLargestIdInSegmentVolume(
-                                graphBase->pSelectedSegmentation);
-                    }
                 }
                 if (graphBase != nullptr) {
                     graphBase->rebuildEdgeColorPresentation();
@@ -1544,7 +1534,7 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY) {
     if (graphBase->pSelectedSegmentation == nullptr) {
         return;
     }
-    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    const dataType::SegmentIdType backgroundLabel = selectedBackground(graphBase);
 
     const qint64 firstPartStartedAtMs = QDateTime::currentMSecsSinceEpoch();
     int x, y, z;
@@ -1691,7 +1681,7 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY) {
     if (graphBase->pSelectedSegmentation == nullptr) {
         return;
     }
-    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    const dataType::SegmentIdType backgroundLabel = selectedBackground(graphBase);
 
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
@@ -1808,7 +1798,7 @@ void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
         return;
     }
 
-    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    const dataType::SegmentIdType backgroundLabel = selectedBackground(graphBase);
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
     const dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
@@ -1869,7 +1859,7 @@ void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
         return;
     }
 
-    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    const dataType::SegmentIdType backgroundLabel = selectedBackground(graphBase);
     int x, y, z;
     getXYZfromPixmapPos(posX, posY, x, y, z);
     const dataType::SegmentIdType labelAtClickPosition = graphBase->pSelectedSegmentation->GetPixel({x, y, z});
@@ -2308,7 +2298,7 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
     const bool canEditEdges = graphBase->pEdgesInitialSegmentsImage != nullptr;
     const bool canEditBoundaries = pThresholdedBoundaries != nullptr;
     const bool canEditSegmentation = graphBase->pSelectedSegmentation != nullptr;
-    const dataType::SegmentIdType backgroundLabel = graphBase->pGraph->backgroundId;
+    const dataType::SegmentIdType backgroundLabel = selectedBackground(graphBase);
     if (canEditEdges || canEditBoundaries || canEditSegmentation) {
         //TODO: Separate function into smaller parts, make sliceblabla general
 
@@ -2399,6 +2389,8 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                 }
             }
             if (selectedSegmentationChanged) {
+                if (!rightClicked)
+                    volume_io::useLabel(*graphBase->selectedSegmentationContext, labelOfClickedSegmentation);
                 graphBase->pSelectedSegmentation->Modified();
             }
             for (auto *viewer : linkedViewerList) {

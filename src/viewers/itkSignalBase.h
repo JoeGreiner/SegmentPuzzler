@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <QTreeWidget>
 
+namespace volume_io { struct VolumeContext; }
+
 
 namespace slice_geometry {
 
@@ -407,6 +409,7 @@ public:
 
     QString name;
     QString sourceFilePath;
+    std::shared_ptr<volume_io::VolumeContext> volumeContext;
 
 private:
     BlendMode blendMode = BlendMode::SourceOver;

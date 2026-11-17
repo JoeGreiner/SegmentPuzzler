@@ -1478,6 +1478,7 @@ void WatershedControl::createRefinementAsync(std::function<void()> then) {
                 linkedSignalControl->graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
             paddedWorkingSegmentsImage->SetSpacing(linkedSignalControl->graphBase->pWorkingSegmentsImage->GetSpacing());
             paddedWorkingSegmentsImage->SetOrigin(linkedSignalControl->graphBase->pWorkingSegmentsImage->GetOrigin());
+            paddedWorkingSegmentsImage->SetDirection(linkedSignalControl->graphBase->pWorkingSegmentsImage->GetDirection());
             paddedWorkingSegmentsImage->Allocate(true);
 
             using PasteImageFilterType = itk::PasteImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
@@ -1500,11 +1501,13 @@ void WatershedControl::createRefinementAsync(std::function<void()> then) {
             if (linkedSignalControl == nullptr) {
                 throw std::logic_error("WatershedControl has no linked SignalControl.");
             }
+            auto context = volume_io::derivedContext(inputVolumeContext);
+            volume_io::initializeLabels(*context, createdOutput->GetBufferPointer(), createdOutput->GetBufferedRegion().GetNumberOfPixels(), false);
 
             if (outputMode == OutputMode::Segments) {
-                linkedSignalControl->importGeneratedSegments(createdOutput);
+                linkedSignalControl->importGeneratedSegments(createdOutput, QStringLiteral("Supervoxels"), context);
             } else {
-                linkedSignalControl->receiveNewRefinement(createdOutput);
+                linkedSignalControl->receiveNewRefinement(createdOutput, context);
             }
             // Export closes this workflow, so returning to idle must not start another preview.
             skipAgglomertionPreviewRefreshAfterCurrentTask = true;
@@ -1566,12 +1569,12 @@ size_t WatershedControl::registerSignal(std::unique_ptr<itkSignalBase> sig, Sign
 }
 
 
-void WatershedControl::addImage(QString fileName) {
+void WatershedControl::addImage(QString fileName, volume_io::ImageLoadOptions options) {
     SP_LOG_INFO("io", QStringLiteral("Adding watershed input image %1").arg(fileName));
     if (!fileName.isEmpty()) {
         itk::ImageIOBase::IOComponentType dataType;
         size_t signalIndexGlobal;
-        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false);
+        bool loadSuccessFull = loadImage(fileName, dataType, signalIndexGlobal, false, false, options);
         if (loadSuccessFull) {
             allSignalList[signalIndexGlobal]->setLayerRole(itkSignalBase::LayerRole::SourceImage);
             segment_puzzler::image_normalization::configureLoadedImageDisplay(
@@ -2938,8 +2941,10 @@ void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *
 
 bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
                               size_t &signalIndexGlobalOut, bool forceShapeOfSegments,
-                              bool forceSegmentDataType) {
+                              bool forceSegmentDataType, volume_io::ImageLoadOptions options) {
     bool loadingWasSuccessful = false;
+    options.labelImage = forceSegmentDataType;
+    if (!prepareVolumeLoad(this, fileName, options)) return false;
     if (!fileName.isEmpty()) {
         unsigned int dimension;
         getDimensionAndDataTypeOfFile(fileName, dimension, dataTypeOut);
@@ -2955,74 +2960,74 @@ bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponent
                 }
 
                 case itk::ImageIOBase::IOComponentType::UCHAR: {
-                    auto pImage = ITKImageLoader<unsigned char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<unsigned char>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<unsigned char>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::CHAR: {
-                    auto pImage = ITKImageLoader<char>(fileName);
-                    loadingWasSuccessful = insertTypedImage<char>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<char>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<char>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::USHORT: {
-                    auto pImage = ITKImageLoader<unsigned short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<unsigned short>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<unsigned short>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::SHORT: {
-                    auto pImage = ITKImageLoader<short>(fileName);
-                    loadingWasSuccessful = insertTypedImage<short>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<short>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<short>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::UINT: {
-                    auto pImage = ITKImageLoader<unsigned int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<unsigned int>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<unsigned int>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::INT: {
-                    auto pImage = ITKImageLoader<int>(fileName);
-                    loadingWasSuccessful = insertTypedImage<int>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<int>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<int>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONG: {
-                    auto pImage = ITKImageLoader<unsigned long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<unsigned long>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<unsigned long>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONG: {
-                    auto pImage = ITKImageLoader<long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<long>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<long>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::ULONGLONG: {
-                    auto pImage = ITKImageLoader<unsigned long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<unsigned long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<unsigned long long>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<unsigned long long>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::LONGLONG: {
-                    auto pImage = ITKImageLoader<long long>(fileName);
-                    loadingWasSuccessful = insertTypedImage<long long>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<long long>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<long long>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::FLOAT: {
-                    auto pImage = ITKImageLoader<float>(fileName);
-                    loadingWasSuccessful = insertTypedImage<float>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<float>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<float>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
                 case itk::ImageIOBase::IOComponentType::DOUBLE: {
-                    auto pImage = ITKImageLoader<double>(fileName);
-                    loadingWasSuccessful = insertTypedImage<double>(pImage, signalIndexGlobalOut, forceShapeOfSegments);
+                    auto loaded = loadVolume<double>(fileName, options);
+                    loadingWasSuccessful = insertTypedImage<double>(loaded.image, signalIndexGlobalOut, forceShapeOfSegments, loaded.context);
                     break;
                 }
 
@@ -3037,27 +3042,31 @@ bool WatershedControl::loadImage(QString fileName, itk::ImageIOBase::IOComponent
             throw std::logic_error("Only 2D and 3D images are supported.");
         }
     }
+    if (loadingWasSuccessful) {
+        cropLoadDefaults.enabled = options.crop.has_value();
+        if (options.crop) cropLoadDefaults.region = options.crop;
+    }
     return loadingWasSuccessful;
 }
 
 void WatershedControl::addImagePressed() {
-    QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Load Image"));
-    if (!fileName.isEmpty()) {
-        addImage(fileName);
-    }
+    VolumeLoadDialog dialog(this, tr("Load Image"), {}, cropLoadDefaults);
+    if (dialog.exec() == QDialog::Accepted) addImage(dialog.selectedFiles().front(), dialog.loadOptions());
 }
 
-void WatershedControl::addBoundariesFromFile(QString fileName) {
+void WatershedControl::addBoundariesFromFile(QString fileName, volume_io::ImageLoadOptions options) {
     if (!fileName.isEmpty()) {
+        if (!prepareVolumeLoad(this, fileName, options)) return;
         SP_LOG_INFO("io", QStringLiteral("Loading watershed boundaries from %1").arg(fileName));
         QSettings MySettings;
         QDir CurrentDir;
         const QString DEFAULT_SAVE_DIR_KEY("default_save_dir");
         MySettings.setValue(DEFAULT_SAVE_DIR_KEY, CurrentDir.absoluteFilePath(fileName));
         if (!fileName.isEmpty()) {
-            dataType::BoundaryImageType::Pointer pBoundariesIn = ITKImageLoader<dataType::BoundaryVoxelType>(fileName);
-            addBoundaries(pBoundariesIn);
+            auto loaded = loadVolume<dataType::BoundaryVoxelType>(fileName, options);
+            addBoundaries(loaded.image, loaded.context);
+            cropLoadDefaults.enabled = options.crop.has_value();
+            if (options.crop) cropLoadDefaults.region = options.crop;
         }
     }
 }
@@ -3065,7 +3074,7 @@ void WatershedControl::addBoundariesFromFile(QString fileName) {
 
 
 void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn,
-                   int fxIn, int txIn, int fyIn, int tyIn, int fzIn, int tzIn){
+                   int fxIn, int txIn, int fyIn, int tyIn, int fzIn, int tzIn, std::shared_ptr<volume_io::VolumeContext> context){
 
     useROI = true;
     fx = fxIn;
@@ -3142,6 +3151,7 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
 
     dataType::BoundaryImageType::Pointer pBoundariesROIImage = ROIExtractionFilter->GetOutput();
     ROIExtractionFilter->Update();
+    pBoundariesROIImage->SetMetaDataDictionary(pBoundariesIn->GetMetaDataDictionary());
 
     // Log the ROI range before the shared low-range rescale prompt runs in addBoundaries().
     dataType::BoundaryVoxelType min, max;
@@ -3159,14 +3169,17 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     }
     SP_LOG_INFO("watershed", QStringLiteral("Boundary ROI intensity range min=%1 max=%2").arg(min).arg(max));
 
-    addBoundaries(pBoundariesROIImage);
+    addBoundaries(pBoundariesROIImage, std::move(context));
 }
 
-void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn) {
+void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBoundariesIn, std::shared_ptr<volume_io::VolumeContext> context) {
+    inputVolumeContext = std::move(context);
     pBoundaries = maybeRescaleLowRangeBoundary(pBoundariesIn);
+    pBoundaries->SetMetaDataDictionary(pBoundariesIn->GetMetaDataDictionary());
 
     // 1. Raw Boundaries Signal
     auto rawSignal = std::make_unique<itkSignal<dataType::BoundaryVoxelType>>(pBoundaries);
+    rawSignal->volumeContext = inputVolumeContext;
     rawSignal->setMainColor(0, 255, 0); // Green
     const int rawIdx = static_cast<int>(registerSignal(
         std::move(rawSignal), SignalStage::None, "Boundaries", false, false, false));
@@ -3246,8 +3259,12 @@ void WatershedControl::inspectSegmentsPressed() {
 
     graphBase->pSelectedSegmentation = selectedOutput;
     graphBase->pSelectedSegmentationSignal = selectedSignal;
-    graphBase->selectedSegmentationMaxSegmentId =
-        graphBase->pGraph != nullptr ? graphBase->pGraph->getLargestIdInSegmentVolume(selectedOutput) : 0;
+    if (!selectedSignal->volumeContext) {
+        selectedSignal->volumeContext = volume_io::derivedContext(inputVolumeContext);
+        volume_io::initializeLabels(*selectedSignal->volumeContext, selectedOutput->GetBufferPointer(),
+                                    selectedOutput->GetBufferedRegion().GetNumberOfPixels(), false);
+    }
+    graphBase->selectedSegmentationContext = selectedSignal->volumeContext;
 
     if (orthoViewer != nullptr) {
         orthoViewer->resetPaintSelection();

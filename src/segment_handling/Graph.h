@@ -203,6 +203,10 @@ public:
 
 
     SegmentIdType nextFreeId;
+    SegmentIdType selectedBackground() const;
+    std::uint64_t nextSelectedLabel() const;
+    SegmentIdType selectedLabelHighWaterMark() const;
+    SegmentIdType reserveSelectedLabelIds(std::size_t count);
 
     std::shared_ptr<GraphBase> graphBase;
 
@@ -223,8 +227,8 @@ public:
     std::unordered_map<EdgeNumIdType, EdgePairIdType> initialEdgeIdLookup;
 
     // construct a graph from
-    void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage);
-    void updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage);
+    void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage, std::optional<SegmentIdType> sourceBackground = {});
+    void updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage, std::optional<SegmentIdType> sourceBackground = {});
 
     void initializeEdgeVolumeAndEdgeStatus();
 
@@ -442,6 +446,7 @@ private:
 
     std::optional<SegmentIdType> refineFromImageAtPosition(
         const SegmentsImageType::Pointer &sourceImage,
+        SegmentIdType sourceBackground,
         const SegmentsImageType::IndexType &seed,
         const std::optional<SegmentsImageType::RegionType> &permittedSeedRegion = std::nullopt);
 

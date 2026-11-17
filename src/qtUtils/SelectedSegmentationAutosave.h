@@ -17,6 +17,7 @@
 class GraphBase;
 class TaskRunner;
 class QWidget;
+namespace volume_io { struct VolumeContext; }
 
 class SelectedSegmentationAutosave : public QObject {
 public:
@@ -71,6 +72,7 @@ private:
 
     struct SegmentationRecoveryState {
         SegmentsImagePointer image;
+        std::shared_ptr<volume_io::VolumeContext> volumeContext;
         QString name;
         QString persistedPath;
         itk::ModifiedTimeType persistedMTime = 0;

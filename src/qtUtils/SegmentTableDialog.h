@@ -143,7 +143,7 @@ public:
     // Runs on a worker thread — must not touch QWidgets.
     static ComputeResult computeFeatures(
         dataType::SegmentsImageType::Pointer segImg,
-        FeatureFlags flags);
+        FeatureFlags flags, dataType::SegmentIdType background = 0);
 
 signals:
     void computeFinishedDebug();

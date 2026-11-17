@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include "VolumeFileDialog.h"
 
 enum class ImageLoadChoice {
     Supervoxels,
@@ -24,9 +25,14 @@ Q_OBJECT
 public:
     explicit QImageSelectionRadioButtons(
         QWidget *parent = nullptr,
-        bool allowApplyToAll = false);
+        bool allowApplyToAll = false,
+        const QString &file = {}, const CropLoadDefaults &defaults = {});
     ImageLoadChoice selectedChoice() const;
     bool applyToAll() const;
+    volume_io::ImageLoadOptions loadOptions() const;
+
+protected:
+    void accept() override;
 
 private:
     void updateApplyToAllVisibility();
@@ -42,6 +48,7 @@ private:
     QRadioButton *radioSegmentation;
     QCheckBox *applyToAllCheckBox;
     QVBoxLayout *vbox;
+    CropOptionsWidget *cropOptions = nullptr;
 };
 
 

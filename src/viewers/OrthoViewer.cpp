@@ -1967,12 +1967,13 @@ void OrthoViewer::setPaintId(dataType::SegmentIdType paintId) {
     }
 
     auto *signal = graphBase->pSelectedSegmentationSignal;
+    volume_io::useLabel(*graphBase->selectedSegmentationContext, paintId);
     setAnnotationSelection(paintId, QColor::fromRgb(signal->colorForLabel(paintId)));
 }
 
 void OrthoViewer::refreshPaintSelectionColor() {
     if (graphBase != nullptr && graphBase->pGraph != nullptr &&
-        annotationSelectionLabel == graphBase->pGraph->backgroundId) {
+        annotationSelectionLabel == graphBase->pGraph->selectedBackground()) {
         resetPaintSelection();
         return;
     }
@@ -1982,7 +1983,7 @@ void OrthoViewer::refreshPaintSelectionColor() {
 void OrthoViewer::resetPaintSelection() {
     const dataType::SegmentIdType neutralLabel =
         graphBase != nullptr && graphBase->pGraph != nullptr
-            ? graphBase->pGraph->backgroundId
+            ? graphBase->pGraph->selectedBackground()
             : 0;
     setAnnotationSelection(neutralLabel, Qt::white);
 }

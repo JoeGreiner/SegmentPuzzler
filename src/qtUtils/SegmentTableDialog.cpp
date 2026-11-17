@@ -216,7 +216,7 @@ struct LabelContactFeatures {
 std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelContactFeatures(
     const dataType::SegmentsImageType::Pointer &segImage,
     bool computeExposureRatios,
-    std::size_t expectedLabelCount) {
+    std::size_t expectedLabelCount, dataType::SegmentIdType background) {
     std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> featuresByLabel;
     if (segImage == nullptr) {
         return featuresByLabel;
@@ -235,7 +235,7 @@ std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelCo
             for (size_t x = 0; x < dimX; ++x) {
                 const size_t index = x + y * dimX + z * planeXY;
                 const dataType::SegmentIdType label = buffer[index];
-                if (label == 0) {
+                if (label == background) {
                     continue;
                 }
 
@@ -251,7 +251,7 @@ std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelCo
                             return;
                         }
                         isSurfaceVoxel = true;
-                        if (neighborLabel == 0) {
+                        if (neighborLabel == background) {
                             touchesBackground = true;
                         } else {
                             touchesForeground = true;
@@ -280,7 +280,7 @@ std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelCo
 
                 const auto markNonIsolatedPair = [&](size_t neighborIndex) {
                     const dataType::SegmentIdType neighborLabel = buffer[neighborIndex];
-                    if (neighborLabel == 0 || neighborLabel == label) {
+                    if (neighborLabel == background || neighborLabel == label) {
                         return;
                     }
                     featuresByLabel[label].isIsolated = false;
@@ -306,13 +306,14 @@ std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelCo
 template<typename ImageType>
 std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
     typename ImageType::Pointer image,
-    const SegmentTableDialog::FeatureFlags &flags) {
+    const SegmentTableDialog::FeatureFlags &flags, dataType::SegmentIdType background) {
     static_assert(ImageType::ImageDimension == 2 || ImageType::ImageDimension == 3);
 
     using FilterType = itk::LabelImageToShapeLabelMapFilter<ImageType>;
     using LabelObjectType = typename FilterType::LabelObjectType;
     auto filter = FilterType::New();
     filter->SetInput(image);
+    filter->SetBackgroundValue(background);
     // Roundness is computed inside the perimeter pass.
     filter->SetComputePerimeter(
         flags.perimeter || flags.roundness || flags.surfaceToVolumeRatio);
@@ -644,7 +645,7 @@ QWidget *SegmentTableDialog::createSetupPage() {
         cbIsIsolated        = new QCheckBox("Is Isolated");                      cbIsIsolated->setChecked(true);
         cbBackgroundExposure = new QCheckBox("Background Exposure");              cbBackgroundExposure->setChecked(false);
         cbBackgroundExposure->setToolTip(
-            "Fraction of surface voxels that touch background (label 0). "
+            "Fraction of surface voxels that touch the layer's background. "
             "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D; "
             "the image exterior counts as background. A voxel may contribute to both exposure ratios.");
         cbForegroundExposure = new QCheckBox("Foreground Exposure");              cbForegroundExposure->setChecked(false);
@@ -991,7 +992,7 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
             .arg(reinterpret_cast<quintptr>(segImg.GetPointer()), 0, 16)
             .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentation.GetPointer()), 0, 16)
             .arg(reinterpret_cast<quintptr>(graphBase->pSelectedSegmentationSignal), 0, 16)
-            .arg(graphBase->selectedSegmentationMaxSegmentId));
+            .arg(graphBase->pGraph->selectedLabelHighWaterMark()));
 
     if (segImg == nullptr) {
         QMessageBox::information(this, "No Segmentation",
@@ -1053,8 +1054,8 @@ void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segIm
     const auto committed = std::make_shared<bool>(false);
     runner->runInBackground(
         QStringLiteral("Computing segment features..."),
-        [segImg, flags]() {
-            return SegmentTableDialog::computeFeatures(segImg, flags);
+        [segImg, flags, background = graphBase->pGraph->selectedBackground()]() {
+            return SegmentTableDialog::computeFeatures(segImg, flags, background);
         },
         [guardedThis, committed](ComputeResult result) {
             if (guardedThis == nullptr) {
@@ -1315,7 +1316,7 @@ std::vector<std::pair<dataType::SegmentIdType, quint32>> SegmentTableDialog::col
         }
 
         const auto label = static_cast<dataType::SegmentIdType>(labelItem->data(Qt::UserRole).toLongLong());
-        if (label == 0 || seenLabels.count(label)) {
+        if (label == graphBase->pGraph->selectedBackground() || seenLabels.count(label)) {
             continue;
         }
         seenLabels.insert(label);
@@ -1421,8 +1422,9 @@ void SegmentTableDialog::requestSingleLabel3D(
 }
 
 bool SegmentTableDialog::deleteLabelFrom3DViewer(dataType::SegmentIdType labelId) {
-    if (labelId == 0 || isBusy() || tableLabelIdsAreStale
-        || !deleteSegmentationLabelsHandler || graphBase == nullptr
+    if (graphBase == nullptr || graphBase->pGraph == nullptr
+        || labelId == graphBase->pGraph->selectedBackground() || isBusy() || tableLabelIdsAreStale
+        || !deleteSegmentationLabelsHandler
         || !segmentationSelectionMatchesCurrent(
             graphBase.get(), currentTableSegmentation, currentTableSegmentationSignal)) {
         return false;
@@ -1497,7 +1499,7 @@ void SegmentTableDialog::onView3DSelectedClicked() {
 
 SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
     dataType::SegmentsImageType::Pointer segImage,
-    FeatureFlags flags)
+    FeatureFlags flags, dataType::SegmentIdType background)
 {
     ComputeResult result;
     result.flags = flags;
@@ -1530,9 +1532,9 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
             changeInformation->SetInput(extract->GetOutput());
             changeInformation->SetOutputSpacing(spacing);
             changeInformation->ChangeSpacingOn();
-            result.rows = computeShapeFeatureRows<Image2D>(changeInformation->GetOutput(), flags);
+            result.rows = computeShapeFeatureRows<Image2D>(changeInformation->GetOutput(), flags, background);
         } else {
-            result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), flags);
+            result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), flags, background);
         }
 
         const int singletonZ = static_cast<int>(region.GetIndex()[2]);
@@ -1540,12 +1542,12 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
             row.centroidZ = singletonZ;
         }
     } else {
-        result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(segImage, flags);
+        result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(segImage, flags, background);
     }
 
     if (flags.isIsolated || flags.backgroundExposure || flags.foregroundExposure) {
         const auto contactFeaturesByLabel = computeLabelContactFeatures(
-            segImage, flags.backgroundExposure || flags.foregroundExposure, result.rows.size());
+            segImage, flags.backgroundExposure || flags.foregroundExposure, result.rows.size(), background);
         for (SegmentRow &row : result.rows) {
             const auto featureIt = contactFeaturesByLabel.find(row.label);
             if (featureIt == contactFeaturesByLabel.end()) {

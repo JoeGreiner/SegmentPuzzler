@@ -870,11 +870,10 @@ int main(int argc, char **argv) {
             sample::duplicateSegmentsImage(failedFixture.graphBase->pWorkingSegmentsImage);
         failedSelected->FillBuffer(failedFixture.graph->backgroundId);
         failedFixture.graphBase->pSelectedSegmentation = failedSelected;
-        failedFixture.graphBase->selectedSegmentationMaxSegmentId =
-            failedFixture.graph->getLargestIdInSegmentVolume(failedSelected);
+        failedFixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(failedFixture.graph->getLargestIdInSegmentVolume(failedSelected)) + 1;
         auto failedSelectedBefore = sample::duplicateSegmentsImage(failedSelected);
         const SegmentIdType failedSelectedMaxBefore =
-            failedFixture.graphBase->selectedSegmentationMaxSegmentId;
+            (failedFixture.graphBase->selectedSegmentationContext->nextLabel - 1);
 
         Projected3DCutRequest unsuccessfulRequest = candidates.front().request;
         unsuccessfulRequest.strokePixels = {{-100.0, -100.0}, {-50.0, -50.0}};
@@ -884,7 +883,7 @@ int main(int argc, char **argv) {
             !unsuccessfulLabels.empty() ||
             !imagesEqual(failedWorkingBefore, failedFixture.graphBase->pWorkingSegmentsImage) ||
             !imagesEqual(failedSelectedBefore, failedSelected) ||
-            failedFixture.graphBase->selectedSegmentationMaxSegmentId != failedSelectedMaxBefore) {
+            (failedFixture.graphBase->selectedSegmentationContext->nextLabel - 1) != failedSelectedMaxBefore) {
             return failTest("An unsuccessful projected cut should leave both segmentations and labels unchanged.");
         }
     }
@@ -1012,19 +1011,18 @@ int main(int argc, char **argv) {
         }
     }
 
-    const auto selectedMaxBeforeMissingTransfer = successfulFixture.graphBase->selectedSegmentationMaxSegmentId;
+    const auto selectedMaxBeforeMissingTransfer = (successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1);
     if (!successfulFixture.graph->transferWorkingNodesToSegmentation(cutResultWorkingLabels).empty() ||
-        successfulFixture.graphBase->selectedSegmentationMaxSegmentId != selectedMaxBeforeMissingTransfer) {
+        (successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1) != selectedMaxBeforeMissingTransfer) {
         return failTest("Batch transfer without a selected segmentation should fail without consuming labels.");
     }
 
     auto selectedSegmentation = sample::duplicateSegmentsImage(postCutImage);
     selectedSegmentation->FillBuffer(backgroundId);
     successfulFixture.graphBase->pSelectedSegmentation = selectedSegmentation;
-    successfulFixture.graphBase->selectedSegmentationMaxSegmentId =
-        successfulFixture.graph->getLargestIdInSegmentVolume(selectedSegmentation);
+    successfulFixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(successfulFixture.graph->getLargestIdInSegmentVolume(selectedSegmentation)) + 1;
     const SegmentIdType selectedMaxBeforeTransfer =
-        successfulFixture.graphBase->selectedSegmentationMaxSegmentId;
+        (successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1);
 
     const auto assignedSegmentationLabels =
         successfulFixture.graph->transferWorkingNodesToSegmentation(cutResultWorkingLabels);
@@ -1047,10 +1045,10 @@ int main(int argc, char **argv) {
             }
         }
     }
-    if (successfulFixture.graphBase->selectedSegmentationMaxSegmentId != assignedSegmentationLabels.back()) {
+    if ((successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1) != assignedSegmentationLabels.back()) {
         return failTest("Batch transfer did not update the selected-segmentation maximum label.");
     }
-    if (successfulFixture.graphBase->selectedSegmentationMaxSegmentId !=
+    if ((successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1) !=
         static_cast<SegmentIdType>(selectedMaxBeforeTransfer + assignedSegmentationLabels.size())) {
         return failTest("Batch transfer did not increase the selected-segmentation maximum by the result count.");
     }
@@ -1097,7 +1095,7 @@ int main(int argc, char **argv) {
         --missingWorkingLabel;
     }
     const SegmentIdType selectedMaxBeforeInvalidBatch =
-        successfulFixture.graphBase->selectedSegmentationMaxSegmentId;
+        (successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1);
     const auto &firstTransferredNode =
         successfulFixture.graph->workingNodes.at(cutResultWorkingLabels.front());
     const Voxel firstTransferredVoxel = firstTransferredNode->subInitialNodes.begin()->second->voxels.front();
@@ -1105,7 +1103,7 @@ int main(int argc, char **argv) {
         selectedSegmentation->GetPixel({firstTransferredVoxel.x, firstTransferredVoxel.y, firstTransferredVoxel.z});
     if (!successfulFixture.graph->transferWorkingNodesToSegmentation(
             {cutResultWorkingLabels.front(), missingWorkingLabel}).empty() ||
-        successfulFixture.graphBase->selectedSegmentationMaxSegmentId != selectedMaxBeforeInvalidBatch ||
+        (successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1) != selectedMaxBeforeInvalidBatch ||
         selectedSegmentation->GetPixel(
             {firstTransferredVoxel.x, firstTransferredVoxel.y, firstTransferredVoxel.z}) !=
             firstTransferredVoxelLabelBefore) {
@@ -1113,7 +1111,7 @@ int main(int argc, char **argv) {
     }
     if (!successfulFixture.graph->transferWorkingNodesToSegmentation(
             {cutResultWorkingLabels.front(), cutResultWorkingLabels.front()}).empty() ||
-        successfulFixture.graphBase->selectedSegmentationMaxSegmentId != selectedMaxBeforeInvalidBatch) {
+        (successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1) != selectedMaxBeforeInvalidBatch) {
         return failTest("A duplicate-label batch should fail without consuming selected-segmentation labels.");
     }
 

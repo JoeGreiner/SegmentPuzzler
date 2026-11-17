@@ -1,3 +1,4 @@
+#include "src/viewers/VolumeRegionIO.h"
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -122,6 +123,15 @@ bool testPersistedStateAndCleanup(const QTemporaryDir &temporaryDirectory) {
     itkSignal<dataType::SegmentIdType> signal(image, false);
     signal.name = QStringLiteral("Loaded");
     signal.sourceFilePath = temporaryDirectory.filePath(QStringLiteral("loaded.nrrd"));
+    signal.volumeContext = std::make_shared<volume_io::VolumeContext>();
+    signal.volumeContext->sourcePath = signal.sourceFilePath;
+    signal.volumeContext->originalSize = {{8, 9, 10}};
+    signal.volumeContext->crop = volume_io::CropRegion{{{3, 4, 5}}, {{2, 2, 2}}};
+    signal.volumeContext->originalLabels = {1};
+    signal.volumeContext->background = 0;
+    signal.volumeContext->nextLabel = 3;
+    signal.volumeContext->targets.push_back({signal.sourceFilePath, {{3, 4, 5}}, volume_io::LabelPolicy::SameSegmentation,
+                                           0, QByteArray("saved-fingerprint"), {{1, 1}, {2, 99}}});
     graphBase->pSelectedSegmentation = image;
     graphBase->pSelectedSegmentationSignal = &signal;
 
@@ -145,6 +155,16 @@ bool testPersistedStateAndCleanup(const QTemporaryDir &temporaryDirectory) {
     }
 
     const QString recoveryPath = autosave.selectedSegmentationRecoveryPath();
+    volume_io::ImageLoadOptions recoveryOptions;
+    recoveryOptions.labelImage = true;
+    const auto recovered = volume_io::readImage<dataType::SegmentIdType>(recoveryPath, recoveryOptions);
+    const auto recoveredContext = recovered.context;
+    if (!check(recoveredContext && recoveredContext->sourcePath == signal.sourceFilePath &&
+               recoveredContext->crop->start == signal.volumeContext->crop->start &&
+               recoveredContext->originalLabels == signal.volumeContext->originalLabels &&
+               recoveredContext->nextLabel == 3 && recoveredContext->targets.front().labels.at(2) == 99 &&
+               recovered.image->GetPixel({0, 0, 0}) == 2,
+               "recovery lost crop provenance or reclassified a new label as original")) return false;
     autosave.cleanup();
     if (!check(QFile::exists(recoveryPath) && autosave.hasUnsavedSegmentations(),
                "cleanup removed recovery data that was not regularly saved")) {

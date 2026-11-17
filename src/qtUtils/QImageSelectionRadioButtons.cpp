@@ -1,6 +1,7 @@
 #include "QImageSelectionRadioButtons.h"
 
 #include <QSettings>
+#include <QMessageBox>
 
 namespace {
 
@@ -16,7 +17,7 @@ bool imageLoadChoiceSupportsApplyToAll(ImageLoadChoice choice) {
 
 QImageSelectionRadioButtons::QImageSelectionRadioButtons(
         QWidget *parent,
-        bool allowApplyToAllIn) :
+        bool allowApplyToAllIn, const QString &file, const CropLoadDefaults &defaults) :
         QDialog(parent),
         allowApplyToAll(allowApplyToAllIn)
 {
@@ -56,15 +57,33 @@ QImageSelectionRadioButtons::QImageSelectionRadioButtons(
     vbox->addStretch(1);
     groupBox->setLayout(vbox);
     grid->addWidget(groupBox);
+    if (!file.isEmpty()) {
+        cropOptions = new CropOptionsWidget(defaults, this);
+        cropOptions->setFile(file);
+        grid->addWidget(cropOptions);
+    }
 
     evaluateButton = new QPushButton(QObject::tr("Load"));
-    connect(evaluateButton, &QPushButton::released, this, &QDialog::accept);
+    connect(evaluateButton, &QPushButton::released, this, &QImageSelectionRadioButtons::accept);
     grid->addWidget(evaluateButton);
 
     this->setLayout(grid);
     this->setWindowFlag(Qt::WindowStaysOnTopHint);
 
 
+}
+
+volume_io::ImageLoadOptions QImageSelectionRadioButtons::loadOptions() const {
+    return cropOptions ? cropOptions->loadOptions() : volume_io::ImageLoadOptions{};
+}
+
+void QImageSelectionRadioButtons::accept() {
+    try { loadOptions(); }
+    catch (const std::exception &error) {
+        QMessageBox::warning(this, tr("Cannot Load Crop"), QString::fromUtf8(error.what()));
+        return;
+    }
+    QDialog::accept();
 }
 
 ImageLoadChoice QImageSelectionRadioButtons::selectedChoice() const {

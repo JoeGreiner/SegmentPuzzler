@@ -229,13 +229,24 @@ set(SEGMENT_PUZZLER_ITK_LIBRARIES
         ${ITK_INTERFACE_LIBRARIES}
         ITK::ITKImageIO)
 
+add_library(segmentpuzzler_volume_io STATIC src/viewers/VolumeRegionIO.cpp src/utils/AppLogger.cpp)
+set_target_properties(segmentpuzzler_volume_io PROPERTIES
+        AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
+target_include_directories(segmentpuzzler_volume_io PUBLIC ${CMAKE_SOURCE_DIR})
+target_link_libraries(segmentpuzzler_volume_io PUBLIC ${SEGMENT_PUZZLER_ITK_LIBRARIES}
+        ${SEGMENT_PUZZLER_QT_CORE_LIBRARY} ITK::zlib)
+list(APPEND SEGMENT_PUZZLER_ITK_LIBRARIES segmentpuzzler_volume_io)
+
 add_library(segmentpuzzler_worker_threads STATIC src/utils/WorkerThreads.cpp)
 set_target_properties(segmentpuzzler_worker_threads PROPERTIES
         AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
 target_include_directories(segmentpuzzler_worker_threads PUBLIC ${CMAKE_SOURCE_DIR})
 target_link_libraries(segmentpuzzler_worker_threads PRIVATE ITK::itksys)
+target_link_libraries(segmentpuzzler_volume_io PUBLIC segmentpuzzler_worker_threads)
 if (USE_OMP)
     target_compile_definitions(segmentpuzzler_worker_threads PRIVATE USE_OMP)
+    target_compile_definitions(segmentpuzzler_volume_io PUBLIC USE_OMP)
+    target_link_libraries(segmentpuzzler_volume_io PUBLIC OpenMP::OpenMP_CXX)
 endif ()
 
 find_package(VTK 9.7 REQUIRED COMPONENTS
@@ -352,7 +363,6 @@ set(SRC_RAG_AGGLOMERATION
         )
 
 set(SRC_UTILS
-        src/utils/AppLogger.cpp
         src/utils/roi.cpp
         src/utils/voxel.cpp
         src/utils/utils.cpp
@@ -503,6 +513,28 @@ if (BUILD_TESTING)
         add_test(NAME GraphicsAppRun COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/linux/test-apprun.sh)
         set_tests_properties(GraphicsAppRun PROPERTIES TIMEOUT 15)
     endif ()
+
+    add_executable(test_VolumeRegionIO examples/viewers/test_volume_region_io.cpp)
+    set_target_properties(test_VolumeRegionIO PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_VolumeRegionIO PRIVATE segmentpuzzler_volume_io)
+    add_test(NAME VolumeRegionIO COMMAND test_VolumeRegionIO)
+
+    add_executable(test_VolumeFileDialog examples/viewers/test_volume_file_dialog.cpp
+            src/qtUtils/VolumeFileDialog.cpp src/qtUtils/QImageSelectionRadioButtons.cpp)
+    target_link_libraries(test_VolumeFileDialog PRIVATE segmentpuzzler_volume_io ${SEGMENT_PUZZLER_QT_WIDGET_NETWORK_LIBRARIES})
+    add_test(NAME VolumeFileDialog COMMAND test_VolumeFileDialog)
+    set_tests_properties(VolumeFileDialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+    add_executable(test_VolumeLoading examples/viewers/test_volume_loading.cpp ${SRC_CORRECT_ORDER})
+    target_link_libraries(test_VolumeLoading segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES}
+            ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    vtk_module_autoinit(TARGETS test_VolumeLoading MODULES ${VTK_LIBRARIES})
+    if (USE_OMP)
+        target_compile_definitions(test_VolumeLoading PRIVATE USE_OMP)
+        target_link_libraries(test_VolumeLoading OpenMP::OpenMP_CXX)
+    endif ()
+    add_test(NAME VolumeLoading COMMAND test_VolumeLoading)
+    set_tests_properties(VolumeLoading PROPERTIES TIMEOUT 60)
 
     add_executable(test_LabelScan examples/viewers/test_label_scan.cpp)
     set_target_properties(test_LabelScan PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)

@@ -246,7 +246,7 @@ NeighborMergePlan buildNeighborMergePlan(
         return plan;
     }
     plan.selectedLabels.insert(requestedLabels.begin(), requestedLabels.end());
-    plan.actualMaximumLabel = backgroundId;
+    plan.actualMaximumLabel = 0;
     for (const Graph::SegmentIdType label : plan.selectedLabels) {
         if (ignoredLabels.count(label) > 0) {
             plan.error = QStringLiteral("Ignored label %1 cannot be merged with a neighbor.")
@@ -671,10 +671,10 @@ struct NeighborWorkingGroup {
 } // namespace
 
 
-void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
+void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage, std::optional<SegmentIdType> sourceBackground) {
     const bool logGraphStorage = isGraphDebugLoggingEnabled(verbose);
     initializeEdgeVolumeAndEdgeStatus();
-    updateBackgroundIdFromVolume(pImage);
+    updateBackgroundIdFromVolume(pImage, sourceBackground);
     pIgnoredSegmentLabels->push_back(backgroundId);
 
     nextFreeId = getNextFreeId(pImage);
@@ -698,12 +698,10 @@ void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage) {
 
 void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     ScopedGraphTimer totalTimer(verbose, __func__, QStringLiteral("Constructing initial nodes"));
-    std::vector<std::size_t> voxelCountByLabel(nextFreeId, 0);
+    std::unordered_map<SegmentIdType, std::size_t> voxelCountByLabel;
     {   ScopedGraphTimer histogramTimer(verbose, __func__, QStringLiteral("Building segment histogram"));
         const int threadCount = segment_puzzler::workerThreadCount();
-        // Dense per-worker histograms favour speed; memory scales with threadCount * nextFreeId.
-        std::vector<std::vector<std::size_t>> localHistograms(
-            threadCount, std::vector<std::size_t>(nextFreeId, 0));
+        std::vector<std::unordered_map<SegmentIdType, std::size_t>> localHistograms(threadCount);
         const auto *buffer = pImage->GetBufferPointer();
         const std::size_t voxelCount = pImage->GetLargestPossibleRegion().GetNumberOfPixels();
         const std::size_t chunkSize = voxelCount / threadCount;
@@ -720,9 +718,7 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
             }
         }
         for (const auto &histogram : localHistograms) {
-            for (std::size_t label = 0; label < voxelCountByLabel.size(); ++label) {
-                voxelCountByLabel[label] += histogram[label];
-            }
+            for (const auto &[label, count] : histogram) voxelCountByLabel[label] += count;
         }
     }
 
@@ -731,8 +727,12 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
     std::size_t ignoredVoxelCount = 0;
     std::size_t backgroundVoxelCount = 0;
     std::size_t largestForegroundLabelVoxelCount = 0;
-    for (std::size_t labelIndex = 0; labelIndex < voxelCountByLabel.size(); ++labelIndex) {
-        const std::size_t voxelCount = voxelCountByLabel[labelIndex];
+    std::vector<SegmentIdType> presentLabels;
+    presentLabels.reserve(voxelCountByLabel.size());
+    for (const auto &[label, count] : voxelCountByLabel) presentLabels.push_back(label);
+    std::sort(presentLabels.begin(), presentLabels.end());
+    for (const auto labelIndex : presentLabels) {
+        const std::size_t voxelCount = voxelCountByLabel.at(labelIndex);
         if (voxelCount == 0) {
             continue;
         }
@@ -751,12 +751,12 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
     }
 
     {
-        std::vector<InitialNode *> initialNodeByLabel;
+        std::unordered_map<SegmentIdType, InitialNode *> initialNodeByLabel;
         {
             ScopedGraphTimer initialNodeTimer(verbose, __func__, QStringLiteral("Allocating initial nodes"));
             QElapsedTimer phaseTimer;
             phaseTimer.start();
-            initialNodeByLabel.resize(nextFreeId, nullptr);
+            initialNodeByLabel.reserve(presentLabels.size());
             const double resizeDenseNodeIndexMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
             phaseTimer.restart();
@@ -764,8 +764,8 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
             const double resetPreviousGraphMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
             phaseTimer.restart();
-            for (std::size_t labelIndex = 0; labelIndex < voxelCountByLabel.size(); ++labelIndex) {
-                const std::size_t voxelCount = voxelCountByLabel[labelIndex];
+            for (const auto labelIndex : presentLabels) {
+                const std::size_t voxelCount = voxelCountByLabel.at(labelIndex);
                 const auto label = static_cast<SegmentIdType>(labelIndex);
                 if (voxelCount == 0 || isIgnoredId(label)) {
                     continue;
@@ -815,7 +815,7 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
 
         {
             ScopedGraphTimer finalizeNodesTimer(verbose, __func__, QStringLiteral("Finalizing initial node ROIs"));
-            for (InitialNode *initialNode : initialNodeByLabel) {
+            for (const auto &[label, initialNode] : initialNodeByLabel) {
                 if (initialNode != nullptr) {
                     initialNode->roi.updateBoundingRoi(initialNode->voxels);
                 }
@@ -882,7 +882,9 @@ Graph::SegmentIdType Graph::getLargestSegmentId(itk::Image<SegmentIdType, 3>::Po
 Graph::SegmentIdType Graph::getNextFreeId(itk::Image<Graph::SegmentIdType, 3>::Pointer pImage) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding next free segment id"));
     const SegmentIdType largestId = segment_puzzler::minMaxValues(
-        pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels()).second;
+            pImage->GetBufferPointer(), pImage->GetLargestPossibleRegion().GetNumberOfPixels()).second;
+    if (largestId == std::numeric_limits<SegmentIdType>::max())
+        throw std::overflow_error("No free segment IDs remain.");
     logGraphDebugIf(verbose, __func__, QStringLiteral("Next free segment id=%1").arg(largestId + 1));
     return largestId + 1;
 }
@@ -1532,6 +1534,23 @@ Graph::SegmentIdType Graph::getLargestIdInSegmentVolume(Graph::SegmentsImageType
     return largestId;
 }
 
+Graph::SegmentIdType Graph::selectedBackground() const {
+    return graphBase->selectedSegmentationContext->background.value_or(0);
+}
+
+std::uint64_t Graph::nextSelectedLabel() const {
+    const auto next = graphBase->selectedSegmentationContext->nextLabel;
+    return next == selectedBackground() ? next + 1 : next;
+}
+
+Graph::SegmentIdType Graph::selectedLabelHighWaterMark() const {
+    return static_cast<SegmentIdType>(std::min<std::uint64_t>(
+        graphBase->selectedSegmentationContext->nextLabel - 1, std::numeric_limits<SegmentIdType>::max()));
+}
+
+Graph::SegmentIdType Graph::reserveSelectedLabelIds(std::size_t count) {
+    return volume_io::reserveLabels(*graphBase->selectedSegmentationContext, count);
+}
 
 void Graph::splitWorkingNodeIntoInitialNodes(int x, int y, int z) {
     if (graphBase->pWorkingSegmentsImage == nullptr) return;
@@ -1715,7 +1734,7 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
     options.ignoredLabels = std::move(ignoredLabels);
     options.nextFreeLabel = nextFreeId;
     stats = splitDisconnectedLabelComponentsInPlace(graphBase->pWorkingSegmentsImage, options);
-    nextFreeId = std::max(nextFreeId, stats.nextFreeLabel);
+    nextFreeId = static_cast<SegmentIdType>(std::min<std::uint64_t>(std::numeric_limits<SegmentIdType>::max(), std::max<std::uint64_t>(nextFreeId, stats.nextFreeLabel)));
 
     if (!stats.changed()) {
         rewriteWorkingLabelsToWorkingImage();
@@ -2750,7 +2769,7 @@ std::vector<Graph::SegmentIdType> Graph::transferNonOverlappingWorkingNodesToSeg
                 if (!selectedRegion.IsInside(index)) {
                     throw std::invalid_argument("Working supervoxel lies outside the selected segmentation.");
                 }
-                if (graphBase->pSelectedSegmentation->GetPixel(index) != 0) {
+                if (graphBase->pSelectedSegmentation->GetPixel(index) != selectedBackground()) {
                     ++overlappingVoxelCount;
                 }
             }
@@ -2782,12 +2801,14 @@ void Graph::setBackgroundIdStrategy(const std::string& backgroundIdStrategyIn) {
                         .arg(QString::fromStdString(backgroundIdStrategy)));
 }
 
-void Graph::updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage) {
+void Graph::updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage, std::optional<SegmentIdType> sourceBackground) {
     logGraphDebugIf(verbose,
                     __func__,
                     QStringLiteral("Resolving background id using strategy %1")
                         .arg(QString::fromStdString(backgroundIdStrategy)));
-    if (backgroundIdStrategy == "backgroundIsHighestId") {
+    if (sourceBackground) {
+        backgroundId = *sourceBackground;
+    } else if (backgroundIdStrategy == "backgroundIsHighestId") {
         backgroundId = getLargestSegmentId(pImage);
     } else if (backgroundIdStrategy == "backgroundIsLowestId") {
         backgroundId = getSmallestSegmentId(pImage);
@@ -2831,10 +2852,10 @@ std::size_t Graph::deleteSegmentationLabels(
 
     if (labels.size() == 1) {
         const SegmentIdType label = *labels.begin();
-        if (label != backgroundId) {
+        if (label != selectedBackground()) {
             for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
                 if (it.Get() == label) {
-                    it.Set(backgroundId);
+                    it.Set(selectedBackground());
                     ++deletedVoxelCount;
                 }
             }
@@ -2842,8 +2863,8 @@ std::size_t Graph::deleteSegmentationLabels(
     } else {
         for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
             const SegmentIdType label = it.Get();
-            if (label != backgroundId && labels.count(label) > 0) {
-                it.Set(backgroundId);
+            if (label != selectedBackground() && labels.count(label) > 0) {
+                it.Set(selectedBackground());
                 ++deletedVoxelCount;
             }
         }
@@ -2872,9 +2893,10 @@ std::vector<Graph::SegmentIdType> Graph::selectedSegmentationLabelsBelowVoxelCou
 
     QElapsedTimer timer;
     timer.start();
-    std::unordered_set<SegmentIdType> ignoredLabels{backgroundId};
-    if (pIgnoredSegmentLabels != nullptr) {
-        ignoredLabels.insert(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
+    std::unordered_set<SegmentIdType> ignoredLabels{selectedBackground()};
+    if (pIgnoredSegmentLabels) {
+        for (const auto label : *pIgnoredSegmentLabels)
+            if (label != backgroundId) ignoredLabels.insert(label);
     }
 
     std::unordered_map<SegmentIdType, std::size_t> voxelCountByLabel;
@@ -2995,7 +3017,7 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
     if (initialSelectedLabels.empty()) {
         return finish(MergeStatus::NothingToMerge, QStringLiteral("No segments are selected."));
     }
-    if (initialSelectedLabels.count(backgroundId) > 0) {
+    if (initialSelectedLabels.count(selectedBackground()) > 0) {
         return finish(MergeStatus::Failed,
                       QStringLiteral("The background label cannot be merged with a neighbor."));
     }
@@ -3007,9 +3029,9 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
     using segment_puzzler::connected_components::splitDisconnectedLabelComponentsInPlace;
 
     std::vector<SegmentIdType> activeRequestedLabels(requestedLabels);
-    std::unordered_set<SegmentIdType> ignoredLabels(
-        pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
-    ignoredLabels.insert(backgroundId);
+    std::unordered_set<SegmentIdType> ignoredLabels{selectedBackground()};
+    for (const auto label : *pIgnoredSegmentLabels)
+        if (label != backgroundId) ignoredLabels.insert(label);
     std::size_t totalDisconnectedLabelCount = 0;
     std::size_t totalDisconnectedRegionCount = 0;
     NeighborMergePlan plan;
@@ -3019,7 +3041,7 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
         planScanTimer.start();
         plan = buildNeighborMergePlan(
             graphBase->pSelectedSegmentation,
-            backgroundId,
+            selectedBackground(),
             ignoredLabels,
             activeRequestedLabels,
             options.neighborSelection);
@@ -3108,7 +3130,7 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
         result.disconnectedRegionCount = totalDisconnectedRegionCount;
 
         const SegmentIdType effectiveMaximum =
-            std::max(graphBase->selectedSegmentationMaxSegmentId, plan.actualMaximumLabel);
+            std::max(selectedLabelHighWaterMark(), plan.actualMaximumLabel);
         const std::size_t newLabelCount = disconnectedRegionCount - disconnectedLabels.size();
         if (newLabelCount >
             std::numeric_limits<SegmentIdType>::max() - static_cast<std::uintmax_t>(effectiveMaximum)) {
@@ -3118,8 +3140,8 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
 
         ConnectedComponentSplitOptions splitOptions;
         splitOptions.connectivity = ConnectivityStencil::SixConnected;
-        splitOptions.nextFreeLabel = static_cast<SegmentIdType>(effectiveMaximum + 1);
-        splitOptions.ignoredLabels.insert(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
+        splitOptions.nextFreeLabel = nextSelectedLabel();
+        splitOptions.ignoredLabels.insert(selectedBackground());
         for (const auto &[label, stats] : plan.statsByLabel) {
             (void)stats;
             if (disconnectedLabels.count(label) == 0) {
@@ -3147,8 +3169,7 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
                           QStringLiteral("Connected Components did not produce the expected regions."));
         }
 
-        graphBase->selectedSegmentationMaxSegmentId =
-            std::max(graphBase->selectedSegmentationMaxSegmentId, splitStats.maxLabel);
+        graphBase->selectedSegmentationContext->nextLabel = splitStats.nextFreeLabel;
         graphBase->pSelectedSegmentation->Modified();
         logGraphDebugIf(
             verbose,
@@ -3175,7 +3196,6 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
     const auto &statsByLabel = plan.statsByLabel;
     const auto &plannedLabelPairs = plan.labelPairs;
     const auto &consumedLabels = plan.consumedLabels;
-    const SegmentIdType actualMaximumLabel = plan.actualMaximumLabel;
     if (graphBase->pSelectedSegmentation->GetBufferPointer() == nullptr
         || graphBase->pWorkingSegmentsImage->GetBufferPointer() == nullptr) {
         return finish(MergeStatus::Failed, QStringLiteral("A segmentation image has no voxel buffer."));
@@ -3504,10 +3524,9 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
                       QStringLiteral("No free Working Segment labels remain for this merge."));
     }
 
-    const SegmentIdType effectiveSelectedMaximum =
-        std::max(graphBase->selectedSegmentationMaxSegmentId, actualMaximumLabel);
-    if (plannedRoots.size() >
-        maximumLabel - static_cast<std::uintmax_t>(effectiveSelectedMaximum)) {
+    try {
+        volume_io::firstLabelForReservation(*graphBase->selectedSegmentationContext, plannedRoots.size());
+    } catch (const std::exception &) {
         return finish(MergeStatus::Failed,
                       QStringLiteral("No free Selected Segmentation labels remain for the merge results."));
     }
@@ -3565,7 +3584,6 @@ Graph::mergeSelectedSegmentationLabelsWithNeighbors(
 
     std::vector<SegmentIdType> transferWorkingLabels(
         finalWorkingLabels.begin(), finalWorkingLabels.end());
-    graphBase->selectedSegmentationMaxSegmentId = effectiveSelectedMaximum;
     const auto assignedLabels = transferWorkingNodesToSegmentation(transferWorkingLabels);
     if (assignedLabels.size() != transferWorkingLabels.size()) {
         throw std::logic_error(
@@ -3640,7 +3658,7 @@ Graph::WorkingSegmentResolution Graph::inspectSelectedSegmentationComponentInWor
     }
 
     const SegmentIdType selectedLabel = graphBase->pSelectedSegmentation->GetPixel(seed);
-    if (selectedLabel == backgroundId) {
+    if (selectedLabel == selectedBackground()) {
         resolution.status = WorkingSegmentResolution::Status::NoForeground;
         return resolution;
     }
@@ -3776,6 +3794,7 @@ std::set<Graph::SegmentIdType> Graph::synchronizeOverwrittenInitialNodeVoxels(
 
 std::optional<Graph::SegmentIdType> Graph::refineFromImageAtPosition(
         const SegmentsImageType::Pointer &sourceImage,
+        SegmentIdType sourceBackground,
         const SegmentsImageType::IndexType &seed,
         const std::optional<SegmentsImageType::RegionType> &permittedSeedRegion) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Refining working graph from image component"));
@@ -3804,12 +3823,12 @@ std::optional<Graph::SegmentIdType> Graph::refineFromImageAtPosition(
     }
 
     const SegmentIdType sourceLabel = sourceImage->GetPixel(seed);
-    if (sourceLabel == backgroundId) {
+    if (sourceLabel == sourceBackground) {
         logGraph(
             LogLevel::Warning,
             __func__,
             QStringLiteral("Refinement label matches background label %1; insertion skipped")
-                .arg(backgroundId));
+                .arg(sourceBackground));
         return std::nullopt;
     }
     if (nextFreeId == std::numeric_limits<SegmentIdType>::max()) {
@@ -4027,7 +4046,7 @@ std::optional<Graph::SegmentIdType> Graph::transferSegmentationSegmentToInitialS
 
     const SegmentsImageType::IndexType seed{{x, y, z}};
     try {
-        return refineFromImageAtPosition(graphBase->pSelectedSegmentation, seed, std::nullopt);
+        return refineFromImageAtPosition(graphBase->pSelectedSegmentation, selectedBackground(), seed);
     } catch (const std::exception &exception) {
         logGraph(
             LogLevel::Error,
@@ -4073,6 +4092,7 @@ void Graph::refineWithSelectedRefinementAtPosition(int x, int y, int z) {
     try {
         static_cast<void>(refineFromImageAtPosition(
             graphBase->pSelectedRefinement,
+            signal->volumeContext ? signal->volumeContext->background.value_or(0) : 0,
             SegmentsImageType::IndexType{{x, y, z}},
             permittedSeedRegion));
     } catch (const std::exception &exception) {
@@ -4181,7 +4201,7 @@ Graph::transferWorkingNodesToSegmentation(
                     return {};
                 }
                 if (preserveExistingSegmentation &&
-                    graphBase->pSelectedSegmentation->GetPixel(index) == 0) {
+                    graphBase->pSelectedSegmentation->GetPixel(index) == selectedBackground()) {
                     hasVoxelsToTransfer = true;
                 }
             }
@@ -4195,21 +4215,17 @@ Graph::transferWorkingNodesToSegmentation(
         return assignedSegmentationLabels;
     }
 
-    const SegmentIdType currentMaxLabel = graphBase->selectedSegmentationMaxSegmentId;
-    const auto availableLabels =
-        static_cast<std::uintmax_t>(std::numeric_limits<SegmentIdType>::max()) -
-        static_cast<std::uintmax_t>(currentMaxLabel);
-    if (nodesToTransfer.size() > availableLabels) {
-        logGraph(LogLevel::Error,
-                 __func__,
-                 QStringLiteral("Not enough free labels remain in the selected segmentation"));
-        return assignedSegmentationLabels;
-    }
-
     assignedSegmentationLabels.reserve(nodesToTransfer.size());
+    SegmentIdType firstLabel;
+    try {
+        firstLabel = reserveSelectedLabelIds(nodesToTransfer.size());
+    } catch (const std::overflow_error &error) {
+        logGraph(LogLevel::Error, __func__, QString::fromUtf8(error.what()));
+        return {};
+    }
     for (std::size_t nodeIndex = 0; nodeIndex < nodesToTransfer.size(); ++nodeIndex) {
         assignedSegmentationLabels.push_back(
-            static_cast<SegmentIdType>(currentMaxLabel + static_cast<SegmentIdType>(nodeIndex + 1)));
+            static_cast<SegmentIdType>(std::uint64_t(firstLabel) + nodeIndex));
     }
 
     for (std::size_t nodeIndex = 0; nodeIndex < nodesToTransfer.size(); ++nodeIndex) {
@@ -4217,7 +4233,7 @@ Graph::transferWorkingNodesToSegmentation(
         for (const auto &voxelList : nodesToTransfer[nodeIndex]->getVoxelLists()) {
             for (const Voxel &voxel : *voxelList) {
                 const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
-                if (!preserveExistingSegmentation || graphBase->pSelectedSegmentation->GetPixel(index) == 0) {
+                if (!preserveExistingSegmentation || graphBase->pSelectedSegmentation->GetPixel(index) == selectedBackground()) {
                     graphBase->pSelectedSegmentation->SetPixel(index, segmentationLabel);
                 }
             }
@@ -4225,7 +4241,6 @@ Graph::transferWorkingNodesToSegmentation(
     }
 
     graphBase->pSelectedSegmentation->Modified();
-    graphBase->selectedSegmentationMaxSegmentId = assignedSegmentationLabels.back();
     logGraphDebugIf(
         verbose,
         __func__,

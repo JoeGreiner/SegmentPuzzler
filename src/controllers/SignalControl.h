@@ -33,6 +33,7 @@
 #include "src/utils/ConnectedComponentLabelSplitter.h"
 #include "src/qtUtils/BoundaryConversionDialog.h"
 #include "src/viewers/VoxelSpacing.h"
+#include "src/qtUtils/VolumeFileDialog.h"
 
 #include <src/qtUtils/QImageSelectionRadioButtons.h>
 #include <src/qtUtils/QBackgroundIdRadioBox.h>
@@ -116,22 +117,17 @@ public:
     QTreeWidget *segmentationTreeWidget;
     QTreeWidget *refinementTreeWidget;
 
-    bool loadImage(QString fileName, itk::ImageIOBase::IOComponentType &dataTypeOut,
-                   size_t &signalIndexGlobalOut, bool forceShapeOfSegments = true,
-                   bool forceSegmentDataTypeUInt = false,
-                   itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType);
-
-    void addImageAsync(QString fileName, QString displayedName, LoadCallback then = {});
-    void loadSegmentationVolume(QString fileName, QString displayedName="", LoadCallback then = {});
+    void addImageAsync(QString fileName, QString displayedName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
+    void loadSegmentationVolume(QString fileName, QString displayedName="", LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
     void loadMembraneProbabilityAsync(QString fileName,
                                       QString displayedName,
                                       BoundaryLoadMode loadMode = BoundaryLoadMode::BoundaryOnly,
                                       FloatBoundaryConversionMode floatConversionMode = FloatBoundaryConversionMode::CastValues,
-                                      LoadCallback then = {});
-    void addSegmentsGraphAsync(QString fileName, LoadCallback then = {});
-    void loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then = {});
+                                      LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
+    void addSegmentsGraphAsync(QString fileName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
+    void loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
     void importGeneratedSegments(GraphSegmentImageType::Pointer pImage,
-                                 const QString &name = QStringLiteral("Supervoxels"));
+                                 const QString &name = QStringLiteral("Supervoxels"), std::shared_ptr<volume_io::VolumeContext> context = {});
 
     bool hasWorkingSegments() const;
     std::optional<voxel_geometry::VoxelSpacing> voxelSpacing() const;
@@ -176,7 +172,7 @@ public slots:
     void activateDilateTool();
     void activateErodeTool();
 
-    void loadMembraneProbability(QString fileName, QString displayedName="");
+    void loadMembraneProbability(QString fileName, QString displayedName="", volume_io::ImageLoadOptions options = {});
 
     void addSegmentsPressed();
 
@@ -184,12 +180,12 @@ public slots:
 
     void loadMembraneProbabilityPressed();
 
-    void addSegmentsGraph(QString fileName);
+    void addSegmentsGraph(QString fileName, volume_io::ImageLoadOptions options = {});
 
-    void addImage(QString fileName, QString displayedName="");
+    void addImage(QString fileName, QString displayedName="", volume_io::ImageLoadOptions options = {});
 
     void loadRefinement(QString fileName);
-    void loadRefinement(QString fileName, QString displayedName);
+    void loadRefinement(QString fileName, QString displayedName, volume_io::ImageLoadOptions options = {});
 
     void mergeSupervoxelsByRefinementLabel();
 
@@ -220,11 +216,11 @@ public slots:
 
     void runWatershed();
 
-    void receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer);
+    void receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer, std::shared_ptr<volume_io::VolumeContext> context = {});
 
     bool insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
     size_t &signalIndexGlobalOut,
-    bool forceShapeOfSegments = true);
+    bool forceShapeOfSegments = true, std::shared_ptr<volume_io::VolumeContext> context = {});
 
     void setPaintId();
 
@@ -238,6 +234,7 @@ private:
         itk::DataObject::Pointer image;
         QString suffix;
         std::optional<QColor> color;
+        std::shared_ptr<volume_io::VolumeContext> context;
     };
 
     struct LoadedImageData {
@@ -253,11 +250,13 @@ private:
     struct BoundaryLoadResult {
         dataType::BoundaryImageType::Pointer boundaryImage;
         dataType::SegmentsImageType::Pointer emptySegmentsImage;
+        std::shared_ptr<volume_io::VolumeContext> context;
         bool createdEmptySegments = false;
     };
 
     struct SegmentationLoadResultData {
         GraphSegmentImageType::Pointer segmentationImage;
+        std::shared_ptr<volume_io::VolumeContext> context;
         GraphSegmentImageType::Pointer workingSegmentsImage;
         bool dimensionMismatch = false;
     };
@@ -350,6 +349,7 @@ private:
     struct DroppedFileBatch {
         QStringList files;
         std::optional<ImageLoadChoice> applyToRemaining;
+        volume_io::ImageLoadOptions options;
     };
     std::deque<DroppedFileBatch> droppedFileBatches;
     bool processingDroppedFile = false;
@@ -375,7 +375,11 @@ private:
         quintptr segmentationSignalIdentity);
     void scheduleDroppedFileProcessing();
     void processNextDroppedFile();
-    void loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice);
+    void loadDroppedFileAs(QString fileName, ImageLoadChoice loadChoice, volume_io::ImageLoadOptions options = {});
+    CropLoadDefaults cropLoadDefaults;
+    bool chooseVolumeFile(const QString &title, QString &path, volume_io::ImageLoadOptions &options);
+    bool prepareLoadOptions(const QString &path, volume_io::ImageLoadOptions &options);
+    std::shared_ptr<LoadCallback> loadCompletion(const volume_io::ImageLoadOptions &options, LoadCallback then);
 
     void setupSignalTreeWidget();
 
@@ -443,7 +447,7 @@ private:
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
     void invokeLoadCallbackOnce(const std::shared_ptr<LoadCallback> &then,
                                 LoadResult result);
-    GraphSegmentImageType::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage);
+    GraphSegmentImageType::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage, std::optional<GraphSegmentType> background = {});
     std::optional<slice_geometry::Dimensions3D> expectedDimensionsForNewSignal(bool forceShapeOfSegments) const;
     bool dimensionsMatchExpectedDimensions(unsigned long dimX,
                                            unsigned long dimY,
@@ -457,7 +461,8 @@ private:
 
     LoadedImageData loadImageData(QString fileName,
                                   bool forceSegmentDataTypeUInt = false,
-                                  itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType);
+                                  itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType,
+                                  const volume_io::ImageLoadOptions &options = {});
     bool insertLoadedImage(const LoadedImageLayer &loadedLayer,
                            itk::ImageIOBase::IOComponentType dataType,
                            size_t &signalIndexGlobalOut,
@@ -465,7 +470,7 @@ private:
     void loadSegmentationVolumeAsync(QString fileName,
                                      QString displayedName,
                                      bool createWorkingSegments,
-                                     LoadCallback then);
+                                     LoadCallback then, volume_io::ImageLoadOptions options);
 
     void registerImageSignal(
         size_t signalIndexGlobal,
@@ -475,13 +480,14 @@ private:
     void registerBoundarySignal(size_t signalIndexGlobal, const QString &name);
     void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
     void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
-    void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage);
+    void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background = {});
 
     template<typename T>
     bool insertTypedImage(
         typename itk::Image<T, 3>::Pointer  pImage,
         size_t                             &signalIndexGlobalOut,
-        bool                                forceShapeOfSegments)
+        bool                                forceShapeOfSegments,
+        std::shared_ptr<volume_io::VolumeContext> context = {})
     {
         if (pImage == nullptr) {
             SP_LOG_WARNING("io", QStringLiteral("Ignoring null image while adding a layer"));
@@ -494,6 +500,7 @@ private:
         SP_LOG_INFO("io", QStringLiteral("volume_load signal_setup_ms=%1 voxels=%2")
             .arg(timer.nsecsElapsed() / 1.0e6, 0, 'f', 1)
             .arg(static_cast<qulonglong>(pImage->GetBufferedRegion().GetNumberOfPixels())));
+        pSignal->volumeContext = std::move(context);
         if (dimensionsMatchExpectedDimensions(
                 pSignal->getDimX(),
                 pSignal->getDimY(),

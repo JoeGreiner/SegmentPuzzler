@@ -1,3 +1,4 @@
+#include "src/viewers/VolumeRegionIO.h"
 #include "SelectedSegmentationAutosave.h"
 
 #include <QDateTime>
@@ -168,6 +169,7 @@ void SelectedSegmentationAutosave::trackSelectedSegmentation() {
     auto [stateIt, inserted] = segmentationStates_.try_emplace(selectedSegmentationKey_);
     SegmentationRecoveryState &state = stateIt->second;
     state.image = image;
+    state.volumeContext = signal->volumeContext;
     state.name = signal->name;
     if (inserted && !signal->sourceFilePath.trimmed().isEmpty()) {
         state.persistedPath = QFileInfo(signal->sourceFilePath).absoluteFilePath();
@@ -337,18 +339,24 @@ void SelectedSegmentationAutosave::startRecoveryWrite(const SegmentationKey &key
     autosavePending_ = false;
     recoveryWriteInProgress_ = true;
     const QPointer<SelectedSegmentationAutosave> guardedAutosave(this);
+    const auto context = state->volumeContext
+        ? std::make_shared<volume_io::VolumeContext>(*state->volumeContext) : nullptr;
 
     taskRunner_->runInBackground(
         tr("Saving selected segmentation recovery..."),
-        [image, path]() {
+        [image, path, context]() {
             WriteResult result;
             try {
                 using Writer = itk::ImageFileWriter<dataType::SegmentsImageType>;
                 auto imageIO = itk::NrrdImageIO::New();
                 auto writer = Writer::New();
+                auto snapshot = dataType::SegmentsImageType::New();
+                snapshot->Graft(image);
+                snapshot->SetMetaDataDictionary(image->GetMetaDataDictionary());
+                if (context) volume_io::setImageContext(snapshot->GetMetaDataDictionary(), *context);
                 writer->SetImageIO(imageIO);
                 writer->SetFileName(path.toStdString());
-                writer->SetInput(image);
+                writer->SetInput(snapshot);
                 writer->SetUseCompression(true);
                 writer->SetCompressionLevel(1);
                 writer->Update();

@@ -12,6 +12,7 @@
 #include <itkImageFileWriter.h>
 #include <itkImageIOBase.h>
 #include "src/utils/AppLogger.h"
+#include "VolumeRegionIO.h"
 
 //#include "H5Cpp.h"
 //#include <highfive/H5File.hpp>
@@ -38,9 +39,7 @@ void getDimensionAndDataTypeOfFile(QString &fileName, unsigned int &dimensionOut
 void validateScalarImageFile(const QString &fileName);
 
 template<typename dType>
-typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
-    using ImageType = itk::Image<dType, 3>;
-    using ReaderType = itk::ImageFileReader<ImageType>;
+volume_io::LoadedVolume<itk::Image<dType, 3>> loadVolume(QString &fileName, const volume_io::ImageLoadOptions &options = {}) {
     SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
 
     QElapsedTimer timer;
@@ -48,11 +47,8 @@ typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
     validateScalarImageFile(fileName);
     const auto validationMs = timer.restart();
 
-    typename ReaderType::Pointer reader = ReaderType::New();
-    reader->SetFileName(fileName.toStdString());
-
-    typename ImageType::Pointer pImage = reader->GetOutput();
-    reader->Update();
+    auto loaded = volume_io::readImage<dType>(fileName, options);
+    const auto pImage = loaded.image;
     SP_LOG_INFO("io", QStringLiteral("volume_load path=\"%1\" validation_ms=%2 read_ms=%3")
         .arg(fileName).arg(validationMs).arg(timer.elapsed()));
 
@@ -78,7 +74,12 @@ typename itk::Image<dType, 3>::Pointer ITKImageLoader(QString &fileName) {
                     .arg(direction[2][1], 0, 'g', 6)
                     .arg(direction[2][2], 0, 'g', 6));
 
-    return pImage;
+    return loaded;
+}
+
+template<typename Pixel>
+typename itk::Image<Pixel, 3>::Pointer ITKImageLoader(QString &path, const volume_io::ImageLoadOptions &options = {}) {
+    return loadVolume<Pixel>(path, options).image;
 }
 
 template<typename imageType>

@@ -47,7 +47,8 @@ public:
 
     SegmentsImageType::Pointer pSelectedSegmentation;
 // keep track of max id of selected segmentation
-    SegmentsVoxelType selectedSegmentationMaxSegmentId;
+    // Aliases the selected layer context; also supports graph-only callers without a viewer.
+    std::shared_ptr<volume_io::VolumeContext> selectedSegmentationContext = std::make_shared<volume_io::VolumeContext>();
     // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pSelectedSegmentationSignal;
     // Shared source for consistent export filename suggestions.
@@ -67,6 +68,7 @@ public:
     std::unordered_map<MappedEdgeIdType, char> edgeStatus;
 
     BoundaryImageType::Pointer pSelectedBoundary;
+    itkSignalBase *pSelectedBoundarySignal = nullptr;
     bool useSelectedSegmentationFor3DView;
 
     bool ROI_set;
@@ -84,7 +86,6 @@ public:
         pWorkingSegments = nullptr;
         pSelectedSegmentation = nullptr;
         pSelectedSegmentationSignal = nullptr;
-        selectedSegmentationMaxSegmentId = 0;
         pSelectedBoundary = nullptr;
         useSelectedSegmentationFor3DView = true;
         ROI_fx = -1;

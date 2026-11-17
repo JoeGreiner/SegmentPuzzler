@@ -1,3 +1,4 @@
+#include "src/viewers/VolumeContext.h"
 #include "src/utils/WorkerThreads.h"
 #include "ConnectedComponentLabelSplitter.h"
 
@@ -23,26 +24,11 @@ struct Component {
 
 using ComponentsByLabel = std::unordered_map<SegmentIdType, std::vector<Component>>;
 
-SegmentIdType firstAvailableLabel(SegmentIdType label,
-                                  const std::unordered_set<SegmentIdType> &ignoredLabels) {
-    while (ignoredLabels.count(label) > 0) {
-        if (label == std::numeric_limits<SegmentIdType>::max()) {
-            throw std::overflow_error("No free segment label is available.");
-        }
-        ++label;
-    }
-    return label;
-}
-
-SegmentIdType nextAvailableLabel(SegmentIdType &nextFreeLabel,
+SegmentIdType nextAvailableLabel(std::uint64_t &nextFreeLabel,
                                  const std::unordered_set<SegmentIdType> &ignoredLabels) {
-    nextFreeLabel = firstAvailableLabel(nextFreeLabel, ignoredLabels);
-    if (nextFreeLabel == std::numeric_limits<SegmentIdType>::max()) {
-        throw std::overflow_error("No free segment label is available.");
-    }
-    const SegmentIdType label = nextFreeLabel;
-    ++nextFreeLabel;
-    return label;
+    const auto label = volume_io::nextAvailableLabel(nextFreeLabel, ignoredLabels);
+    nextFreeLabel = label + 1;
+    return static_cast<SegmentIdType>(label);
 }
 
 template<typename IncludeLabel>
@@ -259,12 +245,12 @@ ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
     SegmentIdType *buffer = image->GetBufferPointer();
 
     ConnectedComponentSplitStats stats;
-    stats.maxLabel = maxLabelInImage(image);
-    const SegmentIdType minFreeLabel =
-        stats.maxLabel == std::numeric_limits<SegmentIdType>::max()
-            ? stats.maxLabel
-            : static_cast<SegmentIdType>(stats.maxLabel + 1);
-    stats.nextFreeLabel = std::max(options.nextFreeLabel, minFreeLabel);
+    const auto count = image->GetBufferedRegion().GetNumberOfPixels();
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!options.ignoredLabels.count(buffer[index]))
+            stats.maxLabel = std::max(stats.maxLabel, buffer[index]);
+    }
+    stats.nextFreeLabel = std::max(options.nextFreeLabel, std::uint64_t(stats.maxLabel) + 1);
 
     auto componentsByLabel = collectComponentsByLabel(
         image,

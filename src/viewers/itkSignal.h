@@ -11,6 +11,7 @@
 #include "itkSignalBase.h"
 #include "itkImageRegionConstIteratorWithIndex.h"
 #include <unordered_map>
+#include "VolumeContext.h"
 #include "src/file_definitions/dataTypes.h"
 #include "src/qtUtils/SignalTreeWidgetUtils.h"
 #include "src/utils/AppLogger.h"
@@ -68,6 +69,7 @@ public:
         if (pImage.IsNull()) {
             throw std::runtime_error("itkSignal::updateImage: Invalid image type.");
         }
+        volumeContext.reset();
         calculateImageSize();
         computeExtrema();
     }

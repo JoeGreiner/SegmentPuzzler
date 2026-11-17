@@ -1,3 +1,6 @@
+#include "src/qtUtils/SegmentTableDialog.h"
+#include "src/viewers/VolumeRegionIO.h"
+#include <itkImageFileWriter.h>
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialog>
@@ -175,10 +178,11 @@ void testDialogsAndShortcut(QApplication &app) {
     selected->Allocate(true);
     selected->SetPixel({1, 1, 0}, 10);
     base->pSelectedSegmentation = selected;
-    base->selectedSegmentationMaxSegmentId = 10;
+    base->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     itkSignal<dataType::SegmentIdType> selectedSignal(selected);
     selectedSignal.setCategoricalColorMode();
     base->pSelectedSegmentationSignal = &selectedSignal;
+    selectedSignal.volumeContext = base->selectedSegmentationContext;
     viewer.addSignal(&selectedSignal);
     viewer.setViewToMiddleOfStack();
     viewer.resize(1200, 800);
@@ -210,7 +214,7 @@ void testDialogsAndShortcut(QApplication &app) {
         });
         waitForTask(runner);
         require(all->isEnabled() && volume->isEnabled(), "Completed tasks must restore bulk actions");
-        require(step == 3 || base->selectedSegmentationMaxSegmentId == 10,
+        require(step == 3 || (base->selectedSegmentationContext->nextLabel - 1) == 10,
                 "Cancel and the exclusive volume boundary must leave labels unchanged and restore actions");
         const auto defaults = transfer_settings::loadSettings();
         require(defaults.maximumOverlapFraction == 0.5 && defaults.preserveExistingSegmentation,
@@ -223,7 +227,9 @@ void testDialogsAndShortcut(QApplication &app) {
     selected->FillBuffer(0);
     selected->SetPixel({1, 1, 0}, 10);
     selected->Modified();
-    base->selectedSegmentationMaxSegmentId = 10;
+    base->selectedSegmentationContext->nextLabel = std::uint64_t(graph.selectedLabelHighWaterMark()) + 1;
+    require((base->selectedSegmentationContext->nextLabel - 1) == 12,
+            "Deleting transferred objects must not make their IDs available again");
     viewer.refreshViewers();
 
     QStatusBar statusBar;
@@ -253,7 +259,7 @@ void testDialogsAndShortcut(QApplication &app) {
     saveScreenshot(&viewer, "non-overlapping-hotkeys");
     transfer_settings::saveSettings({0.49, true});
     click(viewer.xy, 2, 1);
-    require(selected->GetPixel({2, 1, 0}) == 0 && base->selectedSegmentationMaxSegmentId == 10,
+    require(selected->GetPixel({2, 1, 0}) == 0 && (base->selectedSegmentationContext->nextLabel - 1) == 12,
             "Click must use the latest overlap setting and reject excess overlap");
     require(statusMessages.size() == 1 && statusMessages.back().first == "Not transferred: overlap exceeds 49.0%." &&
             statusMessages.back().second == 4000, "Overlap rejection must show the English limit for four seconds");
@@ -286,7 +292,7 @@ void testDialogsAndShortcut(QApplication &app) {
     transfer_settings::saveSettings({0.5, true});
     const QImage beforeClick = viewer.xy->signalList.front()->getAddressSliceQImage()->copy();
     click(viewer.xy, 2, 1);
-    require(selected->GetPixel({1, 1, 0}) == 10 && selected->GetPixel({2, 1, 0}) == 11 &&
+    require(selected->GetPixel({1, 1, 0}) == 10 && selected->GetPixel({2, 1, 0}) == 13 &&
             selected->GetPixel({3, 1, 0}) == 0, "E+click must preserve occupied voxels and transfer only the clicked node");
     require(*viewer.xy->signalList.front()->getAddressSliceQImage() != beforeClick,
             "E+click must refresh the rendered segmentation");
@@ -294,16 +300,16 @@ void testDialogsAndShortcut(QApplication &app) {
     key(viewer.xy, QEvent::KeyRelease, Qt::Key_E, true);
     key(viewer.xy, QEvent::KeyPress, Qt::Key_E, true);
     click(viewer.xy, 3, 1);
-    require(selected->GetPixel({3, 1, 0}) == 12 &&
+    require(selected->GetPixel({3, 1, 0}) == 14 &&
             viewer.xy->activeTool == SliceViewer::ToolMode::NonOverlappingTransfer,
             "E must survive auto-repeat and permit repeated clicks including single voxels");
     click(viewer.xy, 3, 1);
-    require(base->selectedSegmentationMaxSegmentId == 12, "Rejected repeat clicks must not consume labels");
+    require((base->selectedSegmentationContext->nextLabel - 1) == 14, "Rejected repeat clicks must not consume labels");
     require(statusMessages.size() == 3 + extraStatusMessages && statusMessages.back().first == "Not transferred: no empty voxels." &&
             statusMessages.back().second == 4000, "Preserved full nodes must report the English no-empty-voxels reason");
     transfer_settings::saveSettings({1.0, false});
     click(viewer.xy, 2, 1);
-    require(selected->GetPixel({1, 1, 0}) == 13 && selected->GetPixel({2, 1, 0}) == 13,
+    require(selected->GetPixel({1, 1, 0}) == 15 && selected->GetPixel({2, 1, 0}) == 15,
             "E+click must read the latest preserve setting and support full overwrite");
     key(viewer.xz, QEvent::KeyRelease, Qt::Key_E);
     require(viewer.xy->activeTool == SliceViewer::ToolMode::None && eChip->grab().toImage() == rejectedChip,
@@ -319,7 +325,7 @@ void testDialogsAndShortcut(QApplication &app) {
     require(!viewer.xy->isOverlayOnlyMode(), "Releasing A must restore the display");
     key(viewer.xy, QEvent::KeyPress, Qt::Key_S);
     click(viewer.xy, 2, 1);
-    require(selected->GetPixel({1, 1, 0}) == 14 && selected->GetPixel({2, 1, 0}) == 14,
+    require(selected->GetPixel({1, 1, 0}) == 16 && selected->GetPixel({2, 1, 0}) == 16,
             "S must retain its unconditional full-node transfer");
     key(viewer.xy, QEvent::KeyRelease, Qt::Key_S);
     key(viewer.xy, QEvent::KeyPress, Qt::Key_E);
@@ -333,7 +339,7 @@ void testDialogsAndShortcut(QApplication &app) {
     key(viewer.xy, QEvent::KeyPress, Qt::Key_E);
     click(viewer.xy, 2, 1);
     const bool blocked = !all->isEnabled() && !volume->isEnabled() &&
-        viewer.xy->activeTool == SliceViewer::ToolMode::None && base->selectedSegmentationMaxSegmentId == 14;
+        viewer.xy->activeTool == SliceViewer::ToolMode::None && (base->selectedSegmentationContext->nextLabel - 1) == 16;
     finish.set_value();
     waitForTask(runner);
     require(blocked && all->isEnabled() && volume->isEnabled(),
@@ -342,7 +348,7 @@ void testDialogsAndShortcut(QApplication &app) {
     runner.busyChanged(false);
     key(viewer.xy, QEvent::KeyPress, Qt::Key_E);
     click(viewer.xy, 2, 1);
-    require(!all->isEnabled() && !volume->isEnabled() && base->selectedSegmentationMaxSegmentId == 14,
+    require(!all->isEnabled() && !volume->isEnabled() && (base->selectedSegmentationContext->nextLabel - 1) == 16,
             "Missing segmentation must disable bulk actions and make E+click a no-op");
     require(statusMessages.size() == 3 + extraStatusMessages, "Unavailable operations and other hotkeys must not emit rejection feedback");
     processEventsFor(4300);
@@ -352,6 +358,55 @@ void testDialogsAndShortcut(QApplication &app) {
             "Coordinate updates must resume after feedback expires");
     control.segmentsGraph = nullptr;
     base->pSelectedSegmentationSignal = nullptr;
+}
+void testLayerBackgroundAndAllocation(const QString &directory) {
+    using Image = dataType::SegmentsImageType;
+    using Label = dataType::SegmentIdType;
+    for (const Label workingBackground : {0U, 255U}) {
+        const Label selectedBackground = workingBackground == 0 ? 255 : 0;
+        auto working = Image::New(); working->SetRegions(Image::SizeType{{3, 2, 1}}); working->Allocate();
+        working->FillBuffer(workingBackground); working->SetPixel({{1, 0, 0}}, 7);
+        auto base = std::make_shared<GraphBase>();
+        Graph graph(base, false); base->pGraph = &graph; base->pWorkingSegmentsImage = working;
+        graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+        graph.constructFromVolume(working, workingBackground);
+        auto image = Image::New(); image->SetRegions(working->GetBufferedRegion()); image->Allocate(); image->FillBuffer(9);
+        itkSignal<Label> signal(image, false);
+        signal.volumeContext = base->selectedSegmentationContext;
+        signal.volumeContext->background = selectedBackground;
+        volume_io::initializeLabels(*signal.volumeContext, image->GetBufferPointer(), 6, true);
+        base->pSelectedSegmentation = image; base->pSelectedSegmentationSignal = &signal;
+        require(graph.reserveSelectedLabelIds(1) == 10, "Layer allocator used the working background");
+        graph.deleteSegmentationLabel(9);
+        for (unsigned int i = 0; i < 6; ++i)
+            require(image->GetBufferPointer()[i] == selectedBackground, "Deletion used the working background");
+        require(graph.selectedSegmentationLabelsBelowVoxelCount(100).empty(), "Statistics included the layer background");
+        const auto path = directory + QString("/deleted-%1.nrrd").arg(workingBackground);
+        auto target = Image::New(); target->SetRegions(image->GetBufferedRegion()); target->Allocate(true);
+        auto writer = itk::ImageFileWriter<Image>::New(); writer->SetInput(target); writer->SetFileName(path.toStdString()); writer->Update();
+        volume_io::RegionWriteOptions write; write.context = signal.volumeContext;
+        volume_io::writeRegionToVolume(image, path, {{0, 0, 0}}, write);
+        auto restored = volume_io::readImage<Label>(path, {}).image;
+        for (unsigned int i = 0; i < 6; ++i)
+            require(restored->GetBufferPointer()[i] == 0, "Deleted voxels became objects during export");
+        if (selectedBackground != 0) {
+            auto statisticsImage = Image::New(); statisticsImage->SetRegions(image->GetBufferedRegion());
+            statisticsImage->Allocate(); statisticsImage->FillBuffer(selectedBackground);
+            statisticsImage->SetPixel({{1, 0, 0}}, 0);
+            const auto features = SegmentTableDialog::computeFeatures(statisticsImage, {}, selectedBackground);
+            require(features.rows.size() == 1 && features.rows.front().label == 0,
+                    "Table statistics dropped object zero or included the nonzero background");
+        }
+        const auto transferred = graph.transferWorkingNodesToSegmentation({7}, true);
+        require(transferred == std::vector<Label>{11} && image->GetPixel({{1, 0, 0}}) == 11,
+                "Transfer did not use the layer background or reused a deleted ID");
+        auto second = std::make_shared<volume_io::VolumeContext>(); second->background = 42;
+        base->selectedSegmentationContext = second;
+        require(graph.reserveSelectedLabelIds(1) == 1, "Second layer inherited another layer's allocation cursor");
+        base->selectedSegmentationContext = signal.volumeContext;
+        require(graph.reserveSelectedLabelIds(1) == 12 && second->nextLabel == 2, "Layer switch lost allocation state");
+        require(!volume_io::imageContext(image->GetMetaDataDictionary()), "Editing created a second metadata context");
+    }
 }
 } // namespace
 
@@ -368,6 +423,7 @@ int main(int argc, char **argv) {
     QFile style(":qdarkstyle/dark/style.qss");
     if (style.open(QIODevice::ReadOnly)) app.setStyleSheet(QString::fromUtf8(style.readAll()));
     try {
+        testLayerBackgroundAndAllocation(settingsDirectory.path());
         testStoredSettings();
         testDialogsAndShortcut(app);
     } catch (const std::exception &error) {

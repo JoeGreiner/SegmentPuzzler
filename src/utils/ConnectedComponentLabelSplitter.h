@@ -186,7 +186,7 @@ struct ConnectedComponentSplitOptions {
     // splitting to the listed labels; ignoredLabels still takes precedence.
     std::unordered_set<dataType::SegmentIdType> includedLabels;
     std::unordered_set<dataType::SegmentIdType> ignoredLabels;
-    dataType::SegmentIdType nextFreeLabel = 1;
+    std::uint64_t nextFreeLabel = 1;
 };
 
 struct ConnectedComponentSplitStats {
@@ -195,7 +195,7 @@ struct ConnectedComponentSplitStats {
     std::size_t componentsCreated = 0;
     std::size_t voxelsRelabeled = 0;
     dataType::SegmentIdType maxLabel = 0;
-    dataType::SegmentIdType nextFreeLabel = 1;
+    std::uint64_t nextFreeLabel = 1;
     std::unordered_map<dataType::SegmentIdType, std::vector<dataType::SegmentIdType>> finalLabelsByOriginalLabel;
 
     bool changed() const {
