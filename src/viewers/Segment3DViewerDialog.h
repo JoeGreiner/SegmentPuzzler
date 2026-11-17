@@ -41,6 +41,7 @@ class QWidget;
 class TaskRunner;
 class StrokeOverlay;
 class LabelColorSnapshot;
+class SegmentMeshBatchRenderer;
 
 class Segment3DViewerDialog : public QDialog {
     Q_OBJECT
@@ -168,12 +169,13 @@ private:
         bool allowReducedDetail);
 
     struct SegmentActorInfo {
-        vtkSmartPointer<vtkActor> actor;
+        vtkSmartPointer<vtkActor> actor; // Null when rendered in a mesh batch.
         dataType::SegmentIdType labelId = 0;
-        std::array<double, 3> centerWorld{0.0, 0.0, 0.0};
         bool touchesImageBoundary = false;
         std::uint64_t voxelCount = 0;
         int lodFactor = 1;
+        vtkIdType triangles = 0;
+        bool visible = true;
     };
 
     struct SeedRayHit {
@@ -256,6 +258,7 @@ private:
     void renderNextInitialBatch();
     void clearInitialRenderProgress();
     void updateRenderDiagnostics(const char *reason);
+    void updateCameraClippingRange();
     void handleRenderEvent(unsigned long eventId);
     void handleFrameSwapped();
 
@@ -269,6 +272,8 @@ private:
 
     vtkSmartPointer<vtkRenderer> m_renderer;
     std::vector<SegmentActorInfo> m_segmentActors;
+    std::unique_ptr<SegmentMeshBatchRenderer> m_meshBatches;
+    std::array<double, 6> m_sceneBounds{-1, 1, -1, 1, -1, 1};
     std::array<double, 3> m_sceneCenterWorld{};
     double m_sceneExtent = 1.0;
     dataType::SegmentIdType m_targetLabelId = 0;

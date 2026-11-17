@@ -1,5 +1,7 @@
 #include "src/utils/WorkerThreads.h"
 #include "Segment3DViewerDialog.h"
+#include "SegmentMeshBatchRenderer.h"
+#include "MeshPointIdMap.h"
 #include "src/qtUtils/GraphicsSettings.h"
 #include "src/viewers/itkSignalBase.h"
 
@@ -56,6 +58,8 @@
 #include <vtkNew.h>
 #include <vtkType.h>
 #include <vtkCamera.h>
+#include <vtkActorCollection.h>
+#include <vtkBoundingBox.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkMatrix4x4.h>
 #include <vtkRenderer.h>
@@ -1448,48 +1452,6 @@ std::optional<std::vector<vtkSmartPointer<vtkCellArray>>> buildExplodePolys(
     return polys;
 }
 
-// Reuse scratch storage across a worker's segments until preparation finishes.
-// Grow by unique points instead of triangle corners.
-struct PointIdMap {
-    static constexpr auto empty = std::numeric_limits<std::uint32_t>::max();
-    std::vector<std::uint32_t> entries = std::vector<std::uint32_t>(64, empty);
-    std::vector<vtkIdType> sourceIds;
-    int shift = 58;
-
-    void reset() {
-        std::fill(entries.begin(), entries.end(), empty);
-        sourceIds.clear();
-    }
-
-    std::size_t slot(vtkIdType id) const {
-        auto index = static_cast<std::size_t>((static_cast<std::uint64_t>(id)
-            * 11400714819323198485ULL) >> shift);
-        while (entries[index] != empty && sourceIds[entries[index]] != id) {
-            index = (index + 1) & (entries.size() - 1);
-        }
-        return index;
-    }
-
-    std::pair<std::uint32_t, bool> insert(vtkIdType id) {
-        auto index = slot(id);
-        if (entries[index] != empty) {
-            return {entries[index], false};
-        }
-        if (sourceIds.size() >= entries.size() / 2) {
-            entries.assign(entries.size() * 2, empty);
-            --shift;
-            for (std::size_t i = 0; i < sourceIds.size(); ++i) {
-                entries[slot(sourceIds[i])] = static_cast<std::uint32_t>(i);
-            }
-            index = slot(id);
-        }
-        const auto localId = static_cast<std::uint32_t>(sourceIds.size());
-        sourceIds.push_back(id);
-        entries[index] = localId;
-        return {localId, true};
-    }
-};
-
 template <typename ConnectivityArray>
 vtkSmartPointer<vtkPoints> compactMeshPoints(
     const ExplodeSourceView &source,
@@ -1712,6 +1674,7 @@ vtkSmartPointer<vtkActor> createMeshActor(
 
     auto actor = vtkSmartPointer<vtkActor>::New();
     actor->SetMapper(mapper);
+    actor->ForceOpaqueOn();
     setActorColor(actor, mesh.lutColor);
     actor->GetProperty()->SetAmbient(0.1);
     actor->GetProperty()->SetDiffuse(0.7);
@@ -2263,26 +2226,38 @@ Segment3DViewerDialog::Segment3DViewerDialog(
     m_renderer->SetBackground(0.1, 0.1, 0.1);
     renWin->AddRenderer(m_renderer);
 
-    m_segmentActors.reserve(preparedScene.meshes.size());
-    for (const auto &mesh : preparedScene.meshes) {
-        if (mesh.polyData == nullptr || mesh.polyData->GetNumberOfPoints() == 0 || mesh.polyData->GetNumberOfCells() == 0) {
-            continue;
-        }
-
-        auto actor = createMeshActor(mesh);
-        m_renderer->AddActor(actor);
-        m_segmentActors.push_back(
-            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount,
-             mesh.lodFactor});
-    }
-
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
     m_sceneExtent = preparedScene.sceneExtent;
+    preparedScene.meshes.erase(std::remove_if(preparedScene.meshes.begin(), preparedScene.meshes.end(),
+        [](const PreparedMesh &mesh) {
+            return !mesh.polyData || !mesh.polyData->GetNumberOfPoints() || !mesh.polyData->GetNumberOfPolys();
+        }), preparedScene.meshes.end());
+    const bool batchMeshes = preparedScene.meshes.size() > 1 && !m_seededSplitSession.session;
+    vtkBoundingBox bounds;
+    m_segmentActors.reserve(preparedScene.meshes.size());
+    for (const auto &mesh : preparedScene.meshes) {
+        double meshBounds[6];
+        mesh.polyData->GetCellsBounds(meshBounds);
+        bounds.AddBounds(meshBounds);
+        vtkSmartPointer<vtkActor> actor;
+        if (!batchMeshes) {
+            actor = createMeshActor(mesh);
+            m_renderer->AddActor(actor);
+        }
+        m_segmentActors.push_back(
+            {actor, mesh.labelId, mesh.touchesImageBoundary, mesh.voxelCount,
+             mesh.lodFactor, mesh.polyData->GetNumberOfPolys()});
+    }
+    if (bounds.IsValid()) bounds.GetBounds(m_sceneBounds.data());
+    if (batchMeshes) {
+        m_meshBatches = std::make_unique<SegmentMeshBatchRenderer>(
+            std::move(preparedScene.meshes), m_sceneCenterWorld);
+    }
     const bool showSeededSplitControls =
         m_seededSplitSession.session != nullptr
         && static_cast<bool>(m_seededSplitSession.applySplit)
         && m_targetLabelId != 0;
-    const bool showExplodeControls = m_segmentActors.size() > 1 && !showSeededSplitControls;
+    const bool showExplodeControls = m_meshBatches != nullptr;
     const bool showImageBoundaryFilter = std::any_of(
         m_segmentActors.begin(),
         m_segmentActors.end(),
@@ -2313,6 +2288,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
 
     auto style = vtkSmartPointer<SurfaceOnlyTrackballCameraStyle>::New();
     style->SetDefaultRenderer(m_renderer);
+    style->AutoAdjustCameraClippingRangeOff();
     if (m_vtkWidget->interactor() != nullptr) {
         m_vtkWidget->interactor()->SetInteractorStyle(style);
     }
@@ -2371,18 +2347,7 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                     return;
                 }
                 const double explodeFactor = static_cast<double>(value) / 100.0;
-                for (const auto &actorInfo : m_segmentActors) {
-                    if (actorInfo.actor == nullptr) {
-                        continue;
-                    }
-                    const double dx = actorInfo.centerWorld[0] - m_sceneCenterWorld[0];
-                    const double dy = actorInfo.centerWorld[1] - m_sceneCenterWorld[1];
-                    const double dz = actorInfo.centerWorld[2] - m_sceneCenterWorld[2];
-                    actorInfo.actor->SetPosition(explodeFactor * dx,
-                                                 explodeFactor * dy,
-                                                 explodeFactor * dz);
-                }
-                m_renderer->ResetCameraClippingRange();
+                m_meshBatches->setExplode(explodeFactor);
                 if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
                     m_vtkWidget->renderWindow()->Render();
                 }
@@ -2876,13 +2841,10 @@ void Segment3DViewerDialog::updateRenderDiagnostics(const char *reason) {
     m_visibleTriangleCount = 0;
     int lodFactor = 1;
     for (const auto &segment : m_segmentActors) {
-        if (segment.actor->GetVisibility()) {
+        if (segment.visible) {
             ++m_visibleSegmentCount;
-            auto *mapper = vtkPolyDataMapper::SafeDownCast(segment.actor->GetMapper());
-            if (mapper != nullptr && mapper->GetInput() != nullptr) {
-                m_visibleTriangleCount += mapper->GetInput()->GetNumberOfPolys();
-                lodFactor = std::max(lodFactor, segment.lodFactor);
-            }
+            m_visibleTriangleCount += segment.triangles;
+            lodFactor = std::max(lodFactor, segment.lodFactor);
         }
     }
     const char *selection = "all";
@@ -2908,8 +2870,20 @@ void Segment3DViewerDialog::updateRenderDiagnostics(const char *reason) {
                     .arg(lodFactor));
 }
 
+void Segment3DViewerDialog::updateCameraClippingRange() {
+    // Segment centers lie inside these bounds; scaling encloses every exploded vertex.
+    const double scale = 1.0 + (m_explodeSlider ? m_explodeSlider->value() / 100.0 : 0.0);
+    double bounds[6];
+    for (int i = 0; i < 6; ++i) {
+        bounds[i] = m_sceneCenterWorld[i / 2]
+            + scale * (m_sceneBounds[i] - m_sceneCenterWorld[i / 2]);
+    }
+    m_renderer->ResetCameraClippingRange(bounds);
+}
+
 void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
     if (eventId == vtkCommand::StartEvent) {
+        updateCameraClippingRange();
         auto *context = m_vtkWidget->context();
         if (!m_renderContextLogged && context != nullptr && context == QOpenGLContext::currentContext()) {
             auto *functions = context->functions();
@@ -2943,6 +2917,11 @@ void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
         return;
     }
 
+    if (m_meshBatches) {
+        const auto [segments, triangles] = m_meshBatches->visibleCounts();
+        m_visibleSegmentCount = segments;
+        m_visibleTriangleCount = triangles;
+    }
     auto *context = QOpenGLContext::currentContext();
     if (context != m_vtkWidget->context()) {
         context = nullptr;
@@ -3003,10 +2982,10 @@ void Segment3DViewerDialog::setDeleteLabelHandler(DeleteLabelHandler handler) {
 void Segment3DViewerDialog::updateCellVisibility() {
     const bool hideBorderCells = m_hideImageBoundaryCellsCheckBox != nullptr
                                  && m_hideImageBoundaryCellsCheckBox->isChecked();
-    std::vector<const SegmentActorInfo *> cells;
+    std::vector<SegmentActorInfo *> cells;
     cells.reserve(m_segmentActors.size());
-    for (const auto &cell : m_segmentActors) {
-        cell.actor->SetVisibility(false);
+    for (auto &cell : m_segmentActors) {
+        cell.visible = false;
         if (!hideBorderCells || !cell.touchesImageBoundary) {
             cells.push_back(&cell);
         }
@@ -3028,7 +3007,11 @@ void Segment3DViewerDialog::updateCellVisibility() {
         std::shuffle(cells.begin(), cells.end(), generator);
     }
     for (std::size_t index = 0; index < visibleCount; ++index) {
-        cells[index]->actor->SetVisibility(true);
+        cells[index]->visible = true;
+    }
+    for (const auto &cell : m_segmentActors) {
+        if (m_meshBatches) m_meshBatches->setVisible(cell.labelId, cell.visible);
+        else cell.actor->SetVisibility(cell.visible);
     }
     if (m_visibleCellCountLabel != nullptr) {
         m_visibleCellCountLabel->setText(QStringLiteral("Showing %1 of %2 cells")
@@ -3039,9 +3022,6 @@ void Segment3DViewerDialog::updateCellVisibility() {
         m_cellCountSpinBox->setMaximum(static_cast<int>(std::clamp(
             m_segmentActors.size(), std::size_t{1}, static_cast<std::size_t>(std::numeric_limits<int>::max()))));
         m_cellCountSpinBox->setEnabled(!m_segmentActors.empty());
-    }
-    if (visibleCount > 0 && m_renderer != nullptr) {
-        m_renderer->ResetCameraClippingRange();
     }
     if (m_renderObserver != nullptr) {
         updateRenderDiagnostics("filter");
@@ -3201,7 +3181,6 @@ void Segment3DViewerDialog::advanceOrbit() {
         m_orbitSpeedSpinBox->value() * m_orbitTimer->interval() / 1000.0;
     camera->Azimuth(degreesPerTick);
     camera->OrthogonalizeViewUp();
-    m_renderer->ResetCameraClippingRange();
     m_vtkWidget->renderWindow()->Render();
 }
 
@@ -3332,7 +3311,8 @@ bool Segment3DViewerDialog::removeLabelActor(dataType::SegmentIdType labelId) {
         return false;
     }
 
-    m_renderer->RemoveActor(actorIt->actor);
+    if (m_meshBatches) m_meshBatches->setVisible(labelId, false);
+    else m_renderer->RemoveActor(actorIt->actor);
     m_segmentActors.erase(actorIt);
     updateCellVisibility();
     return true;
@@ -3493,8 +3473,8 @@ bool Segment3DViewerDialog::replaceSegmentMeshes(const PreparedScene &preparedSc
         }
         auto actor = createMeshActor(mesh);
         newActors.push_back(
-            {actor, mesh.labelId, mesh.centerWorld, mesh.touchesImageBoundary, mesh.voxelCount,
-             mesh.lodFactor});
+            {actor, mesh.labelId, mesh.touchesImageBoundary, mesh.voxelCount,
+             mesh.lodFactor, mesh.polyData->GetNumberOfPolys()});
     }
 
     if (newActors.empty() || m_renderer == nullptr) {
@@ -3513,10 +3493,10 @@ bool Segment3DViewerDialog::replaceSegmentMeshes(const PreparedScene &preparedSc
     m_sceneCenterWorld = preparedScene.sceneCenterWorld;
     m_sceneExtent = preparedScene.sceneExtent;
 
+    m_renderer->ComputeVisiblePropBounds(m_sceneBounds.data());
     if (resetCamera) {
         m_renderer->ResetCamera();
     }
-    m_renderer->ResetCameraClippingRange();
     updateRenderDiagnostics("meshes");
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->Render();
@@ -3698,15 +3678,16 @@ void Segment3DViewerDialog::startInitialRender() {
     }
 
     if (m_renderer != nullptr && !m_segmentActors.empty()) {
-        m_renderer->ResetCamera();
+        m_renderer->ResetCamera(m_sceneBounds.data());
         applyInitialCameraOrientation(m_launchSliceAxis);
-        m_renderer->ResetCameraClippingRange();
     }
 
-    for (const auto &segment : m_segmentActors) {
-        if (segment.actor->GetVisibility()) {
-            m_initialRenderActors.push_back(segment.actor);
-            segment.actor->VisibilityOff();
+    auto *actors = m_renderer->GetActors();
+    actors->InitTraversal();
+    while (auto *actor = actors->GetNextActor()) {
+        if (actor->GetVisibility()) {
+            m_initialRenderActors.push_back(actor);
+            actor->VisibilityOff();
         }
     }
     m_initialRenderIndex = 0;
@@ -3720,7 +3701,7 @@ void Segment3DViewerDialog::startInitialRender() {
     m_initialRenderProgress->setWindowModality(Qt::WindowModal);
     m_initialRenderProgressBar = new QProgressBar(m_initialRenderProgress);
     m_initialRenderProgress->setBar(m_initialRenderProgressBar);
-    m_initialRenderProgressBar->setRange(0, static_cast<int>(m_initialRenderActors.size()));
+    m_initialRenderProgressBar->setRange(0, m_meshBatches ? 100 : static_cast<int>(m_initialRenderActors.size()));
     m_initialRenderProgressBar->setValue(0);
     connect(m_initialRenderProgress, &QProgressDialog::canceled, this, &QDialog::close);
 
@@ -3748,18 +3729,24 @@ void Segment3DViewerDialog::clearInitialRenderProgress() {
 }
 
 void Segment3DViewerDialog::renderNextInitialBatch() {
-    if (isVisible() && m_initialRenderIndex < m_initialRenderActors.size()) {
+    if (isVisible()) {
+        if (m_meshBatches && m_meshBatches->hasPendingMeshes()) {
+            auto actor = m_meshBatches->buildNext();
+            m_renderer->AddActor(actor);
+            if (actor->GetVisibility()) m_initialRenderActors.push_back(actor);
+        }
         const auto first = m_initialRenderIndex;
         vtkIdType triangles = 0;
-        do {
+        while (m_initialRenderIndex < m_initialRenderActors.size()
+               && m_initialRenderIndex - first < kInitialRenderBatchActors
+               && triangles < kInitialRenderBatchTriangles) {
             auto *actor = m_initialRenderActors[m_initialRenderIndex++].GetPointer();
             actor->VisibilityOn();
             triangles += vtkPolyDataMapper::SafeDownCast(actor->GetMapper())->GetInput()->GetNumberOfPolys();
-        } while (m_initialRenderIndex < m_initialRenderActors.size()
-                 && m_initialRenderIndex - first < kInitialRenderBatchActors
-                 && triangles < kInitialRenderBatchTriangles);
+        }
 
-        if (m_initialRenderIndex < m_initialRenderActors.size()) {
+        if (m_initialRenderIndex < m_initialRenderActors.size()
+            || (m_meshBatches && m_meshBatches->hasPendingMeshes())) {
             // Warm this group without presenting it. The last group joins the final scene render.
             m_initialRenderProgress->show();
             m_visibleSegmentCount = m_initialRenderIndex - first;
@@ -3773,7 +3760,8 @@ void Segment3DViewerDialog::renderNextInitialBatch() {
                 m_initialRenderActors[index]->VisibilityOff();
             }
             // Updating the bar directly avoids QProgressDialog::setValue's nested event loop.
-            m_initialRenderProgressBar->setValue(static_cast<int>(m_initialRenderIndex));
+            m_initialRenderProgressBar->setValue(m_meshBatches ? m_meshBatches->progress()
+                                                               : static_cast<int>(m_initialRenderIndex));
             QTimer::singleShot(0, this, &Segment3DViewerDialog::renderNextInitialBatch);
             return;
         }
@@ -3891,9 +3879,11 @@ bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
                     auto *mouseEvent = static_cast<QMouseEvent *>(event);
                     if (mouseEvent->button() == Qt::LeftButton) {
                         const double devicePixelRatio = m_vtkWidget->devicePixelRatioF();
-                        const int pickX = static_cast<int>(std::lround(mouseEvent->pos().x() * devicePixelRatio));
-                        const int pickY = static_cast<int>(std::lround(
-                            (m_vtkWidget->height() - mouseEvent->pos().y() - 1) * devicePixelRatio));
+                        const auto position = mouseEventPosition(mouseEvent);
+                        const int pickX = static_cast<int>(position.x() * devicePixelRatio);
+                        // Flip in framebuffer pixels, after scaling the Qt position for HiDPI.
+                        const int pickY = m_vtkWidget->renderWindow()->GetSize()[1] - 1
+                            - static_cast<int>(position.y() * devicePixelRatio);
                         const Qt::KeyboardModifiers effectiveModifiers =
                             mouseEvent->modifiers() | QApplication::keyboardModifiers();
                         if (tryHandlePickedLabelInteraction(
@@ -3949,9 +3939,9 @@ void Segment3DViewerDialog::applyColorCycle(
         return;
     }
     for (auto &actorInfo : actors) {
-        setActorColor(
-            actorInfo.actor,
-            randomCycleColor(actorInfo.labelId, m_colorCycleSeed));
+        const auto color = randomCycleColor(actorInfo.labelId, m_colorCycleSeed);
+        if (m_meshBatches) m_meshBatches->setColor(actorInfo.labelId, color);
+        else setActorColor(actorInfo.actor, color);
     }
 }
 
@@ -5518,25 +5508,21 @@ bool Segment3DViewerDialog::tryHandlePickedLabelInteraction(
         QElapsedTimer pickTimer;
         pickTimer.start();
 
-        auto picker = vtkSmartPointer<vtkPropPicker>::New();
-        vtkProp *pickedProp = nullptr;
-        if (picker->Pick(pickX, pickY, 0.0, m_renderer) != 0) {
-            pickedProp = picker->GetViewProp();
-        }
-        const qint64 pickNanoseconds = pickTimer.nsecsElapsed();
-
         dataType::SegmentIdType pickedLabelId = 0;
-        if (pickedProp != nullptr) {
-            for (const auto &actorInfo : m_segmentActors) {
-                if (actorInfo.actor == nullptr || actorInfo.labelId == 0) {
-                    continue;
-                }
-                if (pickedProp == actorInfo.actor.GetPointer()) {
-                    pickedLabelId = actorInfo.labelId;
-                    break;
+        if (m_meshBatches) {
+            pickedLabelId = m_meshBatches->pick(pickX, pickY, m_renderer);
+        } else {
+            auto picker = vtkSmartPointer<vtkPropPicker>::New();
+            if (picker->Pick(pickX, pickY, 0.0, m_renderer)) {
+                for (const auto &segment : m_segmentActors) {
+                    if (picker->GetViewProp() == segment.actor.GetPointer()) {
+                        pickedLabelId = segment.labelId;
+                        break;
+                    }
                 }
             }
         }
+        const qint64 pickNanoseconds = pickTimer.nsecsElapsed();
 
         qint64 dispatchNanoseconds = 0;
         bool interactionHandled = deleteActive;
@@ -5570,7 +5556,7 @@ bool Segment3DViewerDialog::tryHandlePickedLabelInteraction(
                 .arg(static_cast<int>(effectiveModifiers))
                 .arg(m_targetLabelId)
                 .arg(pickedLabelId)
-                .arg(pickedProp != nullptr)
+                .arg(pickedLabelId != 0)
                 .arg(elapsedMilliseconds(pickNanoseconds), 0, 'f', 3)
                 .arg(elapsedMilliseconds(dispatchNanoseconds), 0, 'f', 3)
                 .arg(elapsedMilliseconds(totalTimer.nsecsElapsed()), 0, 'f', 3)

@@ -350,6 +350,7 @@ set(SRC_VIEWERS
         src/viewers/AnnotationSliceViewer.cpp
         src/viewers/OrthoViewer.cpp
         src/viewers/Segment3DViewerDialog.cpp
+        src/viewers/SegmentMeshBatchRenderer.cpp
         )
 
 set(SRC_RAG_MERGING_CORE

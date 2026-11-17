@@ -1,4 +1,5 @@
 #include "src/viewers/Segment3DViewerDialog.h"
+#include "src/viewers/SegmentMeshBatchRenderer.h"
 #include "src/utils/AppLogger.h"
 #include "src/viewers/itkSignalBase.h"
 
@@ -6,6 +7,9 @@
 #include <QCheckBox>
 #include <QEventLoop>
 #include <QImage>
+#include <QMouseEvent>
+#include <QKeyEvent>
+#include <QShortcut>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QSlider>
@@ -23,8 +27,9 @@
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkNew.h>
 #include <vtkPolyDataMapper.h>
+#include <vtkPointData.h>
+#include <vtkTypeInt32Array.h>
 #include <vtkProperty.h>
-#include <vtkPropPicker.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRendererCollection.h>
 #include <vtkSphereSource.h>
@@ -52,6 +57,56 @@ bool waitUntil(const std::function<bool()> &ready) {
         turn.exec();
     }
     return ready();
+}
+
+void testBatchGeometry() {
+    // Check chunk splitting and float precision far from the origin.
+    const std::array<double, 3> center{1e12, -1e12, 1e12};
+    vtkNew<vtkPoints> points;
+    points->SetDataTypeToDouble();
+    for (const auto &offset : std::array<std::array<double, 3>, 3>{{{0, 0, 0}, {0.125, 0, 0}, {0, 0.25, 0}}})
+        points->InsertNextPoint(center[0] + offset[0], center[1] + offset[1], center[2]);
+    vtkNew<vtkTypeInt32Array> indices;
+    constexpr vtkIdType triangles = 4'000'001;
+    indices->SetNumberOfValues(3 * triangles);
+    auto *values = indices->GetPointer(0);
+    for (vtkIdType i = 0; i < 3 * triangles; ++i) values[i] = i % 3;
+    vtkNew<vtkCellArray> cells;
+    cells->SetData(3, indices);
+    vtkNew<vtkPolyData> mesh;
+    mesh->SetPoints(points);
+    mesh->SetPolys(cells);
+    auto sceneCenter = center;
+    sceneCenter[0] -= 1;
+    SegmentMeshBatchRenderer batches({{1, mesh, 0xFF123456, center}}, sceneCenter);
+    std::vector<vtkSmartPointer<vtkActor>> actors;
+    vtkIdType total = 0;
+    int count = 0;
+    while (batches.hasPendingMeshes()) {
+        auto actor = batches.buildNext();
+        actors.push_back(actor);
+        auto *data = vtkPolyDataMapper::SafeDownCast(actor->GetMapper())->GetInput();
+        require(data->GetNumberOfPolys() <= 4'000'000, "Batch exceeded its picking/upload limit");
+        require(data->GetNumberOfPoints() == 3, "Batch did not compact referenced points");
+        require(data->GetPoint(1)[0] == 1.125 && data->GetPoint(2)[1] == 0.25,
+                "Batch lost precision for a distant image");
+        total += data->GetNumberOfPolys();
+        ++count;
+    }
+    require(count == 2 && total == triangles && batches.progress() == 100,
+            "Splitting a large segment lost triangles or progress");
+    require(batches.visibleCounts() == std::make_pair(std::size_t{1}, triangles),
+            "Diagnostics counted a split segment twice");
+    batches.setExplode(2);
+    batches.setVisible(1, false);
+    require(batches.visibleCounts() == std::make_pair(std::size_t{0}, vtkIdType{0}),
+            "Diagnostics counted a hidden segment");
+    for (const auto &actor : actors) {
+        require(actor->GetBounds()[0] == center[0] + 2, "Culling bounds ignored shader Explode");
+        require(!actor->GetVisibility(), "An empty batch remained visible");
+    }
+    batches.setVisible(1, true);
+    for (const auto &actor : actors) require(actor->GetVisibility(), "An empty batch could not be restored");
 }
 
 void testReducedDetail() {
@@ -194,31 +249,142 @@ void testReducedDetail() {
     require(!dialog->findChild<QCheckBox *>("reducedDetailCheckBox"), "Viewer retained the LOD switch");
     auto *widget = dialog->findChild<QVTKOpenGLNativeWidget *>();
     auto *renderer = widget->interactor()->GetInteractorStyle()->GetDefaultRenderer();
-    std::vector<vtkSmartPointer<vtkActor>> actors;
-    auto *collection = renderer->GetActors();
-    collection->InitTraversal();
-    while (auto *actor = collection->GetNextActor()) actors.push_back(actor);
-    require(actors.size() == 3, "Unexpected LOD actor count");
-    for (std::size_t i = 0; i < actors.size(); ++i)
-        require(vtkPolyDataMapper::SafeDownCast(actors[i]->GetMapper())->GetInput() == scene.meshes[i].polyData,
-                "Viewer did not use the prepared mesh");
     int swaps = 0;
     QObject::connect(widget, &QOpenGLWidget::frameSwapped, dialog.get(), [&] { ++swaps; });
     require(widget->renderWindow()->GetNeverRendered(), "LOD rendered before initialization");
     dialog->show();
-    require(waitUntil([&] { return swaps > 0; }), "LOD initial frame was not presented");
+    require(waitUntil([&] { return swaps > 0 && !dialog->findChild<QProgressDialog *>(); }),
+            "LOD initial frame was not presented");
+    require(renderer->GetActors()->GetNumberOfItems() == 1, "LOD meshes were not batched");
+    auto *batchActor = renderer->GetActors()->GetLastActor();
+    auto *combined = vtkPolyDataMapper::SafeDownCast(batchActor->GetMapper())->GetInput();
+    vtkIdType combinedCell = 0;
+    for (const auto &mesh : scene.meshes) {
+        for (vtkIdType cell = 0; cell < mesh.polyData->GetNumberOfPolys(); ++cell, ++combinedCell) {
+            vtkIdType size, combinedSize;
+            const vtkIdType *ids, *combinedIds;
+            mesh.polyData->GetPolys()->GetCellAtId(cell, size, ids);
+            combined->GetPolys()->GetCellAtId(combinedCell, combinedSize, combinedIds);
+            require(size == combinedSize, "Batch changed the triangle topology");
+            for (int corner = 0; corner < 3; ++corner) {
+                double expected[3], actual[3];
+                mesh.polyData->GetPoint(ids[corner], expected);
+                combined->GetPoint(combinedIds[corner], actual);
+                for (int axis = 0; axis < 3; ++axis)
+                    require(std::abs(actual[axis] + batchActor->GetPosition()[axis] - expected[axis]) < 1e-5,
+                            "Batch changed a vertex or its winding");
+            }
+        }
+    }
+    require(combinedCell == combined->GetNumberOfPolys(), "Batch lost or duplicated triangles");
+
+    dataType::SegmentIdType picked = 0;
+    dialog->setNavigateToLabelHandler([&](auto label) { picked = label; });
+    auto click = [&](std::size_t index, double factor) {
+        const auto &center = scene.meshes[index].centerWorld;
+        renderer->SetWorldPoint(center[0] + factor * (center[0] - scene.sceneCenterWorld[0]),
+                               center[1] + factor * (center[1] - scene.sceneCenterWorld[1]),
+                               center[2] + factor * (center[2] - scene.sceneCenterWorld[2]), 1);
+        renderer->WorldToDisplay();
+        const auto *display = renderer->GetDisplayPoint();
+        const auto ratio = widget->devicePixelRatioF();
+        const QPointF point(std::round(display[0]) / ratio,
+                            (widget->renderWindow()->GetSize()[1] - 1 - std::round(display[1])) / ratio);
+        QMouseEvent event(QEvent::MouseButtonPress, point, widget->mapToGlobal(point.toPoint()),
+                          Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+        picked = 0;
+        QApplication::sendEvent(widget, &event);
+    };
+    const int maximumExplode = dialog->findChild<QSlider *>("explodeSlider")->maximum();
+    for (const int explode : {0, 20, 200, maximumExplode}) {
+        dialog->findChild<QSlider *>("explodeSlider")->setValue(explode);
+        renderer->ResetCamera();
+        if (explode == maximumExplode) {
+            auto *camera = renderer->GetActiveCamera();
+            double position[3], focal[3];
+            camera->GetPosition(position);
+            camera->GetFocalPoint(focal);
+            for (int axis = 0; axis < 3; ++axis) {
+                const auto target = scene.meshes[1].centerWorld[axis]
+                    + explode / 100.0 * (scene.meshes[1].centerWorld[axis] - scene.sceneCenterWorld[axis]);
+                position[axis] += target - focal[axis];
+                focal[axis] = target;
+            }
+            camera->SetPosition(position);
+            camera->SetFocalPoint(focal);
+            camera->Zoom(3);
+        }
+        widget->renderWindow()->Render();
+        const auto batchedFrame = widget->grabFramebuffer();
+        batchActor->VisibilityOff();
+        std::vector<vtkSmartPointer<vtkActor>> referenceActors;
+        for (const auto &mesh : scene.meshes) {
+            vtkNew<vtkPolyDataMapper> mapper;
+            mapper->SetInputData(mesh.polyData);
+            mapper->ScalarVisibilityOff();
+            auto actor = vtkSmartPointer<vtkActor>::New();
+            actor->SetMapper(mapper);
+            actor->GetProperty()->DeepCopy(batchActor->GetProperty());
+            actor->GetProperty()->SetColor(qRed(mesh.lutColor) / 255.0,
+                                           qGreen(mesh.lutColor) / 255.0,
+                                           qBlue(mesh.lutColor) / 255.0);
+            actor->SetPosition((mesh.centerWorld[0] - scene.sceneCenterWorld[0]) * explode / 100.0,
+                               (mesh.centerWorld[1] - scene.sceneCenterWorld[1]) * explode / 100.0,
+                               (mesh.centerWorld[2] - scene.sceneCenterWorld[2]) * explode / 100.0);
+            renderer->AddActor(actor);
+            referenceActors.push_back(actor);
+        }
+        widget->renderWindow()->Render();
+        const auto referenceFrame = widget->grabFramebuffer();
+        int changedPixels = 0;
+        for (int y = 0; y < referenceFrame.height(); ++y) {
+            for (int x = 0; x < referenceFrame.width(); ++x) {
+                const auto actual = batchedFrame.pixel(x, y), expected = referenceFrame.pixel(x, y);
+                changedPixels += std::abs(qRed(actual) - qRed(expected)) > 2
+                    || std::abs(qGreen(actual) - qGreen(expected)) > 2
+                    || std::abs(qBlue(actual) - qBlue(expected)) > 2;
+            }
+        }
+        require(changedPixels < referenceFrame.width() * referenceFrame.height() / 1000,
+                "Shader rendering differs from individual actors");
+        for (const auto &actor : referenceActors) renderer->RemoveActor(actor);
+        batchActor->VisibilityOn();
+        widget->renderWindow()->Render();
+        click(1, explode / 100.0);
+        require(picked == 2, "Picking an exploded LOD segment failed");
+    }
     dialog->findChild<QSlider *>("explodeSlider")->setValue(20);
+    renderer->ResetCamera();
     dialog->findChild<QCheckBox *>("hideImageBoundarySegmentsCheckBox")->setChecked(true);
-    require(!actors[0]->GetVisibility() && actors[1]->GetVisibility(), "LOD filtering failed");
-    const auto *position = actors[1]->GetPosition();
-    renderer->SetWorldPoint(scene.meshes[1].centerWorld[0] + position[0],
-                           scene.meshes[1].centerWorld[1] + position[1],
-                           scene.meshes[1].centerWorld[2] + position[2], 1.0);
-    renderer->WorldToDisplay();
-    const auto *display = renderer->GetDisplayPoint();
-    vtkNew<vtkPropPicker> picker;
-    require(picker->Pick(display[0], display[1], 0, renderer) && picker->GetViewProp() == actors[1],
-            "Picking an exploded LOD segment failed");
+    click(0, 0.2);
+    require(picked == 0, "Filtered segment was still pickable");
+    click(1, 0.2);
+    require(picked == 2, "Filtering hid the wrong segment");
+    auto *colors = combined->GetPointData()->GetScalars();
+    const double oldColor = colors->GetComponent(0, 0);
+    for (auto *shortcut : dialog->findChildren<QShortcut *>()) {
+        if (shortcut->key() == QKeySequence(Qt::Key_R))
+            QMetaObject::invokeMethod(shortcut, "activated", Qt::DirectConnection);
+    }
+    require(colors->GetComponent(0, 0) != oldColor || colors->GetComponent(0, 1) != 0,
+            "Color cycling did not update the batch colors");
+    click(1, 0.2);
+    require(picked == 2, "Recoloring broke picking");
+    dataType::SegmentIdType deleted = 0;
+    dialog->setDeleteLabelHandler([&](auto label) { deleted = label; return true; });
+    QKeyEvent keyDown(QEvent::KeyPress, Qt::Key_D, Qt::NoModifier);
+    QApplication::sendEvent(widget, &keyDown);
+    click(1, 0.2);
+    require(deleted == 2, "Delete dispatched the wrong label");
+    QKeyEvent keyUp(QEvent::KeyRelease, Qt::Key_D, Qt::NoModifier);
+    QApplication::sendEvent(widget, &keyUp);
+    click(1, 0.2);
+    require(picked == 0, "Deleted segment was still pickable");
+    dialog->findChild<QCheckBox *>("hideImageBoundarySegmentsCheckBox")->setChecked(false);
+    click(0, 0.2);
+    require(picked == 1, "Clearing the filter did not restore the segment");
+    click(1, 0.2);
+    require(picked == 0, "Clearing the filter restored a deleted segment");
     settings.remove("graphics/lodEnabled");
     settings.remove("graphics/lodVoxelThreshold");
 }
@@ -407,15 +573,31 @@ int main(int argc, char **argv) {
         auto *actors = renderer->GetActors();
         actors->InitTraversal();
         while (auto *actor = actors->GetNextActor()) visibleActors += actor->GetVisibility() != 0;
-        require(visibleActors == 512, "Grouped initialization changed the segment filter");
+        require(visibleActors == 3, "Grouped initialization did not retain the three batches");
         require(groupedWidget->interactor()->GetEnableRender(), "Grouped initialization left rendering disabled");
-        require(renderer->GetNumberOfPropsRendered() == 512, "Final render did not contain the complete selection");
+        require(renderer->GetNumberOfPropsRendered() == 3, "Final render did not contain the complete selection");
         const auto groupedFrame = groupedWidget->grabFramebuffer();
         require(groupedFrame.pixelColor(10, 10) == backgroundColor,
                 "Grouped initialization did not display the rendered framebuffer");
         require(groupedFrame.pixelColor(groupedFrame.width() / 2, groupedFrame.height() / 2) != backgroundColor,
                 "Grouped initialization displayed only the background");
         grouped.reset();
+
+        auto hiddenScene = largeScene;
+        for (auto &mesh : hiddenScene.meshes) mesh.touchesImageBoundary = true;
+        auto hidden = std::make_unique<Segment3DViewerDialog>(std::move(hiddenScene));
+        auto *hiddenWidget = hidden->findChild<QVTKOpenGLNativeWidget *>();
+        auto *hideBorder = hidden->findChild<QCheckBox *>("hideImageBoundarySegmentsCheckBox");
+        hideBorder->setChecked(true);
+        hidden->show();
+        require(waitUntil([&] {
+            return !hiddenWidget->renderWindow()->GetNeverRendered() && !hidden->findChild<QProgressDialog *>();
+        }), "Initialization with every segment hidden did not finish");
+        auto *hiddenRenderer = hiddenWidget->interactor()->GetInteractorStyle()->GetDefaultRenderer();
+        require(hiddenRenderer->GetNumberOfPropsRendered() == 0, "Initialization displayed hidden batches");
+        hideBorder->setChecked(false);
+        require(hiddenRenderer->GetNumberOfPropsRendered() == 3, "Hidden batches could not be restored");
+        hidden.reset();
 
         auto cancelled = std::make_unique<Segment3DViewerDialog>(largeScene);
         auto *cancelledWidget = cancelled->findChild<QVTKOpenGLNativeWidget *>();
@@ -463,6 +645,7 @@ int main(int argc, char **argv) {
         destroyed->show();
         require(waitUntil([&] { return destroyed == nullptr; }), "Viewer was not destroyed between groups");
         QApplication::processEvents();
+        testBatchGeometry();
         testReducedDetail();
         std::cout << "3D render logging tests passed\n";
     } catch (const std::exception &error) {
