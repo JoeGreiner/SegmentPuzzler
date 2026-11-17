@@ -473,10 +473,10 @@ namespace {
 struct GraphStorageSummary {
     MemoryStats memory;
     std::size_t initialNodeVoxelCount = 0;
-    std::size_t initialNodeVoxelCapacity = 0;
+    std::size_t initialNodeVoxelBytes = 0;
     std::size_t oneSidedInitialEdgeCount = 0;
     std::size_t oneSidedInitialEdgeVoxelCount = 0;
-    std::size_t oneSidedInitialEdgeVoxelCapacity = 0;
+    std::size_t oneSidedInitialEdgeVoxelBytes = 0;
     std::size_t twoSidedInitialEdgeReferencedVoxelCount = 0;
     std::size_t twoSidedInitialEdgeOwnedVoxelCapacity = 0;
     std::size_t twoSidedInitialEdgeOneSidedEdgeReferenceCount = 0;
@@ -496,14 +496,14 @@ GraphStorageSummary collectGraphStorageSummary(const Graph &graph) {
             continue;
         }
         summary.initialNodeVoxelCount += initialNode->voxels.size();
-        summary.initialNodeVoxelCapacity += initialNode->voxels.capacity();
+        summary.initialNodeVoxelBytes += initialNode->voxels.storedBytes();
         for (const auto &[neighborLabel, oneSidedInitialEdge] : initialNode->neighborLabelToOneSidedInitialEdge) {
             if (oneSidedInitialEdge == nullptr) {
                 continue;
             }
             ++summary.oneSidedInitialEdgeCount;
             summary.oneSidedInitialEdgeVoxelCount += oneSidedInitialEdge->voxels.size();
-            summary.oneSidedInitialEdgeVoxelCapacity += oneSidedInitialEdge->voxels.capacity();
+            summary.oneSidedInitialEdgeVoxelBytes += oneSidedInitialEdge->voxels.storedBytes();
         }
     }
 
@@ -531,9 +531,9 @@ GraphStorageSummary collectGraphStorageSummary(const Graph &graph) {
     }
 
     const long double trackedVectorCapacityBytes =
-        (static_cast<long double>(summary.initialNodeVoxelCapacity) +
-         static_cast<long double>(summary.oneSidedInitialEdgeVoxelCapacity) +
-         static_cast<long double>(summary.twoSidedInitialEdgeOwnedVoxelCapacity)) * sizeof(Voxel) +
+        (static_cast<long double>(summary.initialNodeVoxelBytes) +
+         static_cast<long double>(summary.oneSidedInitialEdgeVoxelBytes)) +
+        static_cast<long double>(summary.twoSidedInitialEdgeOwnedVoxelCapacity) * sizeof(Voxel) +
         static_cast<long double>(summary.workingEdgeTwoSidedInitialEdgeReferenceCapacity) *
             sizeof(std::shared_ptr<TwoSidedInitialEdge>);
     summary.trackedVectorCapacityMB =
@@ -548,8 +548,8 @@ void logStorageAfterGraphPhase(const Graph &graph, const QString &graphPhase) {
         __func__,
         QStringLiteral(
             "Graph storage phase=%1 process_rss_gb=%2 peak_process_rss_gb=%3 available_memory_gb=%4 "
-            "initial_nodes=%5 initial_node_voxels=%6 initial_node_voxel_capacity=%7 "
-            "one_sided_initial_edges=%8 one_sided_edge_voxels=%9 one_sided_edge_voxel_capacity=%10 "
+            "initial_nodes=%5 initial_node_voxels=%6 initial_node_voxel_bytes=%7 "
+            "one_sided_initial_edges=%8 one_sided_edge_voxels=%9 one_sided_edge_voxel_bytes=%10 "
             "two_sided_initial_edges=%11 two_sided_edge_referenced_voxels=%12 "
             "two_sided_edge_owned_voxel_capacity=%13 two_sided_edge_one_sided_edge_references=%14 "
             "working_nodes=%15 working_edges=%16 working_node_initial_node_references=%17 "
@@ -561,10 +561,10 @@ void logStorageAfterGraphPhase(const Graph &graph, const QString &graphPhase) {
             .arg(summary.memory.availableSystemMemoryGB, 0, 'f', 3)
             .arg(static_cast<qulonglong>(graph.initialNodes.size()))
             .arg(static_cast<qulonglong>(summary.initialNodeVoxelCount))
-            .arg(static_cast<qulonglong>(summary.initialNodeVoxelCapacity))
+            .arg(static_cast<qulonglong>(summary.initialNodeVoxelBytes))
             .arg(static_cast<qulonglong>(summary.oneSidedInitialEdgeCount))
             .arg(static_cast<qulonglong>(summary.oneSidedInitialEdgeVoxelCount))
-            .arg(static_cast<qulonglong>(summary.oneSidedInitialEdgeVoxelCapacity))
+            .arg(static_cast<qulonglong>(summary.oneSidedInitialEdgeVoxelBytes))
             .arg(static_cast<qulonglong>(graph.initialLabelPairToTwoSidedInitialEdge.size()))
             .arg(static_cast<qulonglong>(summary.twoSidedInitialEdgeReferencedVoxelCount))
             .arg(static_cast<qulonglong>(summary.twoSidedInitialEdgeOwnedVoxelCapacity))
@@ -698,14 +698,16 @@ void Graph::constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage, st
 
 void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) {
     ScopedGraphTimer totalTimer(verbose, __func__, QStringLiteral("Constructing initial nodes"));
-    std::unordered_map<SegmentIdType, std::size_t> voxelCountByLabel;
+    std::unordered_map<SegmentIdType, std::size_t> voxelCountByLabel, runCountByLabel;
     {   ScopedGraphTimer histogramTimer(verbose, __func__, QStringLiteral("Building segment histogram"));
         const int threadCount = segment_puzzler::workerThreadCount();
-        std::vector<std::unordered_map<SegmentIdType, std::size_t>> localHistograms(threadCount);
+        struct LabelCounts { std::size_t voxels = 0, runs = 0; };
+        std::vector<std::unordered_map<SegmentIdType, LabelCounts>> localHistograms(threadCount);
         const auto *buffer = pImage->GetBufferPointer();
-        const std::size_t voxelCount = pImage->GetLargestPossibleRegion().GetNumberOfPixels();
-        const std::size_t chunkSize = voxelCount / threadCount;
-        const std::size_t remainder = voxelCount % threadCount;
+        const auto size = pImage->GetLargestPossibleRegion().GetSize();
+        const std::size_t rowCount = size[1] * size[2];
+        const std::size_t chunkSize = rowCount / threadCount;
+        const std::size_t remainder = rowCount % threadCount;
 #ifdef USE_OMP
 #pragma omp parallel for num_threads(threadCount) schedule(static)
 #endif
@@ -713,12 +715,22 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
             auto &histogram = localHistograms[worker];
             const std::size_t begin = worker * chunkSize + std::min<std::size_t>(worker, remainder);
             const std::size_t end = begin + chunkSize + (worker < remainder);
-            for (std::size_t index = begin; index < end; ++index) {
-                ++histogram[buffer[index]];
+            for (std::size_t row = begin; row < end; ++row) {
+                const auto *line = buffer + row * size[0];
+                for (std::size_t x = 0; x < size[0];) {
+                    const auto start = x++;
+                    while (x < size[0] && line[x] == line[start]) ++x;
+                    auto &counts = histogram[line[start]];
+                    counts.voxels += x - start;
+                    ++counts.runs;
+                }
             }
         }
         for (const auto &histogram : localHistograms) {
-            for (const auto &[label, count] : histogram) voxelCountByLabel[label] += count;
+            for (const auto &[label, counts] : histogram) {
+                voxelCountByLabel[label] += counts.voxels;
+                runCountByLabel[label] += counts.runs;
+            }
         }
     }
 
@@ -770,7 +782,7 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
                 if (voxelCount == 0 || isIgnoredId(label)) {
                     continue;
                 }
-                segmentManager.addInitialNode(label, voxelCount);
+                segmentManager.addInitialNode(label, runCountByLabel.at(label));
                 initialNodeByLabel[labelIndex] = initialNodes.at(label).get();
             }
             const double createInitialNodesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
@@ -795,22 +807,12 @@ void Graph::constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage) 
 
         {
             ScopedGraphTimer voxelAssignmentTimer(verbose, __func__, QStringLiteral("Assigning voxels to initial nodes"));
-            const SegmentIdType *segmentLabelBuffer = pImage->GetBufferPointer();
-            const itk::Size<3> &size = pImage->GetLargestPossibleRegion().GetSize();
-
-            for (unsigned int z = 0; z < size[2]; ++z) {
-                for (unsigned int y = 0; y < size[1]; ++y) {
-                    for (unsigned int x = 0; x < size[0]; ++x) {
-                        const std::size_t voxelIndex =
-                            static_cast<std::size_t>(z) * size[1] * size[0] +
-                            static_cast<std::size_t>(y) * size[0] + x;
-                        InitialNode *initialNode = initialNodeByLabel[segmentLabelBuffer[voxelIndex]];
-                        if (initialNode != nullptr) {
-                            initialNode->voxels.emplace_back(x, y, z);
-                        }
-                    }
-                }
-            }
+            const auto source = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(pImage);
+            source->forEachRun([&](const auto &index, std::size_t length, SegmentIdType label) {
+                const auto node = initialNodeByLabel.find(label);
+                if (node != initialNodeByLabel.end())
+                    node->second->voxels.appendRun(Voxel(index[0], index[1], index[2]), length);
+            });
         }
 
         {
@@ -1225,7 +1227,7 @@ itk::Image<short, 3>::Pointer Graph::shortestPath(OneSidedInitialEdge &initialEd
     pVisitedBefore->Allocate();
     pVisitedBefore->FillBuffer(0);
 
-    for (auto &voxel : initialEdge.voxels) {
+    for (const auto &voxel : initialEdge.voxels) {
         if (pLandscape->GetPixel({voxel.x, voxel.y, voxel.z})) { //1vx wide nodes
             openVoxels.push_back({voxel.x, voxel.y, voxel.z});
             pVisitedBefore->SetPixel({voxel.x, voxel.y, voxel.z}, 255);
@@ -1344,7 +1346,7 @@ void Graph::unmergeEdge(TwoSidedInitialEdge *initialEdge, DistanceType::Pointer 
             if ((initialNode.first != labelInitialNodeSmaller) && (initialNode.first != labelInitialNodeBigger)) {
                 double distanceToEdgeSmaller = 0, distanceToEdgeBigger = 0;
 
-                for (auto &voxel : initialNode.second->voxels) {
+                for (const auto &voxel : initialNode.second->voxels) {
                     distanceToEdgeSmaller += pDistanceSmaller->GetPixel({voxel.x, voxel.y, voxel.z});
                     distanceToEdgeBigger += pDistanceBigger->GetPixel({voxel.x, voxel.y, voxel.z});
                 }
@@ -2341,7 +2343,6 @@ bool Graph::applyWorkingNodePartition(
 
         auto *replacementInitialNode =
             new InitialNode(graphBase, graphBase->pWorkingSegmentsImage, replacementInitialLabel);
-        replacementInitialNode->voxels.reserve(replacementComponent.voxelIndices.size());
         const auto materializeReplacementVoxelListStart = Clock::now();
         for (const int voxelIndex : replacementComponent.voxelIndices) {
             replacementInitialNode->voxels.push_back(targetVoxels[static_cast<std::size_t>(voxelIndex)]);
@@ -2521,7 +2522,7 @@ void Graph::mergeSegmentsWithRefinement() {
         for (auto &node : initialNodes) {
             overlapMap[node.first] = LabelOverlap();
             overlapMap[node.first].setPToOtherLabelImagePointer(graphBase->pSelectedRefinement);
-            overlapMap[node.first].compute(node.second->voxels);
+            overlapMap[node.first].compute(node.second->getVoxelLists());
 //            std::cout << "label: " << overlapMap[node.first].labelWithLargestOverlap << " " <<
 //                      overlapMap[node.first].largestOverlapFraction << "\n";
         }
@@ -3706,8 +3707,7 @@ std::set<Graph::SegmentIdType> Graph::synchronizeOverwrittenInitialNodeVoxels(
         }
 
         InitialNode *initialNode = initialNodeIt->second.get();
-        std::vector<Voxel> filteredVoxels;
-        filteredVoxels.reserve(initialNode->voxels.size());
+        VoxelList filteredVoxels;
         for (const Voxel &voxel : initialNode->voxels) {
             const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
             if (workingRegion.IsInside(index) && workingImage->GetPixel(index) == label) {
@@ -3727,8 +3727,7 @@ std::set<Graph::SegmentIdType> Graph::synchronizeOverwrittenInitialNodeVoxels(
     workingImage->forEachRun([&](const auto &index, std::size_t length, SegmentIdType label) {
         if (!labelsNeedingLatticeScan.count(label)) return;
         auto &voxels = initialNodes.at(label)->voxels;
-        for (std::size_t x = 0; x < length; ++x)
-            voxels.emplace_back(static_cast<int>(index[0] + x), static_cast<int>(index[1]), static_cast<int>(index[2]));
+        voxels.appendRun(Voxel(index[0], index[1], index[2]), length);
     });
 
     for (const SegmentIdType label : labelsNeedingLatticeScan) {

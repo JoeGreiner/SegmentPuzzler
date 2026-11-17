@@ -29,6 +29,14 @@ void Roi::mergeRoiWith(Roi B) {
     }
 }
 
+void Roi::updateBoundingRoi(const VoxelList &voxels) {
+    reset();
+    for (const auto &run : voxels.getRuns()) {
+        updateBoundingRoi(run.start);
+        updateBoundingRoi(Voxel(static_cast<int>(std::int64_t(run.start.x) + run.length - 1), run.start.y, run.start.z));
+    }
+}
+
 void Roi::updateBoundingRoi(std::vector<Voxel> &voxels) {
     //    reset roi
     reset();

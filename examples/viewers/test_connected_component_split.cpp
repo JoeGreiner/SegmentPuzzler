@@ -623,7 +623,7 @@ int testRefinementSynchronizesOverwrittenNodeMetadata() {
         if (inserted != insertedLabel || workingImage->GetPixel({5, 0, 0}) != 1 ||
             fixture.graph->initialNodes.count(1) != 1 ||
             fixture.graph->workingNodes.count(1) != 1 ||
-            fixture.graph->initialNodes.at(1)->voxels != expectedSurvivingVoxels ||
+            fixture.graph->initialNodes.at(1)->getVoxelArray() != expectedSurvivingVoxels ||
             fixture.graph->initialNodes.at(1)->roi.minX != 5 ||
             fixture.graph->initialNodes.at(1)->roi.maxX != 5 ||
             fixture.graph->workingNodes.at(1)->roi.minX != 5 ||
@@ -648,10 +648,10 @@ int testRefinementSynchronizesOverwrittenNodeMetadata() {
             fixture.graph->initialNodes.at(1)->neighborLabelToOneSidedInitialEdge.size() != 1 ||
             survivingOneSidedEdge ==
                 fixture.graph->initialNodes.at(1)->neighborLabelToOneSidedInitialEdge.end() ||
-            survivingOneSidedEdge->second->voxels != std::vector<Voxel>{Voxel(5, 0, 0)} ||
+            std::vector<Voxel>(survivingOneSidedEdge->second->voxels.begin(), survivingOneSidedEdge->second->voxels.end()) != std::vector<Voxel>{Voxel(5, 0, 0)} ||
             newOneSidedEdge ==
                 fixture.graph->initialNodes.at(insertedLabel)->neighborLabelToOneSidedInitialEdge.end() ||
-            newOneSidedEdge->second->voxels != std::vector<Voxel>{Voxel(1, 0, 0)} ||
+            std::vector<Voxel>(newOneSidedEdge->second->voxels.begin(), newOneSidedEdge->second->voxels.end()) != std::vector<Voxel>{Voxel(1, 0, 0)} ||
             fixture.graph->initialLabelPairToTwoSidedInitialEdge.at(survivingRemoteEdge)->getVoxelCount() != 2 ||
             fixture.graph->initialLabelPairToTwoSidedInitialEdge.at(newLocalEdge)->getVoxelCount() != 2) {
             return failTest(
@@ -1911,6 +1911,7 @@ int testNonOverlappingTransferAtPosition() {
     }
 
     // A malformed unrelated node must not be inspected by the single-node path.
+    const auto originalVoxels = fixture.graph->initialNodes.at(3)->voxels;
     fixture.graph->initialNodes.at(3)->voxels.emplace_back(100, 0, 0);
     const auto assigned = fixture.graph->transferNonOverlappingWorkingNodeToSegmentation(4, 0, 0, 0.25, true, &rejection);
     if (assigned != std::optional<SegmentIdType>{11} || rejection != Rejection::None ||
@@ -1930,7 +1931,7 @@ int testNonOverlappingTransferAtPosition() {
         copyImageBuffer(selectedImage) != std::vector<SegmentIdType>{0, 12, 12, 12, 12, 0, 0}) {
         return failTest("Single-node transfers must honor the overwrite setting without transferring other nodes.");
     }
-    fixture.graph->initialNodes.at(3)->voxels.pop_back();
+    fixture.graph->initialNodes.at(3)->voxels = originalVoxels;
     fixture.graphBase->ignoredSegmentLabels.push_back(3);
     if (fixture.graph->transferNonOverlappingWorkingNodeToSegmentation(6, 0, 0, 0.0, true, &rejection) ||
         rejection != Rejection::None ||

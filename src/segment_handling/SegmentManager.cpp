@@ -115,10 +115,10 @@ void SegmentManager::addInitialNode(InitialNode *pInitialNodeToAdd) {
 
 }
 
-void SegmentManager::addInitialNode(SegmentIdType labelOfNewNode, std::size_t voxelCapacity) {
+void SegmentManager::addInitialNode(SegmentIdType labelOfNewNode, std::size_t runCapacity) {
     auto pNewInitialNode = std::shared_ptr<InitialNode>(new InitialNode(graphBase, *ppWorkingSegmentsImage, labelOfNewNode));
-    if (voxelCapacity > 0) {
-        pNewInitialNode->voxels.reserve(voxelCapacity);
+    if (runCapacity > 0) {
+        pNewInitialNode->voxels.reserveRuns(runCapacity);
     }
     (*pInitialNodes)[labelOfNewNode] = pNewInitialNode;
 

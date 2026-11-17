@@ -723,7 +723,7 @@ int testSceneImageDirection() {
     return 0;
 }
 
-bool voxelListIsConnected(const std::vector<Voxel> &voxels, const Roi &roi) {
+bool voxelListIsConnected(const VoxelList &voxels, const Roi &roi) {
     if (voxels.empty()) {
         return false;
     }

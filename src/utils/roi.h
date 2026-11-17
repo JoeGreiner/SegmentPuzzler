@@ -21,6 +21,7 @@ struct Roi {
 
     // check if roi changed when adding a voxel
     void updateBoundingRoi(std::vector<Voxel> &voxels);
+    void updateBoundingRoi(const VoxelList &voxels);
 
     void updateBoundingRoi(const Voxel &voxel);
 

@@ -238,7 +238,7 @@ PCA calcPCA(const VoxelLists &voxelLists) {
 
     double xMean = 0, yMean = 0, zMean = 0;
     for (const auto *listEntry : voxelLists) {
-        for (auto &voxel : *listEntry) {
+        for (const auto &voxel : *listEntry) {
             xMean += voxel.x;
             yMean += voxel.y;
             zMean += voxel.z;
@@ -249,7 +249,7 @@ PCA calcPCA(const VoxelLists &voxelLists) {
     zMean = zMean / numberVoxels;
 
     for (const auto *listEntry : voxelLists) {
-        for (auto &voxel : *listEntry) {
+        for (const auto &voxel : *listEntry) {
             cov[0][0] += (voxel.x - xMean) * (voxel.x - xMean);
             cov[0][1] += (voxel.x - xMean) * (voxel.y - yMean);
             cov[0][2] += (voxel.x - xMean) * (voxel.z - zMean);

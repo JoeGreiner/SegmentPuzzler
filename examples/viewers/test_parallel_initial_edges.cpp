@@ -62,8 +62,9 @@ ImagePointer makeTestImage() {
     return image;
 }
 
-void appendVoxels(std::ostringstream &out, const std::vector<Voxel> &input) {
-    std::vector<Voxel> voxels = input;
+template<typename Voxels>
+void appendVoxels(std::ostringstream &out, const Voxels &input) {
+    std::vector<Voxel> voxels(input.begin(), input.end());
     std::sort(voxels.begin(), voxels.end());
     for (const Voxel &voxel : voxels) {
         out << voxel.x << ',' << voxel.y << ',' << voxel.z << ';';
@@ -85,7 +86,7 @@ void appendOneSidedInitialEdge(std::ostringstream &out, const OneSidedInitialEdg
 
 void appendTwoSidedInitialEdge(std::ostringstream &out, const TwoSidedInitialEdge &edge) {
     appendEdgeMetadata(out, edge);
-    VoxelList logicalVoxels;
+    std::vector<Voxel> logicalVoxels;
     logicalVoxels.reserve(edge.getVoxelCount());
     for (const VoxelList *voxelList : edge.getVoxelLists()) {
         logicalVoxels.insert(logicalVoxels.end(), voxelList->begin(), voxelList->end());

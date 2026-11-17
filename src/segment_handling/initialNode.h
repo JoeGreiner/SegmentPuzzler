@@ -57,7 +57,7 @@ public:
 
     std::unordered_map<SegmentIdType, std::shared_ptr<OneSidedInitialEdge>> neighborLabelToOneSidedInitialEdge;
     std::unordered_map<SegmentIdType, std::shared_ptr<TwoSidedInitialEdge>> neighborLabelToTwoSidedInitialEdge;
-    std::vector<Voxel> voxels;
+    VoxelList voxels;
 
     std::shared_ptr<GraphBase> graphBase;
 

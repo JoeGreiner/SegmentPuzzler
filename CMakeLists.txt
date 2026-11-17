@@ -734,9 +734,12 @@ if (BUILD_TESTING)
 #    target_link_libraries(test_watershedControl ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 
     add_executable(test_RleImageStorage examples/viewers/test_rle_image_storage.cpp)
-    set_target_properties(test_RleImageStorage PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    add_executable(test_VoxelList examples/viewers/test_voxel_list.cpp src/utils/voxel.cpp src/utils/roi.cpp)
+    set_target_properties(test_RleImageStorage test_VoxelList PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
     target_link_libraries(test_RleImageStorage PRIVATE segmentpuzzler_image_storage)
+    target_link_libraries(test_VoxelList PRIVATE segmentpuzzler_image_storage)
     add_test(NAME RleImageStorage COMMAND test_RleImageStorage)
+    add_test(NAME VoxelList COMMAND test_VoxelList)
 endif()
 
 if (BUILD_BENCHMARKS)

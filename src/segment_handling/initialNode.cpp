@@ -67,7 +67,7 @@ void InitialNode::addFeature(std::unique_ptr<Feature> &feature) {
 
 void InitialNode::calculateNodeFeatures() {
     for (auto &feature : nodeFeatures) {
-        feature->compute(voxels);
+        feature->compute(getVoxelLists());
     }
 }
 
@@ -378,5 +378,8 @@ void InitialNode::setCurrentWorkingNodeLabel(SegmentIdType currentWorkingNodeLab
 }
 
 std::vector<Voxel> InitialNode::getVoxelArray() {
-    return voxels;
+    std::vector<Voxel> result;
+    result.reserve(voxels.size());
+    result.insert(result.end(), voxels.begin(), voxels.end());
+    return result;
 }

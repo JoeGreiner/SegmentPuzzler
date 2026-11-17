@@ -45,7 +45,7 @@ void MeanSignal::compute(const VoxelLists &voxelLists, unsigned int, unsigned in
     float summedSignal = 0;
     float numberVoxels = 0;
     for (auto &listEntry : voxelLists) {
-        for (auto &voxel : *listEntry) {
+        for (const auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             summedSignal += signalList[signalName]->GetPixel(index);
         }
@@ -154,7 +154,8 @@ void updateLabelOverlapFromHistogram(
 } // namespace
 
 void LabelOverlap::compute(const std::vector<Voxel> &voxels, unsigned int labelA, unsigned int labelB) {
-    compute(VoxelLists{&voxels}, labelA, labelB);
+    const VoxelList runs(voxels);
+    compute(VoxelLists{&runs}, labelA, labelB);
 }
 
 void LabelOverlap::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
@@ -234,7 +235,7 @@ void GroundTruthLabel::compute(const VoxelLists &voxelLists, unsigned int, unsig
     float numberVoxels = 0;
     // calculate hist
     for (auto &listEntry : voxelLists) {
-        for (auto &voxel : *listEntry) {
+        for (const auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             label = pGroundTruth->GetPixel(index);
             if (labelHistogram.count(label)) {
@@ -360,14 +361,14 @@ void GeneralStatisticOnProbabilities::compute(const VoxelLists &voxelLists, unsi
 
 
     for (auto &listEntry : voxelLists) {
-        for (auto &voxel : *listEntry) {
+        for (const auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             intensities.push_back(signalList[signalName]->GetPixel(index));
         }
     }
     float sum = 0;
     for (auto &listEntry : voxelLists) {
-        for (auto &voxel : *listEntry) {
+        for (const auto &voxel : *listEntry) {
             GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
             sum += signalList[signalName]->GetPixel(index);
         }

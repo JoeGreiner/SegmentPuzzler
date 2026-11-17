@@ -55,7 +55,7 @@ public:
 
     void clearGraphAndReserveInitialNodes(std::size_t initialNodeCapacity = 0);
 
-    void addInitialNode(SegmentIdType labelOfNewNode, std::size_t voxelCapacity = 0);
+    void addInitialNode(SegmentIdType labelOfNewNode, std::size_t runCapacity = 0);
 
     void addInitialNode(InitialNode *pInitialNodeToAdd);
 
