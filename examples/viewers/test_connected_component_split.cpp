@@ -8,6 +8,8 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -674,6 +676,23 @@ int testRefinementSynchronizesOverwrittenNodeMetadata() {
             return failTest("A fully replaced label should be removed after the authoritative scan.");
         }
     }
+    {
+        auto workingImage = makeImage(8, 1, 1);
+        workingImage->SetPixel({1, 0, 0}, 1);
+        workingImage->SetPixel({6, 0, 0}, 1);
+        auto selectedImage = makeImage(8, 1, 1);
+        selectedImage->SetPixel({1, 0, 0}, 9);
+        auto fixture = buildGraphFixture(workingImage);
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*selectedImage);
+        auto &voxels = fixture.graph->initialNodes.at(1)->voxels;
+        voxels = {};
+        voxels.emplace_back(1, 0, 0);
+        const auto inserted = fixture.graph->transferSegmentationSegmentToInitialSegment(1, 0, 0);
+        if (!inserted || fixture.graph->initialNodes.count(1) != 1 ||
+            fixture.graph->initialNodes.at(1)->getVoxelArray() != std::vector<Voxel>{Voxel(6, 0, 0)}) {
+            return failTest("An overwritten node must recover surviving voxels missing from its metadata.");
+        }
+    }
     return 0;
 }
 
@@ -765,6 +784,32 @@ int testRefinementPrevalidationAndRoiStayMutationFree() {
             return failTest("Label exhaustion should abort refinement before mutation.");
         }
     }
+    return 0;
+}
+
+int testSelectedLabelSplitUsesGlobalIds() {
+    auto reference = makeImage(20, 10, 4);
+    reference->SetPixel({2, 2, 1}, 7);
+    reference->SetPixel({3, 2, 1}, 7);
+    reference->SetPixel({5, 2, 1}, 7);
+    reference->SetPixel({19, 9, 3}, 1000);
+    auto storage = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*reference);
+    ConnectedComponentSplitOptions options;
+    options.includedLabels = {7};
+    options.ignoredLabels = {0};
+    const auto expected = splitDisconnectedLabelComponentsInPlace(reference, options);
+    const auto actual = splitDisconnectedLabelComponentsInPlace(storage, options);
+    const auto dense = storage->denseRegion(storage->GetLargestPossibleRegion());
+    if (copyImageBuffer(dense) != copyImageBuffer(reference) ||
+        actual.finalLabelsByOriginalLabel != expected.finalLabelsByOriginalLabel ||
+        actual.maxLabel != expected.maxLabel || actual.nextFreeLabel != expected.nextFreeLabel)
+        return failTest("Selected-label splitting must preserve global label allocation and voxel values.");
+    const auto modified = storage->GetMTime();
+    options.includedLabels = {42};
+    const auto absent = splitDisconnectedLabelComponentsInPlace(storage, options);
+    if (absent.labelsVisited || absent.voxelsRelabeled || storage->GetMTime() != modified ||
+        absent.nextFreeLabel != actual.nextFreeLabel)
+        return failTest("Splitting an absent label must leave the image unchanged.");
     return 0;
 }
 
@@ -2006,8 +2051,8 @@ int testBatchTransferPreservesExistingSegmentation() {
 int testCompressedGraphEdits() {
     using Rle = segment_puzzler::StreamVByteImageStorage<SegmentIdType>;
     auto makeFixture = [](bool compressed) {
-        auto image = makeImage(8, 6, 4);
-        for (int z = 1; z < 3; ++z) for (int y = 1; y < 5; ++y)
+        auto image = makeImage(8, 6, 20);
+        for (int z = 1; z < 19; ++z) for (int y = 1; y < 5; ++y)
             for (int x = 1; x < 7; ++x) image->SetPixel({x, y, z}, x < 4 ? 1 : 2);
         auto fixture = buildGraphFixture(image);
         if (compressed) {
@@ -2040,7 +2085,7 @@ int testCompressedGraphEdits() {
         fixture->graph->splitWorkingNodeIntoInitialNodes(merged);
     }
     if (!same()) return failTest("Compressed merge, transfer or unmerge differs");
-    auto refinement = makeImage(8, 6, 4);
+    auto refinement = makeImage(8, 6, 20);
     refinement->SetPixel({3, 2, 1}, 9); refinement->SetPixel({4, 2, 1}, 9);
     for (auto *fixture : {&dense, &compressed}) {
         dataType::SegmentsStorage::Pointer source = Rle::fromImage(*refinement);
@@ -2052,16 +2097,193 @@ int testCompressedGraphEdits() {
         fixture->graphBase->pSelectedRefinementSignal = nullptr;
         if (fixture->graphBase->pWorkingSegmentsImage->GetPixel({3, 2, 1}) != expectedLabel)
             return failTest("Compressed refinement failed");
-        if (fixture->graph->deleteSegmentationLabels({1}) != 48)
+        if (fixture->graph->deleteSegmentationLabels({1}) != 432)
             return failTest("Compressed deletion changed the voxel count");
     }
     return same() ? 0 : failTest("Compressed refinement or deletion differs");
+}
+
+
+using SplitStats = segment_puzzler::connected_components::ConnectedComponentSplitStats;
+using Storage = dataType::SegmentsStorage;
+
+class RunsOnlyStorage final : public Storage {
+public:
+    using Pointer = itk::SmartPointer<RunsOnlyStorage>;
+    itkNewMacro(RunsOnlyStorage);
+    Storage::Pointer source;
+    bool fragmentRuns = false;
+    const itk::ImageBase<3> *imageInformation() const override { return source->imageInformation(); }
+    std::size_t storedBytes() const override { return source->storedBytes(); }
+    LabelStatisticsMap labelStatistics() const override { return source->labelStatistics(); }
+    SegmentIdType GetPixel(const Index &) const override { throw std::runtime_error("Per-voxel storage read"); }
+    void readRegion(const Region &, SegmentIdType *, std::size_t) const override { throw std::runtime_error("Dense storage read"); }
+    void forEachRun(const Region &region, const RunVisitor &visit) const override {
+        source->forEachRun(region, [&](const Index &start, std::size_t length, SegmentIdType label) {
+            for (std::size_t offset = 0; offset < length;) {
+                const auto count = fragmentRuns ? std::min<std::size_t>(3, length - offset) : length;
+                auto index = start; index[0] += itk::IndexValueType(offset);
+                visit(index, count, label); offset += count;
+            }
+        });
+    }
+    void FillBuffer(SegmentIdType) override { throw std::runtime_error("Unexpected fill"); }
+    void fillRegion(const Region &, SegmentIdType) override { throw std::runtime_error("Unexpected region fill"); }
+    void setVoxelValues(const std::vector<Index> &, SegmentIdType) override { throw std::runtime_error("Per-voxel write"); }
+    void writeRegion(const Region &, const SegmentIdType *, std::size_t) override { throw std::runtime_error("Dense storage write"); }
+    void fillVoxelRanges(const std::vector<VoxelRange> &ranges) override {
+        if (!ranges.empty()) {
+            auto first = ranges.front().start[2], last = first;
+            for (const auto &range : ranges) {
+                first = std::min(first, range.start[2]); last = std::max(last, range.start[2]);
+            }
+            if (last - first >= 16) throw std::runtime_error("Write batch exceeds 16 planes");
+        }
+        source->fillVoxelRanges(ranges);
+    }
+};
+
+using ReferenceComponents = std::map<SegmentIdType, std::vector<std::vector<std::size_t>>>;
+
+template<typename Include>
+ReferenceComponents referenceComponents(const ImagePointer &image, Storage::Region region,
+                                       ConnectivityStencil connectivity, Include include) {
+    ReferenceComponents result;
+    if (!region.Crop(image->GetLargestPossibleRegion())) return result;
+    const auto pixels = copyImageBuffer(image);
+    std::vector<bool> visited(pixels.size());
+    for (std::size_t seed = 0; seed < pixels.size(); ++seed) {
+        if (visited[seed] || !include(pixels[seed]) || !region.IsInside(image->ComputeIndex(seed))) continue;
+        std::vector<std::size_t> component{seed};
+        visited[seed] = true;
+        for (std::size_t current = 0; current < component.size(); ++current) {
+            const auto index = image->ComputeIndex(component[current]);
+            for (int z = -1; z <= 1; ++z) for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+                const auto distance = std::abs(x) + std::abs(y) + std::abs(z);
+                if (distance == 0 || (connectivity == ConnectivityStencil::SixConnected && distance != 1)) continue;
+                auto neighbor = index; neighbor[0] += x; neighbor[1] += y; neighbor[2] += z;
+                if (!region.IsInside(neighbor)) continue;
+                const auto offset = image->ComputeOffset(neighbor);
+                if (!visited[offset] && pixels[offset] == pixels[seed]) {
+                    visited[offset] = true; component.push_back(offset);
+                }
+            }
+        }
+        result[pixels[seed]].push_back(std::move(component));
+    }
+    return result;
+}
+
+std::pair<SplitStats, std::vector<SegmentIdType>> referenceSplit(
+    const ImagePointer &image, const ConnectedComponentSplitOptions &options) {
+    auto pixels = copyImageBuffer(image);
+    SplitStats stats;
+    for (auto label : pixels) if (!options.ignoredLabels.count(label)) stats.maxLabel = std::max(stats.maxLabel, label);
+    stats.nextFreeLabel = std::max(options.nextFreeLabel, std::uint64_t(stats.maxLabel) + 1);
+    auto components = referenceComponents(image, image->GetLargestPossibleRegion(), options.connectivity,
+        [&](SegmentIdType label) { return !options.ignoredLabels.count(label) &&
+            (options.includedLabels.empty() || options.includedLabels.count(label)); });
+    stats.labelsVisited = components.size();
+    for (auto &[label, parts] : components) {
+        std::sort(parts.begin(), parts.end(), [](const auto &a, const auto &b) {
+            return a.size() == b.size() ? a.front() < b.front() : a.size() > b.size();
+        });
+        auto &labels = stats.finalLabelsByOriginalLabel[label];
+        labels.push_back(label);
+        stats.labelsSplit += parts.size() > 1;
+        for (std::size_t i = 1; i < parts.size(); ++i) {
+            while (stats.nextFreeLabel <= std::numeric_limits<SegmentIdType>::max() &&
+                   options.ignoredLabels.count(static_cast<SegmentIdType>(stats.nextFreeLabel))) ++stats.nextFreeLabel;
+            if (stats.nextFreeLabel > std::numeric_limits<SegmentIdType>::max()) throw std::overflow_error("Reference ID exhaustion");
+            const auto next = static_cast<SegmentIdType>(stats.nextFreeLabel++);
+            labels.push_back(next); stats.maxLabel = std::max(stats.maxLabel, next);
+            ++stats.componentsCreated; stats.voxelsRelabeled += parts[i].size();
+            for (auto offset : parts[i]) pixels[offset] = next;
+        }
+    }
+    return {stats, pixels};
+}
+
+int testRunComponentsAgainstReference() {
+    try {
+        std::mt19937 random(731);
+        for (auto size : {Storage::Image::SizeType{13, 9, 1}, Storage::Image::SizeType{1, 9, 5},
+                          Storage::Image::SizeType{13, 1, 1}, Storage::Image::SizeType{9, 7, 37}}) {
+            for (unsigned sample = 0; sample < 8; ++sample) {
+                const auto background = sample % 2 ? std::numeric_limits<SegmentIdType>::max() : SegmentIdType(0);
+                auto image = Storage::Image::New();
+                image->SetRegions(Storage::Region({-7, -3, -5}, size));
+                image->Allocate();
+                const std::array<SegmentIdType, 5> palette{background, 1, 2, 17, 4000000000U};
+                const auto count = image->GetBufferedRegion().GetNumberOfPixels();
+                auto *pixels = image->GetBufferPointer();
+                for (std::size_t i = 0; i < count; ++i)
+                    pixels[i] = sample == 0 ? background : sample == 1 ? 17 :
+                        (i % size[0] && random() % 3) ? pixels[i - 1] : palette[random() % palette.size()];
+                for (auto connectivity : {ConnectivityStencil::SixConnected, ConnectivityStencil::Full}) {
+                    ConnectedComponentSplitOptions options;
+                    options.connectivity = connectivity;
+                    options.ignoredLabels = {background, 4000000001U};
+                    if (sample > 1 && sample % 3 == 1) options.includedLabels = {1, 2};
+                    if (sample % 3 == 2) options.includedLabels = {123};
+                    const auto [expectedStats, expectedPixels] = referenceSplit(image, options);
+                    for (unsigned variant = 0; variant < 3; ++variant) {
+                        auto storage = RunsOnlyStorage::New();
+                        if (variant == 0) {
+                            auto copy = Storage::Image::New(); copy->CopyInformation(image);
+                            copy->SetRegions(image->GetLargestPossibleRegion()); copy->Allocate();
+                            std::copy_n(pixels, count, copy->GetBufferPointer());
+                            storage->source = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(copy);
+                        } else storage->source = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image);
+                        storage->fragmentRuns = variant == 2;
+                        std::unordered_map<SegmentIdType, Storage::Region> regions;
+                        auto roi = image->GetLargestPossibleRegion();
+                        roi.SetSize(0, std::max<itk::SizeValueType>(1, size[0] / 2));
+                        for (auto label : palette) regions.emplace(label, roi);
+                        regions.emplace(123, Storage::Region({999, 999, 999}, {2, 2, 2}));
+                        const auto actualCounts = countConnectedComponentsByLabelInRegions(storage, regions, connectivity);
+                        for (const auto &[label, region] : regions) {
+                            const auto reference = referenceComponents(image, region, connectivity,
+                                [targetLabel = label](SegmentIdType value) { return value == targetLabel; });
+                            const auto found = reference.find(label);
+                            if (actualCounts.at(label) != (found == reference.end() ? 0 : found->second.size()))
+                                return failTest("Run-based component counts differ from voxel BFS.");
+                        }
+                        const auto actual = splitDisconnectedLabelComponentsInPlace(storage, options);
+                        const auto dense = storage->source->denseRegion(storage->GetLargestPossibleRegion());
+                        if (copyImageBuffer(dense) != expectedPixels || actual.labelsVisited != expectedStats.labelsVisited ||
+                            actual.labelsSplit != expectedStats.labelsSplit || actual.componentsCreated != expectedStats.componentsCreated ||
+                            actual.voxelsRelabeled != expectedStats.voxelsRelabeled || actual.maxLabel != expectedStats.maxLabel ||
+                            actual.nextFreeLabel != expectedStats.nextFreeLabel ||
+                            actual.finalLabelsByOriginalLabel != expectedStats.finalLabelsByOriginalLabel)
+                            return failTest("Run-based split differs from voxel BFS, including deterministic label allocation.");
+                        if (splitDisconnectedLabelComponentsInPlace(storage, options).changed())
+                            return failTest("Repeated connected-component split changed the image.");
+                    }
+                }
+            }
+        }
+        auto image = makeImage(7, 1, 1);
+        image->SetPixel({0, 0, 0}, 1); image->SetPixel({2, 0, 0}, 1); image->SetPixel({4, 0, 0}, 1);
+        auto storage = RunsOnlyStorage::New();
+        storage->source = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image);
+        ConnectedComponentSplitOptions options; options.ignoredLabels = {0};
+        options.nextFreeLabel = std::numeric_limits<SegmentIdType>::max();
+        bool exhausted = false;
+        try { splitDisconnectedLabelComponentsInPlace(storage, options); }
+        catch (const std::overflow_error &) { exhausted = true; }
+        if (!exhausted || copyImageBuffer(storage->source->denseRegion(storage->GetLargestPossibleRegion())) != copyImageBuffer(image))
+            return failTest("RLE label exhaustion changed the image.");
+    } catch (const std::exception &error) { return failTest(error.what()); }
+    return 0;
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
+
+    if (int result = testRunComponentsAgainstReference()) return result;
 
     if (int result = testUtilityConnectivityModes()) {
         return result;
@@ -2179,6 +2401,7 @@ int main(int argc, char **argv) {
         return result;
     }
 
+    if (int result = testSelectedLabelSplitUsesGlobalIds()) return result;
     if (int result = testCompressedGraphEdits()) return result;
     std::cout << "Connected component split tests passed.\n";
     return 0;

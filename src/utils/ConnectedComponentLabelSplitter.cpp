@@ -1,11 +1,12 @@
 #include "src/viewers/VolumeContext.h"
 #include "src/utils/WorkerThreads.h"
+#include "src/image_storage/DenseImageStorage.h"
 #include "ConnectedComponentLabelSplitter.h"
 
 #include <algorithm>
 #include <exception>
-#include <limits>
-#include <stdexcept>
+#include <map>
+#include <numeric>
 #ifdef USE_OMP
 #include <omp.h>
 #endif
@@ -14,138 +15,110 @@ namespace segment_puzzler::connected_components {
 namespace {
 
 using SegmentIdType = dataType::SegmentIdType;
+using Storage = dataType::SegmentsStorage;
 
-
-struct Component {
-    SegmentIdType originalLabel = 0;
-    std::ptrdiff_t seedIndex = 0;
-    std::vector<std::ptrdiff_t> voxelIndices;
+struct Run {
+    std::size_t begin, end, parent;
+    SegmentIdType label;
+    unsigned char rank = 0;
 };
 
-using ComponentsByLabel = std::unordered_map<SegmentIdType, std::vector<Component>>;
+struct Component {
+    std::size_t root, voxelCount, firstRun;
+};
 
-SegmentIdType nextAvailableLabel(std::uint64_t &nextFreeLabel,
-                                 const std::unordered_set<SegmentIdType> &ignoredLabels) {
-    const auto label = volume_io::nextAvailableLabel(nextFreeLabel, ignoredLabels);
-    nextFreeLabel = label + 1;
-    return static_cast<SegmentIdType>(label);
-}
+struct RunComponents {
+    detail::ImageGeometry geometry;
+    std::vector<Run> runs;
+    std::vector<std::size_t> rowOffsets;
+    std::map<SegmentIdType, std::vector<Component>> byLabel;
+
+    std::size_t root(std::size_t index) {
+        while (runs[index].parent != index) {
+            runs[index].parent = runs[runs[index].parent].parent;
+            index = runs[index].parent;
+        }
+        return index;
+    }
+
+    void connect(std::size_t first, std::size_t second) {
+        first = root(first); second = root(second);
+        if (first == second) return;
+        if (runs[first].rank < runs[second].rank) std::swap(first, second);
+        runs[second].parent = first;
+        if (runs[first].rank == runs[second].rank) ++runs[first].rank;
+    }
+
+    void connectRows(std::size_t row, std::size_t neighbor, std::size_t reach) {
+        auto firstNeighbor = rowOffsets[neighbor];
+        const auto neighborEnd = rowOffsets[neighbor + 1];
+        for (auto i = rowOffsets[row]; i < rowOffsets[row + 1]; ++i) {
+            const auto &run = runs[i];
+            while (firstNeighbor < neighborEnd && runs[firstNeighbor].end + reach <= run.begin)
+                ++firstNeighbor;
+            for (auto j = firstNeighbor; j < neighborEnd && runs[j].begin < run.end + reach; ++j)
+                if (run.label == runs[j].label) connect(i, j);
+        }
+    }
+};
 
 template<typename IncludeLabel>
-ComponentsByLabel collectComponentsByLabel(
-    const dataType::SegmentsImageType::Pointer &image,
-    ConnectivityStencil connectivity,
-    IncludeLabel &&includeLabel) {
-    const detail::ImageGeometry geometry = detail::geometryForImage(image);
-    const SegmentIdType *buffer = image->GetBufferPointer();
+RunComponents collectRunComponents(const Storage &image, Storage::Region region,
+                                   ConnectivityStencil connectivity, IncludeLabel includeLabel) {
+    RunComponents result;
+    if (!region.Crop(image.GetLargestPossibleRegion())) return result;
+    result.geometry = detail::geometryForRegion(region);
+    const auto &geometry = result.geometry;
+    const auto height = static_cast<std::size_t>(geometry.dimY);
+    const auto depth = static_cast<std::size_t>(geometry.dimZ);
+    result.rowOffsets.resize(height * depth + 1, 0);
+    image.forEachRun(region, [&](const auto &start, std::size_t, SegmentIdType label) {
+        if (!includeLabel(label)) return;
+        const auto row = (start[2] - geometry.start[2]) * geometry.dimY + start[1] - geometry.start[1];
+        ++result.rowOffsets[row + 1];
+    });
+    std::partial_sum(result.rowOffsets.begin(), result.rowOffsets.end(), result.rowOffsets.begin());
+    if (result.rowOffsets.back() == 0) return result;
+    // Count first to allocate the run array once.
+    result.runs.reserve(result.rowOffsets.back());
+    image.forEachRun(region, [&](const auto &start, std::size_t length, SegmentIdType label) {
+        if (!includeLabel(label)) return;
+        const auto x = static_cast<std::size_t>(start[0] - geometry.start[0]);
+        result.runs.push_back({x, x + length, result.runs.size(), label});
+    });
 
-    std::vector<unsigned char> visited(static_cast<std::size_t>(geometry.total), 0);
-    std::vector<std::ptrdiff_t> open;
-    open.reserve(1024);
-    ComponentsByLabel componentsByLabel;
-    componentsByLabel.reserve(1024);
-
-    for (std::ptrdiff_t seed = 0; seed < geometry.total; ++seed) {
-        if (visited[static_cast<std::size_t>(seed)] != 0) {
-            continue;
+    const auto reach = connectivity == ConnectivityStencil::Full ? 1U : 0U;
+    for (std::size_t z = 0; z < depth; ++z) for (std::size_t y = 0; y < height; ++y) {
+        const auto row = z * height + y;
+        for (auto i = result.rowOffsets[row] + 1; i < result.rowOffsets[row + 1]; ++i)
+            if (result.runs[i - 1].end == result.runs[i].begin && result.runs[i - 1].label == result.runs[i].label)
+                result.connect(i - 1, i);
+        if (y > 0) result.connectRows(row, row - 1, reach);
+        if (z > 0) {
+            result.connectRows(row, row - height, reach);
+            if (reach && y > 0) result.connectRows(row, row - height - 1, reach);
+            if (reach && y + 1 < height) result.connectRows(row, row - height + 1, reach);
         }
-
-        const SegmentIdType label = buffer[seed];
-        visited[static_cast<std::size_t>(seed)] = 1;
-        if (!includeLabel(label)) {
-            continue;
-        }
-
-        Component component;
-        component.originalLabel = label;
-        component.seedIndex = seed;
-        open.clear();
-        open.push_back(seed);
-
-        for (std::size_t queueIndex = 0; queueIndex < open.size(); ++queueIndex) {
-            const std::ptrdiff_t current = open[queueIndex];
-            component.voxelIndices.push_back(current);
-
-            detail::forEachNeighbor(current, geometry, connectivity, [&](std::ptrdiff_t neighbor) {
-                const auto neighborIndex = static_cast<std::size_t>(neighbor);
-                if (visited[neighborIndex] != 0 || buffer[neighbor] != label) {
-                    return;
-                }
-
-                visited[neighborIndex] = 1;
-                open.push_back(neighbor);
-            });
-        }
-
-        componentsByLabel[label].push_back(std::move(component));
     }
-    return componentsByLabel;
+
+    std::unordered_map<std::size_t, Component> components;
+    for (std::size_t i = 0; i < result.runs.size(); ++i) {
+        auto &run = result.runs[i];
+        run.parent = result.root(i);
+        const auto entry = components.try_emplace(run.parent, Component{run.parent, 0, i}).first;
+        entry->second.voxelCount += run.end - run.begin;
+    }
+    for (const auto &[root, component] : components)
+        result.byLabel[result.runs[root].label].push_back(component);
+    return result;
 }
 
-std::size_t countLabelComponentsInRegion(
-    const dataType::SegmentsImageType::Pointer &image,
-    SegmentIdType label,
-    dataType::SegmentsImageType::RegionType region,
-    ConnectivityStencil connectivity) {
-    const auto imageGeometry = detail::geometryForImage(image);
-    const auto imageRegion = image->GetLargestPossibleRegion();
-    if (!region.Crop(imageRegion)) {
-        return 0;
-    }
-
-    const auto imageStart = imageRegion.GetIndex();
-    const auto regionStart = region.GetIndex();
-    const auto regionGeometry = detail::geometryForRegion(region);
-    if (regionGeometry.total <= 0) {
-        return 0;
-    }
-
-    const std::ptrdiff_t regionOffsetX = regionStart[0] - imageStart[0];
-    const std::ptrdiff_t regionOffsetY = regionStart[1] - imageStart[1];
-    const std::ptrdiff_t regionOffsetZ = regionStart[2] - imageStart[2];
-    const std::ptrdiff_t regionBase =
-        regionOffsetX + regionOffsetY * imageGeometry.dimX + regionOffsetZ * imageGeometry.planeXY;
-    const auto fullImageIndex = [&](std::ptrdiff_t regionIndex) {
-        const std::ptrdiff_t z = regionIndex / regionGeometry.planeXY;
-        const std::ptrdiff_t withinSlice = regionIndex - z * regionGeometry.planeXY;
-        const std::ptrdiff_t y = withinSlice / regionGeometry.dimX;
-        const std::ptrdiff_t x = withinSlice - y * regionGeometry.dimX;
-        return regionBase + x + y * imageGeometry.dimX + z * imageGeometry.planeXY;
-    };
-
-    const SegmentIdType *buffer = image->GetBufferPointer();
-    std::vector<unsigned char> visited(static_cast<std::size_t>(regionGeometry.total), 0);
-    std::vector<std::ptrdiff_t> open;
-    open.reserve(1024);
-    std::size_t componentCount = 0;
-
-    for (std::ptrdiff_t seed = 0; seed < regionGeometry.total; ++seed) {
-        const auto seedIndex = static_cast<std::size_t>(seed);
-        if (visited[seedIndex] != 0) {
-            continue;
-        }
-        visited[seedIndex] = 1;
-        if (buffer[fullImageIndex(seed)] != label) {
-            continue;
-        }
-
-        ++componentCount;
-        open.clear();
-        open.push_back(seed);
-        for (std::size_t queueIndex = 0; queueIndex < open.size(); ++queueIndex) {
-            detail::forEachNeighbor(open[queueIndex], regionGeometry, connectivity, [&](std::ptrdiff_t neighbor) {
-                const auto neighborIndex = static_cast<std::size_t>(neighbor);
-                if (visited[neighborIndex] != 0) {
-                    return;
-                }
-                visited[neighborIndex] = 1;
-                if (buffer[fullImageIndex(neighbor)] == label) {
-                    open.push_back(neighbor);
-                }
-            });
-        }
-    }
-    return componentCount;
+std::size_t countLabelComponentsInRegion(const Storage &image, SegmentIdType label,
+                                        Storage::Region region, ConnectivityStencil connectivity) {
+    const auto components = collectRunComponents(image, region, connectivity,
+        [label](SegmentIdType value) { return value == label; });
+    const auto found = components.byLabel.find(label);
+    return found == components.byLabel.end() ? 0 : found->second.size();
 }
 
 } // namespace
@@ -172,184 +145,129 @@ SegmentIdType maxLabelInImage(const dataType::SegmentsImageType::Pointer &image)
 
 std::unordered_map<SegmentIdType, std::size_t> countConnectedComponentsByLabel(
     const dataType::SegmentsImageType::Pointer &image,
-    const std::unordered_set<SegmentIdType> &labels,
-    ConnectivityStencil connectivity) {
-    std::unordered_map<SegmentIdType, std::size_t> componentCounts;
-    componentCounts.reserve(labels.size());
-    for (const SegmentIdType label : labels) {
-        componentCounts[label] = 0;
+    const std::unordered_set<SegmentIdType> &labels, ConnectivityStencil connectivity) {
+    std::unordered_map<SegmentIdType, std::size_t> counts;
+    if (labels.empty()) return counts;
+    const auto storage = DenseImageStorage<SegmentIdType>::fromImage(image);
+    const auto components = collectRunComponents(*storage, storage->GetLargestPossibleRegion(), connectivity,
+        [&](SegmentIdType label) { return labels.count(label) > 0; });
+    for (const auto label : labels) {
+        const auto found = components.byLabel.find(label);
+        counts[label] = found == components.byLabel.end() ? 0 : found->second.size();
     }
-    if (labels.empty()) {
-        return componentCounts;
-    }
+    return counts;
+}
 
-    const auto componentsByLabel = collectComponentsByLabel(
-        image,
-        connectivity,
-        [&labels](SegmentIdType label) { return labels.count(label) > 0; });
-    for (const auto &[label, components] : componentsByLabel) {
-        componentCounts[label] = components.size();
+std::unordered_map<SegmentIdType, std::size_t> countConnectedComponentsByLabelInRegions(
+    const Storage::Pointer &image,
+    const std::unordered_map<SegmentIdType, dataType::SegmentsImageType::RegionType> &regionsByLabel,
+    ConnectivityStencil connectivity) {
+    if (regionsByLabel.empty()) return {};
+    if (!image) throw std::invalid_argument("Cannot traverse components in a null label image.");
+    std::vector<std::pair<SegmentIdType, Storage::Region>> regions(regionsByLabel.begin(), regionsByLabel.end());
+    std::vector<std::size_t> counts(regions.size());
+    std::vector<std::exception_ptr> failures(regions.size());
+#ifdef USE_OMP
+    const int threadCount = workerThreadCount();
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threadCount)
+#endif
+    for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(regions.size()); ++i) {
+        try {
+            counts[i] = countLabelComponentsInRegion(*image, regions[i].first, regions[i].second, connectivity);
+        } catch (...) { failures[i] = std::current_exception(); }
     }
-    return componentCounts;
+    std::unordered_map<SegmentIdType, std::size_t> result;
+    for (std::size_t i = 0; i < regions.size(); ++i) {
+        if (failures[i]) std::rethrow_exception(failures[i]);
+        result.emplace(regions[i].first, counts[i]);
+    }
+    return result;
 }
 
 std::unordered_map<SegmentIdType, std::size_t> countConnectedComponentsByLabelInRegions(
     const dataType::SegmentsImageType::Pointer &image,
     const std::unordered_map<SegmentIdType, dataType::SegmentsImageType::RegionType> &regionsByLabel,
     ConnectivityStencil connectivity) {
-    using LabelRegion =
-        std::pair<SegmentIdType, dataType::SegmentsImageType::RegionType>;
-
-    std::unordered_map<SegmentIdType, std::size_t> componentCounts;
-    componentCounts.reserve(regionsByLabel.size());
-    if (regionsByLabel.empty()) {
-        return componentCounts;
-    }
-
-    std::vector<LabelRegion> labelRegions;
-    labelRegions.reserve(regionsByLabel.size());
-    for (const auto &entry : regionsByLabel) {
-        labelRegions.push_back(entry);
-    }
-
-    std::vector<std::size_t> counts(labelRegions.size(), 0);
-    std::vector<std::exception_ptr> failures(labelRegions.size());
-#ifdef USE_OMP
-    const int threadCount = workerThreadCount();
-#pragma omp parallel for schedule(dynamic, 1) num_threads(threadCount)
-#endif
-    for (std::ptrdiff_t index = 0;
-         index < static_cast<std::ptrdiff_t>(labelRegions.size());
-         ++index) {
-        try {
-            const auto &[label, region] = labelRegions[static_cast<std::size_t>(index)];
-            counts[static_cast<std::size_t>(index)] =
-                countLabelComponentsInRegion(image, label, region, connectivity);
-        } catch (...) {
-            failures[static_cast<std::size_t>(index)] = std::current_exception();
-        }
-    }
-
-    for (std::size_t index = 0; index < labelRegions.size(); ++index) {
-        if (failures[index] != nullptr) {
-            std::rethrow_exception(failures[index]);
-        }
-        componentCounts.emplace(labelRegions[index].first, counts[index]);
-    }
-    return componentCounts;
+    if (regionsByLabel.empty()) return {};
+    Storage::Pointer storage = DenseImageStorage<SegmentIdType>::fromImage(image);
+    return countConnectedComponentsByLabelInRegions(storage, regionsByLabel, connectivity);
 }
 
 ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
-    const dataType::SegmentsImageType::Pointer &image,
-    const ConnectedComponentSplitOptions &options) {
-    SegmentIdType *buffer = image->GetBufferPointer();
-
-    ConnectedComponentSplitStats stats;
-    const auto count = image->GetBufferedRegion().GetNumberOfPixels();
-    for (std::size_t index = 0; index < count; ++index) {
-        if (!options.ignoredLabels.count(buffer[index]))
-            stats.maxLabel = std::max(stats.maxLabel, buffer[index]);
-    }
-    stats.nextFreeLabel = std::max(options.nextFreeLabel, std::uint64_t(stats.maxLabel) + 1);
-
-    auto componentsByLabel = collectComponentsByLabel(
-        image,
-        options.connectivity,
-        [&options](SegmentIdType label) {
-            return options.ignoredLabels.count(label) == 0
-                   && (options.includedLabels.empty()
-                       || options.includedLabels.count(label) > 0);
-        });
-
-    stats.labelsVisited = componentsByLabel.size();
-    std::vector<SegmentIdType> originalLabels;
-    originalLabels.reserve(componentsByLabel.size());
-    for (const auto &entry : componentsByLabel) {
-        originalLabels.push_back(entry.first);
-    }
-    std::sort(originalLabels.begin(), originalLabels.end());
-
-    // Allocate every required label before changing the image. This keeps a
-    // label-space failure from leaving a partially relabelled segmentation.
-    for (const SegmentIdType originalLabel : originalLabels) {
-        auto &components = componentsByLabel.at(originalLabel);
-        std::sort(components.begin(), components.end(), [](const Component &lhs, const Component &rhs) {
-            if (lhs.voxelIndices.size() != rhs.voxelIndices.size()) {
-                return lhs.voxelIndices.size() > rhs.voxelIndices.size();
-            }
-            return lhs.seedIndex < rhs.seedIndex;
-        });
-
-        auto &finalLabels = stats.finalLabelsByOriginalLabel[originalLabel];
-        finalLabels.reserve(components.size());
-        if (components.empty()) {
-            continue;
-        }
-
-        finalLabels.push_back(originalLabel);
-        if (components.size() == 1) {
-            continue;
-        }
-
-        ++stats.labelsSplit;
-        for (std::size_t componentIndex = 1; componentIndex < components.size(); ++componentIndex) {
-            const SegmentIdType newLabel = nextAvailableLabel(stats.nextFreeLabel, options.ignoredLabels);
-            finalLabels.push_back(newLabel);
-            stats.maxLabel = std::max(stats.maxLabel, newLabel);
-            ++stats.componentsCreated;
-        }
-    }
-
-    for (const SegmentIdType originalLabel : originalLabels) {
-        const auto &components = componentsByLabel.at(originalLabel);
-        const auto &finalLabels = stats.finalLabelsByOriginalLabel.at(originalLabel);
-        for (std::size_t componentIndex = 1; componentIndex < components.size(); ++componentIndex) {
-            const SegmentIdType newLabel = finalLabels[componentIndex];
-            for (const std::ptrdiff_t voxelIndex : components[componentIndex].voxelIndices) {
-                buffer[voxelIndex] = newLabel;
-            }
-            stats.voxelsRelabeled += components[componentIndex].voxelIndices.size();
-        }
-    }
-
-    return stats;
-}
-
-std::unordered_map<dataType::SegmentIdType, std::size_t> countConnectedComponentsByLabelInRegions(
-    const dataType::SegmentsStorage::Pointer &image,
-    const std::unordered_map<dataType::SegmentIdType, dataType::SegmentsImageType::RegionType> &regionsByLabel,
-    ConnectivityStencil connectivity) {
-    std::unordered_map<dataType::SegmentIdType, std::size_t> counts;
-    for (const auto &[label, region] : regionsByLabel)
-        counts[label] = countLabelComponentsInRegion(image->denseRegion(region), label, region, connectivity);
-    return counts;
-}
-
-ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
-    const dataType::SegmentsStorage::Pointer &image, const ConnectedComponentSplitOptions &options) {
+    const Storage::Pointer &image, const ConnectedComponentSplitOptions &options) {
+    (void)detail::geometryForImage(image);
     auto region = image->GetLargestPossibleRegion();
-    auto localOptions = options;
-    SegmentIdType maximum = 0;
+    ConnectedComponentSplitStats stats;
     if (!options.includedLabels.empty()) {
-        dataType::SegmentsStorage::LabelStatistics selected;
+        Storage::LabelStatistics selected;
         for (const auto &[label, statistics] : image->labelStatistics()) {
             if (options.ignoredLabels.count(label)) continue;
-            maximum = std::max(maximum, label);
+            stats.maxLabel = std::max(stats.maxLabel, label);
             if (options.includedLabels.count(label)) selected.include(statistics.bounds, statistics.voxelCount);
         }
-        localOptions.nextFreeLabel = std::max(options.nextFreeLabel, std::uint64_t(maximum) + 1);
         if (!selected.voxelCount) {
-            ConnectedComponentSplitStats result;
-            result.maxLabel = maximum; result.nextFreeLabel = localOptions.nextFreeLabel;
-            return result;
+            stats.nextFreeLabel = std::max(options.nextFreeLabel, std::uint64_t(stats.maxLabel) + 1);
+            return stats;
         }
         region = selected.bounds;
     }
-    auto dense = image->denseRegion(region);
-    auto result = splitDisconnectedLabelComponentsInPlace(dense, localOptions);
-    result.maxLabel = std::max(result.maxLabel, maximum);
-    if (result.changed()) image->writeRegion(region, dense->GetBufferPointer(), region.GetNumberOfPixels());
-    return result;
+    auto components = collectRunComponents(*image, region, options.connectivity, [&](SegmentIdType label) {
+        if (options.ignoredLabels.count(label)) return false;
+        stats.maxLabel = std::max(stats.maxLabel, label);
+        return options.includedLabels.empty() || options.includedLabels.count(label) > 0;
+    });
+    stats.nextFreeLabel = std::max(options.nextFreeLabel, std::uint64_t(stats.maxLabel) + 1);
+    stats.labelsVisited = components.byLabel.size();
+    std::unordered_map<std::size_t, SegmentIdType> newLabels;
+    // Reserve all IDs before writing any changed runs.
+    for (auto &[label, parts] : components.byLabel) {
+        std::sort(parts.begin(), parts.end(), [](const Component &a, const Component &b) {
+            if (a.voxelCount != b.voxelCount) return a.voxelCount > b.voxelCount;
+            return a.firstRun < b.firstRun;
+        });
+        auto &finalLabels = stats.finalLabelsByOriginalLabel[label];
+        finalLabels.push_back(label);
+        if (parts.size() > 1) ++stats.labelsSplit;
+        for (std::size_t i = 1; i < parts.size(); ++i) {
+            const auto next = volume_io::nextAvailableLabel(stats.nextFreeLabel, options.ignoredLabels);
+            const auto newLabel = static_cast<SegmentIdType>(next);
+            stats.nextFreeLabel = next + 1;
+            stats.maxLabel = std::max(stats.maxLabel, newLabel);
+            finalLabels.push_back(newLabel);
+            newLabels.emplace(parts[i].root, newLabel);
+            ++stats.componentsCreated;
+            stats.voxelsRelabeled += parts[i].voxelCount;
+        }
+    }
+    if (!stats.changed()) return stats;
+
+    const auto &start = components.geometry.start;
+    const auto height = static_cast<std::size_t>(components.geometry.dimY);
+    const auto depth = static_cast<std::size_t>(components.geometry.dimZ);
+    std::vector<Storage::VoxelRange> edits;
+    for (std::size_t z = 0; z < depth; ++z) {
+        for (std::size_t y = 0; y < height; ++y) {
+            const auto row = z * height + y;
+            for (auto i = components.rowOffsets[row]; i < components.rowOffsets[row + 1]; ++i) {
+                const auto &run = components.runs[i];
+                const auto found = newLabels.find(run.parent);
+                if (found != newLabels.end())
+                    edits.push_back({{start[0] + itk::IndexValueType(run.begin), start[1] + itk::IndexValueType(y),
+                                      start[2] + itk::IndexValueType(z)}, run.end - run.begin, found->second});
+            }
+        }
+        if ((z + 1) % 16 == 0 || z + 1 == depth) {
+            image->fillVoxelRanges(edits);
+            edits.clear();
+        }
+    }
+    return stats;
+}
+
+ConnectedComponentSplitStats splitDisconnectedLabelComponentsInPlace(
+    const dataType::SegmentsImageType::Pointer &image, const ConnectedComponentSplitOptions &options) {
+    Storage::Pointer storage = DenseImageStorage<SegmentIdType>::fromImage(image);
+    return splitDisconnectedLabelComponentsInPlace(storage, options);
 }
 
 } // namespace segment_puzzler::connected_components
