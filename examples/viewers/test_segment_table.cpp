@@ -188,9 +188,69 @@ void checkImage(Image::Pointer image, Label background, const Flags &flags) {
     }
 }
 
+void checkIntensity() {
+    using IntensityImage = itk::Image<float, 3>;
+    auto image = IntensityImage::New();
+    const Image::RegionType region({-2, 7, 11}, {101, 2, 1});
+    image->SetRegions(region);
+    image->Allocate();
+    image->FillBuffer(std::numeric_limits<float>::quiet_NaN());
+    auto labels = Image::New();
+    labels->SetRegions(region);
+    labels->Allocate();
+    labels->FillBuffer(17);
+    for (int i = 0; i < 100; ++i) image->GetBufferPointer()[i] = i - 50.5f;
+    labels->GetBufferPointer()[101] = 23;
+    image->GetBufferPointer()[102] = std::numeric_limits<float>::infinity();
+    labels->GetBufferPointer()[103] = 0;
+    image->GetBufferPointer()[103] = 10000;
+    Flags flags;
+    flags.meanIntensity = flags.minIntensity = flags.maxIntensity = flags.intensityQuantiles = true;
+    const auto storage = segment_puzzler::storeLabels(*labels);
+    image->SetOrigin(IntensityImage::PointType{{1, 0, 0}});
+    const auto table = SegmentTableDialog::computeFeatures(storage, flags, 0, image);
+    require(table.rows.size() == 2, "Intensity label count");
+    const std::array<double, 7> expected{-1, -50.5, 48.5, -50.5, -46.5, 43.5, 47.5};
+    for (const auto &row : table.rows)
+        for (std::size_t i = 0; i < expected.size(); ++i)
+            near(row.intensity[i], row.label == 17 ? expected[i] : std::numeric_limits<double>::quiet_NaN(), "Intensity");
+    auto largeValues = itk::Image<double, 3>::New();
+    largeValues->SetRegions(region);
+    largeValues->Allocate();
+    largeValues->FillBuffer(std::numeric_limits<double>::max());
+    const auto large = SegmentTableDialog::computeFeatures(storage, flags, 0, largeValues);
+    for (const auto &row : large.rows)
+        require(row.intensity[0] == std::numeric_limits<double>::max(), "Finite mean overflowed");
+    image->SetRegions(Image::RegionType({-1, 7, 11}, region.GetSize()));
+    try { SegmentTableDialog::computeFeatures(storage, flags, 0, image); }
+    catch (const std::invalid_argument &) { return; }
+    throw std::runtime_error("Mismatched intensity grid accepted");
+}
+
+void checkIntegerQuantiles() {
+    using IntensityImage = itk::Image<signed char, 3>;
+    const Image::SizeType size{16, 8, 2};
+    auto image = IntensityImage::New();
+    image->SetRegions(size);
+    image->Allocate();
+    auto labels = Image::New();
+    labels->SetRegions(size);
+    labels->Allocate();
+    labels->FillBuffer(0);
+    for (int i = 0; i < 256; ++i) image->GetBufferPointer()[i] = static_cast<signed char>(i - 128);
+    Flags flags;
+    flags.intensityQuantiles = true;
+    const auto table = SegmentTableDialog::computeFeatures(segment_puzzler::storeLabels(*labels), flags, 255, image);
+    const auto &values = table.rows.at(0).intensity;
+    require(values[3] == -126 && values[4] == -116 && values[5] == 115 && values[6] == 125,
+            "Signed histogram percentiles");
+}
+
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
+        checkIntensity();
+        checkIntegerQuantiles();
         auto image = Image::New();
         image->SetRegions(Image::SizeType{3, 3, 4});
         image->Allocate();

@@ -1,5 +1,6 @@
 #include "src/itkImageFilters/itkWorkerThreads.h"
 #include "SegmentTableDialog.h"
+#include "SegmentIntensity.h"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,7 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFileDialog>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
@@ -64,31 +66,6 @@
 namespace {
 
 constexpr char kSettingsGroup[] = "SegmentFeatureTable";
-using FeatureBoolMember = bool SegmentTableDialog::FeatureFlags::*;
-const std::array<std::pair<const char *, FeatureBoolMember>, 21> kFeatureBoolSettings{{
-    {"volume", &SegmentTableDialog::FeatureFlags::volume},
-    {"isIsolated", &SegmentTableDialog::FeatureFlags::isIsolated},
-    {"backgroundExposure", &SegmentTableDialog::FeatureFlags::backgroundExposure},
-    {"foregroundExposure", &SegmentTableDialog::FeatureFlags::foregroundExposure},
-    {"nearBoundary", &SegmentTableDialog::FeatureFlags::nearBoundary},
-    {"physicalSize", &SegmentTableDialog::FeatureFlags::physicalSize},
-    {"pixelsOnBorder", &SegmentTableDialog::FeatureFlags::pixelsOnBorder},
-    {"overridePixelSize", &SegmentTableDialog::FeatureFlags::overridePixelSize},
-    {"perimeterOnBorder", &SegmentTableDialog::FeatureFlags::perimeterOnBorder},
-    {"centroid", &SegmentTableDialog::FeatureFlags::centroid},
-    {"bbox", &SegmentTableDialog::FeatureFlags::bbox},
-    {"elongation", &SegmentTableDialog::FeatureFlags::elongation},
-    {"flatness", &SegmentTableDialog::FeatureFlags::flatness},
-    {"roundness", &SegmentTableDialog::FeatureFlags::roundness},
-    {"equivSphRadius", &SegmentTableDialog::FeatureFlags::equivSphRadius},
-    {"equivSphPerimeter", &SegmentTableDialog::FeatureFlags::equivSphPerimeter},
-    {"equivEllipsoid", &SegmentTableDialog::FeatureFlags::equivEllipsoid},
-    {"principalMoments", &SegmentTableDialog::FeatureFlags::principalMoments},
-    {"perimeter", &SegmentTableDialog::FeatureFlags::perimeter},
-    {"surfaceToVolumeRatio", &SegmentTableDialog::FeatureFlags::surfaceToVolumeRatio},
-    {"orientedBBox", &SegmentTableDialog::FeatureFlags::orientedBBox},
-}};
-
 QString physicalUnitLabel(const QString &unitId) {
     return unitId == QStringLiteral("um") ? QStringLiteral("µm") : unitId;
 }
@@ -310,7 +287,14 @@ template<typename ImageType>
 std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
     typename ImageType::Pointer image,
     const dataType::SegmentsStorage &storage,
-    const SegmentTableDialog::FeatureFlags &flags, dataType::SegmentIdType background) {
+    const SegmentTableDialog::FeatureFlags &flags, dataType::SegmentIdType background,
+    const itk::ImageBase<3> *intensityImage) {
+    segment_puzzler::IntensityBuffer intensityBuffer;
+    if (flags.usesIntensity()) {
+        if (!intensityImage || intensityImage->GetBufferedRegion() != storage.GetLargestPossibleRegion())
+            throw std::invalid_argument("Intensity image and segmentation must share the same voxel grid.");
+        segment_puzzler::getIntensityBuffer(*intensityImage, intensityBuffer);
+    }
     static_assert(ImageType::ImageDimension == 2 || ImageType::ImageDimension == 3);
 
     image->UpdateOutputInformation();
@@ -467,6 +451,11 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
             }
         }
 
+        if (flags.usesIntensity()) {
+            row.intensity = std::visit([&](auto pixels) {
+                return segment_puzzler::measureSegmentIntensity(pixels, *intensityImage, *labelObject, flags.intensityQuantiles);
+            }, intensityBuffer);
+        }
         rows.push_back(row);
     }
 
@@ -555,6 +544,7 @@ SegmentTableDialog::SegmentTableDialog(std::shared_ptr<GraphBase> graphBaseIn,
     stack = new QStackedWidget(this);
     stack->addWidget(createSetupPage());
     stack->addWidget(createResultsPage());
+    refreshIntensityImages();
     loadSettings();
     stack->setCurrentIndex(0);
 
@@ -566,7 +556,7 @@ SegmentTableDialog::SegmentTableDialog(std::shared_ptr<GraphBase> graphBaseIn,
     Q_ASSERT(runner != nullptr);
     if (runner != nullptr) {
         connect(runner, &TaskRunner::busyChanged, this,
-                [this](bool) { updateResultsActionState(); });
+                [this](bool busy) { if (!busy) refreshIntensityImages(); updateResultsActionState(); });
     }
 }
 
@@ -641,19 +631,25 @@ QWidget *SegmentTableDialog::createSetupPage() {
         updateCalibrationControls();
     }
 
+    const auto featureCheckBox = [this](const char *text, const char *key, bool FeatureFlags::*flag) {
+        auto *box = new QCheckBox(text);
+        featureOptions.push_back({key, flag, box});
+        return box;
+    };
+
     // --- Basic Measurements ---
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Basic Measurements", grid);
-        cbVolume            = new QCheckBox("Pixel / voxel count");              cbVolume->setChecked(true);
-        cbIsIsolated        = new QCheckBox("Is Isolated");                      cbIsIsolated->setChecked(true);
-        cbNearBoundary      = new QCheckBox("Near Boundary");                    cbNearBoundary->setChecked(false);
+        cbVolume = featureCheckBox("Pixel / voxel count", "volume", &FeatureFlags::volume);
+        cbIsIsolated = featureCheckBox("Is Isolated", "isIsolated", &FeatureFlags::isIsolated);
+        auto *cbNearBoundary = featureCheckBox("Near Boundary", "nearBoundary", &FeatureFlags::nearBoundary);
         cbNearBoundary->setToolTip(
             "Yes if at least one segment pixel or voxel is within the configured distance "
             "of the image boundary.");
-        cbPhysicalSize      = new QCheckBox("Physical Size");                    cbPhysicalSize->setChecked(false);
-        cbPixelsOnBorder    = new QCheckBox("Pixels on Border");                 cbPixelsOnBorder->setChecked(false);
-        cbPerimeterOnBorder = new QCheckBox("Perimeter on Border (physical)");   cbPerimeterOnBorder->setChecked(false);
+        auto *cbPhysicalSize = featureCheckBox("Physical Size", "physicalSize", &FeatureFlags::physicalSize);
+        auto *cbPixelsOnBorder = featureCheckBox("Pixels on Border", "pixelsOnBorder", &FeatureFlags::pixelsOnBorder);
+        auto *cbPerimeterOnBorder = featureCheckBox("Perimeter on Border (physical)", "perimeterOnBorder", &FeatureFlags::perimeterOnBorder);
         auto *borderDistanceLabel = new QLabel("Boundary distance:");
         borderDistanceSpinBox = new QSpinBox();
         borderDistanceSpinBox->setRange(0, 1'000'000);
@@ -677,10 +673,12 @@ QWidget *SegmentTableDialog::createSetupPage() {
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Position & Extent", grid);
-        cbCentroid = new QCheckBox("Centroid (voxel coordinates)");          cbCentroid->setChecked(true);
-        cbBBox     = new QCheckBox("Axis-Aligned Bounding Box");              cbBBox->setChecked(false);
+        cbCentroid = featureCheckBox("Centroid (voxel coordinates)", "centroid", &FeatureFlags::centroid);
+        auto *cbBBox = featureCheckBox("Axis-Aligned Bounding Box", "bbox", &FeatureFlags::bbox);
+        auto *cbOrientedBBox = featureCheckBox("Oriented Bounding Box (size + area/volume)", "orientedBBox", &FeatureFlags::orientedBBox);
         grid->addWidget(cbCentroid, 0, 0);
         grid->addWidget(cbBBox,     1, 0);
+        grid->addWidget(cbOrientedBBox, 1, 1);
         vContent->addWidget(gb);
     }
 
@@ -688,12 +686,12 @@ QWidget *SegmentTableDialog::createSetupPage() {
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Shape Descriptors", grid);
-        cbElongation        = new QCheckBox("Elongation");                          cbElongation->setChecked(true);
-        cbFlatness          = new QCheckBox("Flatness");                            cbFlatness->setChecked(true);
-        cbEquivSphRadius    = new QCheckBox("Equiv. Circle / Spherical Radius");    cbEquivSphRadius->setChecked(true);
-        cbEquivSphPerimeter = new QCheckBox("Equiv. Circle / Spherical Perimeter"); cbEquivSphPerimeter->setChecked(false);
-        cbEquivEllipsoid    = new QCheckBox("Equiv. Ellipsoid Diameters");          cbEquivEllipsoid->setChecked(false);
-        cbPrincipalMoments  = new QCheckBox("Principal Moments");                   cbPrincipalMoments->setChecked(false);
+        auto *cbElongation = featureCheckBox("Elongation", "elongation", &FeatureFlags::elongation);
+        auto *cbFlatness = featureCheckBox("Flatness", "flatness", &FeatureFlags::flatness);
+        auto *cbEquivSphRadius = featureCheckBox("Equiv. Circle / Spherical Radius", "equivSphRadius", &FeatureFlags::equivSphRadius);
+        auto *cbEquivSphPerimeter = featureCheckBox("Equiv. Circle / Spherical Perimeter", "equivSphPerimeter", &FeatureFlags::equivSphPerimeter);
+        auto *cbEquivEllipsoid = featureCheckBox("Equiv. Ellipsoid Diameters", "equivEllipsoid", &FeatureFlags::equivEllipsoid);
+        auto *cbPrincipalMoments = featureCheckBox("Principal Moments", "principalMoments", &FeatureFlags::principalMoments);
         grid->addWidget(cbElongation,        0, 0);
         grid->addWidget(cbFlatness,          0, 1);
         grid->addWidget(cbEquivSphRadius,    1, 0);
@@ -703,27 +701,41 @@ QWidget *SegmentTableDialog::createSetupPage() {
         vContent->addWidget(gb);
     }
 
+    {
+        QGridLayout *grid = nullptr;
+        auto *group = makeGroup("Image intensity", grid);
+        intensityImageBox = new QComboBox();
+        intensityImageBox->setToolTip("Uses raw intensities at matching voxel indices, as displayed in the slice views.");
+        auto *cbMeanIntensity = featureCheckBox("Mean", "meanIntensity", &FeatureFlags::meanIntensity);
+        auto *cbMinIntensity = featureCheckBox("Minimum", "minIntensity", &FeatureFlags::minIntensity);
+        auto *cbMaxIntensity = featureCheckBox("Maximum", "maxIntensity", &FeatureFlags::maxIntensity);
+        auto *cbQuantiles = featureCheckBox("P01, P05, P95, P99", "intensityQuantiles", &FeatureFlags::intensityQuantiles);
+        cbQuantiles->setToolTip("Exact nearest-rank percentiles of finite voxel intensities.");
+        grid->addWidget(intensityImageBox, 0, 0, 1, 2);
+        grid->addWidget(cbMeanIntensity, 1, 0);
+        grid->addWidget(cbMinIntensity, 1, 1);
+        grid->addWidget(cbMaxIntensity, 2, 0);
+        grid->addWidget(cbQuantiles, 2, 1);
+        vContent->addWidget(group);
+    }
+
     // --- Advanced (slower) ---
     {
         QGridLayout *grid = nullptr;
         auto *gb = makeGroup("Advanced (slower)", grid);
-        cbPerimeter = new QCheckBox("Perimeter / Surface Area");
-        cbPerimeter->setChecked(false);
-        cbSurfaceToVolumeRatio = new QCheckBox("Surface/Volume");
-        cbSurfaceToVolumeRatio->setChecked(false);
+        auto *cbPerimeter = featureCheckBox("Perimeter / Surface Area", "perimeter", &FeatureFlags::perimeter);
+        auto *cbSurfaceToVolumeRatio = featureCheckBox("Surface/Volume", "surfaceToVolumeRatio", &FeatureFlags::surfaceToVolumeRatio);
         cbSurfaceToVolumeRatio->setToolTip(
             "Surface area divided by physical volume in 3D; "
             "perimeter divided by physical area in 2D.");
-        cbRoundness = new QCheckBox("Roundness");
+        auto *cbRoundness = featureCheckBox("Roundness", "roundness", &FeatureFlags::roundness);
         cbRoundness->setToolTip("Very slow on large images. Uses the same calculation as Perimeter / Surface Area.");
-        cbOrientedBBox = new QCheckBox("Oriented Bounding Box (size + area/volume)");
-        cbOrientedBBox->setChecked(false);
-        cbBackgroundExposure = new QCheckBox("Background Exposure");
+        auto *cbBackgroundExposure = featureCheckBox("Background Exposure", "backgroundExposure", &FeatureFlags::backgroundExposure);
         cbBackgroundExposure->setToolTip(
             "Fraction of surface voxels that touch the layer's background. "
             "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D; "
             "the image exterior counts as background. A voxel may contribute to both exposure ratios.");
-        cbForegroundExposure = new QCheckBox("Foreground Exposure");
+        auto *cbForegroundExposure = featureCheckBox("Foreground Exposure", "foregroundExposure", &FeatureFlags::foregroundExposure);
         cbForegroundExposure->setToolTip(
             "Fraction of surface voxels that touch another foreground label. "
             "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D. "
@@ -731,9 +743,8 @@ QWidget *SegmentTableDialog::createSetupPage() {
         grid->addWidget(cbPerimeter,             0, 0);
         grid->addWidget(cbSurfaceToVolumeRatio,  0, 1);
         grid->addWidget(cbRoundness,             1, 0);
-        grid->addWidget(cbOrientedBBox,          1, 1);
-        grid->addWidget(cbBackgroundExposure, 2, 0);
-        grid->addWidget(cbForegroundExposure, 2, 1);
+        grid->addWidget(cbBackgroundExposure,    2, 0);
+        grid->addWidget(cbForegroundExposure,    2, 1);
         vContent->addWidget(gb);
     }
 
@@ -869,59 +880,21 @@ void SegmentTableDialog::setDeleteSegmentationLabelsHandler(
 
 SegmentTableDialog::FeatureFlags SegmentTableDialog::collectFlags() const {
     FeatureFlags f;
-    f.volume            = cbVolume->isChecked();
-    f.isIsolated        = cbIsIsolated->isChecked();
-    f.backgroundExposure = cbBackgroundExposure->isChecked();
-    f.foregroundExposure = cbForegroundExposure->isChecked();
-    f.nearBoundary      = cbNearBoundary->isChecked();
-    f.physicalSize      = cbPhysicalSize->isChecked();
-    f.pixelsOnBorder    = cbPixelsOnBorder->isChecked();
+    for (const auto &option : featureOptions) f.*option.flag = option.box->isChecked();
     f.borderDistancePx  = borderDistanceSpinBox->value();
     f.overridePixelSize = overridePixelSizeCheckBox->isChecked();
     f.pixelSize         = pixelSizeSpinBox->value();
     f.physicalUnit      = physicalUnitComboBox->currentData().toString();
-    f.perimeterOnBorder = cbPerimeterOnBorder->isChecked();
-    f.centroid          = cbCentroid->isChecked();
-    f.bbox              = cbBBox->isChecked();
-    f.elongation        = cbElongation->isChecked();
-    f.flatness          = cbFlatness->isChecked();
-    f.roundness         = cbRoundness->isChecked();
-    f.equivSphRadius    = cbEquivSphRadius->isChecked();
-    f.equivSphPerimeter = cbEquivSphPerimeter->isChecked();
-    f.equivEllipsoid    = cbEquivEllipsoid->isChecked();
-    f.principalMoments  = cbPrincipalMoments->isChecked();
-    f.perimeter         = cbPerimeter->isChecked();
-    f.surfaceToVolumeRatio = cbSurfaceToVolumeRatio->isChecked();
-    f.orientedBBox      = cbOrientedBBox->isChecked();
     return f;
 }
 
 void SegmentTableDialog::applyFlagsToUi(const FeatureFlags &flags) {
-    cbVolume->setChecked(flags.volume);
-    cbIsIsolated->setChecked(flags.isIsolated);
-    cbBackgroundExposure->setChecked(flags.backgroundExposure);
-    cbForegroundExposure->setChecked(flags.foregroundExposure);
-    cbNearBoundary->setChecked(flags.nearBoundary);
-    cbPhysicalSize->setChecked(flags.physicalSize);
-    cbPixelsOnBorder->setChecked(flags.pixelsOnBorder);
+    for (const auto &option : featureOptions) option.box->setChecked(flags.*option.flag);
     borderDistanceSpinBox->setValue(flags.borderDistancePx);
     overridePixelSizeCheckBox->setChecked(flags.overridePixelSize);
     pixelSizeSpinBox->setValue(flags.pixelSize);
     const int unitIndex = physicalUnitComboBox->findData(flags.physicalUnit);
     physicalUnitComboBox->setCurrentIndex(unitIndex >= 0 ? unitIndex : 0);
-    cbPerimeterOnBorder->setChecked(flags.perimeterOnBorder);
-    cbCentroid->setChecked(flags.centroid);
-    cbBBox->setChecked(flags.bbox);
-    cbElongation->setChecked(flags.elongation);
-    cbFlatness->setChecked(flags.flatness);
-    cbRoundness->setChecked(flags.roundness);
-    cbEquivSphRadius->setChecked(flags.equivSphRadius);
-    cbEquivSphPerimeter->setChecked(flags.equivSphPerimeter);
-    cbEquivEllipsoid->setChecked(flags.equivEllipsoid);
-    cbPrincipalMoments->setChecked(flags.principalMoments);
-    cbPerimeter->setChecked(flags.perimeter);
-    cbSurfaceToVolumeRatio->setChecked(flags.surfaceToVolumeRatio);
-    cbOrientedBBox->setChecked(flags.orientedBBox);
     updateCalibrationControls();
 }
 
@@ -929,9 +902,10 @@ void SegmentTableDialog::loadSettings() {
     FeatureFlags flags;
     QSettings settings;
     settings.beginGroup(kSettingsGroup);
-    for (const auto &[key, member] : kFeatureBoolSettings) {
-        flags.*member = settings.value(key, flags.*member).toBool();
+    for (const auto &option : featureOptions) {
+        flags.*option.flag = settings.value(option.key, flags.*option.flag).toBool();
     }
+    flags.overridePixelSize = settings.value(QStringLiteral("overridePixelSize"), flags.overridePixelSize).toBool();
     flags.borderDistancePx =
         settings.value(QStringLiteral("borderDistancePx"), flags.borderDistancePx).toInt();
     flags.pixelSize = settings.value(QStringLiteral("pixelSize"), flags.pixelSize).toDouble();
@@ -948,9 +922,10 @@ void SegmentTableDialog::loadSettings() {
 void SegmentTableDialog::saveSettings(const FeatureFlags &flags) const {
     QSettings settings;
     settings.beginGroup(kSettingsGroup);
-    for (const auto &[key, member] : kFeatureBoolSettings) {
-        settings.setValue(key, flags.*member);
+    for (const auto &option : featureOptions) {
+        settings.setValue(option.key, flags.*option.flag);
     }
+    settings.setValue(QStringLiteral("overridePixelSize"), flags.overridePixelSize);
     settings.setValue(QStringLiteral("borderDistancePx"), flags.borderDistancePx);
     settings.setValue(QStringLiteral("pixelSize"), flags.pixelSize);
     settings.setValue(QStringLiteral("physicalUnit"), flags.physicalUnit);
@@ -972,6 +947,28 @@ void SegmentTableDialog::updateCalibrationControls() {
     if (physicalUnitComboBox != nullptr) {
         physicalUnitComboBox->setEnabled(enabled);
     }
+}
+
+void SegmentTableDialog::refreshIntensityImages() {
+    const QString selected = intensityImageBox->currentText();
+    intensityImageBox->clear();
+    if (orthoViewer && graphBase && graphBase->pSelectedSegmentation) {
+        const auto *geometry = graphBase->pSelectedSegmentation->imageInformation();
+        for (const auto *signal : orthoViewer->signalRenderOrder()) {
+            if (signal->getLayerRole() != itkSignalBase::LayerRole::SourceImage) continue;
+            const auto image = signal->getImageBase();
+            if (image && image->GetBufferedRegion() == geometry->GetLargestPossibleRegion())
+                intensityImageBox->addItem(signal->name);
+        }
+    }
+    if (intensityImageBox->findText(selected) >= 0) intensityImageBox->setCurrentText(selected);
+    intensityImageBox->parentWidget()->setVisible(intensityImageBox->count() > 0);
+}
+
+void SegmentTableDialog::changeEvent(QEvent *event) {
+    QDialog::changeEvent(event);
+    if (intensityImageBox && event->type() == QEvent::ActivationChange && isActiveWindow())
+        refreshIntensityImages();
 }
 
 void SegmentTableDialog::setQuickComputeMode() {
@@ -1006,7 +1003,25 @@ void SegmentTableDialog::startCompute(dataType::SegmentsStorage::Pointer segImg)
         return;
     }
 
-    const FeatureFlags flags = collectFlags();
+    auto flags = collectFlags();
+    itk::ImageBase<3>::ConstPointer intensityImage;
+    QString intensityImageName;
+    if (flags.usesIntensity() && intensityImageBox->count()) {
+        intensityImageName = intensityImageBox->currentText();
+        for (const auto *signal : orthoViewer->signalRenderOrder()) {
+            if (signal->getLayerRole() == itkSignalBase::LayerRole::SourceImage && signal->name == intensityImageName) {
+                intensityImage = signal->getImageBase();
+                break;
+            }
+        }
+        if (!intensityImage || intensityImage->GetBufferedRegion() != segImg->GetLargestPossibleRegion()) {
+            refreshIntensityImages();
+            QMessageBox::information(this, "Image intensity", "Select a source image on the segmentation's voxel grid.");
+            return;
+        }
+    } else {
+        flags.meanIntensity = flags.minIntensity = flags.maxIntensity = flags.intensityQuantiles = false;
+    }
     currentTableSegmentation = segImg;
     currentTableSegmentationSignal = graphBase->pSelectedSegmentationSignal;
     tableLabelIdsAreStale = true;
@@ -1059,8 +1074,10 @@ void SegmentTableDialog::startCompute(dataType::SegmentsStorage::Pointer segImg)
     const auto committed = std::make_shared<bool>(false);
     runner->runInBackground(
         QStringLiteral("Computing segment features..."),
-        [segImg, flags, background = graphBase->pGraph->selectedBackground()]() {
-            return SegmentTableDialog::computeFeatures(segImg, flags, background);
+        [segImg, flags, intensityImage, intensityImageName, background = graphBase->pGraph->selectedBackground()]() {
+            auto result = SegmentTableDialog::computeFeatures(segImg, flags, background, intensityImage);
+            result.intensityImageName = intensityImageName;
+            return result;
         },
         [guardedThis, committed](ComputeResult result) {
             if (guardedThis == nullptr) {
@@ -1169,15 +1186,7 @@ void SegmentTableDialog::onMergeWithNeighborClicked() {
 }
 
 void SegmentTableDialog::setAllChecked(bool checked) {
-    for (QCheckBox *cb : {cbVolume, cbIsIsolated, cbBackgroundExposure, cbForegroundExposure,
-                          cbNearBoundary, cbPhysicalSize,
-                          cbPixelsOnBorder, cbPerimeterOnBorder,
-                          cbCentroid, cbBBox, cbElongation, cbFlatness, cbRoundness,
-                          cbEquivSphRadius, cbEquivSphPerimeter, cbEquivEllipsoid,
-                          cbPrincipalMoments, cbPerimeter, cbSurfaceToVolumeRatio,
-                          cbOrientedBBox}) {
-        cb->setChecked(checked);
-    }
+    for (const auto &option : featureOptions) option.box->setChecked(checked);
 }
 
 void SegmentTableDialog::updateResultsActionState() {
@@ -1504,7 +1513,7 @@ void SegmentTableDialog::onView3DSelectedClicked() {
 
 SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
     dataType::SegmentsStorage::Pointer storage,
-    FeatureFlags flags, dataType::SegmentIdType background)
+    FeatureFlags flags, dataType::SegmentIdType background, itk::ImageBase<3>::ConstPointer intensityImage)
 {
     auto geometry = dataType::SegmentsImageType::New();
     geometry->CopyInformation(storage->imageInformation());
@@ -1540,9 +1549,9 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
             changeInformation->SetInput(extract->GetOutput());
             changeInformation->SetOutputSpacing(spacing);
             changeInformation->ChangeSpacingOn();
-            result.rows = computeShapeFeatureRows<Image2D>(changeInformation->GetOutput(), *storage, flags, background);
+            result.rows = computeShapeFeatureRows<Image2D>(changeInformation->GetOutput(), *storage, flags, background, intensityImage);
         } else {
-            result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), *storage, flags, background);
+            result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), *storage, flags, background, intensityImage);
         }
 
         const int singletonZ = static_cast<int>(region.GetIndex()[2]);
@@ -1550,7 +1559,7 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
             row.centroidZ = singletonZ;
         }
     } else {
-        result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(geometry, *storage, flags, background);
+        result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(geometry, *storage, flags, background, intensityImage);
     }
 
     if (!result.rows.empty() && (flags.isIsolated || flags.backgroundExposure || flags.foregroundExposure)) {
@@ -1619,6 +1628,7 @@ void SegmentTableDialog::onComputeFinished(ComputeResult result) {
                       "⚠ Warning: surface features may be biased at %1:1 anisotropy</span>")
                       .arg(anisotropy.ratio, 0, 'f', 2);
     }
+    if (!result.intensityImageName.isEmpty()) status += " | " + result.intensityImageName.toHtmlEscaped();
     statusLabel->setText(status);
     SP_LOG_INFO(
         "segmentation",
@@ -1838,12 +1848,25 @@ void SegmentTableDialog::populateTable(const ComputeResult &result) {
     // Avoid re-sorting and resizing the proxy after every cell change during a bulk refresh.
     sortModel->setSourceModel(nullptr);
     updateColumnHeaders(result.flags, result.is2D);
+    const QStringList intensityHeaders{"Mean Intensity", "Min Intensity", "Max Intensity", "P01", "P05", "P95", "P99"};
+    for (int i = 0; i < intensityHeaders.size(); ++i)
+        model->setHeaderData(COL_MEAN_INTENSITY + i, Qt::Horizontal, result.intensityImageName.isEmpty()
+            ? intensityHeaders[i] : QString("%1 (%2)").arg(intensityHeaders[i], result.intensityImageName));
     model->removeRows(0, model->rowCount());
     model->setRowCount(static_cast<int>(result.rows.size()));
 
     for (int r = 0; r < static_cast<int>(result.rows.size()); ++r) {
         const auto &row = result.rows[r];
 
+        if (result.flags.usesIntensity()) {
+            for (int i = 0; i < int(row.intensity.size()); ++i) {
+                const double value = row.intensity[i];
+                if (!std::isfinite(value)) continue;
+                auto *item = new QStandardItem(QString::number(value, 'g', 15));
+                item->setData(value, Qt::UserRole);
+                model->setItem(r, COL_MEAN_INTENSITY + i, item);
+            }
+        }
         // Label item — centroid stored in UserRole+1/2/3 for navigation.
         auto *labelItem = new QStandardItem(QString::number(row.label));
         labelItem->setData(QVariant(static_cast<qlonglong>(row.label)), Qt::UserRole);
@@ -1912,7 +1935,7 @@ void SegmentTableDialog::applyColumnColoring() {
             if (!item) { continue; }
             bool ok = false;
             const double v = item->data(Qt::UserRole).toDouble(&ok);
-            if (ok && v >= 0.0) {
+            if (ok && (col >= COL_MEAN_INTENSITY || v >= 0.0)) {
                 minVal = std::min(minVal, v);
                 maxVal = std::max(maxVal, v);
             }
@@ -1920,13 +1943,14 @@ void SegmentTableDialog::applyColumnColoring() {
 
         if (minVal >= maxVal) { continue; }
         const double range = maxVal - minVal;
+        if (!std::isfinite(range)) continue;
 
         for (int row = 0; row < nRows; ++row) {
             auto *item = model->item(row, col);
             if (!item) { continue; }
             bool ok = false;
             const double v = item->data(Qt::UserRole).toDouble(&ok);
-            if (!ok || v < 0.0) { continue; }
+            if (!ok || (col < COL_MEAN_INTENSITY && v < 0.0)) { continue; }
             const QColor bg = colorForNormalizedValue((v - minVal) / range);
             item->setBackground(bg);
             item->setForeground(textColorForBackground(bg));
@@ -2009,6 +2033,10 @@ void SegmentTableDialog::updateColumnVisibility(const FeatureFlags &f, bool is2D
         tableView->setColumnHidden(col, true);
     }
 
+    tableView->setColumnHidden(COL_MEAN_INTENSITY, !f.meanIntensity);
+    tableView->setColumnHidden(COL_MIN_INTENSITY, !f.minIntensity);
+    tableView->setColumnHidden(COL_MAX_INTENSITY, !f.maxIntensity);
+    for (int col = COL_P01; col <= COL_P99; ++col) tableView->setColumnHidden(col, !f.intensityQuantiles);
     if (f.volume)            tableView->setColumnHidden(SegmentTableDialog::COL_VOLUME, false);
     if (f.isIsolated)        tableView->setColumnHidden(SegmentTableDialog::COL_IS_ISOLATED, false);
     if (f.backgroundExposure) {
@@ -2153,7 +2181,10 @@ void SegmentTableDialog::onExportCsvClicked() {
     QStringList headers;
     for (int col : visibleCols) {
         const auto *h = model->horizontalHeaderItem(col);
-        headers << (h ? h->text() : QString());
+        QString name = h ? h->text() : QString();
+        if (name.contains(',') || name.contains('"') || name.contains('\n') || name.contains('\r'))
+            name = '"' + name.replace('"', "\"\"") + '"';
+        headers << name;
     }
     out << headers.join(",") << "\n";
 

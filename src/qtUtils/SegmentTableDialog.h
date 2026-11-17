@@ -2,6 +2,7 @@
 #define SEGMENTPUZZLER_SEGMENTTABLEDIALOG_H
 
 #include <QDialog>
+#include <array>
 #include <QPointer>
 #include <QString>
 #include <cstddef>
@@ -52,26 +53,28 @@ public:
         bool isIsolated        = true;
         bool backgroundExposure = false;
         bool foregroundExposure = false;
-        bool nearBoundary      = false;
-        bool physicalSize      = false;
-        bool pixelsOnBorder    = false;
+        bool nearBoundary      = true;
+        bool physicalSize      = true;
+        bool pixelsOnBorder    = true;
         int borderDistancePx   = 0;
         bool overridePixelSize = false;
         double pixelSize       = 1.0;
         QString physicalUnit   = QStringLiteral("nm");
-        bool perimeterOnBorder = false;
+        bool perimeterOnBorder = true;
         bool centroid          = true;   // always computed; flag controls column visibility only
-        bool bbox              = false;
+        bool bbox              = true;
         bool elongation        = true;
         bool flatness          = true;
         bool roundness         = false;
         bool equivSphRadius    = true;
-        bool equivSphPerimeter = false;
-        bool equivEllipsoid    = false;
-        bool principalMoments  = false;
+        bool equivSphPerimeter = true;
+        bool equivEllipsoid    = true;
+        bool principalMoments  = true;
         bool perimeter         = false;  // requires SetComputePerimeter
         bool surfaceToVolumeRatio = false; // requires SetComputePerimeter
-        bool orientedBBox      = false;  // requires SetComputeOrientedBoundingBox
+        bool orientedBBox      = true;  // requires SetComputeOrientedBoundingBox
+        bool meanIntensity = false, minIntensity = false, maxIntensity = false, intensityQuantiles = false;
+        bool usesIntensity() const { return meanIntensity || minIntensity || maxIntensity || intensityQuantiles; }
     };
 
     // ---- Per-label result row; -1.0 = not computed ----
@@ -80,6 +83,7 @@ public:
         // Centroid always computed (needed for navigation even if column is hidden)
         int centroidX = 0, centroidY = 0, centroidZ = 0;
 
+        std::array<double, 7> intensity{};
         double volume = -1, physicalSize = -1;
         bool isIsolated = true;
         bool isNearBoundary = false;
@@ -99,6 +103,7 @@ public:
     struct ComputeResult {
         std::vector<SegmentRow> rows;
         FeatureFlags flags;
+        QString intensityImageName;
         bool is2D = false;
         double elapsedSeconds = 0.0;
     };
@@ -137,13 +142,15 @@ public:
         COL_OBBOX_H             = 29,
         COL_OBBOX_D             = 30,
         COL_OBBOX_VOLUME        = 31,
-        COL_COUNT               = 32
+        COL_MEAN_INTENSITY, COL_MIN_INTENSITY, COL_MAX_INTENSITY,
+        COL_P01, COL_P05, COL_P95, COL_P99, COL_COUNT
     };
 
     // Runs on a worker thread — must not touch QWidgets.
     static ComputeResult computeFeatures(
         dataType::SegmentsStorage::Pointer segImg,
-        FeatureFlags flags, dataType::SegmentIdType background = 0);
+        FeatureFlags flags, dataType::SegmentIdType background = 0,
+        itk::ImageBase<3>::ConstPointer intensityImage = nullptr);
 
 signals:
     void computeFinishedDebug();
@@ -174,6 +181,8 @@ private:
     QWidget *createSetupPage();
     QWidget *createResultsPage();
     FeatureFlags collectFlags() const;
+    void refreshIntensityImages();
+    void changeEvent(QEvent *event) override;
     void populateTable(const ComputeResult &result);
     void applyMergedLabelChanges(
         const std::map<dataType::SegmentIdType, dataType::SegmentIdType> &newLabelByConsumedLabel,
@@ -215,20 +224,18 @@ private:
     QStackedWidget *stack = nullptr;
 
     // ---- Setup page ----
-    QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr;
-    QCheckBox *cbBackgroundExposure = nullptr, *cbForegroundExposure = nullptr;
-    QCheckBox *cbNearBoundary = nullptr, *cbPhysicalSize = nullptr;
-    QCheckBox *cbPixelsOnBorder = nullptr, *cbPerimeterOnBorder = nullptr;
+    struct FeatureOption {
+        const char *key;
+        bool FeatureFlags::*flag;
+        QCheckBox *box;
+    };
+    std::vector<FeatureOption> featureOptions;
+    QCheckBox *cbVolume = nullptr, *cbIsIsolated = nullptr, *cbCentroid = nullptr;
     QSpinBox *borderDistanceSpinBox = nullptr;
     QCheckBox *overridePixelSizeCheckBox = nullptr;
     QDoubleSpinBox *pixelSizeSpinBox = nullptr;
     QComboBox *physicalUnitComboBox = nullptr;
-    QCheckBox *cbCentroid = nullptr, *cbBBox = nullptr;
-    QCheckBox *cbElongation = nullptr, *cbFlatness = nullptr, *cbRoundness = nullptr;
-    QCheckBox *cbEquivSphRadius = nullptr, *cbEquivSphPerimeter = nullptr;
-    QCheckBox *cbEquivEllipsoid = nullptr, *cbPrincipalMoments = nullptr;
-    QCheckBox *cbPerimeter = nullptr, *cbSurfaceToVolumeRatio = nullptr;
-    QCheckBox *cbOrientedBBox = nullptr;
+    QComboBox *intensityImageBox = nullptr;
     QPushButton *computeButton = nullptr;
 
     // ---- Results page ----
