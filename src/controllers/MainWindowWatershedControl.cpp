@@ -104,8 +104,8 @@ MainWindowWatershedControl::MainWindowWatershedControl(WatershedControl::OutputM
     std::shared_ptr<GraphBase> graphBase = std::make_shared<GraphBase>();
 
     graphBase->ignoredSegmentLabels = {};
-    graphBase->pWorkingSegmentsImage = dataType::SegmentsImageType::Pointer();
-    graphBase->pEdgesInitialSegmentsImage = dataType::EdgeImageType::Pointer();
+    graphBase->pWorkingSegmentsImage = nullptr;
+    graphBase->pEdgesInitialSegmentsImage = nullptr;
     graphBase->colorLookUpEdgesStatus = std::unordered_map<char, QRgb>();
     graphBase->edgeStatus = std::unordered_map<dataType::MappedEdgeIdType, char>();
 

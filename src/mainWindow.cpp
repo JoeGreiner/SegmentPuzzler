@@ -595,15 +595,11 @@ MainWindow::MainWindow() {
         if (dialog.exec() == QDialog::Accepted) {
             int label = labelEdit.text().toInt();
             SP_LOG_INFO("viewer.interaction", QStringLiteral("Go to label id=%1").arg(label));
-            itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(graphBase->pSelectedSegmentation, graphBase->pSelectedSegmentation->GetLargestPossibleRegion());
             std::vector<itk::Index<3>> indices;
-            while (!it.IsAtEnd()) {
-                if (it.Get() == label) {
-                    auto index = it.GetIndex();
-                    indices.push_back(index);
-                }
-                ++it;
-            }
+            graphBase->pSelectedSegmentation->forEachRun([&](auto index, std::size_t length, auto value) {
+                if (value != label) return;
+                for (std::size_t x = 0; x < length; ++x, ++index[0]) indices.push_back(index);
+            });
 
             if (indices.empty()) {
                 SP_LOG_WARNING("segmentation", QStringLiteral("Requested label id=%1 was not found in the selected segmentation").arg(label));
@@ -1334,7 +1330,7 @@ void MainWindow::showSegmentTable() {
         connect(segmentTableDialog, &SegmentTableDialog::neighborMergeRequested,
                 mySignalControl, &SignalControl::mergeSelectedSegmentsWithNeighbors);
         segmentTableDialog->setDeleteSegmentationLabelsHandler(
-            [this](dataType::SegmentsImageType::Pointer segmentation,
+            [this](dataType::SegmentsStorage::Pointer segmentation,
                    const std::unordered_set<dataType::SegmentIdType> &labels) {
                 return mySignalControl->deleteSelectedSegmentationLabels(segmentation, labels);
             });

@@ -215,9 +215,9 @@ struct LabelOverlap : public Feature, GraphBase {
     double largestNonZeroOverlapFraction;
     long int labelWithSecondLargestNonZeroOverlap;
     double secondLargestNonZeroOverlapFraction;
-    dataType::SegmentsImageType::Pointer pToOtherLabelImagePointer;
+    dataType::SegmentsStorage::Pointer pToOtherLabelImagePointer;
 
-    void setPToOtherLabelImagePointer(dataType::SegmentsImageType::Pointer pToOtherLabelImagePointer);
+    void setPToOtherLabelImagePointer(dataType::SegmentsStorage::Pointer pToOtherLabelImagePointer);
 
     // constructor with signalName and filterName
     LabelOverlap();

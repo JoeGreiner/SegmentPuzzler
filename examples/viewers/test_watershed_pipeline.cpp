@@ -284,7 +284,7 @@ int main(int argc, char *argv[]) {
                             failTest("watershed boundary-masked label is disconnected: " + std::to_string(badLabel));
                             return;
                         }
-                        if (!imagesEqual(ws->pWatershed, ws->graphBase->pWorkingSegmentsImage)) {
+                        if (!imagesEqual(ws->pWatershed, ws->graphBase->pWorkingSegmentsImage->denseRegion(ws->graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()))) {
                             failTest("graph working image does not match watershed boundary-masked labels");
                             return;
                         }
@@ -305,7 +305,7 @@ int main(int argc, char *argv[]) {
                                 failTest("agglomeration boundary-masked label is disconnected: " + std::to_string(badLabel));
                                 return;
                             }
-                            if (!imagesEqual(ws->pAgglomertion, ws->graphBase->pWorkingSegmentsImage)) {
+                            if (!imagesEqual(ws->pAgglomertion, ws->graphBase->pWorkingSegmentsImage->denseRegion(ws->graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()))) {
                                 failTest("graph working image does not match agglomeration boundary-masked labels");
                                 return;
                             }

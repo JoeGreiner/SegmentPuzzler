@@ -1,3 +1,4 @@
+#include "src/image_storage/LabelImageStorage.h"
 #include "SignalControl.h"
 #include "src/segment_handling/graphBase.h"
 #include "src/segment_handling/Graph.h"
@@ -656,10 +657,13 @@ void SignalControl::prepareWorkingSegmentsGraph(const GraphSegmentImageType::Poi
     graphBase->ignoredSegmentLabels.clear();
     graphBase->edgeStatus.clear();
     graphBase->colorLookUpEdgesStatus.clear();
-    graphBase->pGraph->setBackgroundIdStrategy("backgroundIsLowestId");
-    graphBase->pWorkingSegmentsImage = workingSegmentsImage;
+    if (!background) graphBase->pGraph->setBackgroundIdStrategy("backgroundIsLowestId");
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(workingSegmentsImage);
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
     graphBase->pGraph->constructFromVolume(workingSegmentsImage, background);
+    graphBase->pWorkingSegmentsImage = segment_puzzler::storeLabels(*workingSegmentsImage);
+    for (const auto &[label, node] : graphBase->pGraph->initialNodes)
+        node->setSegmentPointer(graphBase->pWorkingSegmentsImage);
 }
 
 void SignalControl::showInfoMessage(const QString &message) const {
@@ -693,11 +697,11 @@ std::optional<voxel_geometry::VoxelSpacing> SignalControl::voxelSpacing() const 
     }
 
     const itk::ImageBase<3> *fallbackImages[] = {
-        graphBase->pWorkingSegmentsImage.GetPointer(),
-        graphBase->pSelectedSegmentation.GetPointer(),
-        graphBase->pSelectedRefinement.GetPointer(),
+        graphBase->pWorkingSegmentsImage ? graphBase->pWorkingSegmentsImage->imageInformation() : nullptr,
+        graphBase->pSelectedSegmentation ? graphBase->pSelectedSegmentation->imageInformation() : nullptr,
+        graphBase->pSelectedRefinement ? graphBase->pSelectedRefinement->imageInformation() : nullptr,
         graphBase->pSelectedBoundary.GetPointer(),
-        graphBase->pEdgesInitialSegmentsImage.GetPointer(),
+        graphBase->pEdgesInitialSegmentsImage ? graphBase->pEdgesInitialSegmentsImage->imageInformation() : nullptr,
         graphBase->pGroundTruth.GetPointer()
     };
     for (const auto *image : fallbackImages) {
@@ -728,11 +732,11 @@ void SignalControl::setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing)
         const auto image = signal->getImageBase();
         addImage(image.GetPointer());
     }
-    addImage(graphBase->pWorkingSegmentsImage.GetPointer());
-    addImage(graphBase->pSelectedSegmentation.GetPointer());
-    addImage(graphBase->pSelectedRefinement.GetPointer());
+    addImage(graphBase->pWorkingSegmentsImage ? graphBase->pWorkingSegmentsImage->imageInformation() : nullptr);
+    addImage(graphBase->pSelectedSegmentation ? graphBase->pSelectedSegmentation->imageInformation() : nullptr);
+    addImage(graphBase->pSelectedRefinement ? graphBase->pSelectedRefinement->imageInformation() : nullptr);
     addImage(graphBase->pSelectedBoundary.GetPointer());
-    addImage(graphBase->pEdgesInitialSegmentsImage.GetPointer());
+    addImage(graphBase->pEdgesInitialSegmentsImage ? graphBase->pEdgesInitialSegmentsImage->imageInformation() : nullptr);
     addImage(graphBase->pGroundTruth.GetPointer());
 
     for (auto *image : images) {
@@ -1410,8 +1414,7 @@ void SignalControl::selectRefinementItem(QTreeWidgetItem *item) {
     }
 
     const size_t signalIndex = signalIndexForItem(item);
-    graphBase->pSelectedRefinement = dynamic_cast<GraphSegmentImageType *>(
-        allSignalList[signalIndex]->getImageBase().GetPointer());
+    graphBase->pSelectedRefinement = dynamic_cast<itkSignal<GraphSegmentType> *>(allSignalList[signalIndex])->imageStorage;
     graphBase->pSelectedRefinementSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
         allSignalList[signalIndex]);
 }
@@ -1434,8 +1437,7 @@ void SignalControl::selectSegmentationItem(QTreeWidgetItem *item) {
     }
 
     const size_t signalIndex = signalIndexForItem(item);
-    graphBase->pSelectedSegmentation = dynamic_cast<GraphSegmentImageType *>(
-        allSignalList[signalIndex]->getImageBase().GetPointer());
+    graphBase->pSelectedSegmentation = dynamic_cast<itkSignal<GraphSegmentType> *>(allSignalList[signalIndex])->imageStorage;
     graphBase->pSelectedSegmentationSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(
         allSignalList[signalIndex]);
     graphBase->selectedSegmentationContext = graphBase->pSelectedSegmentationSignal->volumeContext;
@@ -1454,7 +1456,7 @@ void SignalControl::setGuiBusy(bool busy) {
 }
 
 std::size_t SignalControl::deleteSelectedSegmentationLabels(
-    dataType::SegmentsImageType::Pointer expectedSegmentation,
+    dataType::SegmentsStorage::Pointer expectedSegmentation,
     const std::unordered_set<dataType::SegmentIdType> &labels)
 {
     if (labels.empty() || expectedSegmentation == nullptr
@@ -1960,8 +1962,11 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
     auto *signal = allSignalList[signalIndexGlobal];
     if (!signal->volumeContext) {
         signal->volumeContext = std::make_shared<volume_io::VolumeContext>();
-        auto *image = dynamic_cast<GraphSegmentImageType *>(signal->getImageBase().GetPointer());
-        volume_io::initializeLabels(*signal->volumeContext, image->GetBufferPointer(), image->GetBufferedRegion().GetNumberOfPixels(), false);
+        signal->volumeContext->background = 0;
+        const auto image = dynamic_cast<itkSignal<GraphSegmentType> *>(signal)->imageStorage;
+        image->forEachRun([&](const auto &, std::size_t, GraphSegmentType label) {
+            volume_io::useLabel(*signal->volumeContext, label);
+        });
     }
     allSignalList[signalIndexGlobal]->setCategoricalColorMode();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
@@ -2013,7 +2018,9 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     attachLayerWidgetToLastItem(signalTreeWidget);
 
     graphBase->pWorkingSegments = typedSegmentsSignal;
-    graphBase->pWorkingSegmentsImage = typedSegmentsSignal->pImage;
+    graphBase->pWorkingSegmentsImage = typedSegmentsSignal->imageStorage;
+    for (const auto &[label, node] : graphBase->pGraph->initialNodes)
+        node->setSegmentPointer(graphBase->pWorkingSegmentsImage);
 
     allSignalList[signalIndexGlobal]->setValueColorToTransparent(graphBase->ignoredSegmentLabels.front());
     orthoViewer->addSignal(allSignalList[signalIndexGlobal]);
@@ -2113,11 +2120,11 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
         [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
-SignalControl::GraphSegmentImageType::Pointer SignalControl::duplicateSegmentationAndBuildWorkingSegments(
+dataType::SegmentsStorage::Pointer SignalControl::duplicateSegmentationAndBuildWorkingSegments(
     const GraphSegmentImageType::Pointer &segmentationImage, std::optional<GraphSegmentType> background) {
     auto workingSegmentsImage = duplicateSegmentsImage(segmentationImage);
     prepareWorkingSegmentsGraph(workingSegmentsImage, background);
-    return workingSegmentsImage;
+    return graphBase->pWorkingSegmentsImage;
 }
 
 void SignalControl::loadSegmentationVolume(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options) {
@@ -2172,19 +2179,18 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
          spacingOverride = spacingDecision.spacingOverride]() mutable {
             SegmentationLoadResultData result;
             auto loaded = loadVolume<GraphSegmentType>(fileName, options);
-            result.segmentationImage = loaded.image;
             result.context = loaded.context;
-            applyVoxelSpacingOverride(result.segmentationImage.GetPointer(), spacingOverride);
-            if (expectedDimensions && !imageMatchesDimensions(result.segmentationImage, *expectedDimensions)) {
+            applyVoxelSpacingOverride(loaded.image.GetPointer(), spacingOverride);
+            if (expectedDimensions && !imageMatchesDimensions(loaded.image, *expectedDimensions)) {
+                result.segmentationImage = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(loaded.image);
                 result.dimensionMismatch = true;
                 return result;
             }
-            if (!hadWorkingSegments) {
-                graphBase->pGraph->updateBackgroundIdFromVolume(result.segmentationImage, result.context->background);
-            }
-            if (createWorkingSegments) {
-                result.workingSegmentsImage = duplicateSegmentationAndBuildWorkingSegments(result.segmentationImage, result.context->background);
-            }
+            if (!hadWorkingSegments)
+                graphBase->pGraph->updateBackgroundIdFromVolume(loaded.image, result.context->background);
+            if (createWorkingSegments)
+                result.workingSegmentsImage = duplicateSegmentationAndBuildWorkingSegments(loaded.image, result.context->background);
+            result.segmentationImage = segment_puzzler::storeLabels(*loaded.image);
             return result;
         },
         [this, fileName, displayedName, hadWorkingSegments, completion](SegmentationLoadResultData result) {
@@ -2238,9 +2244,9 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
         [fileName, options, spacingOverride = spacingDecision.spacingOverride]() mutable {
             auto loaded = loadVolume<GraphSegmentType>(fileName, options);
             applyVoxelSpacingOverride(loaded.image.GetPointer(), spacingOverride);
-            return loaded;
+            return volume_io::LoadedVolume<dataType::SegmentsStorage>{segment_puzzler::storeLabels(*loaded.image), loaded.context};
         },
-        [this, fileName, displayedName, completion](volume_io::LoadedVolume<GraphSegmentImageType> loaded) {
+        [this, fileName, displayedName, completion](volume_io::LoadedVolume<dataType::SegmentsStorage> loaded) {
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(loaded.image, signalIndexGlobal, true, loaded.context);
             if (ok) {
@@ -2268,7 +2274,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, v
     }
 
     struct SegmentsGraphLoadResult {
-        GraphSegmentImageType::Pointer image;
+        dataType::SegmentsStorage::Pointer image;
         std::shared_ptr<volume_io::VolumeContext> context;
         bool dimensionMismatch = false;
     };
@@ -2289,17 +2295,13 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, v
             auto pImage = loaded.image;
             result.context = loaded.context;
             applyVoxelSpacingOverride(pImage.GetPointer(), spacingOverride);
-            result.image = pImage;
+            result.image = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(pImage);
             if (expectedDimensions && !imageMatchesDimensions(pImage, *expectedDimensions)) {
                 result.dimensionMismatch = true;
                 return result;
             }
-            graphBase->ignoredSegmentLabels.clear();
-            graphBase->edgeStatus.clear();
-            graphBase->colorLookUpEdgesStatus.clear();
-            graphBase->pWorkingSegmentsImage = pImage;
-            graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-            graphBase->pGraph->constructFromVolume(pImage, loaded.context->background);
+            prepareWorkingSegmentsGraph(pImage, loaded.context->background);
+            result.image = graphBase->pWorkingSegmentsImage;
             return result;
         },
         [this, fileName, completion](SegmentsGraphLoadResult result) {
@@ -2709,7 +2711,7 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
 
     const QPointer<SignalControl> guardedThis(this);
     const auto deleteSelectedLabel =
-        [guardedThis](dataType::SegmentsImageType::Pointer segmentation,
+        [guardedThis](dataType::SegmentsStorage::Pointer segmentation,
                       dataType::SegmentIdType label) {
             return guardedThis != nullptr
                    && guardedThis->deleteSelectedSegmentationLabels(segmentation, {label}) > 0;
@@ -3357,8 +3359,7 @@ void SignalControl::exportSelectedSegmentation() {
                                 .arg(direction[2][0]).arg(direction[2][1]).arg(direction[2][2])
                                 .arg(QString::fromUtf8(std::setlocale(LC_NUMERIC, nullptr))));
             }
-            auto exportImage = dataType::SegmentsImageType::New();
-            exportImage->Graft(exportedImage);
+            auto exportImage = exportedImage->denseRegion(exportedImage->GetLargestPossibleRegion());
             auto metadata = exportedImage->GetMetaDataDictionary();
             volume_io::clearImageContext(metadata);
             exportImage->SetMetaDataDictionary(metadata);
@@ -3401,10 +3402,10 @@ void SignalControl::setPaintId(){
     }
     const auto paintId = static_cast<dataType::SegmentIdType>(value);
     const auto context = graphBase->pSelectedSegmentationSignal->volumeContext;
-    const auto *pixels = graphBase->pSelectedSegmentation->GetBufferPointer();
-    const auto count = graphBase->pSelectedSegmentation->GetBufferedRegion().GetNumberOfPixels();
-    const bool known = paintId == context->background.value_or(0) ||
-        context->originalLabels.count(paintId) || std::find(pixels, pixels + count, paintId) != pixels + count;
+    bool known = paintId == context->background.value_or(0) || context->originalLabels.count(paintId);
+    if (!known) graphBase->pSelectedSegmentation->forEachRun([&](const auto &, std::size_t, auto label) {
+        if (label == paintId) known = true;
+    });
     if (!known && value < context->nextLabel) {
         showInfoMessage(tr("This ID is not an existing object in the loaded region. Choose a new ID of at least %1.").arg(context->nextLabel)); return;
     }
@@ -3954,9 +3955,10 @@ void SignalControl::addEmptySegmentsFromBoundary() {
     graphBase->ignoredSegmentLabels.clear();
     graphBase->edgeStatus.clear();
     graphBase->colorLookUpEdgesStatus.clear();
-    graphBase->pWorkingSegmentsImage = pImage;
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(pImage);
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graphBase->pGraph->constructFromVolume(pImage);
+    prepareWorkingSegmentsGraph(pImage);
+    dynamic_cast<itkSignal<GraphSegmentType> *>(segmentsGraph)->updateStorage(graphBase->pWorkingSegmentsImage);
     registerSegmentsGraphSignal(signalIndexGlobal);
 
     SP_LOG_INFO("segmentation", QStringLiteral("Empty segments volume initialized and registered"));
@@ -4032,13 +4034,13 @@ void SignalControl::importGeneratedSegments(GraphSegmentImageType::Pointer pImag
         return;
     }
 
+    prepareWorkingSegmentsGraph(pImage);
     size_t signalIndexGlobal = 0;
-    if (!insertImageSegmenttype(pImage, signalIndexGlobal, false, std::move(context))) {
+    if (!insertImageSegmenttype(graphBase->pWorkingSegmentsImage, signalIndexGlobal, false, std::move(context))) {
         showInfoMessage("Failed to import generated segments.");
         return;
     }
 
-    prepareWorkingSegmentsGraph(pImage);
     registerSegmentsGraphSignal(signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     if (QTreeWidgetItem *item = findSignalTreeItem(signalTreeWidget, signalIndexGlobal)) {
@@ -4107,16 +4109,9 @@ void SignalControl::createEmptySegmentation() {
         return;
     }
 
-    // 3 indices:
-    // signalIndexLocal = index inside <dtype> array
-    // signalIndexGlobal = index inside allsignal array
-    GraphSegmentImageType::Pointer pImage = dataType::SegmentsImageType::New();
-    pImage->SetRegions(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
-    pImage->SetSpacing(graphBase->pWorkingSegmentsImage->GetSpacing());
-    pImage->SetOrigin(graphBase->pWorkingSegmentsImage->GetOrigin());
-    pImage->SetDirection(graphBase->pWorkingSegmentsImage->GetDirection());
+    dataType::SegmentsStorage::Pointer pImage = segment_puzzler::StreamVByteImageStorage<GraphSegmentType>::create(
+        *graphBase->pWorkingSegmentsImage->imageInformation());
     const auto context = volume_io::derivedContext(graphBase->pWorkingSegments ? graphBase->pWorkingSegments->volumeContext : nullptr);
-    pImage->Allocate(true);
 
     {
         auto srcSpacing = graphBase->pWorkingSegmentsImage->GetSpacing();
@@ -4216,7 +4211,8 @@ void SignalControl::askForBackgroundStrategy() {
 bool SignalControl::insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
                                            size_t &signalIndexGlobalOut,
                                            bool forceShapeOfSegments, std::shared_ptr<volume_io::VolumeContext> context) {
-    return insertTypedImage<dataType::SegmentIdType>(pImage, signalIndexGlobalOut, forceShapeOfSegments, std::move(context));
+    if (!pImage) return false;
+    return insertImageSegmenttype(segment_puzzler::storeLabels(*pImage), signalIndexGlobalOut, forceShapeOfSegments, std::move(context));
 }
 
 void SignalControl::addImagePressed() {
@@ -4273,4 +4269,9 @@ bool SignalControl::isSegmentsItem(QTreeWidgetItem *item) const {
         return false;
     }
     return signalForItem(item) == segmentsGraph;
+}
+
+bool SignalControl::insertImageSegmenttype(dataType::SegmentsStorage::Pointer image,
+    size_t &signalIndexGlobalOut, bool forceShapeOfSegments, std::shared_ptr<volume_io::VolumeContext> context) {
+    return insertTypedImage<dataType::SegmentIdType>(image, signalIndexGlobalOut, forceShapeOfSegments, std::move(context));
 }

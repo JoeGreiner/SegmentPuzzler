@@ -1,3 +1,4 @@
+#include "src/image_storage/LabelImageStorage.h"
 #include "src/utils/WorkerThreads.h"
 
 
@@ -125,7 +126,7 @@ void SegmentManager::addInitialNode(SegmentIdType labelOfNewNode, std::size_t vo
 
 
 void SegmentManager::registerTwoSidedInitialEdge(
-        std::unique_ptr<TwoSidedInitialEdge> edgeToRegister) {
+        std::unique_ptr<TwoSidedInitialEdge> edgeToRegister, bool updateImage) {
     if (edgeToRegister == nullptr) {
         throw std::invalid_argument("Cannot register a null two-sided initial edge.");
     }
@@ -140,12 +141,8 @@ void SegmentManager::registerTwoSidedInitialEdge(
 
     char defaultEdgeStatus = 0;
     pEdgeStatus->insert(std::pair<EdgeNumIdType, char>(registeredEdge->numId, defaultEdgeStatus));
-    for (const VoxelList *voxelList : registeredEdge->getVoxelLists()) {
-        for (const Voxel &voxel : *voxelList) {
-            graphBase->pEdgesInitialSegmentsImage->SetPixel(
-                {voxel.x, voxel.y, voxel.z}, registeredEdge->numId);
-        }
-    }
+    if (updateImage) segment_puzzler::setVoxelLists(*graphBase->pEdgesInitialSegmentsImage,
+        registeredEdge->getVoxelLists(), registeredEdge->numId);
 }
 
 void SegmentManager::addWorkingNode(WorkingNode *workingNodeToAdd) {
@@ -188,12 +185,8 @@ void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode
         logSegmentManagerDebugIf(verbose,
                                  __func__,
                                  QStringLiteral("Removing voxels for initial edge %1").arg(initialEdge.second->numId));
-        for (const VoxelList *voxelList : initialEdge.second->getVoxelLists()) {
-            for (const Voxel &voxel : *voxelList) {
-                (*ppEdgesInitialSegmentsImage)->SetPixel(
-                    {voxel.x, voxel.y, voxel.z}, backgroundValueEdges);
-            }
-        }
+        segment_puzzler::setVoxelLists(**ppEdgesInitialSegmentsImage,
+            initialEdge.second->getVoxelLists(), backgroundValueEdges);
 
         // delete edge status
         if (pEdgeStatus->count(initialEdge.second->numId) > 0) {
@@ -368,11 +361,7 @@ void SegmentManager::removeInitialNodeFromWorkingNodeAtPosition(int x, int y, in
 }
 
 void SegmentManager::insertWorkingNodeIntoITKImage(WorkingNode *newWorkingNode) {
-    for (auto &voxelArray : newWorkingNode->getVoxelLists()) {
-        for (auto voxel : *voxelArray) {
-            (*ppWorkingSegmentsImage)->SetPixel({voxel.x, voxel.y, voxel.z}, newWorkingNode->getLabel());
-        }
-    }
+    segment_puzzler::setVoxelLists(**ppWorkingSegmentsImage, newWorkingNode->getVoxelLists(), newWorkingNode->getLabel());
 }
 
 void SegmentManager::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit) {
@@ -405,11 +394,7 @@ void SegmentManager::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeI
             addWorkingNode(newWorkingNode);
             setOfInsertedWorkingNodes.insert(subInitialNodeId);
 
-            for (auto &voxelArray : newWorkingNode->getVoxelLists()) {
-                for (auto voxel : *voxelArray) {
-                    (*ppWorkingSegmentsImage)->SetPixel({voxel.x, voxel.y, voxel.z}, subInitialNodeId);
-                }
-            }
+            segment_puzzler::setVoxelLists(**ppWorkingSegmentsImage, newWorkingNode->getVoxelLists(), subInitialNodeId);
         }
 
         // put neighboring nodes in the set
@@ -758,8 +743,27 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(bool very
     const double featureCalculationMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 
     phaseTimer.restart();
+    const auto size = graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion().GetSize();
+    using EdgePixel = std::pair<std::size_t, dataType::MappedEdgeIdType>;
+    std::vector<std::vector<EdgePixel>> planes(size[2]);
     for (auto &twoSidedInitialEdge : twoSidedInitialEdgesToRegister) {
-        registerTwoSidedInitialEdge(std::move(twoSidedInitialEdge));
+        auto *edge = twoSidedInitialEdge.get();
+        registerTwoSidedInitialEdge(std::move(twoSidedInitialEdge), false);
+        for (const auto *list : edge->getVoxelLists())
+            for (const auto &voxel : *list)
+                planes[voxel.z].emplace_back(voxel.y * size[0] + voxel.x, edge->numId);
+    }
+    std::vector<dataType::MappedEdgeIdType> pixels;
+    for (std::size_t z = 0; z < planes.size(); ++z) {
+        if (planes[z].empty()) continue;
+        auto region = graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion();
+        region.SetIndex(2, z);
+        region.SetSize(2, 1);
+        pixels.resize(region.GetNumberOfPixels());
+        graphBase->pEdgesInitialSegmentsImage->readRegion(region, pixels.data(), pixels.size());
+        for (const auto &[offset, value] : planes[z]) pixels[offset] = value;
+        graphBase->pEdgesInitialSegmentsImage->writeRegion(region, pixels.data(), pixels.size());
+        std::vector<EdgePixel>().swap(planes[z]);
     }
     const double registerTwoSidedEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 

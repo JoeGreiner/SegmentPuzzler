@@ -1,3 +1,5 @@
+#include "src/image_storage/StreamVByteImageStorage.h"
+#include "src/image_storage/DenseImageStorage.h"
 #include <QCoreApplication>
 #include <QFileInfo>
 
@@ -428,7 +430,7 @@ int testAllLabelsSceneUsesSegmentMeshes() {
     labelColors.overrides = std::move(overrides);
 
     auto image = makeSmallSegmentsImage(true);
-    auto scene = Segment3DViewerDialog::prepareAllLabelsScene(image, labelColors);
+    auto scene = Segment3DViewerDialog::prepareAllLabelsScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image), labelColors);
     if (!scene.allLabelsInImage || scene.targetLabelId != 0 || scene.meshes.size() != 2) {
         return failTest("All-label scene did not produce one mesh per label.");
     }
@@ -454,7 +456,7 @@ int testAllLabelsSceneUsesSegmentMeshes() {
         return failTest("All-label scene bounds are invalid.");
     }
 
-    auto selectedScene = Segment3DViewerDialog::prepareScene(image, {{1, red}});
+    auto selectedScene = Segment3DViewerDialog::prepareScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image), {{1, red}});
     if (selectedScene.meshes.size() != 1) {
         return failTest("Selected-label scene did not produce one mesh.");
     }
@@ -491,7 +493,7 @@ int testAllLabelsSceneUsesSegmentMeshes() {
         return failTest("Selected-label mesh retained unused points.");
     }
 
-    auto selectedLabelsScene = Segment3DViewerDialog::prepareScene(image, {{1, red}, {2, green}});
+    auto selectedLabelsScene = Segment3DViewerDialog::prepareScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image), {{1, red}, {2, green}});
     if (selectedLabelsScene.meshes.size() != 2
         || selectedLabelsScene.meshes[0].polyData->GetNumberOfCells() != reference->GetNumberOfCells()
         || selectedLabelsScene.meshes[1].polyData->GetNumberOfCells()
@@ -506,8 +508,8 @@ int testAllLabelsSceneUsesSegmentMeshes() {
         auto *pixels = boundaryImage->GetBufferPointer();
         const auto voxelCount = boundaryImage->GetLargestPossibleRegion().GetNumberOfPixels();
         std::replace(pixels, pixels + voxelCount, SegmentIdType{2}, neighborLabel);
-        auto allLabels = Segment3DViewerDialog::prepareAllLabelsScene(boundaryImage, labelColors);
-        auto singleLabel = Segment3DViewerDialog::prepareScene(boundaryImage, {{1, red}});
+        auto allLabels = Segment3DViewerDialog::prepareAllLabelsScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*boundaryImage), labelColors);
+        auto singleLabel = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(boundaryImage), {{1, red}});
         if (allLabels.meshes.size() != 2 || allLabels.meshes[1].labelId != neighborLabel
             || allLabels.meshes[1].voxelCount != 16 || singleLabel.meshes.size() != 1) {
             return failTest("Scene lost a label at the uint16 boundary.");
@@ -528,7 +530,7 @@ int testAllLabelsSceneUsesSegmentMeshes() {
     }
 
     auto singleLabelScene = Segment3DViewerDialog::prepareAllLabelsScene(
-        makeSmallSegmentsImage(false), labelColors);
+        segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*makeSmallSegmentsImage(false)), labelColors);
     if (!singleLabelScene.allLabelsInImage || singleLabelScene.targetLabelId != 0
         || singleLabelScene.meshes.size() != 1
         || singleLabelScene.meshes.front().labelId != 1
@@ -650,7 +652,7 @@ int testPreparedVolumeGeometry() {
         surface->SetLabel(1, neighbor);
         surface->Update();
         const auto reference = Segment3DViewerDialog::prepareExplodedMeshes(surface->GetOutput(), {{1, 0}, {neighbor, 0}});
-        const auto actual = Segment3DViewerDialog::prepareAllLabelsScene(image, LabelColorSnapshot{});
+        const auto actual = Segment3DViewerDialog::prepareAllLabelsScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image), LabelColorSnapshot{});
         if (actual.meshes.size() != 2 || reference.size() != 2) {
             return failTest("Volume preparation lost a label.");
         }
@@ -694,7 +696,7 @@ int testSceneImageDirection() {
     image->SetSpacing(spacing);
     const dataType::SegmentsImageType::PointType origin{{10.0, 20.0, 30.0}};
     image->SetOrigin(origin);
-    auto reference = Segment3DViewerDialog::prepareScene(image, {{1, 0xFF0000}});
+    auto reference = Segment3DViewerDialog::prepareScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image), {{1, 0xFF0000}});
 
     dataType::SegmentsImageType::DirectionType direction;
     direction.SetIdentity();
@@ -702,7 +704,7 @@ int testSceneImageDirection() {
     direction[0][1] = -1.0;
     direction[1][0] = 1.0;
     image->SetDirection(direction);
-    auto rotated = Segment3DViewerDialog::prepareScene(image, {{1, 0xFF0000}});
+    auto rotated = Segment3DViewerDialog::prepareScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image), {{1, 0xFF0000}});
     if (reference.meshes.size() != 1 || rotated.meshes.size() != 1) {
         return failTest("Image-direction test did not produce its meshes.");
     }
@@ -799,7 +801,7 @@ int main(int argc, char **argv) {
         settings.minimumLevel = LogLevel::Debug;
         AppLogger::setSettings(settings, false);
         auto image = ITKImageLoader<SegmentIdType>(options.segmentsPath);
-        auto scene = Segment3DViewerDialog::prepareAllLabelsScene(image, {});
+        auto scene = Segment3DViewerDialog::prepareAllLabelsScene(segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image), {});
         if (scene.meshes.empty()) {
             return failTest("Input segmentation did not produce a scene.");
         }
@@ -869,7 +871,7 @@ int main(int argc, char **argv) {
         auto failedSelected =
             sample::duplicateSegmentsImage(failedFixture.graphBase->pWorkingSegmentsImage);
         failedSelected->FillBuffer(failedFixture.graph->backgroundId);
-        failedFixture.graphBase->pSelectedSegmentation = failedSelected;
+        failedFixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(failedSelected);
         failedFixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(failedFixture.graph->getLargestIdInSegmentVolume(failedSelected)) + 1;
         auto failedSelectedBefore = sample::duplicateSegmentsImage(failedSelected);
         const SegmentIdType failedSelectedMaxBefore =
@@ -881,7 +883,7 @@ int main(int argc, char **argv) {
         if (failedFixture.graph->splitWorkingNodeByProjected3DCut(
                 unsuccessfulRequest, nullptr, &unsuccessfulLabels) ||
             !unsuccessfulLabels.empty() ||
-            !imagesEqual(failedWorkingBefore, failedFixture.graphBase->pWorkingSegmentsImage) ||
+            !imagesEqual(failedWorkingBefore, sample::duplicateSegmentsImage(failedFixture.graphBase->pWorkingSegmentsImage)) ||
             !imagesEqual(failedSelectedBefore, failedSelected) ||
             (failedFixture.graphBase->selectedSegmentationContext->nextLabel - 1) != failedSelectedMaxBefore) {
             return failTest("An unsuccessful projected cut should leave both segmentations and labels unchanged.");
@@ -916,7 +918,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    const auto postCutImage = successfulFixture.graphBase->pWorkingSegmentsImage;
+    const auto postCutImage = sample::duplicateSegmentsImage(successfulFixture.graphBase->pWorkingSegmentsImage);
     const SegmentIdType backgroundId = successfulFixture.graph->backgroundId;
     if (countNonBackgroundVoxels(beforeCutImage, backgroundId) !=
         countNonBackgroundVoxels(postCutImage, backgroundId)) {
@@ -1019,7 +1021,7 @@ int main(int argc, char **argv) {
 
     auto selectedSegmentation = sample::duplicateSegmentsImage(postCutImage);
     selectedSegmentation->FillBuffer(backgroundId);
-    successfulFixture.graphBase->pSelectedSegmentation = selectedSegmentation;
+    successfulFixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedSegmentation);
     successfulFixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(successfulFixture.graph->getLargestIdInSegmentVolume(selectedSegmentation)) + 1;
     const SegmentIdType selectedMaxBeforeTransfer =
         (successfulFixture.graphBase->selectedSegmentationContext->nextLabel - 1);

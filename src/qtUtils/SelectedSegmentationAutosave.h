@@ -54,7 +54,7 @@ public:
     QString selectedSegmentationRecoveryPath() const;
 
 private:
-    using SegmentsImagePointer = dataType::SegmentsImageType::Pointer;
+    using SegmentsImagePointer = dataType::SegmentsStorage::Pointer;
 
     struct SegmentationKey {
         quintptr imageIdentity = 0;

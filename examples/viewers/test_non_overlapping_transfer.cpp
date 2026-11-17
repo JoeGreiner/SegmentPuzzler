@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/viewers/VolumeRegionIO.h"
 #include <itkImageFileWriter.h>
@@ -169,7 +170,7 @@ void testDialogsAndShortcut(QApplication &app) {
     working->SetPixel({1, 1, 0}, 1);
     working->SetPixel({2, 1, 0}, 1);
     working->SetPixel({3, 1, 0}, 2);
-    base->pWorkingSegmentsImage = working;
+    base->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(working);
     graph.constructFromVolume(working);
     itkSignal<dataType::SegmentIdType> workingSignal(working);
     control.segmentsGraph = &workingSignal;
@@ -177,7 +178,7 @@ void testDialogsAndShortcut(QApplication &app) {
     selected->SetRegions(working->GetLargestPossibleRegion());
     selected->Allocate(true);
     selected->SetPixel({1, 1, 0}, 10);
-    base->pSelectedSegmentation = selected;
+    base->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selected);
     base->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     itkSignal<dataType::SegmentIdType> selectedSignal(selected);
     selectedSignal.setCategoricalColorMode();
@@ -367,7 +368,7 @@ void testLayerBackgroundAndAllocation(const QString &directory) {
         auto working = Image::New(); working->SetRegions(Image::SizeType{{3, 2, 1}}); working->Allocate();
         working->FillBuffer(workingBackground); working->SetPixel({{1, 0, 0}}, 7);
         auto base = std::make_shared<GraphBase>();
-        Graph graph(base, false); base->pGraph = &graph; base->pWorkingSegmentsImage = working;
+        Graph graph(base, false); base->pGraph = &graph; base->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(working);
         graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
         graph.constructFromVolume(working, workingBackground);
         auto image = Image::New(); image->SetRegions(working->GetBufferedRegion()); image->Allocate(); image->FillBuffer(9);
@@ -375,7 +376,7 @@ void testLayerBackgroundAndAllocation(const QString &directory) {
         signal.volumeContext = base->selectedSegmentationContext;
         signal.volumeContext->background = selectedBackground;
         volume_io::initializeLabels(*signal.volumeContext, image->GetBufferPointer(), 6, true);
-        base->pSelectedSegmentation = image; base->pSelectedSegmentationSignal = &signal;
+        base->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image); base->pSelectedSegmentationSignal = &signal;
         require(graph.reserveSelectedLabelIds(1) == 10, "Layer allocator used the working background");
         graph.deleteSegmentationLabel(9);
         for (unsigned int i = 0; i < 6; ++i)
@@ -393,7 +394,7 @@ void testLayerBackgroundAndAllocation(const QString &directory) {
             auto statisticsImage = Image::New(); statisticsImage->SetRegions(image->GetBufferedRegion());
             statisticsImage->Allocate(); statisticsImage->FillBuffer(selectedBackground);
             statisticsImage->SetPixel({{1, 0, 0}}, 0);
-            const auto features = SegmentTableDialog::computeFeatures(statisticsImage, {}, selectedBackground);
+            const auto features = SegmentTableDialog::computeFeatures(segment_puzzler::DenseImageStorage<Label>::fromImage(statisticsImage), {}, selectedBackground);
             require(features.rows.size() == 1 && features.rows.front().label == 0,
                     "Table statistics dropped object zero or included the nonzero background");
         }

@@ -133,7 +133,7 @@ public:
     std::optional<voxel_geometry::VoxelSpacing> voxelSpacing() const;
     void setVoxelSpacing(const voxel_geometry::VoxelSpacing &spacing);
     std::size_t deleteSelectedSegmentationLabels(
-        dataType::SegmentsImageType::Pointer expectedSegmentation,
+        dataType::SegmentsStorage::Pointer expectedSegmentation,
         const std::unordered_set<dataType::SegmentIdType> &labels);
     QMenu *populateDataMenu(QMenu *menu, QAction *loadSampleDataAction);
     void populateSegmentationMenu(QMenu *menu);
@@ -218,6 +218,9 @@ public slots:
 
     void receiveNewRefinement(itk::Image<dataType::SegmentIdType, 3>::Pointer, std::shared_ptr<volume_io::VolumeContext> context = {});
 
+    bool insertImageSegmenttype(dataType::SegmentsStorage::Pointer image,
+                                size_t &signalIndexGlobalOut, bool forceShapeOfSegments,
+                                std::shared_ptr<volume_io::VolumeContext> context = {});
     bool insertImageSegmenttype(itk::Image<dataType::SegmentIdType, 3>::Pointer pImage,
     size_t &signalIndexGlobalOut,
     bool forceShapeOfSegments = true, std::shared_ptr<volume_io::VolumeContext> context = {});
@@ -255,9 +258,9 @@ private:
     };
 
     struct SegmentationLoadResultData {
-        GraphSegmentImageType::Pointer segmentationImage;
+        dataType::SegmentsStorage::Pointer segmentationImage;
         std::shared_ptr<volume_io::VolumeContext> context;
-        GraphSegmentImageType::Pointer workingSegmentsImage;
+        dataType::SegmentsStorage::Pointer workingSegmentsImage;
         bool dimensionMismatch = false;
     };
 
@@ -447,7 +450,7 @@ private:
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
     void invokeLoadCallbackOnce(const std::shared_ptr<LoadCallback> &then,
                                 LoadResult result);
-    GraphSegmentImageType::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage, std::optional<GraphSegmentType> background = {});
+    dataType::SegmentsStorage::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage, std::optional<GraphSegmentType> background = {});
     std::optional<slice_geometry::Dimensions3D> expectedDimensionsForNewSignal(bool forceShapeOfSegments) const;
     bool dimensionsMatchExpectedDimensions(unsigned long dimX,
                                            unsigned long dimY,
@@ -482,9 +485,9 @@ private:
     void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
     void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background = {});
 
-    template<typename T>
+    template<typename T, typename ImagePointer>
     bool insertTypedImage(
-        typename itk::Image<T, 3>::Pointer  pImage,
+        ImagePointer                       pImage,
         size_t                             &signalIndexGlobalOut,
         bool                                forceShapeOfSegments,
         std::shared_ptr<volume_io::VolumeContext> context = {})

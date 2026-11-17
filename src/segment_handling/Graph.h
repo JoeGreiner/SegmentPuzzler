@@ -233,6 +233,7 @@ public:
     void initializeEdgeVolumeAndEdgeStatus();
 
     SegmentIdType getLargestIdInSegmentVolume(SegmentsImageType::Pointer pSegment);
+    SegmentIdType getLargestIdInSegmentVolume(dataType::SegmentsStorage::Pointer image);
 
     // generate a landscape/path with the allowedsegmentids
     LandscapeType::Pointer
@@ -445,7 +446,7 @@ private:
         int numberVxDilations = 0);
 
     std::optional<SegmentIdType> refineFromImageAtPosition(
-        const SegmentsImageType::Pointer &sourceImage,
+        const dataType::SegmentsStorage::Pointer &sourceImage,
         SegmentIdType sourceBackground,
         const SegmentsImageType::IndexType &seed,
         const std::optional<SegmentsImageType::RegionType> &permittedSeedRegion = std::nullopt);

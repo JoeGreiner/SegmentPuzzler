@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include "src/viewers/VolumeRegionIO.h"
 #include <QApplication>
 #include <QDir>
@@ -68,7 +69,7 @@ void selectSegmentation(const std::shared_ptr<GraphBase> &graphBase,
                         const dataType::SegmentsImageType::Pointer &image,
                         itkSignal<dataType::SegmentIdType> *signal,
                         SelectedSegmentationAutosave &autosave) {
-    graphBase->pSelectedSegmentation = image;
+    graphBase->pSelectedSegmentation = signal->imageStorage;
     graphBase->pSelectedSegmentationSignal = signal;
     autosave.selectedSegmentationChanged();
 }
@@ -132,7 +133,7 @@ bool testPersistedStateAndCleanup(const QTemporaryDir &temporaryDirectory) {
     signal.volumeContext->nextLabel = 3;
     signal.volumeContext->targets.push_back({signal.sourceFilePath, {{3, 4, 5}}, volume_io::LabelPolicy::SameSegmentation,
                                            0, QByteArray("saved-fingerprint"), {{1, 1}, {2, 99}}});
-    graphBase->pSelectedSegmentation = image;
+    graphBase->pSelectedSegmentation = signal.imageStorage;
     graphBase->pSelectedSegmentationSignal = &signal;
 
     SelectedSegmentationAutosave autosave(graphBase, &taskRunner);
@@ -177,7 +178,7 @@ bool testPersistedStateAndCleanup(const QTemporaryDir &temporaryDirectory) {
     }
     autosave.applySettings({true, 120});
 
-    const quintptr imageIdentity = reinterpret_cast<quintptr>(image.GetPointer());
+    const quintptr imageIdentity = reinterpret_cast<quintptr>(graphBase->pSelectedSegmentation.GetPointer());
     const quintptr signalIdentity = reinterpret_cast<quintptr>(&signal);
     autosave.recordSelectedSegmentationSave(
         imageIdentity,
@@ -192,7 +193,7 @@ bool testPersistedStateAndCleanup(const QTemporaryDir &temporaryDirectory) {
     autosave.recordSelectedSegmentationSave(
         imageIdentity,
         signalIdentity,
-        static_cast<quint64>(image->GetMTime()),
+        static_cast<quint64>(graphBase->pSelectedSegmentation->GetMTime()),
         temporaryDirectory.filePath(QStringLiteral("exported.nrrd")));
     return check(!autosave.hasUnsavedSegmentations() && !QFile::exists(recoveryPath),
                  "a successful regular save did not clear covered recovery data");
@@ -205,7 +206,7 @@ bool testRecoveryGenerationsAndSelectionSwitch(const QTemporaryDir &temporaryDir
     itkSignal<dataType::SegmentIdType> loadedSignal(loadedImage, false);
     loadedSignal.name = QStringLiteral("Generation test");
     loadedSignal.sourceFilePath = temporaryDirectory.filePath(QStringLiteral("generation.nrrd"));
-    graphBase->pSelectedSegmentation = loadedImage;
+    graphBase->pSelectedSegmentation = loadedSignal.imageStorage;
     graphBase->pSelectedSegmentationSignal = &loadedSignal;
 
     SelectedSegmentationAutosave autosave(graphBase, &taskRunner);
@@ -286,7 +287,7 @@ bool testInactiveSegmentationAutosave(const QTemporaryDir &temporaryDirectory) {
         + QStringLiteral("dirty");
     inactiveSignal.sourceFilePath = temporaryDirectory.filePath(
         QStringLiteral("inactive.nrrd"));
-    graphBase->pSelectedSegmentation = inactiveImage;
+    graphBase->pSelectedSegmentation = inactiveSignal.imageStorage;
     graphBase->pSelectedSegmentationSignal = &inactiveSignal;
 
     SelectedSegmentationAutosave autosave(graphBase, &taskRunner);
@@ -331,7 +332,7 @@ bool testDiscardDeletionFailure(const QTemporaryDir &temporaryDirectory) {
     signal.name = QStringLiteral("Deletion failure");
     signal.sourceFilePath = temporaryDirectory.filePath(
         QStringLiteral("deletion-failure.nrrd"));
-    graphBase->pSelectedSegmentation = image;
+    graphBase->pSelectedSegmentation = signal.imageStorage;
     graphBase->pSelectedSegmentationSignal = &signal;
 
     SelectedSegmentationAutosave autosave(graphBase, &taskRunner);
@@ -371,7 +372,7 @@ bool testDestructorProtection() {
         auto image = makeSegmentation(9);
         itkSignal<dataType::SegmentIdType> signal(image, false);
         signal.name = QStringLiteral("Destructor protected");
-        graphBase->pSelectedSegmentation = image;
+        graphBase->pSelectedSegmentation = signal.imageStorage;
         graphBase->pSelectedSegmentationSignal = &signal;
         SelectedSegmentationAutosave autosave(graphBase, &taskRunner);
         autosave.applySettings({true, 120});
@@ -393,7 +394,7 @@ bool testDestructorProtection() {
     const QString inFlightName = QStringLiteral("In-flight-%1")
         .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     inFlightSignal.name = inFlightName;
-    graphBase->pSelectedSegmentation = inFlightImage;
+    graphBase->pSelectedSegmentation = inFlightSignal.imageStorage;
     graphBase->pSelectedSegmentationSignal = &inFlightSignal;
     auto inFlightAutosave = std::make_unique<SelectedSegmentationAutosave>(
         graphBase, &taskRunner);

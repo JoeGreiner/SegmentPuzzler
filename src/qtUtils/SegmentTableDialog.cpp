@@ -103,7 +103,7 @@ bool usesCroftonSurfaceEstimate(const SegmentTableDialog::FeatureFlags &flags) {
 }
 
 SurfaceAnisotropyInfo surfaceAnisotropyInfo(
-    const dataType::SegmentsImageType::Pointer &image,
+    const dataType::SegmentsStorage::Pointer &image,
     const SegmentTableDialog::FeatureFlags &flags) {
     SurfaceAnisotropyInfo info;
     if (image == nullptr) {
@@ -470,7 +470,7 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
 }
 
 bool segmentationSelectionMatchesCurrent(const GraphBase *graphBase,
-                                         const dataType::SegmentsImageType::Pointer &currentTableSegmentation,
+                                         const dataType::SegmentsStorage::Pointer &currentTableSegmentation,
                                          const itkSignalBase *currentTableSegmentationSignal) {
     return graphBase != nullptr
            && currentTableSegmentation != nullptr
@@ -976,7 +976,7 @@ void SegmentTableDialog::setQuickComputeMode() {
     cbCentroid->setChecked(true);
 }
 
-void SegmentTableDialog::startCompute(dataType::SegmentsImageType::Pointer segImg) {
+void SegmentTableDialog::startCompute(dataType::SegmentsStorage::Pointer segImg) {
     auto *runner = taskRunner();
     if (runner == nullptr || runner->isBusy()) {
         return;
@@ -1498,9 +1498,10 @@ void SegmentTableDialog::onView3DSelectedClicked() {
 // ---- compute (worker thread) ------------------------------------------------
 
 SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer storage,
     FeatureFlags flags, dataType::SegmentIdType background)
 {
+    auto segImage = storage->denseRegion(storage->GetLargestPossibleRegion());
     ComputeResult result;
     result.flags = flags;
 

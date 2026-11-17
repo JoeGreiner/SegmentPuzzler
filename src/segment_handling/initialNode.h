@@ -15,9 +15,9 @@ class WorkingNode;
 class InitialNode : public BaseNode {
 public:
 
-    InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageType::Pointer pSegmentsIn, SegmentIdType labelIn);
+    InitialNode(std::shared_ptr<GraphBase> graphBaseIn, dataType::SegmentsStorage::Pointer pSegmentsIn, SegmentIdType labelIn);
 
-    InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageType::Pointer pSegmentsIn, SegmentIdType labelIn,
+    InitialNode(std::shared_ptr<GraphBase> graphBaseIn, dataType::SegmentsStorage::Pointer pSegmentsIn, SegmentIdType labelIn,
                 int x, int y, int z);
 
     void addVoxel(int x, int y, int z);
@@ -28,7 +28,7 @@ public:
     void addFeature(std::unique_ptr<Feature> &feature);
 
 
-    void setSegmentPointer(SegmentIdImageType::Pointer pSegmentsIn);
+    void setSegmentPointer(dataType::SegmentsStorage::Pointer pSegmentsIn);
 
     // print node properties
     void print(int indentationLevel, std::ostream &outStream) override;
@@ -71,7 +71,7 @@ private:
     // this indicates the numId of the corresponding segment in the working copy
     SegmentIdType currentWorkingNodeLabel;
 
-    SegmentIdImageType::Pointer pSegments;
+    dataType::SegmentsStorage::Pointer pSegments;
 
 };
 

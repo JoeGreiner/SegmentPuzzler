@@ -21,7 +21,7 @@ void logInitialNodeDebug(const char *functionName, const QString &message) {
 }
 
 
-InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageType::Pointer pSegmentsIn, SegmentIdType labelIn) {
+InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, dataType::SegmentsStorage::Pointer pSegmentsIn, SegmentIdType labelIn) {
     graphBase = graphBaseIn;
     pSegments = pSegmentsIn;
     label = labelIn;
@@ -33,7 +33,7 @@ InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageT
 }
 
 // creates initial node from flood filling into a label at a coordinate x,y,z
-InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, SegmentIdImageType::Pointer pSegmentsIn, SegmentIdType labelIn,
+InitialNode::InitialNode(std::shared_ptr<GraphBase> graphBaseIn, dataType::SegmentsStorage::Pointer pSegmentsIn, SegmentIdType labelIn,
                          int x, int y, int z) {
     graphBase = graphBaseIn;
     pSegments = pSegmentsIn;
@@ -109,8 +109,6 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
     const auto dimX = pSegments->GetLargestPossibleRegion().GetSize()[0];
     const auto dimY = pSegments->GetLargestPossibleRegion().GetSize()[1];
     const auto dimZ = pSegments->GetLargestPossibleRegion().GetSize()[2];
-    const auto sliceStride = dimX * dimY;
-    const auto rowStride = dimX;
 
     if (roi.minX < 0 || roi.minY < 0 || roi.minZ < 0 ||
         roi.minX > roi.maxX || roi.minY > roi.maxY || roi.minZ > roi.maxZ ||
@@ -123,8 +121,17 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
     constexpr unsigned int estimateNumberEdges = 30;
     neighborLabelToOneSidedInitialEdge.reserve(estimateNumberEdges);
 
-    // Image buffer
-    const SegmentIdType* buffer = pSegments->GetBufferPointer();
+    SegmentIdImageType::RegionType readRegion(
+        {roi.minX - 1, roi.minY - 1, roi.minZ - 1},
+        {static_cast<itk::SizeValueType>(roi.maxX - roi.minX + 3),
+         static_cast<itk::SizeValueType>(roi.maxY - roi.minY + 3),
+         static_cast<itk::SizeValueType>(roi.maxZ - roi.minZ + 3)});
+    readRegion.Crop(pSegments->GetLargestPossibleRegion());
+    const auto image = pSegments->readImageRegion(readRegion);
+    const auto start = image->GetBufferedRegion().GetIndex();
+    const auto bufferedSize = image->GetBufferedRegion().GetSize();
+    const auto rowStride = bufferedSize[0], sliceStride = bufferedSize[0] * bufferedSize[1];
+    const SegmentIdType *buffer = image->GetBufferPointer();
 
     static const int neighborOffsets[6][3] = {
             {  1,  0,  0 },
@@ -142,7 +149,7 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
     for (size_t z = roi.minZ; z <= roi.maxZ; ++z) {
         for (size_t y = roi.minY; y <= roi.maxY; ++y) {
             for (size_t x = roi.minX; x <= roi.maxX; ++x) {
-                size_t centerIndex = x + y * rowStride + z * sliceStride;
+                size_t centerIndex = (x - start[0]) + (y - start[1]) * rowStride + (z - start[2]) * sliceStride;
                 SegmentIdType centerLabel = buffer[centerIndex];
 
                 if (centerLabel == label) {
@@ -160,9 +167,9 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
                         }
 
                         const std::size_t neighborIndex =
-                            static_cast<std::size_t>(nx) +
-                            static_cast<std::size_t>(ny) * rowStride +
-                            static_cast<std::size_t>(nz) * sliceStride;
+                            static_cast<std::size_t>(nx - start[0]) +
+                            static_cast<std::size_t>(ny - start[1]) * rowStride +
+                            static_cast<std::size_t>(nz - start[2]) * sliceStride;
                         SegmentIdType neighborLabel = buffer[neighborIndex];
                         if (neighborLabel != label && !isIgnoredId(neighborLabel, ignoredSegmentIds)) {
                             if (neighborLabelsAddedForVoxel.find(neighborLabel) == neighborLabelsAddedForVoxel.end()) {
@@ -223,7 +230,8 @@ OneSidedInitialEdge *InitialNode::computeCorrospondingOneSidedEdge(OneSidedIniti
     NeighborhoodIteratorType::RadiusType radius;
     radius.Fill(1);
 
-    NeighborhoodIteratorType neighborhoodIt(radius, pSegments, region);
+    const auto image = pSegments->readImageRegion(region);
+    NeighborhoodIteratorType neighborhoodIt(radius, image, region);
 
     NeighborhoodIteratorType::OffsetType off = {{0, 0, 0}};
     NeighborhoodIteratorType::OffsetType off1 = {{1, 0, 0}};
@@ -339,7 +347,7 @@ void InitialNode::print(int indentationLevel, std::ostream &outStream) {
 }
 
 
-void InitialNode::setSegmentPointer(SegmentIdImageType::Pointer pSegmentsIn) {
+void InitialNode::setSegmentPointer(dataType::SegmentsStorage::Pointer pSegmentsIn) {
     pSegments = pSegmentsIn;
 }
 

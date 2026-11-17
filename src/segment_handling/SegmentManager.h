@@ -29,8 +29,8 @@ public:
             std::map<dataType::EdgePairIdType, std::shared_ptr<TwoSidedInitialEdge>> *pInitialLabelPairToTwoSidedInitialEdgeIn,
             std::unordered_map<dataType::EdgeNumIdType, dataType::EdgePairIdType> *pInitialEdgeIdLookUpIn,
             std::unordered_map<dataType::MappedEdgeIdType, char> *pEdgeStatusIn,
-            dataType::EdgeImageType::Pointer *ppEdgesInitialSegmentsImageIn,
-            dataType::SegmentsImageType::Pointer *ppWorkingSegmentsImageIn,
+            dataType::EdgeStorage::Pointer *ppEdgesInitialSegmentsImageIn,
+            dataType::SegmentsStorage::Pointer *ppWorkingSegmentsImageIn,
             std::unordered_map<dataType::SegmentIdType, std::shared_ptr<WorkingNode>> *pWorkingNodesIn,
             std::map<dataType::EdgePairIdType, std::shared_ptr<WorkingEdge>> *pWorkingLabelPairToWorkingEdgeIn,
             std::vector<SegmentIdType> *pIgnoredSegmentLabelsIn,
@@ -78,7 +78,7 @@ public:
     void computeOneSidedEdgesOnAllInitialNodes();
 
 //    void removeOneSidedInitialEdge();
-    void registerTwoSidedInitialEdge(std::unique_ptr<TwoSidedInitialEdge> edgeToRegister);
+    void registerTwoSidedInitialEdge(std::unique_ptr<TwoSidedInitialEdge> edgeToRegister, bool updateImage = true);
 
 //    void removeTwoSidedInitialEdge();
     void buildTwoSidedInitialEdgesFromOneSidedInitialEdges(bool veryVerbose = false);
@@ -123,11 +123,11 @@ private:
     std::map<dataType::EdgePairIdType, std::shared_ptr<TwoSidedInitialEdge>> *pInitialLabelPairToTwoSidedInitialEdge;
     std::unordered_map<dataType::EdgeNumIdType, dataType::EdgePairIdType> *pInitialEdgeIdLookUp;
     std::unordered_map<dataType::MappedEdgeIdType, char> *pEdgeStatus;
-    dataType::EdgeImageType::Pointer *ppEdgesInitialSegmentsImage;
+    dataType::EdgeStorage::Pointer *ppEdgesInitialSegmentsImage;
     std::vector<SegmentIdType> *pIgnoredSegmentLabels;
 
     // working segments & edges
-    dataType::SegmentsImageType::Pointer *ppWorkingSegmentsImage;
+    dataType::SegmentsStorage::Pointer *ppWorkingSegmentsImage;
     std::unordered_map<dataType::SegmentIdType, std::shared_ptr<WorkingNode>> *pWorkingNodes;
     std::map<dataType::EdgePairIdType, std::shared_ptr<WorkingEdge>> *pWorkingLabelPairToWorkingEdge;
 

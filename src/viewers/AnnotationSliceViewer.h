@@ -19,7 +19,7 @@ Q_OBJECT
 
 public:
     using DeleteSelectedSegmentationLabelHandler =
-        std::function<bool(dataType::SegmentsImageType::Pointer,
+        std::function<bool(dataType::SegmentsStorage::Pointer,
                            dataType::SegmentIdType)>;
 
     explicit AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBaseIn, TaskRunner *taskRunnerIn,
@@ -133,7 +133,7 @@ protected:
 
 
 private:
-    dataType::SegmentsImageType::Pointer active3DViewSegmentsImage() const;
+    dataType::SegmentsStorage::Pointer active3DViewSegmentsImage() const;
     itkSignal<dataType::SegmentIdType> *active3DViewSignal() const;
     std::vector<quint32> tmpImageEdge;
     QImage annotationImage, edgeImage;
@@ -165,7 +165,7 @@ private:
                             const QString &progressText,
                             int launchSliceAxis);
     void requestSingleLabel3D(Segment3DViewerDialog *dialog,
-                              dataType::SegmentsImageType::Pointer segImage,
+                              dataType::SegmentsStorage::Pointer segImage,
                               dataType::SegmentIdType labelId,
                               const Roi &bounds);
     void show3DSegmentView(int posX, int posY);

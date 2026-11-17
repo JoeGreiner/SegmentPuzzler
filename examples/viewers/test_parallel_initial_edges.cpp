@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include <QCoreApplication>
 
 #include <algorithm>
@@ -102,11 +103,11 @@ void appendTwoSidedInitialEdge(std::ostringstream &out, const TwoSidedInitialEdg
 
 std::string graphFingerprint() {
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = makeTestImage();
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
 
     std::ostringstream out;
     std::vector<SegmentIdType> nodeLabels;
@@ -153,7 +154,8 @@ std::string graphFingerprint() {
     }
 
     out << "I";
-    const auto *edgeImageBuffer = graphBase->pEdgesInitialSegmentsImage->GetBufferPointer();
+    const auto edgeImageImage = graphBase->pEdgesInitialSegmentsImage->denseRegion(graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion());
+    const auto *edgeImageBuffer = edgeImageImage->GetBufferPointer();
     const std::size_t edgeImageVoxelCount =
         graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels();
     for (std::size_t voxelIndex = 0; voxelIndex < edgeImageVoxelCount; ++voxelIndex) {
@@ -175,11 +177,11 @@ int testRepeatableInitialEdgeBuild() {
 
 int testTwoSidedInitialEdgeReferencesBothOneSidedInitialEdges() {
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = makeTestImage();
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
 
     std::size_t oneSidedEdgeReferenceCount = 0;
     for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
@@ -201,11 +203,11 @@ int testTwoSidedInitialEdgeReferencesBothOneSidedInitialEdges() {
 
 int testTwoSidedInitialEdgePreservesVoxelOrderAndCount() {
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = makeTestImage();
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
 
     for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
         const VoxelLists voxelLists = edge->getVoxelLists();
@@ -225,11 +227,11 @@ int testTwoSidedInitialEdgePreservesVoxelOrderAndCount() {
 int testTwoSidedInitialEdgeFeaturesUseBothOneSidedInitialEdges() {
     FeatureList::edgeFeaturesList.emplace_back(std::make_unique<NumberOfVoxels>());
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = makeTestImage();
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
 
     bool featuresAreValid = true;
     for (const auto &[labelPair, edge] : graph->initialLabelPairToTwoSidedInitialEdge) {
@@ -248,11 +250,11 @@ int testTwoSidedInitialEdgeFeaturesUseBothOneSidedInitialEdges() {
 
 int testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges() {
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = makeTestImage();
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
 
     if (graph->initialLabelPairToTwoSidedInitialEdge.empty()) {
         return failTest("The rebuild fixture contains no two-sided initial edge.");
@@ -262,7 +264,7 @@ int testRebuiltTwoSidedInitialEdgeReferencesCurrentOneSidedInitialEdges() {
     const auto previousSmallerLabelEdge = previousEdge->getSmallerLabelOneSidedInitialEdge();
     const auto previousLargerLabelEdge = previousEdge->getLargerLabelOneSidedInitialEdge();
 
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
     const auto &rebuiltEdge = graph->initialLabelPairToTwoSidedInitialEdge.at(labelPair);
     const auto &currentSmallerLabelEdge =
         graph->initialNodes.at(labelPair.first)->neighborLabelToOneSidedInitialEdge.at(labelPair.second);
@@ -290,7 +292,7 @@ int testRepeatableFeatureEnabledBuild() {
 
 int testEmptyNodeProducesNoEdges() {
     auto graphBase = std::make_shared<GraphBase>();
-    InitialNode node(graphBase, makeTestImage(), 41);
+    InitialNode node(graphBase, segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(makeTestImage()), 41);
     node.computeOneSidedEdges({0});
     if (!node.neighborLabelToOneSidedInitialEdge.empty()) {
         return failTest("An empty initial node should not produce one-sided edges.");
@@ -301,7 +303,7 @@ int testEmptyNodeProducesNoEdges() {
 int testIgnoredLabelsAreNotMaterialized() {
     constexpr SegmentIdType additionallyIgnoredLabel = 40;
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = makeTestImage();
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
     graphBase->ignoredSegmentLabels.push_back(additionallyIgnoredLabel);
 
     auto graph = std::make_unique<Graph>(graphBase, false);
@@ -310,7 +312,7 @@ int testIgnoredLabelsAreNotMaterialized() {
 #ifdef USE_OMP
     const int defaultThreadCount = omp_get_max_threads();
 #endif
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
 #ifdef USE_OMP
     if (omp_get_max_threads() != defaultThreadCount) {
         return failTest("Graph construction changed the caller's OpenMP default.");
@@ -330,7 +332,8 @@ int testIgnoredLabelsAreNotMaterialized() {
 
     std::size_t expectedVoxelCount = 0;
     std::vector<std::size_t> expectedCountByLabel(41, 0);
-    const auto *segmentLabelBuffer = graphBase->pWorkingSegmentsImage->GetBufferPointer();
+    const auto segmentLabelImage = graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion());
+    const auto *segmentLabelBuffer = segmentLabelImage->GetBufferPointer();
     const std::size_t imageVoxelCount =
         graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels();
     for (std::size_t voxelIndex = 0; voxelIndex < imageVoxelCount; ++voxelIndex) {
@@ -357,7 +360,7 @@ int testIgnoredLabelsAreNotMaterialized() {
         return failTest("Initial nodes do not contain exactly the non-ignored voxels.");
     }
     graph->setBackgroundIdStrategy("backgroundIsHighestId");
-    graph->updateBackgroundIdFromVolume(graphBase->pWorkingSegmentsImage);
+    graph->updateBackgroundIdFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
     if (graph->backgroundId != 40) {
         return failTest("Highest-label background selection is incorrect.");
     }

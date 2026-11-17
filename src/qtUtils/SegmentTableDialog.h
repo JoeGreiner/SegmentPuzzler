@@ -35,7 +35,7 @@ class SegmentTableDialog : public QDialog {
     Q_OBJECT
 public:
     using DeleteSegmentationLabelsHandler = std::function<std::size_t(
-        dataType::SegmentsImageType::Pointer,
+        dataType::SegmentsStorage::Pointer,
         const std::unordered_set<dataType::SegmentIdType> &)>;
 
     explicit SegmentTableDialog(std::shared_ptr<GraphBase> graphBase,
@@ -43,7 +43,7 @@ public:
                                 QWidget *parent = nullptr);
 
     void setQuickComputeMode();
-    void startCompute(dataType::SegmentsImageType::Pointer segImg = nullptr);
+    void startCompute(dataType::SegmentsStorage::Pointer segImg = nullptr);
     void setDeleteSegmentationLabelsHandler(DeleteSegmentationLabelsHandler handler);
 
     // ---- What to compute (mirrors the setup-page checkboxes) ----
@@ -142,7 +142,7 @@ public:
 
     // Runs on a worker thread — must not touch QWidgets.
     static ComputeResult computeFeatures(
-        dataType::SegmentsImageType::Pointer segImg,
+        dataType::SegmentsStorage::Pointer segImg,
         FeatureFlags flags, dataType::SegmentIdType background = 0);
 
 signals:
@@ -205,7 +205,7 @@ private:
     // ---- Shared state ----
     std::shared_ptr<GraphBase> graphBase;
     OrthoViewer *orthoViewer;
-    dataType::SegmentsImageType::Pointer currentTableSegmentation;
+    dataType::SegmentsStorage::Pointer currentTableSegmentation;
     itkSignalBase *currentTableSegmentationSignal = nullptr;
     FeatureFlags currentResultFlags;
     bool currentResultIs2D = false;

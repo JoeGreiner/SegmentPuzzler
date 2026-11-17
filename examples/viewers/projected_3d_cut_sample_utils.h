@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #ifndef SEGMENTPUZZLER_PROJECTED_3D_CUT_SAMPLE_UTILS_H
 #define SEGMENTPUZZLER_PROJECTED_3D_CUT_SAMPLE_UTILS_H
 
@@ -49,6 +50,10 @@ inline QString defaultSampleSegmentsPath() {
     return QDir(tempDir).filePath(QStringLiteral("Watershed_MC.tif"));
 }
 
+inline dataType::SegmentsImageType::Pointer duplicateSegmentsImage(const dataType::SegmentsStorage::Pointer &image) {
+    return image->denseRegion(image->GetLargestPossibleRegion());
+}
+
 inline dataType::SegmentsImageType::Pointer duplicateSegmentsImage(
     const dataType::SegmentsImageType::Pointer &sourceImage)
 {
@@ -62,11 +67,12 @@ inline dataType::SegmentsImageType::Pointer duplicateSegmentsImage(
 inline GraphFixture buildGraphFixture(const dataType::SegmentsImageType::Pointer &sourceImage) {
     GraphFixture fixture;
     fixture.graphBase = std::make_shared<GraphBase>();
-    fixture.graphBase->pWorkingSegmentsImage = duplicateSegmentsImage(sourceImage);
+    auto workingImage = duplicateSegmentsImage(sourceImage);
+    fixture.graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(workingImage);
     fixture.graph = std::make_unique<Graph>(fixture.graphBase, false);
     fixture.graphBase->pGraph = fixture.graph.get();
     fixture.graph->setPointerToIgnoredSegmentLabels(&fixture.graphBase->ignoredSegmentLabels);
-    fixture.graph->constructFromVolume(fixture.graphBase->pWorkingSegmentsImage);
+    fixture.graph->constructFromVolume(workingImage);
     return fixture;
 }
 

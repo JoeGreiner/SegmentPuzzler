@@ -116,7 +116,7 @@ QString workingResolutionAction(const Graph::WorkingSegmentResolution &resolutio
     return QStringLiteral("failed");
 }
 
-bool hasIdentityDirection(dataType::SegmentsImageType::Pointer image, double epsilon = 1e-6) {
+bool hasIdentityDirection(dataType::SegmentsStorage::Pointer image, double epsilon = 1e-6) {
     if (image == nullptr) {
         return true;
     }
@@ -133,8 +133,8 @@ bool hasIdentityDirection(dataType::SegmentsImageType::Pointer image, double eps
     return true;
 }
 
-bool haveMatchingImageRegions(dataType::SegmentsImageType::Pointer left,
-                              dataType::SegmentsImageType::Pointer right) {
+bool haveMatchingImageRegions(dataType::SegmentsStorage::Pointer left,
+                              dataType::SegmentsStorage::Pointer right) {
     if (left == nullptr || right == nullptr) {
         return false;
     }
@@ -196,7 +196,7 @@ bool isOneShotViewerCommandKey(int key) {
 }
 
 dataType::SegmentsImageType::RegionType paddedLabelRegion(
-    dataType::SegmentsImageType::Pointer image,
+    dataType::SegmentsStorage::Pointer image,
     dataType::SegmentIdType label,
     int padding) {
     auto [fx, fy, fz, tx, ty, tz] = utils::calculateBoundingBoxForLabel(image, label);
@@ -254,7 +254,7 @@ void navigateOrthoViewerToIndex(OrthoViewer *orthoViewer,
 }
 
 void navigateOrthoViewerToLabel(OrthoViewer *orthoViewer,
-                                dataType::SegmentsImageType::Pointer segImage,
+                                dataType::SegmentsStorage::Pointer segImage,
                                 dataType::SegmentIdType labelId) {
     if (orthoViewer == nullptr || segImage == nullptr) {
         return;
@@ -321,7 +321,7 @@ AnnotationSliceViewer::AnnotationSliceViewer(std::shared_ptr<GraphBase> graphBas
 
 }
 
-dataType::SegmentsImageType::Pointer AnnotationSliceViewer::active3DViewSegmentsImage() const {
+dataType::SegmentsStorage::Pointer AnnotationSliceViewer::active3DViewSegmentsImage() const {
     if (graphBase == nullptr) {
         return nullptr;
     }
@@ -712,7 +712,7 @@ void AnnotationSliceViewer::showPrepared3DView(
 
 void AnnotationSliceViewer::requestSingleLabel3D(
     Segment3DViewerDialog *dialog,
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer segImage,
     dataType::SegmentIdType labelId,
     const Roi &bounds)
 {
@@ -1569,7 +1569,6 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY) {
 
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     ROIExtractionFilterType::Pointer ROIExtractionFilter = ROIExtractionFilterType::New();
-    ROIExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
 
     dataType::SegmentsImageType::IndexType extractedCellIndex;
     extractedCellIndex.at(0) = fx;
@@ -1582,6 +1581,7 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY) {
     extracedCellSize.at(2) = tz - fz + 1;
 
     dataType::SegmentsImageType::RegionType pExtracedCellROI(extractedCellIndex, extracedCellSize);
+    ROIExtractionFilter->SetInput(graphBase->pSelectedSegmentation->readImageRegion(pExtracedCellROI));
     ROIExtractionFilter->SetRegionOfInterest(pExtracedCellROI);
 
     dataType::SegmentsImageType ::Pointer pExtractedCell = ROIExtractionFilter->GetOutput();
@@ -1642,31 +1642,32 @@ void AnnotationSliceViewer::openSegmentationLabel(int posX, int posY) {
 //    graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(pExtractedCell,
 //                                                                   "/home/greinerj/test.nrrd");
 
-    // delete old label; this is only needed if more is done than closing
-    itk::ImageRegionIterator<dataType::SegmentsImageType> itDelete(graphBase->pSelectedSegmentation, pExtracedCellROI);
-    itDelete.GoToBegin();
-    while (!itDelete.IsAtEnd()) {
-        if(itDelete.Get() == labelAtClickPosition){
-            itDelete.Set(backgroundLabel);
+    graphBase->pSelectedSegmentation->editImageRegion(pExtracedCellROI, [&](auto &editedImage) {
+        itk::ImageRegionIterator<dataType::SegmentsImageType> itDelete(&editedImage, pExtracedCellROI);
+        itDelete.GoToBegin();
+        while (!itDelete.IsAtEnd()) {
+            if(itDelete.Get() == labelAtClickPosition){
+                itDelete.Set(backgroundLabel);
+            }
+            ++itDelete;
         }
-        ++itDelete;
-    }
 
-    // insert new label, if d
-    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(pExtractedCellClosed, pExtractedCellClosed->GetLargestPossibleRegion());
-    it.GoToBegin();
-    while (!it.IsAtEnd()) {
-        if(it.Get() == labelAtClickPosition){
-            dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
-            newIndex[0] += fx;
-            newIndex[1] += fy;
-            newIndex[2] += fz;
-            graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
+        // insert new label, if d
+        itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(pExtractedCellClosed, pExtractedCellClosed->GetLargestPossibleRegion());
+        it.GoToBegin();
+        while (!it.IsAtEnd()) {
+            if(it.Get() == labelAtClickPosition){
+                dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
+                newIndex[0] += pExtracedCellROI.GetIndex()[0];
+                newIndex[1] += pExtracedCellROI.GetIndex()[1];
+                newIndex[2] += pExtracedCellROI.GetIndex()[2];
+                editedImage.SetPixel(newIndex, labelAtClickPosition);
+            }
+            ++it;
         }
-        ++it;
-    }
 
-    graphBase->pSelectedSegmentation->Modified();
+        editedImage.Modified();
+    });
 
     SP_LOG_INFO("segmentation",
                 QStringLiteral("Opened segmentation label %1 in %2 ms")
@@ -1719,7 +1720,6 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY) {
 
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     ROIExtractionFilterType::Pointer ROIExtractionFilter = ROIExtractionFilterType::New();
-    ROIExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
 
     dataType::SegmentsImageType::IndexType extractedCellIndex;
     extractedCellIndex.at(0) = fx;
@@ -1732,6 +1732,7 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY) {
     extracedCellSize.at(2) = tz - fz + 1;
 
     dataType::SegmentsImageType::RegionType pExtracedCellROI(extractedCellIndex, extracedCellSize);
+    ROIExtractionFilter->SetInput(graphBase->pSelectedSegmentation->readImageRegion(pExtracedCellROI));
     ROIExtractionFilter->SetRegionOfInterest(pExtracedCellROI);
 
     dataType::SegmentsImageType ::Pointer pExtractedCell = ROIExtractionFilter->GetOutput();
@@ -1761,31 +1762,32 @@ void AnnotationSliceViewer::fillSegmentationLabel(int posX, int posY) {
 //    graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(pExtractedCell,
 //                                                                   "/home/greinerj/test.nrrd");
 
-    // delete old label; this is only needed if more is done than closing
-    itk::ImageRegionIterator<dataType::SegmentsImageType> itDelete(graphBase->pSelectedSegmentation, pExtracedCellROI);
-    itDelete.GoToBegin();
-    while (!itDelete.IsAtEnd()) {
-        if(itDelete.Get() == labelAtClickPosition){
-            itDelete.Set(backgroundLabel);
+    graphBase->pSelectedSegmentation->editImageRegion(pExtracedCellROI, [&](auto &editedImage) {
+        itk::ImageRegionIterator<dataType::SegmentsImageType> itDelete(&editedImage, pExtracedCellROI);
+        itDelete.GoToBegin();
+        while (!itDelete.IsAtEnd()) {
+            if(itDelete.Get() == labelAtClickPosition){
+                itDelete.Set(backgroundLabel);
+            }
+            ++itDelete;
         }
-        ++itDelete;
-    }
 
-    // insert new label, if d
-    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(pExtractedCellClosed, pExtractedCellClosed->GetLargestPossibleRegion());
-    it.GoToBegin();
-    while (!it.IsAtEnd()) {
-        if(it.Get() == labelAtClickPosition){
-            dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
-            newIndex[0] += fx;
-            newIndex[1] += fy;
-            newIndex[2] += fz;
-            graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
+        // insert new label, if d
+        itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(pExtractedCellClosed, pExtractedCellClosed->GetLargestPossibleRegion());
+        it.GoToBegin();
+        while (!it.IsAtEnd()) {
+            if(it.Get() == labelAtClickPosition){
+                dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
+                newIndex[0] += pExtracedCellROI.GetIndex()[0];
+                newIndex[1] += pExtracedCellROI.GetIndex()[1];
+                newIndex[2] += pExtracedCellROI.GetIndex()[2];
+                editedImage.SetPixel(newIndex, labelAtClickPosition);
+            }
+            ++it;
         }
-        ++it;
-    }
 
-    graphBase->pSelectedSegmentation->Modified();
+        editedImage.Modified();
+    });
 
     SP_LOG_INFO("segmentation",
                 QStringLiteral("Filled segmentation label %1 in %2 ms")
@@ -1810,7 +1812,7 @@ void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
     const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, radius);
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     auto roiExtractionFilter = ROIExtractionFilterType::New();
-    roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
+    roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation->readImageRegion(roi));
     roiExtractionFilter->SetRegionOfInterest(roi);
     auto extractedCell = roiExtractionFilter->GetOutput();
     roiExtractionFilter->Update();
@@ -1829,29 +1831,31 @@ void AnnotationSliceViewer::dilateSegmentationLabel(int posX, int posY) {
     dilateFilter->Update();
     auto dilatedCell = dilateFilter->GetOutput();
 
-    bool changed = false;
-    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(dilatedCell, dilatedCell->GetLargestPossibleRegion());
-    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
-        if (it.Get() != labelAtClickPosition) {
-            continue;
-        }
+    graphBase->pSelectedSegmentation->editImageRegion(roi, [&](auto &editedImage) {
+        bool changed = false;
+        itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(dilatedCell, dilatedCell->GetLargestPossibleRegion());
+        for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+            if (it.Get() != labelAtClickPosition) {
+                continue;
+            }
 
-        dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
-        newIndex[0] += roi.GetIndex()[0];
-        newIndex[1] += roi.GetIndex()[1];
-        newIndex[2] += roi.GetIndex()[2];
+            dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
+            newIndex[0] += roi.GetIndex()[0];
+            newIndex[1] += roi.GetIndex()[1];
+            newIndex[2] += roi.GetIndex()[2];
 
-        const auto existingLabel = graphBase->pSelectedSegmentation->GetPixel(newIndex);
-        if (existingLabel == backgroundLabel || existingLabel == labelAtClickPosition) {
-            if (existingLabel != labelAtClickPosition) {
-                graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
-                changed = true;
+            const auto existingLabel = editedImage.GetPixel(newIndex);
+            if (existingLabel == backgroundLabel || existingLabel == labelAtClickPosition) {
+                if (existingLabel != labelAtClickPosition) {
+                    editedImage.SetPixel(newIndex, labelAtClickPosition);
+                    changed = true;
+                }
             }
         }
-    }
-    if (changed) {
-        graphBase->pSelectedSegmentation->Modified();
-    }
+        if (changed) {
+            editedImage.Modified();
+        }
+    });
 }
 
 void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
@@ -1871,7 +1875,7 @@ void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
     const auto roi = paddedLabelRegion(graphBase->pSelectedSegmentation, labelAtClickPosition, radius);
     using ROIExtractionFilterType = itk::RegionOfInterestImageFilter<dataType::SegmentsImageType, dataType::SegmentsImageType>;
     auto roiExtractionFilter = ROIExtractionFilterType::New();
-    roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation);
+    roiExtractionFilter->SetInput(graphBase->pSelectedSegmentation->readImageRegion(roi));
     roiExtractionFilter->SetRegionOfInterest(roi);
     auto extractedCell = roiExtractionFilter->GetOutput();
     roiExtractionFilter->Update();
@@ -1890,26 +1894,28 @@ void AnnotationSliceViewer::erodeSegmentationLabel(int posX, int posY) {
     erodeFilter->Update();
     auto erodedCell = erodeFilter->GetOutput();
 
-    itk::ImageRegionIterator<dataType::SegmentsImageType> deleteIt(graphBase->pSelectedSegmentation, roi);
-    for (deleteIt.GoToBegin(); !deleteIt.IsAtEnd(); ++deleteIt) {
-        if (deleteIt.Get() == labelAtClickPosition) {
-            deleteIt.Set(backgroundLabel);
-        }
-    }
-
-    itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(erodedCell, erodedCell->GetLargestPossibleRegion());
-    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
-        if (it.Get() != labelAtClickPosition) {
-            continue;
+    graphBase->pSelectedSegmentation->editImageRegion(roi, [&](auto &editedImage) {
+        itk::ImageRegionIterator<dataType::SegmentsImageType> deleteIt(&editedImage, roi);
+        for (deleteIt.GoToBegin(); !deleteIt.IsAtEnd(); ++deleteIt) {
+            if (deleteIt.Get() == labelAtClickPosition) {
+                deleteIt.Set(backgroundLabel);
+            }
         }
 
-        dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
-        newIndex[0] += roi.GetIndex()[0];
-        newIndex[1] += roi.GetIndex()[1];
-        newIndex[2] += roi.GetIndex()[2];
-        graphBase->pSelectedSegmentation->SetPixel(newIndex, labelAtClickPosition);
-    }
-    graphBase->pSelectedSegmentation->Modified();
+        itk::ImageRegionConstIterator<dataType::SegmentsImageType> it(erodedCell, erodedCell->GetLargestPossibleRegion());
+        for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+            if (it.Get() != labelAtClickPosition) {
+                continue;
+            }
+
+            dataType::SegmentsImageType::IndexType newIndex = it.GetIndex();
+            newIndex[0] += roi.GetIndex()[0];
+            newIndex[1] += roi.GetIndex()[1];
+            newIndex[2] += roi.GetIndex()[2];
+            editedImage.SetPixel(newIndex, labelAtClickPosition);
+        }
+        editedImage.Modified();
+    });
 }
 
 void AnnotationSliceViewer::setOpeningRadius(int radius) {
@@ -2361,6 +2367,7 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
             }
         } else { // edit the segmentation modus
             bool selectedSegmentationChanged = false;
+            std::vector<dataType::SegmentsImageType::IndexType> paintedIndices;
             for (int y = 0; y < image.height(); ++y) {
                 const auto *scanLine = image.constScanLine(y);
                 for (int x = 0; x < image.width(); ++x) {
@@ -2377,7 +2384,7 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                             const dataType::SegmentsImageType::IndexType index{
                                 {worldX, worldY, worldZ}};
                             if (graphBase->pSelectedSegmentation->GetPixel(index) != targetLabel) {
-                                graphBase->pSelectedSegmentation->SetPixel(index, targetLabel);
+                                paintedIndices.push_back(index);
                                 selectedSegmentationChanged = true;
                             }
                         }
@@ -2389,6 +2396,8 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                 }
             }
             if (selectedSegmentationChanged) {
+                graphBase->pSelectedSegmentation->setVoxelValues(
+                    paintedIndices, rightClicked ? backgroundLabel : labelOfClickedSegmentation);
                 if (!rightClicked)
                     volume_io::useLabel(*graphBase->selectedSegmentationContext, labelOfClickedSegmentation);
                 graphBase->pSelectedSegmentation->Modified();

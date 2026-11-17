@@ -158,7 +158,7 @@ void testMixedCrops(const QString &directory) {
             exported->GetDirection() == base->pSelectedSegmentation->GetDirection(),
             "Normal export changed crop geometry");
     require(std::equal(exported->GetBufferPointer(), exported->GetBufferPointer() +
-            exported->GetBufferedRegion().GetNumberOfPixels(), base->pSelectedSegmentation->GetBufferPointer()),
+            exported->GetBufferedRegion().GetNumberOfPixels(), base->pSelectedSegmentation->denseRegion(base->pSelectedSegmentation->GetLargestPossibleRegion())->GetBufferPointer()),
             "Normal export changed crop pixels");
     for (auto *signal : control.allSignalList) viewer.removeSignal(signal);
 }

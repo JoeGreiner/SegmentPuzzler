@@ -350,8 +350,7 @@ void SelectedSegmentationAutosave::startRecoveryWrite(const SegmentationKey &key
                 using Writer = itk::ImageFileWriter<dataType::SegmentsImageType>;
                 auto imageIO = itk::NrrdImageIO::New();
                 auto writer = Writer::New();
-                auto snapshot = dataType::SegmentsImageType::New();
-                snapshot->Graft(image);
+                auto snapshot = image->denseRegion(image->GetLargestPossibleRegion());
                 snapshot->SetMetaDataDictionary(image->GetMetaDataDictionary());
                 if (context) volume_io::setImageContext(snapshot->GetMetaDataDictionary(), *context);
                 writer->SetImageIO(imageIO);

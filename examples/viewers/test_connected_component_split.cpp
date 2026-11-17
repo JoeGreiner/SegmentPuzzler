@@ -1,3 +1,5 @@
+#include "src/image_storage/StreamVByteImageStorage.h"
+#include "src/image_storage/DenseImageStorage.h"
 #include <QCoreApplication>
 
 #include <algorithm>
@@ -70,11 +72,11 @@ struct GraphFixture {
 GraphFixture buildGraphFixture(const ImagePointer &image) {
     GraphFixture fixture;
     fixture.graphBase = std::make_shared<GraphBase>();
-    fixture.graphBase->pWorkingSegmentsImage = image;
+    fixture.graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image);
     fixture.graph = std::make_unique<Graph>(fixture.graphBase, false);
     fixture.graphBase->pGraph = fixture.graph.get();
     fixture.graph->setPointerToIgnoredSegmentLabels(&fixture.graphBase->ignoredSegmentLabels);
-    fixture.graph->constructFromVolume(fixture.graphBase->pWorkingSegmentsImage);
+    fixture.graph->constructFromVolume(image);
     return fixture;
 }
 
@@ -454,7 +456,7 @@ int testEnsureReusesExactSelectedComponent() {
     selectedImage->SetPixel({3, 2, 0}, 9); // Diagonal only: not part of the clicked 6-component.
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     const auto imageBefore = copyImageBuffer(workingImage);
     const auto nextFreeIdBefore = fixture.graph->nextFreeId;
     const auto initialNodeCountBefore = fixture.graph->initialNodes.size();
@@ -492,13 +494,13 @@ int expectSelectedGeometryInsertion(const std::vector<std::array<int, 3>> &worki
     }
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     const SegmentIdType expectedWorkingLabel = fixture.graph->nextFreeId;
 
     auto previousRefinement = makeImage(6, 4, 1);
     itkSignal<SegmentIdType> previousRefinementSignal(previousRefinement, false);
     if (verifyRefinementRestore) {
-        fixture.graphBase->pSelectedRefinement = previousRefinement;
+        fixture.graphBase->pSelectedRefinement = previousRefinementSignal.imageStorage;
         fixture.graphBase->pSelectedRefinementSignal = &previousRefinementSignal;
     }
 
@@ -524,7 +526,7 @@ int expectSelectedGeometryInsertion(const std::vector<std::array<int, 3>> &worki
         }
     }
     if (verifyRefinementRestore &&
-        (fixture.graphBase->pSelectedRefinement != previousRefinement ||
+        (fixture.graphBase->pSelectedRefinement != previousRefinementSignal.imageStorage ||
          fixture.graphBase->pSelectedRefinementSignal != &previousRefinementSignal)) {
         return failTest(scenario + ": temporary refinement pointers were not restored.");
     }
@@ -573,7 +575,7 @@ int testEnsureHandlesNoForegroundAndInconsistentWorkingNode() {
     auto fixture = buildGraphFixture(workingImage);
 
     auto selectedBackground = makeImage(3, 2, 1);
-    fixture.graphBase->pSelectedSegmentation = selectedBackground;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedBackground);
     const auto nextFreeIdBefore = fixture.graph->nextFreeId;
     auto result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
     if (result.status != Graph::WorkingSegmentResolution::Status::NoForeground ||
@@ -583,7 +585,7 @@ int testEnsureHandlesNoForegroundAndInconsistentWorkingNode() {
 
     auto mismatchedSelected = makeImage(4, 2, 1);
     mismatchedSelected->SetPixel({1, 1, 0}, 7);
-    fixture.graphBase->pSelectedSegmentation = mismatchedSelected;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(mismatchedSelected);
     result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
     if (result.status != Graph::WorkingSegmentResolution::Status::Failed ||
         fixture.graph->nextFreeId != nextFreeIdBefore) {
@@ -592,7 +594,7 @@ int testEnsureHandlesNoForegroundAndInconsistentWorkingNode() {
 
     auto selectedForeground = makeImage(3, 2, 1);
     selectedForeground->SetPixel({1, 1, 0}, 7);
-    fixture.graphBase->pSelectedSegmentation = selectedForeground;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedForeground);
     fixture.graph->workingNodes.erase(1);
     result = fixture.graph->ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
     if (result.status != Graph::WorkingSegmentResolution::Status::Failed ||
@@ -613,7 +615,7 @@ int testRefinementSynchronizesOverwrittenNodeMetadata() {
         selectedImage->SetPixel({1, 0, 0}, 9);
 
         auto fixture = buildGraphFixture(workingImage);
-        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
         const SegmentIdType insertedLabel = fixture.graph->nextFreeId;
         const auto inserted =
             fixture.graph->transferSegmentationSegmentToInitialSegment(1, 0, 0);
@@ -664,7 +666,7 @@ int testRefinementSynchronizesOverwrittenNodeMetadata() {
         selectedImage->SetPixel({1, 0, 0}, 9);
 
         auto fixture = buildGraphFixture(workingImage);
-        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
         const auto inserted =
             fixture.graph->transferSegmentationSegmentToInitialSegment(1, 0, 0);
         if (!inserted.has_value() || fixture.graph->initialNodes.count(1) != 0 ||
@@ -682,7 +684,7 @@ int testRefinementPrevalidationAndRoiStayMutationFree() {
         auto selectedImage = makeImage(4, 1, 1);
         selectedImage->SetPixel({1, 0, 0}, 9);
         auto fixture = buildGraphFixture(workingImage);
-        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
         fixture.graph->workingNodes.at(1).reset();
         const auto before = copyImageBuffer(workingImage);
         const auto nextFreeIdBefore = fixture.graph->nextFreeId;
@@ -708,7 +710,7 @@ int testRefinementPrevalidationAndRoiStayMutationFree() {
         refinementSignal.ROI_tx = 3;
         refinementSignal.ROI_fy = refinementSignal.ROI_ty = 0;
         refinementSignal.ROI_fz = refinementSignal.ROI_tz = 0;
-        fixture.graphBase->pSelectedRefinement = refinementImage;
+        fixture.graphBase->pSelectedRefinement = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(refinementImage);
         fixture.graphBase->pSelectedRefinementSignal = &refinementSignal;
         const auto before = copyImageBuffer(workingImage);
         const auto nextFreeIdBefore = fixture.graph->nextFreeId;
@@ -733,14 +735,14 @@ int testRefinementPrevalidationAndRoiStayMutationFree() {
         refinementSignal.ROI_fx = refinementSignal.ROI_tx = 1;
         refinementSignal.ROI_fy = refinementSignal.ROI_ty = 0;
         refinementSignal.ROI_fz = refinementSignal.ROI_tz = 0;
-        fixture.graphBase->pSelectedRefinement = refinementImage;
+        fixture.graphBase->pSelectedRefinement = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(refinementImage);
         fixture.graphBase->pSelectedRefinementSignal = &refinementSignal;
         const SegmentIdType expectedLabel = fixture.graph->nextFreeId;
 
         fixture.graph->refineWithSelectedRefinementAtPosition(1, 0, 0);
         if (workingImage->GetPixel({1, 0, 0}) != expectedLabel ||
             workingImage->GetPixel({2, 0, 0}) != expectedLabel ||
-            fixture.graphBase->pSelectedRefinement != refinementImage ||
+            fixture.graphBase->pSelectedRefinement->imageInformation() != refinementImage.GetPointer() ||
             fixture.graphBase->pSelectedRefinementSignal != &refinementSignal) {
             return failTest("The ROI should gate only the seed and must not clip its connected component.");
         }
@@ -752,7 +754,7 @@ int testRefinementPrevalidationAndRoiStayMutationFree() {
         auto selectedImage = makeImage(4, 1, 1);
         selectedImage->SetPixel({1, 0, 0}, 9);
         auto fixture = buildGraphFixture(workingImage);
-        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
         fixture.graph->nextFreeId = std::numeric_limits<SegmentIdType>::max();
         const auto before = copyImageBuffer(workingImage);
 
@@ -783,7 +785,7 @@ int testAutomaticSixConnected3DSplitPreparation() {
     }
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
 
     ConnectedComponentSplitOptions options;
@@ -857,7 +859,7 @@ int testBulkSegmentationDeleteUsesOneGraphOperation() {
     selectedImage->SetPixel({4, 0, 0}, 1);
 
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pSelectedSegmentation = selectedImage;
+    graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     Graph graph(graphBase, false);
 
     const std::unordered_set<SegmentIdType> labelsToDelete{0, 1, 2};
@@ -886,7 +888,7 @@ int testSelectedSegmentationLabelsBelowVoxelCountUsesExclusiveThreshold() {
     selectedImage->SetPixel({5, 0, 0}, 30);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->ignoredSegmentLabels.push_back(20);
 
     if (fixture.graph->selectedSegmentationLabelsBelowVoxelCount(3) !=
@@ -919,7 +921,7 @@ int testNeighborMergeChoosesSmallestExactNeighbor() {
     selectedImage->SetPixel({6, 0, 0}, 30);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
@@ -963,7 +965,7 @@ int testNeighborMergeChoosesLargestExactNeighbor() {
     selectedImage->SetPixel({6, 0, 0}, 30);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
@@ -1008,7 +1010,7 @@ int testNeighborMergeDefaultsToMostConnectedNeighbor() {
     }
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(40) + 1;
 
     const Graph::SegmentationNeighborMergeOptions options;
@@ -1052,7 +1054,7 @@ int testMostConnectedMergeRefreshesSparseColorPresentation() {
     selectedSignal.setCategoricalColorMode();
     selectedSignal.setLabelRenderMode(itkSignalBase::LabelRenderMode::Boundaries);
     fixture.graphBase->pWorkingSegments = &workingSignal;
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->pSelectedSegmentationSignal = &selectedSignal;
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
@@ -1108,7 +1110,7 @@ int testMostConnectedNeighborUsesStableLabelTieBreak() {
     selectedImage->SetPixel({2, 1, 0}, 10);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
@@ -1133,7 +1135,7 @@ int testNeighborMergeRejectsInvalidSelectionWithoutMutation() {
     selectedImage->SetPixel({1, 0, 0}, 20);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
     const auto workingBefore = copyImageBuffer(workingImage);
     const auto selectedBefore = copyImageBuffer(selectedImage);
@@ -1174,7 +1176,7 @@ int testNeighborMergeRequiresConfirmationBeforeInsertion() {
     selectedImage->SetPixel({4, 0, 0}, 20);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
     const auto workingBefore = copyImageBuffer(workingImage);
     const auto selectedBefore = copyImageBuffer(selectedImage);
@@ -1227,7 +1229,7 @@ int testNeighborMergeRepairsWorkingNodeSplitByInsertion() {
     selectedImage->SetPixel({3, 2, 1}, 10);
     selectedImage->SetPixel({4, 2, 1}, 20);
     selectedImage->SetPixel({5, 2, 1}, 30);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
@@ -1264,7 +1266,7 @@ int testNeighborMergeCountPreflightRejectsDifferentVoxelSet() {
     selectedImage->SetPixel({4, 0, 0}, 20);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
     const auto workingBefore = copyImageBuffer(workingImage);
     const auto selectedBefore = copyImageBuffer(selectedImage);
@@ -1297,7 +1299,7 @@ int testNeighborMergeCombinesSelectedChainsOnce() {
     selectedImage->SetPixel({6, 0, 0}, 30);
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(30) + 1;
 
     Graph::SegmentationNeighborMergeOptions options;
@@ -1329,7 +1331,7 @@ int testNeighborMergeDeduplicatesMutualSelection() {
     }
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
 
     const auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
@@ -1356,7 +1358,7 @@ int testNeighborMergePropagatesOnlyNewSmallLabels() {
     }
 
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(50) + 1;
 
     constexpr std::size_t threshold = 6;
@@ -1403,7 +1405,7 @@ int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
         selectedImage->SetPixel({1, 0, 0}, 10);
         selectedImage->SetPixel({3, 0, 0}, 20);
         auto fixture = buildGraphFixture(workingImage);
-        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
         fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
         const auto selectedBefore = copyImageBuffer(selectedImage);
 
@@ -1424,7 +1426,7 @@ int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
         selectedImage->SetPixel({1, 0, 0}, 20);
         selectedImage->SetPixel({2, 0, 0}, 10);
         auto fixture = buildGraphFixture(workingImage);
-        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
         fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
         const auto workingBefore = copyImageBuffer(workingImage);
         const auto selectedBefore = copyImageBuffer(selectedImage);
@@ -1463,7 +1465,7 @@ int testNeighborMergeSkipsIsolatedAndRecoversDisconnectedLabels() {
         selectedImage->SetPixel({1, 0, 0}, 20);
         selectedImage->SetPixel({3, 0, 0}, 20);
         auto fixture = buildGraphFixture(workingImage);
-        fixture.graphBase->pSelectedSegmentation = selectedImage;
+        fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
         fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
 
         auto result = fixture.graph->mergeSelectedSegmentationLabelsWithNeighbors(
@@ -1507,7 +1509,7 @@ int testLabelOverlapReportsLargestAndSecondNonZeroOverlap() {
     }
 
     LabelOverlap overlap;
-    overlap.setPToOtherLabelImagePointer(refinementImage);
+    overlap.setPToOtherLabelImagePointer(segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(refinementImage));
     overlap.compute(voxels);
     overlap.compute(voxels);
 
@@ -1556,8 +1558,8 @@ int testRefinementOverlapTransferTransfersAllAboveThreshold() {
 
     auto selectedImage = makeImage(32, 1, 1);
     auto fixture = buildGraphFixture(workingImage);
-    fixture.graphBase->pSelectedRefinement = refinementImage;
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedRefinement = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(refinementImage);
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(0) + 1;
 
     fixture.graph->transferSegmentsWithRefinementOverlap();
@@ -1615,7 +1617,7 @@ int testRefinementOverlapTransferTransfersAllAboveThreshold() {
     auto highestBackgroundSelectedImage = makeImage(6, 1, 1);
     GraphFixture highestBackgroundFixture;
     highestBackgroundFixture.graphBase = std::make_shared<GraphBase>();
-    highestBackgroundFixture.graphBase->pWorkingSegmentsImage = highestBackgroundWorkingImage;
+    highestBackgroundFixture.graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(highestBackgroundWorkingImage);
     highestBackgroundFixture.graph =
         std::make_unique<Graph>(highestBackgroundFixture.graphBase, false);
     highestBackgroundFixture.graphBase->pGraph = highestBackgroundFixture.graph.get();
@@ -1623,8 +1625,8 @@ int testRefinementOverlapTransferTransfersAllAboveThreshold() {
         &highestBackgroundFixture.graphBase->ignoredSegmentLabels);
     highestBackgroundFixture.graph->setBackgroundIdStrategy("backgroundIsHighestId");
     highestBackgroundFixture.graph->constructFromVolume(highestBackgroundWorkingImage);
-    highestBackgroundFixture.graphBase->pSelectedRefinement = highestBackgroundRefinementImage;
-    highestBackgroundFixture.graphBase->pSelectedSegmentation = highestBackgroundSelectedImage;
+    highestBackgroundFixture.graphBase->pSelectedRefinement = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(highestBackgroundRefinementImage);
+    highestBackgroundFixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(highestBackgroundSelectedImage);
 
     highestBackgroundFixture.graph->transferSegmentsWithRefinementOverlap(0.0);
     if (highestBackgroundFixture.graph->backgroundId != 9 ||
@@ -1653,7 +1655,7 @@ int testNonOverlappingTransferThresholdAndPriority() {
     selectedImage->SetPixel({24, 0, 0}, 20);
     selectedImage->SetPixel({25, 0, 0}, 30);
     selectedImage->SetPixel({39, 0, 0}, 80);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     const auto selectedBefore = copyImageBuffer(selectedImage);
 
     for (const double threshold : {0.0, 0.2}) {
@@ -1714,7 +1716,7 @@ int testNonOverlappingTransferDecimalThresholds() {
     for (int x = 1; x <= 1000; ++x) workingImage->SetPixel({x, 0, 0}, 1);
     auto fixture = buildGraphFixture(workingImage);
     auto selectedImage = makeImage(1002, 1, 1);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
 
     for (const int tenthsOfPercent : {0, 7, 14, 29, 41, 999}) {
         // Use the same percent-to-fraction conversion as the dialog and stored settings.
@@ -1756,7 +1758,7 @@ int testNonOverlappingTransferUsesEntireWorkingNodeVolume() {
     const auto workingBefore = copyImageBuffer(workingImage);
     auto selectedImage = makeImage(7, 1, 1);
     selectedImage->SetPixel({1, 0, 0}, 10);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     const auto selectedBefore = copyImageBuffer(selectedImage);
 
@@ -1782,7 +1784,7 @@ int testNonOverlappingTransferUsesZeroAsSelectedBackground() {
     workingImage->SetPixel({2, 0, 0}, 2);
     GraphFixture fixture;
     fixture.graphBase = std::make_shared<GraphBase>();
-    fixture.graphBase->pWorkingSegmentsImage = workingImage;
+    fixture.graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(workingImage);
     fixture.graph = std::make_unique<Graph>(fixture.graphBase, false);
     fixture.graphBase->pGraph = fixture.graph.get();
     fixture.graph->setPointerToIgnoredSegmentLabels(&fixture.graphBase->ignoredSegmentLabels);
@@ -1790,7 +1792,7 @@ int testNonOverlappingTransferUsesZeroAsSelectedBackground() {
     fixture.graph->constructFromVolume(workingImage);
     auto selectedImage = makeImage(4, 1, 1);
     selectedImage->SetPixel({2, 0, 0}, 9);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(9) + 1;
 
     fixture.graph->transferNonOverlappingSegments(0.0);
@@ -1807,7 +1809,7 @@ int testNonOverlappingTransferRejectsInvalidInputWithoutMutation() {
     workingImage->SetPixel({2, 0, 0}, 2);
     auto fixture = buildGraphFixture(workingImage);
     auto selectedImage = makeImage(4, 1, 1);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     const auto selectedBefore = copyImageBuffer(selectedImage);
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -1830,15 +1832,15 @@ int testNonOverlappingTransferRejectsInvalidInputWithoutMutation() {
     fixture.graphBase->pSelectedSegmentation = nullptr;
     fixture.graph->transferNonOverlappingSegments(0.0);
     auto incompatibleImage = makeImage(3, 1, 1);
-    fixture.graphBase->pSelectedSegmentation = incompatibleImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(incompatibleImage);
     fixture.graph->transferNonOverlappingSegments(0.0);
     if (countLabel(incompatibleImage, 0) != 3 || (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Missing or incompatible target images must not consume labels or change pixels.");
     }
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->pWorkingSegmentsImage = nullptr;
     fixture.graph->transferNonOverlappingSegments(0.0);
-    fixture.graphBase->pWorkingSegmentsImage = workingImage;
+    fixture.graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(workingImage);
     if (copyImageBuffer(selectedImage) != selectedBefore ||
         (fixture.graphBase->selectedSegmentationContext->nextLabel - 1) != 10) {
         return failTest("Missing working image must leave segmentation unchanged.");
@@ -1879,7 +1881,7 @@ int testNonOverlappingTransferAtPosition() {
     fixture.graph->mergeEdge(fixture.graph->initialLabelPairToTwoSidedInitialEdge.at({1, 2}).get());
     auto selectedImage = makeImage(7, 1, 1);
     selectedImage->SetPixel({1, 0, 0}, 10);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(10) + 1;
     const auto before = copyImageBuffer(selectedImage);
 
@@ -1947,7 +1949,7 @@ int testBatchTransferPreservesExistingSegmentation() {
     auto selectedImage = makeImage(5, 1, 1);
     selectedImage->SetPixel({1, 0, 0}, 10);
     selectedImage->SetPixel({2, 0, 0}, 20);
-    fixture.graphBase->pSelectedSegmentation = selectedImage;
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(selectedImage);
     fixture.graphBase->selectedSegmentationContext->nextLabel = std::uint64_t(20) + 1;
 
     const auto assigned = fixture.graph->transferWorkingNodesToSegmentation({1, 2}, true);
@@ -1966,6 +1968,61 @@ int testBatchTransferPreservesExistingSegmentation() {
         return failTest("Existing batch callers must still overwrite entire working nodes by default.");
     }
     return 0;
+}
+
+int testCompressedGraphEdits() {
+    using Rle = segment_puzzler::StreamVByteImageStorage<SegmentIdType>;
+    auto makeFixture = [](bool compressed) {
+        auto image = makeImage(8, 6, 4);
+        for (int z = 1; z < 3; ++z) for (int y = 1; y < 5; ++y)
+            for (int x = 1; x < 7; ++x) image->SetPixel({x, y, z}, x < 4 ? 1 : 2);
+        auto fixture = buildGraphFixture(image);
+        if (compressed) {
+            fixture.graphBase->pWorkingSegmentsImage = Rle::fromImage(*image);
+            for (auto &[label, node] : fixture.graph->initialNodes)
+                node->setSegmentPointer(fixture.graphBase->pWorkingSegmentsImage);
+            fixture.graphBase->pSelectedSegmentation = Rle::create(*image);
+        } else {
+            fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<SegmentIdType>::create(*image);
+        }
+        return fixture;
+    };
+    auto dense = makeFixture(false), compressed = makeFixture(true);
+    const auto same = [&] {
+        for (auto member : {&GraphBase::pWorkingSegmentsImage, &GraphBase::pSelectedSegmentation, &GraphBase::pEdgesInitialSegmentsImage}) {
+            const auto left = dense.graphBase.get()->*member;
+            const auto right = compressed.graphBase.get()->*member;
+            auto a = left->denseRegion(left->GetLargestPossibleRegion());
+            auto b = right->denseRegion(right->GetLargestPossibleRegion());
+            if (copyImageBuffer(a) != copyImageBuffer(b)) return false;
+        }
+        return dense.graph->initialNodes.size() == compressed.graph->initialNodes.size() &&
+               dense.graph->workingNodes.size() == compressed.graph->workingNodes.size();
+    };
+    for (auto *fixture : {&dense, &compressed}) {
+        fixture->graph->mergeEdge(fixture->graph->initialLabelPairToTwoSidedInitialEdge.at({1, 2}).get());
+        const auto merged = fixture->graph->workingNodes.begin()->first;
+        if (fixture->graph->transferWorkingNodesToSegmentation({merged}, true).size() != 1)
+            return failTest("Compressed graph transfer failed");
+        fixture->graph->splitWorkingNodeIntoInitialNodes(merged);
+    }
+    if (!same()) return failTest("Compressed merge, transfer or unmerge differs");
+    auto refinement = makeImage(8, 6, 4);
+    refinement->SetPixel({3, 2, 1}, 9); refinement->SetPixel({4, 2, 1}, 9);
+    for (auto *fixture : {&dense, &compressed}) {
+        dataType::SegmentsStorage::Pointer source = Rle::fromImage(*refinement);
+        itkSignal<SegmentIdType> signal(source, false);
+        fixture->graphBase->pSelectedRefinement = source;
+        fixture->graphBase->pSelectedRefinementSignal = &signal;
+        const auto expectedLabel = fixture->graph->nextFreeId;
+        fixture->graph->refineWithSelectedRefinementAtPosition(3, 2, 1);
+        fixture->graphBase->pSelectedRefinementSignal = nullptr;
+        if (fixture->graphBase->pWorkingSegmentsImage->GetPixel({3, 2, 1}) != expectedLabel)
+            return failTest("Compressed refinement failed");
+        if (fixture->graph->deleteSegmentationLabels({1}) != 48)
+            return failTest("Compressed deletion changed the voxel count");
+    }
+    return same() ? 0 : failTest("Compressed refinement or deletion differs");
 }
 
 } // namespace
@@ -2088,6 +2145,7 @@ int main(int argc, char **argv) {
         return result;
     }
 
+    if (int result = testCompressedGraphEdits()) return result;
     std::cout << "Connected component split tests passed.\n";
     return 0;
 }

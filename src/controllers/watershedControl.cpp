@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include "src/utils/WorkerThreads.h"
 #include "watershedControl.h"
 #include "src/segment_handling/graphBase.h"
@@ -2902,7 +2903,7 @@ void WatershedControl::rebuildGraphFromSegmentsImage(dataType::SegmentsImageType
     graphBase->ignoredSegmentLabels.clear();
     graphBase->edgeStatus.clear();
     graphBase->colorLookUpEdgesStatus.clear();
-    graphBase->pWorkingSegmentsImage = segmentsImage;
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(segmentsImage);
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
     const qint64 startedAtMs = QDateTime::currentMSecsSinceEpoch();
     SP_LOG_INFO("watershed", QStringLiteral("Building graph from watershed segments volume"));
@@ -2919,7 +2920,7 @@ void WatershedControl::attachSegmentsSignalToGraph(itkSignal<GraphSegmentType> *
 
     itkSignalSegmentsGraph = segmentsSignal;
     graphBase->pWorkingSegments = itkSignalSegmentsGraph;
-    graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->pImage;
+    graphBase->pWorkingSegmentsImage = itkSignalSegmentsGraph->imageStorage;
     if (!graphBase->ignoredSegmentLabels.empty()) {
         segmentsSignal->setValueColorToTransparent(graphBase->ignoredSegmentLabels.front());
     }
@@ -3257,7 +3258,7 @@ void WatershedControl::inspectSegmentsPressed() {
         return;
     }
 
-    graphBase->pSelectedSegmentation = selectedOutput;
+    graphBase->pSelectedSegmentation = selectedSignal->imageStorage;
     graphBase->pSelectedSegmentationSignal = selectedSignal;
     if (!selectedSignal->volumeContext) {
         selectedSignal->volumeContext = volume_io::derivedContext(inputVolumeContext);
@@ -3279,7 +3280,7 @@ void WatershedControl::inspectSegmentsPressed() {
     segmentTableDialog->show();
     segmentTableDialog->raise();
     segmentTableDialog->activateWindow();
-    segmentTableDialog->startCompute(selectedOutput);
+    segmentTableDialog->startCompute(selectedSignal->imageStorage);
 }
 
 void WatershedControl::finalizeOutputPressed() {

@@ -1,3 +1,4 @@
+#include "src/image_storage/LabelImageStorage.h"
 
 #include "feature.h"
 #include "Graph.h"
@@ -159,13 +160,11 @@ void LabelOverlap::compute(const std::vector<Voxel> &voxels, unsigned int labelA
 void LabelOverlap::compute(const VoxelLists &voxelLists, unsigned int, unsigned int) {
     std::map<unsigned int, unsigned int> labelHistogram;
     std::size_t numberVoxels = 0;
-    for (auto &listEntry : voxelLists) {
-        for (auto &voxel : *listEntry) {
-            GraphBase::FeatureImageType::IndexType index{voxel.x, voxel.y, voxel.z};
-            const unsigned int label = pToOtherLabelImagePointer->GetPixel(index);
-            ++labelHistogram[label];
-        }
-        numberVoxels += listEntry->size();
+    for (const auto *list : voxelLists) numberVoxels += list->size();
+    if (numberVoxels) {
+        const auto image = segment_puzzler::readVoxelRegion(*pToOtherLabelImagePointer, voxelLists);
+        for (const auto *list : voxelLists) for (const auto &voxel : *list)
+            ++labelHistogram[image->GetPixel({voxel.x, voxel.y, voxel.z})];
     }
     updateLabelOverlapFromHistogram(*this, labelHistogram, numberVoxels);
 }
@@ -184,7 +183,7 @@ void LabelOverlap::merge(std::vector<Voxel> &allVoxels,
     compute(allVoxels);
 }
 
-void LabelOverlap::setPToOtherLabelImagePointer(dataType::SegmentsImageType::Pointer pToOtherLabelImagePointer) {
+void LabelOverlap::setPToOtherLabelImagePointer(dataType::SegmentsStorage::Pointer pToOtherLabelImagePointer) {
     LabelOverlap::pToOtherLabelImagePointer = pToOtherLabelImagePointer;
 }
 

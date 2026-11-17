@@ -36,16 +36,16 @@ public:
     // Non-owning — owned by MainWindow / MainWindowWatershedControl
     Graph *pGraph;
 
-    SegmentsImageType::Pointer pWorkingSegmentsImage;
+    dataType::SegmentsStorage::Pointer pWorkingSegmentsImage;
 //    static SegmentsImageType::Pointer pInitialSegments;
-    SegmentsImageType::Pointer pSelectedRefinement;
+    dataType::SegmentsStorage::Pointer pSelectedRefinement;
     // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pSelectedRefinementSignal;
     // Non-owning — points into SignalControl::ownedSignals
     itkSignal<SegmentsVoxelType> *pWorkingSegments;
 
 
-    SegmentsImageType::Pointer pSelectedSegmentation;
+    dataType::SegmentsStorage::Pointer pSelectedSegmentation;
 // keep track of max id of selected segmentation
     // Aliases the selected layer context; also supports graph-only callers without a viewer.
     std::shared_ptr<volume_io::VolumeContext> selectedSegmentationContext = std::make_shared<volume_io::VolumeContext>();
@@ -60,7 +60,7 @@ public:
     // Non-owning — owned by Graph (via Graph::ownedEdgesSignal)
     itkSignal<MappedEdgeIdType> *pEdgesInitialSegmentsITKSignal;
 
-    EdgeImageType::Pointer pEdgesInitialSegmentsImage;
+    dataType::EdgeStorage::Pointer pEdgesInitialSegmentsImage;
     size_t edgeCounter;
     std::unordered_map<char, QRgb> colorLookUpEdgesStatus;
 
