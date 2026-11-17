@@ -6,7 +6,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QEventLoop>
+#include <QFile>
 #include <QImage>
+#include <QRegularExpression>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QShortcut>
@@ -16,6 +18,7 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QSurfaceFormat>
+#include <QThread>
 #include <QTimer>
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkCallbackCommand.h>
@@ -57,6 +60,20 @@ bool waitUntil(const std::function<bool()> &ready) {
         turn.exec();
     }
     return ready();
+}
+
+QString readLog(const QString &path) {
+    QFile file(path);
+    require(file.open(QIODevice::ReadOnly), "Could not read render log");
+    return QString::fromUtf8(file.readAll());
+}
+
+double value(const QString &line, const QString &key) {
+    const auto match = QRegularExpression(QStringLiteral("(?:^| )%1=([^ ]+)").arg(key)).match(line);
+    bool ok = false;
+    const double result = match.captured(1).toDouble(&ok);
+    require(ok, "Missing or non-numeric timing field");
+    return result;
 }
 
 void testBatchGeometry() {
@@ -398,16 +415,23 @@ int main(int argc, char **argv) {
     app.setQuitOnLastWindowClosed(false);
     QCoreApplication::setOrganizationName(QStringLiteral("SegmentPuzzlerTests"));
     QCoreApplication::setApplicationName(QStringLiteral("RenderLogging"));
+    QTemporaryDir directory;
     QTemporaryDir settingsDirectory;
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settingsDirectory.path());
     try {
+        require(directory.isValid(), "Could not create temporary log directory");
+        const auto logPath = directory.filePath(QStringLiteral("render.log"));
         using segment_puzzler::app_logging::AppLogger;
         auto settings = AppLogger::defaultSettings();
         settings.consoleEnabled = false;
-        settings.fileEnabled = false;
+        settings.fileEnabled = true;
+        settings.logFilePath = logPath;
         AppLogger::setSettings(settings, false);
+        const auto summaries = [&] {
+            return readLog(logPath).split(QLatin1Char('\n')).filter(QStringLiteral("[3DView] interaction "));
+        };
 
         vtkNew<vtkSphereSource> sphere;
         sphere->Update();
@@ -441,25 +465,63 @@ int main(int argc, char **argv) {
         require(waitUntil([&] { return swaps > 0; }), "Initial frame was not presented");
         require(renders == 2 && sceneRenders == 1, "Expected one empty frame and one scene render");
         const auto backgroundColor = widget->grabFramebuffer().pixelColor(10, 10);
+        require(readLog(logPath).contains("vtk_render_ms="), "Render time was not renamed");
         vtkSmartPointer<vtkRenderWindowInteractor> interactor = widget->interactor();
         auto *style = vtkInteractorStyleTrackballCamera::SafeDownCast(interactor->GetInteractorStyle());
         require(style != nullptr, "Missing trackball style");
         style->SetCurrentRenderer(style->GetDefaultRenderer());
+
+        // Three renders share one Qt swap; the last follows EndInteractionEvent.
+        vtkNew<vtkCallbackCommand> delay;
+        delay->SetCallback([](vtkObject *, unsigned long, void *, void *) { QThread::msleep(80); });
+        const auto delayTag = window->AddObserver(vtkCommand::StartEvent, delay, -1.0f);
+        style->StartRotate();
+        window->Render();
+        window->Render();
+        style->EndRotate();
+        require(summaries().isEmpty(), "Interaction was logged before the last swap");
+        require(waitUntil([&] { return summaries().size() == 1; }), "Missing coalesced interaction summary");
+        auto line = summaries().last();
+        require(value(line, "vtk_renders") == 3 && value(line, "qt_frames") == 1, "Wrong coalesced frame counts");
+        require(value(line, "vtk_render_ms_avg") >= 75, "Render samples were lost");
+        require(value(line, "vtk_render_ms_max") >= value(line, "vtk_render_ms_avg"), "Invalid render maximum");
+        require(value(line, "render_to_swap_ms_avg") >= 3 * value(line, "vtk_render_ms_avg") - 5,
+                "Swap timer was restarted by a later render");
+        std::cout << line.toStdString() << '\n';
+        window->RemoveObserver(delayTag);
+
+        // A drag remains active across multiple Qt swaps.
+        style->StartRotate();
+        for (int i = 0; i < 2; ++i) {
+            const int previousSwaps = swaps;
+            window->Render();
+            require(waitUntil([&] { return swaps > previousSwaps; }), "Drag frame was not presented");
+            require(summaries().size() == 1, "Active drag was logged early");
+        }
+        style->EndRotate();
+        require(waitUntil([&] { return summaries().size() == 2; }), "Missing drag summary");
+        line = summaries().last();
+        require(value(line, "vtk_renders") == 3 && value(line, "qt_frames") == 3, "Drag counts did not reset");
+        const int previousSwaps = swaps;
+        widget->update();
+        require(waitUntil([&] { return swaps > previousSwaps; }), "Idle repaint did not complete");
+        require(summaries().size() == 2, "Idle repaint generated an interaction summary");
 
         interactor->SetEventPosition(window->GetSize()[0] / 2, window->GetSize()[1] / 2);
         style->FindPokedRenderer(interactor->GetEventPosition()[0], interactor->GetEventPosition()[1]);
         auto *camera = style->GetCurrentRenderer()->GetActiveCamera();
         const double initialDistance = camera->GetDistance();
         for (const bool forward : {true, false}) {
-            const int previousSwaps = swaps;
+            const auto previousSummaries = summaries().size();
             const int previousRenders = renders;
             if (forward) {
                 style->OnMouseWheelForward();
             } else {
                 style->OnMouseWheelBackward();
             }
-            require(waitUntil([&] { return swaps > previousSwaps; }), "Wheel frame was not presented");
-            require(renders == previousRenders + 1,
+            require(waitUntil([&] { return summaries().size() == previousSummaries + 1; }),
+                    "Missing wheel summary");
+            require(renders == previousRenders + 1 && value(summaries().last(), "vtk_renders") == 1,
                     "Wheel step did not render exactly once");
             require(interactor->GetEnableRender(), "Wheel step left rendering disabled");
             require(forward ? camera->GetDistance() < initialDistance
@@ -473,8 +535,27 @@ int main(int argc, char **argv) {
         require(!interactor->GetEnableRender() && renders == rendersBeforeDisabledWheel,
                 "Wheel step ignored the disabled render state");
         QApplication::processEvents();
+        require(summaries().size() == 4, "Disabled rendering generated a wheel summary");
         interactor->EnableRenderOn();
 
+        auto *slider = dialog->findChild<QSlider *>(QStringLiteral("explodeSlider"));
+        require(slider != nullptr, "Missing explode slider");
+        slider->setSliderDown(true);
+        slider->setValue(10);
+        slider->setValue(20);
+        slider->setSliderDown(false);
+        require(waitUntil([&] { return summaries().size() == 5; }), "Missing explode drag summary");
+        require(value(summaries().last(), "vtk_renders") == 2, "Explode drag was not grouped");
+        slider->triggerAction(QAbstractSlider::SliderSingleStepAdd);
+        require(waitUntil([&] { return summaries().size() == 6; }), "Missing explode step summary");
+
+        style->StartRotate();
+        window->Render();
+        style->EndRotate();
+        dialog->hide();
+        require(summaries().size() == 7, "Hidden widget retained a pending interaction");
+        require(value(summaries().last(), "qt_frames") == 0 &&
+                    summaries().last().contains("render_to_swap_ms_avg=unavailable"), "Missing swap was reported as zero time");
         window->RemoveObserver(countRenders);
         dialog.reset();
         // Check observer cleanup on retained VTK objects.

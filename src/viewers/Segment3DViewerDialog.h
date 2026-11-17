@@ -260,6 +260,9 @@ private:
     void updateRenderDiagnostics(const char *reason);
     void updateCameraClippingRange();
     void handleRenderEvent(unsigned long eventId);
+    void beginRenderInteraction();
+    void endRenderInteraction();
+    void finishRenderInteraction();
     void handleFrameSwapped();
 
     vtkSmartPointer<vtkCallbackCommand> m_renderObserver;
@@ -269,6 +272,17 @@ private:
     bool m_renderContextLogged = false;
     std::size_t m_visibleSegmentCount = 0;
     vtkIdType m_visibleTriangleCount = 0;
+    struct InteractionTiming {
+        QElapsedTimer elapsed;
+        bool active = false;
+        int renders = 0;
+        double renderTotalMs = 0.0;
+        double renderMaxMs = 0.0;
+        int frames = 0;
+        double renderToSwapTotalMs = 0.0;
+        double renderToSwapMaxMs = 0.0;
+    } m_interactionTiming;
+    QElapsedTimer m_renderToSwapTimer;
 
     vtkSmartPointer<vtkRenderer> m_renderer;
     std::vector<SegmentActorInfo> m_segmentActors;

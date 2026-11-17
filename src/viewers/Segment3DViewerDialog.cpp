@@ -2342,14 +2342,21 @@ Segment3DViewerDialog::Segment3DViewerDialog(
                     .arg(kMaximumExplodePercent));
             m_explodeSlider->setMinimumHeight(28);
 
+            connect(m_explodeSlider, &QSlider::sliderPressed, this, &Segment3DViewerDialog::beginRenderInteraction);
+            connect(m_explodeSlider, &QSlider::sliderReleased, this, &Segment3DViewerDialog::endRenderInteraction);
             connect(m_explodeSlider, &QSlider::valueChanged, this, [this](int value) {
                 if (m_segmentActors.empty()) {
                     return;
                 }
+                const bool singleStep = !m_interactionTiming.active;
+                beginRenderInteraction();
                 const double explodeFactor = static_cast<double>(value) / 100.0;
                 m_meshBatches->setExplode(explodeFactor);
                 if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
                     m_vtkWidget->renderWindow()->Render();
+                }
+                if (singleStep) {
+                    endRenderInteraction();
                 }
             });
             m_controlsRow->addWidget(new QLabel(QStringLiteral("Explode:"), m_controlsWidget));
@@ -2827,12 +2834,19 @@ Segment3DViewerDialog::Segment3DViewerDialog(
     });
     renWin->AddObserver(vtkCommand::StartEvent, m_renderObserver);
     renWin->AddObserver(vtkCommand::EndEvent, m_renderObserver);
+    if (auto *interactor = m_vtkWidget->interactor()) {
+        interactor->AddObserver(vtkCommand::StartInteractionEvent, m_renderObserver);
+        interactor->AddObserver(vtkCommand::EndInteractionEvent, m_renderObserver);
+    }
     connect(m_vtkWidget, &QOpenGLWidget::frameSwapped, this, &Segment3DViewerDialog::handleFrameSwapped);
 }
 
 Segment3DViewerDialog::~Segment3DViewerDialog() {
     if (m_vtkWidget != nullptr && m_vtkWidget->renderWindow() != nullptr) {
         m_vtkWidget->renderWindow()->RemoveObserver(m_renderObserver);
+        if (auto *interactor = m_vtkWidget->interactor()) {
+            interactor->RemoveObserver(m_renderObserver);
+        }
     }
 }
 
@@ -2882,6 +2896,14 @@ void Segment3DViewerDialog::updateCameraClippingRange() {
 }
 
 void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
+    if (eventId == vtkCommand::StartInteractionEvent) {
+        beginRenderInteraction();
+        return;
+    }
+    if (eventId == vtkCommand::EndInteractionEvent) {
+        endRenderInteraction();
+        return;
+    }
     if (eventId == vtkCommand::StartEvent) {
         updateCameraClippingRange();
         auto *context = m_vtkWidget->context();
@@ -2902,6 +2924,10 @@ void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
             m_renderContextLogged = true;
         }
         m_renderTimer.start();
+        // Qt may present several VTK renders together. Keep the first pending start.
+        if (m_interactionTiming.elapsed.isValid() && !m_renderToSwapTimer.isValid()) {
+            m_renderToSwapTimer = m_renderTimer;
+        }
         return;
     }
     if (eventId != vtkCommand::EndEvent || !m_renderTimer.isValid()) {
@@ -2910,6 +2936,11 @@ void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
     // VTK render wall time, including driver waits.
     const double renderMs = m_renderTimer.nsecsElapsed() / 1.0e6;
     m_renderTimer.invalidate();
+    if (m_interactionTiming.elapsed.isValid()) {
+        ++m_interactionTiming.renders;
+        m_interactionTiming.renderTotalMs += renderMs;
+        m_interactionTiming.renderMaxMs = std::max(m_interactionTiming.renderMaxMs, renderMs);
+    }
     const bool sceneChanged = m_renderLogReason != nullptr;
     if (!sceneChanged && (renderMs < kSlowRenderMilliseconds
         || (m_slowRenderLogTimer.isValid()
@@ -2929,7 +2960,7 @@ void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
     const auto memory = systemStats::queryMemory();
     constexpr GLenum currentAvailableVideoMemoryNVX = 0x9049;
     const auto *size = m_vtkWidget->renderWindow()->GetSize();
-    const auto message = QStringLiteral("[3DView] render view=%1 reason=%2 render_ms=%3 size_px=%4x%5 "
+    const auto message = QStringLiteral("[3DView] render view=%1 reason=%2 vtk_render_ms=%3 size_px=%4x%5 "
                                        "visible_segments=%6 visible_triangles=%7 rendered_props=%8 "
                                        "process_rss_mib=%9 gpu_free_mib=%10")
         .arg(reinterpret_cast<quintptr>(this), 0, 16)
@@ -2950,10 +2981,60 @@ void Segment3DViewerDialog::handleRenderEvent(unsigned long eventId) {
     m_renderLogReason = nullptr;
 }
 
+void Segment3DViewerDialog::beginRenderInteraction() {
+    if (!m_interactionTiming.elapsed.isValid()) {
+        m_interactionTiming.elapsed.start();
+    }
+    m_interactionTiming.active = true;
+}
+
+void Segment3DViewerDialog::endRenderInteraction() {
+    m_interactionTiming.active = false;
+    // VTK's StopState emits EndInteractionEvent before its final Render().
+    QTimer::singleShot(0, this, &Segment3DViewerDialog::finishRenderInteraction);
+}
+
 void Segment3DViewerDialog::handleFrameSwapped() {
     if (m_initialFrameRendered && m_initialRenderProgress != nullptr) {
         clearInitialRenderProgress();
     }
+    if (!m_renderToSwapTimer.isValid() || m_renderTimer.isValid()) {
+        return;
+    }
+    const double renderToSwapMs = m_renderToSwapTimer.nsecsElapsed() / 1.0e6;
+    m_renderToSwapTimer.invalidate();
+    ++m_interactionTiming.frames;
+    m_interactionTiming.renderToSwapTotalMs += renderToSwapMs;
+    m_interactionTiming.renderToSwapMaxMs = std::max(m_interactionTiming.renderToSwapMaxMs, renderToSwapMs);
+    finishRenderInteraction();
+}
+
+void Segment3DViewerDialog::finishRenderInteraction() {
+    if (m_interactionTiming.active || m_renderToSwapTimer.isValid()) {
+        return;
+    }
+    const auto &timing = m_interactionTiming;
+    if (timing.renders > 0) {
+        // duration_ms includes pauses during a drag.
+        // Render-to-swap spans VTK StartEvent to Qt frameSwapped.
+        SP_LOG_INFO("viewer.three_d",
+                    QStringLiteral("[3DView] interaction view=%1 duration_ms=%2 vtk_renders=%3 "
+                                   "vtk_render_ms_avg=%4 vtk_render_ms_max=%5 qt_frames=%6 "
+                                   "render_to_swap_ms_avg=%7 render_to_swap_ms_max=%8 "
+                                   "visible_segments=%9 visible_triangles=%10")
+                        .arg(reinterpret_cast<quintptr>(this), 0, 16)
+                        .arg(timing.elapsed.nsecsElapsed() / 1.0e6, 0, 'f', 1)
+                        .arg(timing.renders)
+                        .arg(timing.renderTotalMs / timing.renders, 0, 'f', 1)
+                        .arg(timing.renderMaxMs, 0, 'f', 1)
+                        .arg(timing.frames)
+                        .arg(timing.frames ? QString::number(timing.renderToSwapTotalMs / timing.frames, 'f', 1)
+                                           : QStringLiteral("unavailable"))
+                        .arg(timing.frames ? QString::number(timing.renderToSwapMaxMs, 'f', 1)
+                                           : QStringLiteral("unavailable"))
+                        .arg(static_cast<qulonglong>(m_visibleSegmentCount)).arg(m_visibleTriangleCount));
+    }
+    m_interactionTiming = {};
 }
 
 std::optional<Segment3DViewerDialog::CameraOrientation>
@@ -3851,6 +3932,12 @@ bool Segment3DViewerDialog::eventFilter(QObject *watched, QEvent *event) {
 
     if (watched == m_vtkWidget && event != nullptr) {
         switch (event->type()) {
+            case QEvent::Hide:
+                // A hidden widget may never swap its pending frame.
+                m_renderToSwapTimer.invalidate();
+                m_interactionTiming.active = false;
+                finishRenderInteraction();
+                break;
             case QEvent::FocusOut:
                 m_deleteModeActive = false;
                 break;
