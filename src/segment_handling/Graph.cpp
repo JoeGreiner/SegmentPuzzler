@@ -1581,7 +1581,8 @@ void Graph::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit)
             segmentManager.addWorkingNode(newWorkingNode);
             setOfInsertedWorkingNodes.insert(subInitialNodeId);
 
-            insertWorkingNodeInSegmentImage(*newWorkingNode);
+            if (idsOfSubInitialNodes.size() != 1 || subInitialNodeId != workingNodeIdToSplit)
+                insertWorkingNodeInSegmentImage(*newWorkingNode);
         }
 
         // put neighboring nodes in the set
@@ -3673,9 +3674,7 @@ std::set<Graph::SegmentIdType> Graph::synchronizeOverwrittenInitialNodeVoxels(
 
     const auto workingImage = graphBase->pWorkingSegmentsImage;
     const auto workingRegion = workingImage->GetLargestPossibleRegion();
-    std::unordered_set<SegmentIdType> labelsNeedingLatticeScan;
-    labelsNeedingLatticeScan.reserve(overwrittenLabels.size());
-
+    std::optional<dataType::SegmentsStorage::LabelStatisticsMap> remainingLabels;
     for (const SegmentIdType label : overwrittenLabels) {
         const auto initialNodeIt = initialNodes.find(label);
         if (initialNodeIt == initialNodes.end() || initialNodeIt->second == nullptr) {
@@ -3684,38 +3683,27 @@ std::set<Graph::SegmentIdType> Graph::synchronizeOverwrittenInitialNodeVoxels(
 
         InitialNode *initialNode = initialNodeIt->second.get();
         VoxelList filteredVoxels;
-        for (const Voxel &voxel : initialNode->voxels) {
-            const SegmentsImageType::IndexType index{{voxel.x, voxel.y, voxel.z}};
-            if (workingRegion.IsInside(index) && workingImage->GetPixel(index) == label) {
-                filteredVoxels.push_back(voxel);
+        const auto collect = [&](const SegmentsImageType::RegionType &region) {
+            workingImage->forEachRun(region, [&](const auto &index, std::size_t length, SegmentIdType value) {
+                if (value == label) filteredVoxels.appendRun(Voxel(index[0], index[1], index[2]), length);
+            });
+        };
+        for (const auto &run : initialNode->voxels.getRuns()) {
+            SegmentsImageType::RegionType region({run.start.x, run.start.y, run.start.z}, {run.length, 1, 1});
+            if (region.Crop(workingRegion)) collect(region);
+        }
+        if (filteredVoxels.empty()) {
+            if (!remainingLabels) remainingLabels = workingImage->labelStatistics();
+            const auto found = remainingLabels->find(label);
+            if (found != remainingLabels->end()) {
+                collect(found->second.bounds);
+                logGraph(LogLevel::Warning, __func__,
+                         QStringLiteral("Recovered label %1 from lattice after its voxel metadata became empty").arg(label));
+            } else {
+                absentLabels.insert(label);
             }
         }
         initialNode->voxels = std::move(filteredVoxels);
-        if (initialNode->voxels.empty()) {
-            labelsNeedingLatticeScan.insert(label);
-        }
-    }
-
-    if (labelsNeedingLatticeScan.empty()) {
-        return absentLabels;
-    }
-
-    workingImage->forEachRun([&](const auto &index, std::size_t length, SegmentIdType label) {
-        if (!labelsNeedingLatticeScan.count(label)) return;
-        auto &voxels = initialNodes.at(label)->voxels;
-        voxels.appendRun(Voxel(index[0], index[1], index[2]), length);
-    });
-
-    for (const SegmentIdType label : labelsNeedingLatticeScan) {
-        if (initialNodes.at(label)->voxels.empty()) {
-            absentLabels.insert(label);
-            continue;
-        }
-        logGraph(
-            LogLevel::Warning,
-            __func__,
-            QStringLiteral("Recovered label %1 from lattice after its voxel metadata became empty")
-                .arg(label));
     }
     return absentLabels;
 }
