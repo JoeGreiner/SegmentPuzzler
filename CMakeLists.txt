@@ -543,6 +543,17 @@ if (BUILD_TESTING)
     add_test(NAME VolumeLoading COMMAND test_VolumeLoading)
     set_tests_properties(VolumeLoading PROPERTIES TIMEOUT 60)
 
+    add_executable(test_SegmentTable examples/viewers/test_segment_table.cpp ${SRC_CORRECT_ORDER})
+    target_link_libraries(test_SegmentTable segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES}
+            ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
+    vtk_module_autoinit(TARGETS test_SegmentTable MODULES ${VTK_LIBRARIES})
+    if (USE_OMP)
+        target_compile_definitions(test_SegmentTable PRIVATE USE_OMP)
+        target_link_libraries(test_SegmentTable OpenMP::OpenMP_CXX)
+    endif ()
+    add_test(NAME SegmentTable COMMAND test_SegmentTable)
+    set_tests_properties(SegmentTable PROPERTIES TIMEOUT 60)
+
     add_executable(test_LabelScan examples/viewers/test_label_scan.cpp)
     set_target_properties(test_LabelScan PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
     target_link_libraries(test_LabelScan PRIVATE segmentpuzzler_worker_threads)

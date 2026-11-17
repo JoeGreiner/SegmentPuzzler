@@ -64,7 +64,7 @@ public:
         bool bbox              = false;
         bool elongation        = true;
         bool flatness          = true;
-        bool roundness         = true;
+        bool roundness         = false;
         bool equivSphRadius    = true;
         bool equivSphPerimeter = false;
         bool equivEllipsoid    = false;

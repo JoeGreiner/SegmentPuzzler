@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,9 +47,12 @@
 #include <itkChangeInformationImageFilter.h>
 #include <itkContinuousIndex.h>
 #include <itkExtractImageFilter.h>
-#include <itkLabelImageToShapeLabelMapFilter.h>
+#include <itkLabelMap.h>
+#include <itkShapeLabelObject.h>
+#include <itkShapeLabelMapFilter.h>
 
 #include "src/segment_handling/Graph.h"
+#include "src/segment_handling/LabelContacts.h"
 #include "src/qtUtils/TaskRunner.h"
 #include "src/utils/AppLogger.h"
 #include "src/utils/ExportPathUtils.h"
@@ -214,90 +218,89 @@ struct LabelContactFeatures {
 };
 
 std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelContactFeatures(
-    const dataType::SegmentsImageType::Pointer &segImage,
+    const dataType::SegmentsStorage &image,
     bool computeExposureRatios,
-    std::size_t expectedLabelCount, dataType::SegmentIdType background) {
+    std::size_t labelCount, dataType::SegmentIdType background) {
     std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> featuresByLabel;
-    if (segImage == nullptr) {
+    if (!computeExposureRatios && labelCount < 2) {
         return featuresByLabel;
     }
-    featuresByLabel.reserve(expectedLabelCount);
+    featuresByLabel.reserve(labelCount);
 
-    const auto size = segImage->GetLargestPossibleRegion().GetSize();
+    const auto region = image.GetLargestPossibleRegion();
+    const auto origin = region.GetIndex();
+    const auto size = region.GetSize();
+    const auto firstZ = origin[2];
+    if (!computeExposureRatios) {
+        using Slices = itk::ImageRegion<1>;
+        const Slices slices({firstZ}, {size[2]});
+        std::mutex mergeMutex;
+        auto threads = itk::MultiThreaderBase::New();
+        threads->SetMaximumNumberOfThreads(segment_puzzler::workerThreadCount(segment_puzzler::ThreadBackend::ITK));
+        threads->ParallelizeImageRegion<1>(slices, [&](const Slices &part) {
+            const auto first = part.GetIndex()[0];
+            const auto halo = first != firstZ;
+            auto slab = region;
+            slab.SetIndex(2, first - halo);
+            slab.SetSize(2, part.GetSize()[0] + halo);
+            std::unordered_set<dataType::SegmentIdType> touching;
+            segment_puzzler::visitLabelContacts(image, slab, first,
+                [&](auto a, auto b, const itk::Index<3> &, const itk::Index<3> &, std::size_t) {
+                    if (a == b || a == background || b == background) return;
+                    touching.insert(a);
+                    touching.insert(b);
+                });
+            std::lock_guard lock(mergeMutex);
+            for (auto label : touching) featuresByLabel[label].isIsolated = false;
+        }, nullptr);
+        return featuresByLabel;
+    }
+    auto plane = region;
+    plane.SetSize(2, 1);
     const size_t dimX = size[0];
     const size_t dimY = size[1];
     const size_t dimZ = size[2];
-    const size_t planeXY = dimX * dimY;
-    const auto *buffer = segImage->GetBufferPointer();
+    std::vector<dataType::SegmentIdType> previous, current, next;
+    image.readSlice(2, firstZ, current);
 
     for (size_t z = 0; z < dimZ; ++z) {
-        for (size_t y = 0; y < dimY; ++y) {
-            for (size_t x = 0; x < dimX; ++x) {
-                const size_t index = x + y * dimX + z * planeXY;
-                const dataType::SegmentIdType label = buffer[index];
-                if (label == background) {
-                    continue;
-                }
-
-                auto &features = featuresByLabel[label];
-
-                if (computeExposureRatios) {
-                    bool isSurfaceVoxel = false;
-                    bool touchesBackground = false;
-                    bool touchesForeground = false;
-                    const auto inspectNeighbor = [&](size_t neighborIndex) {
-                        const dataType::SegmentIdType neighborLabel = buffer[neighborIndex];
-                        if (neighborLabel == label) {
-                            return;
-                        }
-                        isSurfaceVoxel = true;
-                        if (neighborLabel == background) {
-                            touchesBackground = true;
-                        } else {
-                            touchesForeground = true;
-                            features.isIsolated = false;
-                        }
-                    };
-                    const auto inspectImageExterior = [&]() {
-                        isSurfaceVoxel = true;
+        const auto sliceIndex = firstZ + static_cast<itk::IndexValueType>(z);
+        if (z + 1 < dimZ) image.readSlice(2, sliceIndex + 1, next);
+        plane.SetIndex(2, sliceIndex);
+        image.forEachRun(plane, [&](const auto &start, std::size_t length, dataType::SegmentIdType label) {
+            if (label == background) return;
+            const size_t y = start[1] - origin[1], firstX = start[0] - origin[0];
+            auto &features = featuresByLabel[label];
+            for (size_t x = firstX; x < firstX + length; ++x) {
+                const size_t index = x + y * dimX;
+                bool touchesBackground = false;
+                bool touchesForeground = false;
+                const auto inspectNeighbor = [&](dataType::SegmentIdType neighborLabel) {
+                    if (neighborLabel == label) return;
+                    if (neighborLabel == background) {
                         touchesBackground = true;
-                    };
-
-                    if (x > 0) inspectNeighbor(index - 1); else inspectImageExterior();
-                    if (x + 1 < dimX) inspectNeighbor(index + 1); else inspectImageExterior();
-                    if (y > 0) inspectNeighbor(index - dimX); else inspectImageExterior();
-                    if (y + 1 < dimY) inspectNeighbor(index + dimX); else inspectImageExterior();
-                    if (dimZ > 1) {
-                        if (z > 0) inspectNeighbor(index - planeXY); else inspectImageExterior();
-                        if (z + 1 < dimZ) inspectNeighbor(index + planeXY); else inspectImageExterior();
+                    } else {
+                        touchesForeground = true;
+                        features.isIsolated = false;
                     }
-
-                    features.surfaceVoxelCount += isSurfaceVoxel ? 1 : 0;
-                    features.backgroundTouchingVoxelCount += touchesBackground ? 1 : 0;
-                    features.foregroundTouchingVoxelCount += touchesForeground ? 1 : 0;
-                    continue;
-                }
-
-                const auto markNonIsolatedPair = [&](size_t neighborIndex) {
-                    const dataType::SegmentIdType neighborLabel = buffer[neighborIndex];
-                    if (neighborLabel == background || neighborLabel == label) {
-                        return;
-                    }
-                    featuresByLabel[label].isIsolated = false;
-                    featuresByLabel[neighborLabel].isIsolated = false;
                 };
 
-                if (x + 1 < dimX) {
-                    markNonIsolatedPair(index + 1);
+                inspectNeighbor(x > 0 ? current[index - 1] : background);
+                inspectNeighbor(x + 1 < dimX ? current[index + 1] : background);
+                inspectNeighbor(y > 0 ? current[index - dimX] : background);
+                inspectNeighbor(y + 1 < dimY ? current[index + dimX] : background);
+                if (dimZ > 1) {
+                    inspectNeighbor(z > 0 ? previous[index] : background);
+                    inspectNeighbor(z + 1 < dimZ ? next[index] : background);
                 }
-                if (y + 1 < dimY) {
-                    markNonIsolatedPair(index + dimX);
-                }
-                if (z + 1 < dimZ) {
-                    markNonIsolatedPair(index + planeXY);
-                }
+
+                features.surfaceVoxelCount += touchesBackground || touchesForeground;
+                features.backgroundTouchingVoxelCount += touchesBackground;
+                features.foregroundTouchingVoxelCount += touchesForeground;
             }
-        }
+        });
+        previous.swap(current);
+        current.swap(next);
     }
 
     return featuresByLabel;
@@ -306,38 +309,61 @@ std::unordered_map<dataType::SegmentIdType, LabelContactFeatures> computeLabelCo
 template<typename ImageType>
 std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
     typename ImageType::Pointer image,
+    const dataType::SegmentsStorage &storage,
     const SegmentTableDialog::FeatureFlags &flags, dataType::SegmentIdType background) {
     static_assert(ImageType::ImageDimension == 2 || ImageType::ImageDimension == 3);
 
-    using FilterType = itk::LabelImageToShapeLabelMapFilter<ImageType>;
-    using LabelObjectType = typename FilterType::LabelObjectType;
+    image->UpdateOutputInformation();
+    using LabelObjectType = itk::ShapeLabelObject<dataType::SegmentIdType, ImageType::ImageDimension>;
+    using LabelMapType = itk::LabelMap<LabelObjectType>;
+    auto input = LabelMapType::New();
+    input->CopyInformation(image);
+    input->SetRegions(image->GetLargestPossibleRegion());
+    input->SetBackgroundValue(background);
+    std::unordered_map<dataType::SegmentIdType, typename LabelObjectType::Pointer> objects;
+    QElapsedTimer timer;
+    timer.start();
+    storage.forEachRun([&](const auto &start, std::size_t length, dataType::SegmentIdType label) {
+        if (label == background) return;
+        auto &object = objects[label];
+        if (!object) {
+            object = LabelObjectType::New();
+            object->SetLabel(label);
+            input->AddLabelObject(object);
+        }
+        typename LabelObjectType::IndexType index;
+        for (unsigned axis = 0; axis < ImageType::ImageDimension; ++axis) index[axis] = start[axis];
+        object->AddLine(index, length);
+    });
+    const auto buildMs = timer.restart();
+    using FilterType = itk::ShapeLabelMapFilter<LabelMapType>;
     auto filter = FilterType::New();
-    filter->SetInput(image);
-    filter->SetBackgroundValue(background);
-    // Roundness is computed inside the perimeter pass.
-    filter->SetComputePerimeter(
-        flags.perimeter || flags.roundness || flags.surfaceToVolumeRatio);
+    filter->SetInput(input);
+    filter->SetComputePerimeter(usesCroftonSurfaceEstimate(flags));
     filter->SetComputeOrientedBoundingBox(flags.orientedBBox);
     segment_puzzler::setItkWorkerThreadCount(*filter);
     SP_LOG_INFO(
         "segmentation",
-        QStringLiteral("Running %1D LabelImageToShapeLabelMapFilter with %2 ITK work units")
+        QStringLiteral("Running %1D ShapeLabelMapFilter with %2 ITK work units")
             .arg(ImageType::ImageDimension)
             .arg(filter->GetNumberOfWorkUnits()));
     filter->Update();
+    SP_LOG_INFO("segmentation", QStringLiteral("segment_table label_map_ms=%1 shape_ms=%2 labels=%3")
+        .arg(buildMs).arg(timer.elapsed()).arg(objects.size()));
 
     auto *labelMap = filter->GetOutput();
     const auto labelCount = labelMap->GetNumberOfLabelObjects();
     std::vector<SegmentTableDialog::SegmentRow> rows;
     rows.reserve(labelCount);
 
-    const auto region = image->GetLargestPossibleRegion();
-    const auto regionStart = region.GetIndex();
-    const auto regionSize = region.GetSize();
-    const long long borderDistance = std::max(0, flags.borderDistancePx);
+    auto interiorRegion = image->GetLargestPossibleRegion();
+    const auto &size = interiorRegion.GetSize();
+    const auto borderWidth = static_cast<long long>(std::max(0, flags.borderDistancePx)) + 1;
+    const bool hasInterior = 2 * borderWidth < *std::min_element(size.begin(), size.end()) &&
+        interiorRegion.ShrinkByRadius(static_cast<itk::OffsetValueType>(borderWidth));
 
-    for (unsigned int i = 0; i < labelCount; ++i) {
-        const auto *labelObject = labelMap->GetNthLabelObject(i);
+    for (typename LabelMapType::ConstIterator it(labelMap); !it.IsAtEnd(); ++it) {
+        const auto *labelObject = it.GetLabelObject();
         SegmentTableDialog::SegmentRow row;
         row.label = labelObject->GetLabel();
 
@@ -358,41 +384,19 @@ std::vector<SegmentTableDialog::SegmentRow> computeShapeFeatureRows(
             row.physicalSize = labelObject->GetPhysicalSize();
         }
         if (flags.nearBoundary) {
-            const auto boundingBox = labelObject->GetBoundingBox();
-            for (unsigned int dimension = 0; dimension < ImageType::ImageDimension; ++dimension) {
-                const long long distanceFromMinimum =
-                    static_cast<long long>(boundingBox.GetIndex()[dimension]) -
-                    static_cast<long long>(regionStart[dimension]);
-                const long long distanceFromMaximum =
-                    static_cast<long long>(regionStart[dimension]) +
-                    static_cast<long long>(regionSize[dimension]) -
-                    static_cast<long long>(boundingBox.GetIndex()[dimension]) -
-                    static_cast<long long>(boundingBox.GetSize()[dimension]);
-                if (distanceFromMinimum <= borderDistance ||
-                    distanceFromMaximum <= borderDistance) {
-                    row.isNearBoundary = true;
-                    break;
-                }
-            }
+            row.isNearBoundary = !hasInterior || !interiorRegion.IsInside(labelObject->GetBoundingBox());
         }
         if (flags.pixelsOnBorder) {
-            std::size_t count = 0;
-            typename LabelObjectType::ConstIndexIterator indexIt(labelObject);
-            while (!indexIt.IsAtEnd()) {
-                const auto &index = indexIt.GetIndex();
-                for (unsigned int dimension = 0; dimension < ImageType::ImageDimension; ++dimension) {
-                    const long long distanceFromMinimum =
-                        static_cast<long long>(index[dimension]) -
-                        static_cast<long long>(regionStart[dimension]);
-                    const long long distanceFromMaximum =
-                        static_cast<long long>(regionSize[dimension]) - 1 - distanceFromMinimum;
-                    if (distanceFromMinimum <= borderDistance ||
-                        distanceFromMaximum <= borderDistance) {
-                        ++count;
-                        break;
-                    }
+            auto count = labelObject->GetNumberOfPixels();
+            if (hasInterior) {
+                for (typename LabelObjectType::ConstLineIterator it(labelObject); !it.IsAtEnd(); ++it) {
+                    const auto &line = it.GetLine();
+                    typename ImageType::SizeType runSize;
+                    runSize.Fill(1);
+                    runSize[0] = line.GetLength();
+                    typename ImageType::RegionType runRegion(line.GetIndex(), runSize);
+                    if (runRegion.Crop(interiorRegion)) count -= runRegion.GetNumberOfPixels();
                 }
-                ++indexIt;
             }
             row.pixelsOnBorder = static_cast<double>(count);
         }
@@ -643,16 +647,6 @@ QWidget *SegmentTableDialog::createSetupPage() {
         auto *gb = makeGroup("Basic Measurements", grid);
         cbVolume            = new QCheckBox("Pixel / voxel count");              cbVolume->setChecked(true);
         cbIsIsolated        = new QCheckBox("Is Isolated");                      cbIsIsolated->setChecked(true);
-        cbBackgroundExposure = new QCheckBox("Background Exposure");              cbBackgroundExposure->setChecked(false);
-        cbBackgroundExposure->setToolTip(
-            "Fraction of surface voxels that touch the layer's background. "
-            "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D; "
-            "the image exterior counts as background. A voxel may contribute to both exposure ratios.");
-        cbForegroundExposure = new QCheckBox("Foreground Exposure");              cbForegroundExposure->setChecked(false);
-        cbForegroundExposure->setToolTip(
-            "Fraction of surface voxels that touch another non-zero label. "
-            "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D. "
-            "A voxel may contribute to both exposure ratios.");
         cbNearBoundary      = new QCheckBox("Near Boundary");                    cbNearBoundary->setChecked(false);
         cbNearBoundary->setToolTip(
             "Yes if at least one segment pixel or voxel is within the configured distance "
@@ -670,14 +664,12 @@ QWidget *SegmentTableDialog::createSetupPage() {
             "image layer; N also includes pixels or voxels up to and including N layers inward.");
         grid->addWidget(cbVolume,            0, 0);
         grid->addWidget(cbIsIsolated,        0, 1);
-        grid->addWidget(cbBackgroundExposure, 1, 0);
-        grid->addWidget(cbForegroundExposure, 1, 1);
-        grid->addWidget(cbPhysicalSize,      2, 0);
-        grid->addWidget(cbNearBoundary,      2, 1);
-        grid->addWidget(borderDistanceLabel, 3, 0);
-        grid->addWidget(borderDistanceSpinBox, 3, 1);
-        grid->addWidget(cbPixelsOnBorder,    4, 0);
-        grid->addWidget(cbPerimeterOnBorder, 4, 1);
+        grid->addWidget(cbPhysicalSize,      1, 0);
+        grid->addWidget(cbNearBoundary,      1, 1);
+        grid->addWidget(borderDistanceLabel, 2, 0);
+        grid->addWidget(borderDistanceSpinBox, 2, 1);
+        grid->addWidget(cbPixelsOnBorder,    3, 0);
+        grid->addWidget(cbPerimeterOnBorder, 3, 1);
         vContent->addWidget(gb);
     }
 
@@ -698,18 +690,16 @@ QWidget *SegmentTableDialog::createSetupPage() {
         auto *gb = makeGroup("Shape Descriptors", grid);
         cbElongation        = new QCheckBox("Elongation");                          cbElongation->setChecked(true);
         cbFlatness          = new QCheckBox("Flatness");                            cbFlatness->setChecked(true);
-        cbRoundness         = new QCheckBox("Roundness");                           cbRoundness->setChecked(true);
         cbEquivSphRadius    = new QCheckBox("Equiv. Circle / Spherical Radius");    cbEquivSphRadius->setChecked(true);
         cbEquivSphPerimeter = new QCheckBox("Equiv. Circle / Spherical Perimeter"); cbEquivSphPerimeter->setChecked(false);
         cbEquivEllipsoid    = new QCheckBox("Equiv. Ellipsoid Diameters");          cbEquivEllipsoid->setChecked(false);
         cbPrincipalMoments  = new QCheckBox("Principal Moments");                   cbPrincipalMoments->setChecked(false);
         grid->addWidget(cbElongation,        0, 0);
         grid->addWidget(cbFlatness,          0, 1);
-        grid->addWidget(cbRoundness,         1, 0);
-        grid->addWidget(cbEquivSphRadius,    1, 1);
-        grid->addWidget(cbEquivSphPerimeter, 2, 0);
-        grid->addWidget(cbEquivEllipsoid,    2, 1);
-        grid->addWidget(cbPrincipalMoments,  3, 0);
+        grid->addWidget(cbEquivSphRadius,    1, 0);
+        grid->addWidget(cbEquivSphPerimeter, 1, 1);
+        grid->addWidget(cbEquivEllipsoid,    2, 0);
+        grid->addWidget(cbPrincipalMoments,  2, 1);
         vContent->addWidget(gb);
     }
 
@@ -724,11 +714,26 @@ QWidget *SegmentTableDialog::createSetupPage() {
         cbSurfaceToVolumeRatio->setToolTip(
             "Surface area divided by physical volume in 3D; "
             "perimeter divided by physical area in 2D.");
+        cbRoundness = new QCheckBox("Roundness");
+        cbRoundness->setToolTip("Very slow on large images. Uses the same calculation as Perimeter / Surface Area.");
         cbOrientedBBox = new QCheckBox("Oriented Bounding Box (size + area/volume)");
         cbOrientedBBox->setChecked(false);
+        cbBackgroundExposure = new QCheckBox("Background Exposure");
+        cbBackgroundExposure->setToolTip(
+            "Fraction of surface voxels that touch the layer's background. "
+            "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D; "
+            "the image exterior counts as background. A voxel may contribute to both exposure ratios.");
+        cbForegroundExposure = new QCheckBox("Foreground Exposure");
+        cbForegroundExposure->setToolTip(
+            "Fraction of surface voxels that touch another foreground label. "
+            "Uses 4-neighbour connectivity in 2D and 6-neighbour connectivity in 3D. "
+            "A voxel may contribute to both exposure ratios.");
         grid->addWidget(cbPerimeter,             0, 0);
         grid->addWidget(cbSurfaceToVolumeRatio,  0, 1);
-        grid->addWidget(cbOrientedBBox,          1, 0);
+        grid->addWidget(cbRoundness,             1, 0);
+        grid->addWidget(cbOrientedBBox,          1, 1);
+        grid->addWidget(cbBackgroundExposure, 2, 0);
+        grid->addWidget(cbForegroundExposure, 2, 1);
         vContent->addWidget(gb);
     }
 
@@ -1501,14 +1506,16 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
     dataType::SegmentsStorage::Pointer storage,
     FeatureFlags flags, dataType::SegmentIdType background)
 {
-    auto segImage = storage->denseRegion(storage->GetLargestPossibleRegion());
+    auto geometry = dataType::SegmentsImageType::New();
+    geometry->CopyInformation(storage->imageInformation());
+    geometry->SetRegions(storage->GetLargestPossibleRegion());
     ComputeResult result;
     result.flags = flags;
 
     QElapsedTimer timer;
     timer.start();
 
-    const auto region = segImage->GetLargestPossibleRegion();
+    const auto region = geometry->GetLargestPossibleRegion();
     const auto size = region.GetSize();
     result.is2D = size[2] == 1;
 
@@ -1522,7 +1529,7 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
         extractionRegion.SetSize(extractionSize);
 
         auto extract = ExtractFilter::New();
-        extract->SetInput(segImage);
+        extract->SetInput(geometry);
         extract->SetExtractionRegion(extractionRegion);
         extract->SetDirectionCollapseToSubmatrix();
         if (flags.overridePixelSize && std::isfinite(flags.pixelSize) && flags.pixelSize > 0.0) {
@@ -1533,9 +1540,9 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
             changeInformation->SetInput(extract->GetOutput());
             changeInformation->SetOutputSpacing(spacing);
             changeInformation->ChangeSpacingOn();
-            result.rows = computeShapeFeatureRows<Image2D>(changeInformation->GetOutput(), flags, background);
+            result.rows = computeShapeFeatureRows<Image2D>(changeInformation->GetOutput(), *storage, flags, background);
         } else {
-            result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), flags, background);
+            result.rows = computeShapeFeatureRows<Image2D>(extract->GetOutput(), *storage, flags, background);
         }
 
         const int singletonZ = static_cast<int>(region.GetIndex()[2]);
@@ -1543,12 +1550,15 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
             row.centroidZ = singletonZ;
         }
     } else {
-        result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(segImage, flags, background);
+        result.rows = computeShapeFeatureRows<dataType::SegmentsImageType>(geometry, *storage, flags, background);
     }
 
-    if (flags.isIsolated || flags.backgroundExposure || flags.foregroundExposure) {
+    if (!result.rows.empty() && (flags.isIsolated || flags.backgroundExposure || flags.foregroundExposure)) {
+        QElapsedTimer contactTimer;
+        contactTimer.start();
         const auto contactFeaturesByLabel = computeLabelContactFeatures(
-            segImage, flags.backgroundExposure || flags.foregroundExposure, result.rows.size(), background);
+            *storage, flags.backgroundExposure || flags.foregroundExposure, result.rows.size(), background);
+        SP_LOG_INFO("segmentation", QStringLiteral("segment_table contacts_ms=%1").arg(contactTimer.elapsed()));
         for (SegmentRow &row : result.rows) {
             const auto featureIt = contactFeaturesByLabel.find(row.label);
             if (featureIt == contactFeaturesByLabel.end()) {
@@ -1572,6 +1582,8 @@ SegmentTableDialog::ComputeResult SegmentTableDialog::computeFeatures(
     }
 
     result.elapsedSeconds = timer.elapsed() / 1000.0;
+    SP_LOG_INFO("segmentation", QStringLiteral("segment_table total_ms=%1 labels=%2")
+        .arg(timer.elapsed()).arg(result.rows.size()));
     return result;
 }
 
