@@ -18,6 +18,8 @@
 #include <vtkRenderer.h>
 #include <vtkSmartPointer.h>
 #include "src/file_definitions/dataTypes.h"
+#include "src/image_storage/DenseImageStorage.h"
+#include "src/viewers/itkSignalBase.h"
 #include "src/segment_handling/Projected3DCut.h"
 #include "src/segment_handling/SeededWatershedSplit.h"
 #include "src/utils/roi.h"
@@ -84,23 +86,51 @@ public:
     };
 
     static PreparedScene prepareScene(
-        dataType::SegmentsImageType::Pointer segImage,
+        dataType::SegmentsStorage::Pointer segImage,
         std::vector<LabelWithColor> labels);
     static PreparedScene prepareScene(
-        dataType::SegmentsImageType::Pointer segImage,
+        dataType::SegmentsStorage::Pointer segImage,
         std::vector<LabelWithColor> labels,
         Roi requestedBounds,
         bool allowReducedDetail = true);
     static PreparedScene prepareSingleLabelSlideshowScene(
-        dataType::SegmentsImageType::Pointer segImage,
+        dataType::SegmentsStorage::Pointer segImage,
         LabelWithColor label);
     static PreparedScene prepareSingleLabelSlideshowScene(
-        dataType::SegmentsImageType::Pointer segImage,
+        dataType::SegmentsStorage::Pointer segImage,
         LabelWithColor label,
         const Roi &cachedBounds);
     static PreparedScene prepareAllLabelsScene(
-        dataType::SegmentsImageType::Pointer segImage,
+        dataType::SegmentsStorage::Pointer segImage,
         LabelColorSnapshot labelColors);
+    static PreparedScene prepareScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        std::vector<LabelWithColor> labels) {
+        return prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(segImage), labels);
+    }
+    static PreparedScene prepareScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        std::vector<LabelWithColor> labels,
+        Roi requestedBounds,
+        bool allowReducedDetail = true) {
+        return prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(segImage), labels, requestedBounds, allowReducedDetail);
+    }
+    static PreparedScene prepareSingleLabelSlideshowScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        LabelWithColor label) {
+        return prepareSingleLabelSlideshowScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(segImage), label);
+    }
+    static PreparedScene prepareSingleLabelSlideshowScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        LabelWithColor label,
+        const Roi &cachedBounds) {
+        return prepareSingleLabelSlideshowScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(segImage), label, cachedBounds);
+    }
+    static PreparedScene prepareAllLabelsScene(
+        dataType::SegmentsImageType::Pointer segImage,
+        LabelColorSnapshot labelColors) {
+        return prepareAllLabelsScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(segImage), labelColors);
+    }
     // Avoid large graphics buffers that can crash the macOS graphics driver.
     static constexpr std::uint64_t kMaximumMeshBufferBytes = 256ULL * 1024 * 1024;
 
@@ -162,7 +192,7 @@ protected:
 
 private:
     static PreparedScene extractScene(
-        dataType::SegmentsImageType::Pointer segImage,
+        dataType::SegmentsStorage::Pointer segImage,
         std::vector<LabelWithColor> labels,
         Roi requestedBounds,
         bool allLabelsInImage,

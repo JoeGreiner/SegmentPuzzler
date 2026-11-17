@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/qtUtils/TaskRunner.h"
 
@@ -80,7 +81,7 @@ int main(int argc, char **argv) {
         image->FillBuffer(1);
         auto baseSession = segment_puzzler::prepareSeededWatershedSplit(
             image, 1, segment_puzzler::SplitLandscapePreparation::Deferred);
-        const auto scene = Segment3DViewerDialog::prepareScene(image, {{1, 0xFFAAAAAA}}, baseSession.sourceRoi);
+        const auto scene = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), {{1, 0xFFAAAAAA}}, baseSession.sourceRoi);
         auto reference = baseSession;
         segment_puzzler::updateSeededWatershedSplitLandscape(reference, 2.0);
         auto session = std::make_shared<Session>(baseSession);

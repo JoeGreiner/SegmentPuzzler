@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/viewers/SegmentMeshBatchRenderer.h"
 #include "src/utils/AppLogger.h"
@@ -148,19 +149,19 @@ void testReducedDetail() {
         {1, 0xFFFF0000}, {2, 0xFF00FF00}, {3, 0xFF0000FF}};
     QSettings settings;
     settings.setValue("graphics/lodEnabled", false);
-    auto original = Segment3DViewerDialog::prepareScene(image, labels);
+    auto original = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels);
     require(original.meshes.size() == 3, "Preparation lost a segment");
     require(original.meshes[0].polyData->GetPoints() == original.meshes[1].polyData->GetPoints(),
             "Shared-point fixture no longer exercises shared points");
     constexpr int roiVoxels = 60 * 18 * 18;
     settings.setValue("graphics/lodEnabled", true);
     settings.setValue("graphics/lodVoxelThreshold", roiVoxels + 1);
-    auto belowThreshold = Segment3DViewerDialog::prepareScene(image, labels);
+    auto belowThreshold = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels);
     for (std::size_t i = 0; i < labels.size(); ++i)
         require(belowThreshold.meshes[i].polyData->GetNumberOfPolys() == original.meshes[i].polyData->GetNumberOfPolys(),
                 "Scene below threshold was simplified");
     settings.setValue("graphics/lodVoxelThreshold", roiVoxels);
-    auto scene = Segment3DViewerDialog::prepareScene(image, labels);
+    auto scene = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels);
     require(scene.meshes.size() == 3, "LOD preparation lost a segment");
     require(scene.meshes[2].polyData->GetNumberOfPolys() == original.meshes[2].polyData->GetNumberOfPolys(),
             "Tiny segment did not retain its geometry");
@@ -184,28 +185,28 @@ void testReducedDetail() {
         }
     }
     settings.setValue("graphics/lodReductionFactor", 8);
-    const auto coarser = Segment3DViewerDialog::prepareScene(image, labels);
+    const auto coarser = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels);
     require(coarser.meshes[0].polyData->GetNumberOfPolys() > 0 &&
                 coarser.meshes[0].polyData->GetNumberOfPolys() < scene.meshes[0].polyData->GetNumberOfPolys(),
             "Increasing the LOD factor did not produce coarser geometry");
     settings.remove("graphics/lodReductionFactor");
     settings.setValue("graphics/lodVoxelThreshold", 1);
     settings.setValue("graphics/lodEnabled", false);
-    auto disabled = Segment3DViewerDialog::prepareScene(image, labels);
+    auto disabled = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels);
     require(disabled.meshes[0].polyData->GetNumberOfPolys() == original.meshes[0].polyData->GetNumberOfPolys(),
             "Disabled LOD still simplified geometry");
     settings.setValue("graphics/lodEnabled", true);
-    auto splitScene = Segment3DViewerDialog::prepareScene(image, labels, Roi(), false);
+    auto splitScene = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels, Roi(), false);
     require(splitScene.meshes[0].polyData->GetNumberOfPolys() == original.meshes[0].polyData->GetNumberOfPolys(),
             "Split preparation used reduced geometry");
-    auto allLabels = Segment3DViewerDialog::prepareAllLabelsScene(image, LabelColorSnapshot{});
+    auto allLabels = Segment3DViewerDialog::prepareAllLabelsScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), LabelColorSnapshot{});
     require(allLabels.meshes.size() == scene.meshes.size(), "LOD lost labels in the full scene");
     for (std::size_t i = 0; i < scene.meshes.size(); ++i)
         require(allLabels.meshes[i].polyData->GetNumberOfPolys() == scene.meshes[i].polyData->GetNumberOfPolys(),
                 "Full scene used different LOD geometry");
 
     settings.setValue("graphics/lodReductionFactor", 1);
-    const auto factorOne = Segment3DViewerDialog::prepareScene(image, labels);
+    const auto factorOne = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels);
     for (std::size_t i = 0; i < labels.size(); ++i)
         require(factorOne.meshes[i].polyData->GetNumberOfPolys() == original.meshes[i].polyData->GetNumberOfPolys(),
                 "Factor one changed full-detail geometry");
@@ -216,7 +217,7 @@ void testReducedDetail() {
     direction[0][1] = -1;
     direction[1][0] = 1;
     image->SetDirection(direction);
-    const auto rotated = Segment3DViewerDialog::prepareScene(image, labels);
+    const auto rotated = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(image), labels);
     for (std::size_t i = 0; i < labels.size(); ++i) {
         double bounds[6], rotatedBounds[6];
         scene.meshes[i].polyData->GetCellsBounds(bounds);
@@ -232,7 +233,7 @@ void testReducedDetail() {
     borderImage->SetRegions(dataType::SegmentsImageType::RegionType({{0, 0, 0}}, {{9, 10, 11}}));
     borderImage->Allocate();
     borderImage->FillBuffer(70000);
-    auto borderScene = Segment3DViewerDialog::prepareScene(borderImage, {{70000, 0xFFFFFFFF}});
+    auto borderScene = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(borderImage), {{70000, 0xFFFFFFFF}});
     require(borderScene.meshes.size() == 1 && borderScene.meshes[0].lodFactor == 4,
             "LOD lost a high label ID at the image boundary");
     vtkNew<vtkFeatureEdges> edges;
@@ -248,7 +249,7 @@ void testReducedDetail() {
     borderImage->SetPixel({{2, 2, 2}}, 70000);
     borderImage->SetPixel({{5, 5, 5}}, 2);
     settings.setValue("graphics/lodReductionFactor", 64);
-    const auto allMissing = Segment3DViewerDialog::prepareScene(borderImage, {{70000, 0xFFFFFFFF}, {2, 0xFFFFFFFF}});
+    const auto allMissing = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(borderImage), {{70000, 0xFFFFFFFF}, {2, 0xFFFFFFFF}});
     require(allMissing.meshes.size() == 2 && allMissing.meshes[0].labelId == 70000 &&
                 allMissing.meshes[1].labelId == 2 && allMissing.meshes[0].lodFactor == 1 &&
                 allMissing.meshes[1].lodFactor == 1, "Fallback did not restore missing labels in order");
@@ -256,7 +257,7 @@ void testReducedDetail() {
     Roi roi;
     roi.minX = roi.minY = roi.minZ = 1;
     roi.maxX = roi.maxY = roi.maxZ = 3;
-    const auto clipped = Segment3DViewerDialog::prepareScene(borderImage, {{70000, 0xFFFFFFFF}}, roi);
+    const auto clipped = Segment3DViewerDialog::prepareScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(borderImage), {{70000, 0xFFFFFFFF}}, roi);
     require(clipped.meshes.size() == 1 && clipped.meshes[0].polyData->GetBounds()[1] < 4,
             "Fallback restored geometry outside the requested ROI");
     settings.remove("graphics/lodReductionFactor");

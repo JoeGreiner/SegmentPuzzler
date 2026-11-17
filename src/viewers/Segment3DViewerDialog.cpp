@@ -1,3 +1,4 @@
+#include "src/image_storage/DenseImageStorage.h"
 #include "src/utils/WorkerThreads.h"
 #include "Segment3DViewerDialog.h"
 #include "SegmentMeshBatchRenderer.h"
@@ -742,80 +743,25 @@ bool touchesImageBoundary(const BoundsScanResult &bounds,
 }
 
 AllLabelsScanResult scanAllLabelsAndBounds(
-    const dataType::SegmentIdType *buf,
-    int dimX,
-    int dimY,
-    int dimZ)
+    const dataType::SegmentsStorage &image, int dimX, int dimY, int dimZ)
 {
     const BoundsScanResult emptyBounds{dimX, -1, dimY, -1, dimZ, -1};
-    const int threadCount = segment_puzzler::workerThreadCount();
-    std::vector<std::unordered_map<dataType::SegmentIdType, LabelScanResult>> localResults(
-        static_cast<std::size_t>(threadCount));
-
-#ifdef USE_OMP
-#pragma omp parallel num_threads(threadCount)
-#endif
-    {
-#ifdef USE_OMP
-        auto &local = localResults[static_cast<std::size_t>(omp_get_thread_num())];
-#else
-        auto &local = localResults.front();
-#endif
-#ifdef USE_OMP
-#pragma omp for nowait
-#endif
-        for (int z = 0; z < dimZ; ++z) {
-            for (int y = 0; y < dimY; ++y) {
-                const auto rowOffset =
-                    static_cast<std::size_t>(z) * dimX * dimY + static_cast<std::size_t>(y) * dimX;
-                const auto *row = buf + rowOffset;
-                for (int x = 0; x < dimX;) {
-                    const auto labelId = row[x];
-                    const int first = x++;
-                    while (x < dimX && row[x] == labelId) {
-                        ++x;
-                    }
-                    if (labelId == 0) {
-                        continue;
-                    }
-                    auto &stats = local[labelId];
-                    if (stats.voxelCount == 0) {
-                        stats.bounds = {first, x - 1, y, y, z, z};
-                    } else {
-                        includeInBounds(stats.bounds, first, y, z);
-                        includeInBounds(stats.bounds, x - 1, y, z);
-                    }
-                    stats.voxelCount += x - first;
-                }
-            }
-        }
-    }
-
     AllLabelsScanResult result;
     result.bounds = emptyBounds;
-    for (const auto &local : localResults) {
-        for (const auto &[labelId, localStats] : local) {
-            const auto [labelStats, inserted] = result.statsByLabel.try_emplace(
-                labelId, localStats);
-            if (!inserted) {
-                labelStats->second.voxelCount += localStats.voxelCount;
-                includeInBounds(labelStats->second.bounds,
-                                localStats.bounds.minX,
-                                localStats.bounds.minY,
-                                localStats.bounds.minZ);
-                includeInBounds(labelStats->second.bounds,
-                                localStats.bounds.maxX,
-                                localStats.bounds.maxY,
-                                localStats.bounds.maxZ);
-            }
-        }
+    for (const auto &[label, stats] : image.labelStatistics()) {
+        if (label == 0) continue;
+        const auto first = stats.bounds.GetIndex(), last = stats.bounds.GetUpperIndex();
+        auto &entry = result.statsByLabel[label];
+        entry.voxelCount = stats.voxelCount;
+        entry.bounds = {static_cast<int>(first[0]), static_cast<int>(last[0]),
+                        static_cast<int>(first[1]), static_cast<int>(last[1]),
+                        static_cast<int>(first[2]), static_cast<int>(last[2])};
     }
-
     result.labels.reserve(result.statsByLabel.size());
-    for (const auto &[labelId, stats] : result.statsByLabel) {
+    for (const auto &[label, stats] : result.statsByLabel) {
         includeInBounds(result.bounds, stats.bounds.minX, stats.bounds.minY, stats.bounds.minZ);
         includeInBounds(result.bounds, stats.bounds.maxX, stats.bounds.maxY, stats.bounds.maxZ);
-        result.labels.push_back(labelId);
+        result.labels.push_back(label);
     }
     std::sort(result.labels.begin(), result.labels.end());
     return result;
@@ -848,49 +794,17 @@ Roi roiFromBounds(const BoundsScanResult &bounds) {
 }
 
 BoundsScanResult scanBoundsForRequestedLabels(
-    const dataType::SegmentIdType *buf,
-    int dimX,
-    int dimY,
-    int dimZ,
+    const dataType::SegmentsStorage &image, int dimX, int dimY, int dimZ,
     const LabelMembershipLookup &lookup)
 {
-    BoundsScanResult result{dimX, -1, dimY, -1, dimZ, -1};
-    const int threadCount = segment_puzzler::workerThreadCount();
-#ifdef USE_OMP
-#pragma omp parallel num_threads(threadCount)
-#endif
-    {
-        BoundsScanResult local{dimX, -1, dimY, -1, dimZ, -1};
-#ifdef USE_OMP
-#pragma omp for nowait
-#endif
-        for (int z = 0; z < dimZ; ++z) {
-            for (int y = 0; y < dimY; ++y) {
-                const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
-                for (int x = 0; x < dimX;) {
-                    const auto labelId = row[x];
-                    const int first = x++;
-                    while (x < dimX && row[x] == labelId) {
-                        ++x;
-                    }
-                    if (lookup.contains(labelId)) {
-                        includeInBounds(local, first, y, z);
-                        includeInBounds(local, x - 1, y, z);
-                    }
-                }
-            }
-        }
-        if (local.maxX >= 0) {
-#ifdef USE_OMP
-#pragma omp critical
-#endif
-            {
-                includeInBounds(result, local.minX, local.minY, local.minZ);
-                includeInBounds(result, local.maxX, local.maxY, local.maxZ);
-            }
-        }
+    BoundsScanResult bounds{dimX, -1, dimY, -1, dimZ, -1};
+    for (const auto &[label, stats] : image.labelStatistics()) {
+        if (!lookup.contains(label)) continue;
+        const auto first = stats.bounds.GetIndex(), last = stats.bounds.GetUpperIndex();
+        includeInBounds(bounds, first[0], first[1], first[2]);
+        includeInBounds(bounds, last[0], last[1], last[2]);
     }
-    return result;
+    return bounds;
 }
 
 vtkSmartPointer<vtkPolyData> detachPolyData(vtkPolyData *source) {
@@ -945,58 +859,16 @@ std::vector<dataType::SegmentIdType> collectRequestedLabels(
 }
 
 std::vector<dataType::SegmentIdType> collectLabelsInExtent(
-    const dataType::SegmentIdType *buf,
-    int dimX,
-    int dimY,
-    int minX,
-    int maxX,
-    int minY,
-    int maxY,
-    int minZ,
-    int maxZ)
+    const dataType::SegmentsStorage &image, int dimX, int dimY,
+    int minX, int maxX, int minY, int maxY, int minZ, int maxZ)
 {
-    std::unordered_set<dataType::SegmentIdType> labelSet;
-    const int threadCount = segment_puzzler::workerThreadCount();
-    std::vector<std::unordered_set<dataType::SegmentIdType>> localSets(static_cast<std::size_t>(threadCount));
-#ifdef USE_OMP
-#pragma omp parallel num_threads(threadCount)
-#endif
-    {
-#ifdef USE_OMP
-        auto &localSet = localSets[static_cast<std::size_t>(omp_get_thread_num())];
-#else
-        auto &localSet = localSets.front();
-#endif
-#ifdef USE_OMP
-#pragma omp for nowait
-#endif
-        for (int z = minZ; z <= maxZ; ++z) {
-            for (int y = minY; y <= maxY; ++y) {
-                const auto *row = buf + (static_cast<std::size_t>(z) * dimY + y) * dimX;
-                for (int x = minX; x <= maxX;) {
-                    const auto labelId = row[x++];
-                    while (x <= maxX && row[x] == labelId) {
-                        ++x;
-                    }
-                    if (labelId != 0) {
-                        localSet.insert(labelId);
-                    }
-                }
-            }
-        }
-    }
-    std::size_t reserveCount = 0;
-    for (const auto &localSet : localSets) {
-        reserveCount += localSet.size();
-    }
-    labelSet.reserve(reserveCount);
-    for (const auto &localSet : localSets) {
-        labelSet.insert(localSet.begin(), localSet.end());
-    }
-
-    std::vector<dataType::SegmentIdType> labelIds(labelSet.begin(), labelSet.end());
-    std::sort(labelIds.begin(), labelIds.end());
-    return labelIds;
+    dataType::SegmentsStorage::Region region({minX, minY, minZ},
+        {static_cast<itk::SizeValueType>(maxX - minX + 1),
+         static_cast<itk::SizeValueType>(maxY - minY + 1),
+         static_cast<itk::SizeValueType>(maxZ - minZ + 1)});
+    std::set<dataType::SegmentIdType> labels;
+    image.forEachRun(region, [&](const auto &, std::size_t, auto label) { if (label != 0) labels.insert(label); });
+    return {labels.begin(), labels.end()};
 }
 
 vtkSmartPointer<vtkSurfaceNets3D> createSurfaceNet(
@@ -1729,14 +1601,14 @@ std::vector<Segment3DViewerDialog::PreparedMesh> Segment3DViewerDialog::prepareE
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer segImage,
     std::vector<LabelWithColor> labels)
 {
     return prepareScene(segImage, std::move(labels), Roi());
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer segImage,
     std::vector<LabelWithColor> labels,
     Roi requestedBounds,
     bool allowReducedDetail)
@@ -1750,7 +1622,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareScene(
 
 Segment3DViewerDialog::PreparedScene
 Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer segImage,
     LabelWithColor label)
 {
     if (segImage == nullptr || label.first == 0) {
@@ -1763,7 +1635,7 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
     QElapsedTimer scanStartedAt;
     scanStartedAt.start();
     auto scan = scanAllLabelsAndBounds(
-        segImage->GetBufferPointer(),
+        *segImage,
         static_cast<int>(size[0]),
         static_cast<int>(size[1]),
         static_cast<int>(size[2]));
@@ -1793,7 +1665,7 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
 
 Segment3DViewerDialog::PreparedScene
 Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer segImage,
     LabelWithColor label,
     const Roi &cachedBounds)
 {
@@ -1812,7 +1684,7 @@ Segment3DViewerDialog::prepareSingleLabelSlideshowScene(
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScene(
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer segImage,
     LabelColorSnapshot labelColors)
 {
     if (segImage == nullptr) {
@@ -1825,7 +1697,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
     QElapsedTimer scanStartedAt;
     scanStartedAt.start();
     const auto scan = scanAllLabelsAndBounds(
-        segImage->GetBufferPointer(),
+        *segImage,
         static_cast<int>(size[0]),
         static_cast<int>(size[1]),
         static_cast<int>(size[2]));
@@ -1865,7 +1737,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::prepareAllLabelsScen
 }
 
 Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
-    dataType::SegmentsImageType::Pointer segImage,
+    dataType::SegmentsStorage::Pointer segImage,
     std::vector<LabelWithColor> labels,
     Roi requestedBounds,
     bool allLabelsInImage,
@@ -1884,7 +1756,6 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
         return preparedScene;
     }
 
-    const auto *buf = segImage->GetBufferPointer();
     const auto &sz = segImage->GetLargestPossibleRegion().GetSize();
     const int dimX = static_cast<int>(sz[0]);
     const int dimY = static_cast<int>(sz[1]);
@@ -1921,7 +1792,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
         const auto requestedLabelLookup = buildRequestedLabelLookup(labels);
         QElapsedTimer t_bbox;
         t_bbox.start();
-        bounds = scanBoundsForRequestedLabels(buf, dimX, dimY, dimZ, requestedLabelLookup);
+        bounds = scanBoundsForRequestedLabels(*segImage, dimX, dimY, dimZ, requestedLabelLookup);
         SP_LOG_3D_TIMER(t_bbox, QStringLiteral("[3DView] [segmentpuzzler] bbox scan"));
     }
     const int minX = bounds.minX;
@@ -1946,7 +1817,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
     labelTimer.start();
     auto surfaceNetLabels = allLabelsInImage
         ? requestedLabels
-        : collectLabelsInExtent(buf, dimX, dimY, padX0, padX1, padY0, padY1, padZ0, padZ1);
+        : collectLabelsInExtent(*segImage, dimX, dimY, padX0, padX1, padY0, padY1, padZ0, padZ1);
     if (surfaceNetLabels.empty()) {
         surfaceNetLabels = requestedLabels;
     }
@@ -1987,6 +1858,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
     const std::size_t height = sizeY + 2;
     const auto copyVolume = [&](auto *output) {
         vtkSMPTools::For(-1, sizeZ + 1, [&](vtkIdType begin, vtkIdType end) {
+            std::vector<dataType::SegmentIdType> input(padX1 - padX0 + 1);
             for (auto z = begin; z < end; ++z) {
                 auto *slice = output + static_cast<std::size_t>(z + 1) * width * height;
                 for (int y = -1; y <= sizeY; ++y) {
@@ -1995,8 +1867,11 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
                         std::fill_n(row, width, 0);
                     } else {
                         row[0] = row[width - 1] = 0;
-                        const auto *source = buf + (static_cast<std::size_t>(padZ0 + z * sampleRate)
-                            * dimY + padY0 + y * sampleRate) * dimX + padX0;
+                        dataType::SegmentsStorage::Region region(
+                            {padX0, padY0 + y * sampleRate, padZ0 + z * sampleRate},
+                            {static_cast<itk::SizeValueType>(input.size()), 1, 1});
+                        segImage->readRegion(region, input.data(), input.size());
+                        const auto *source = input.data();
                         if (sampleRate == 1) {
                             std::copy_n(source, sizeX, row + 1);
                         } else {
@@ -2119,7 +1994,7 @@ Segment3DViewerDialog::PreparedScene Segment3DViewerDialog::extractScene(
         const auto missingCount = labels.size() - preparedScene.meshes.size();
         if (missingCount > 0) {
             // One scan supplies tight bounds for all labels missed by subsampling.
-            const auto scan = scanAllLabelsAndBounds(buf, dimX, dimY, dimZ);
+            const auto scan = scanAllLabelsAndBounds(*segImage, dimX, dimY, dimZ);
             std::map<dataType::SegmentIdType, PreparedMesh> meshes;
             for (auto &mesh : preparedScene.meshes) meshes.emplace(mesh.labelId, std::move(mesh));
             preparedScene.meshes.clear();
@@ -4126,7 +4001,7 @@ void Segment3DViewerDialog::previewProjectedCut() {
         PreparedScene scene;
         if (result.valid()) {
             scene = extractScene(
-                result.partition,
+                segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(result.partition),
                 splitPreviewLabels(result.componentVoxelCounts.size()), Roi(), false, false);
         }
         m_seededSplitBusy = false;
@@ -4831,7 +4706,7 @@ void Segment3DViewerDialog::previewSeededSplit() {
         PreparedScene scene;
         if (result.valid()) {
             scene = extractScene(
-                result.partition, {{1, 0xF2483D}, {2, 0x26A6FF}}, Roi(), false, false);
+                segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(result.partition), {{1, 0xF2483D}, {2, 0x26A6FF}}, Roi(), false, false);
         }
         m_seededSplitBusy = false;
         m_lastSeededSplitResult = result;
@@ -5249,7 +5124,7 @@ void Segment3DViewerDialog::previewErosionSplit() {
         PreparedScene partitionScene;
         if (result.valid()) {
             const auto labels = splitPreviewLabels(result.voxelCounts.size());
-            partitionScene = extractScene(result.partition, labels, Roi(), false, false);
+            partitionScene = extractScene(segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(result.partition), labels, Roi(), false, false);
         }
         return std::make_pair(std::move(result), std::move(partitionScene));
     };
