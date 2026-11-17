@@ -10,12 +10,14 @@
 #include <QJsonObject>
 #include <QLockFile>
 #include <QSaveFile>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <itkImageFileWriter.h>
 #include <QtEndian>
 #include <zlib-ng.h>
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <functional>
 #include <future>
 #include <set>
@@ -114,7 +116,6 @@ public:
         if (compressed && zng_deflateInit2(&stream, 1, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
             fail("Cannot initialize gzip compression.");
     }
-    qint64 deflateNs=0, writeNs=0, hashNs=0;
     ~ByteWriter() { if (compressed) zng_deflateEnd(&stream); }
     void write(const unsigned char *data, std::size_t size) {
         if (!compressed) { raw(data, size); return; }
@@ -127,18 +128,14 @@ public:
     }
 private:
     void raw(const unsigned char *data, std::size_t size) {
-        QElapsedTimer stage; stage.start();
         if (file.write(reinterpret_cast<const char *>(data), size) != static_cast<qint64>(size)) fail(file.errorString());
-        writeNs+=stage.nsecsElapsed(); stage.start();
-        hash.addData(reinterpret_cast<const char *>(data), size); hashNs+=stage.nsecsElapsed();
+        hash.addData(reinterpret_cast<const char *>(data), size);
     }
     int pump(int flush) {
         stream.next_out = output.data();
         stream.avail_out = output.size();
-        QElapsedTimer stage;stage.start();
         const int status = zng_deflate(&stream, flush);
         if (status != Z_OK && status != Z_STREAM_END) fail("Failed to compress volume.");
-        deflateNs+=stage.nsecsElapsed();
         raw(output.data(), output.size() - stream.avail_out);
         return status;
     }
@@ -148,6 +145,98 @@ private:
     zng_stream stream{};
     std::array<unsigned char, 128 * 1024> output{};
 };
+
+struct NrrdBlock {
+    std::vector<Label> pixels;
+    QByteArray deflated;
+    std::uint32_t crc = 0;
+    std::exception_ptr error;
+
+    void compress(bool last) {
+        zng_stream stream{};
+        if (zng_deflateInit2(&stream, 1, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+            fail("Cannot initialize NRRD compression.");
+        const auto cleanup = qScopeGuard([&] { zng_deflateEnd(&stream); });
+        stream.next_in = reinterpret_cast<const unsigned char *>(pixels.data());
+        stream.avail_in = static_cast<std::uint32_t>(pixels.size() * sizeof(Label));
+        crc = zng_crc32(0, stream.next_in, stream.avail_in);
+        deflated.resize(0);
+        std::array<unsigned char, 64 * 1024> buffer;
+        // Sync flush aligns intermediate blocks for concatenation into one gzip member.
+        do {
+            stream.next_out = buffer.data();
+            stream.avail_out = buffer.size();
+            const int status = zng_deflate(&stream, last ? Z_FINISH : Z_SYNC_FLUSH);
+            if (status != Z_OK && status != Z_STREAM_END) fail("Failed to compress NRRD block.");
+            deflated.append(reinterpret_cast<const char *>(buffer.data()), buffer.size() - stream.avail_out);
+            if (status == Z_STREAM_END) break;
+        } while (last || stream.avail_in || !stream.avail_out);
+    }
+};
+
+template<class Write>
+std::size_t writeNrrdPixels(const dataType::SegmentsStorage &image, bool compressed, const Write &write) {
+    const auto full = image.GetLargestPossibleRegion();
+    const auto size = full.GetSize();
+    auto tile = size;
+    auto grid = size;
+    std::size_t capacity = 4 * 1024 * 1024 / sizeof(Label);
+    std::size_t blockCount = 1;
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        tile[axis] = std::min<std::size_t>(size[axis], capacity);
+        capacity /= tile[axis];
+        grid[axis] = 1 + (size[axis] - 1) / tile[axis];
+        blockCount *= grid[axis];
+    }
+    auto threads = itk::MultiThreaderBase::New();
+    const auto workers = compressed ? std::min<std::size_t>(
+        {8, itk::MultiThreaderBase::GetGlobalDefaultNumberOfThreads(), blockCount}) : 1;
+    threads->SetNumberOfWorkUnits(workers);
+    std::vector<NrrdBlock> blocks(workers);
+    std::uint32_t crc = 0;
+    if (compressed) {
+        constexpr unsigned char gzipHeader[] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 4, 255};
+        write(gzipHeader, sizeof(gzipHeader));
+    }
+    for (std::size_t first = 0; first < blockCount; first += workers) {
+        const auto count = std::min(workers, blockCount - first);
+        threads->ParallelizeArray(0, count, [&](itk::SizeValueType i) {
+            auto position = first + i;
+            auto region = full;
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                const auto offset = (position % grid[axis]) * tile[axis];
+                position /= grid[axis];
+                region.SetIndex(axis, full.GetIndex()[axis] + static_cast<itk::IndexValueType>(offset));
+                region.SetSize(axis, std::min(tile[axis], size[axis] - offset));
+            }
+            auto &block = blocks[i];
+            try {
+                block.pixels.resize(region.GetNumberOfPixels());
+                image.readRegion(region, block.pixels.data(), block.pixels.size());
+                if (compressed) block.compress(first + i + 1 == blockCount);
+            } catch (...) {
+                block.error = std::current_exception();
+            }
+        }, nullptr);
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto &block = blocks[i];
+            if (block.error) std::rethrow_exception(block.error);
+            const auto bytes = block.pixels.size() * sizeof(Label);
+            if (compressed) {
+                write(block.deflated.constData(), block.deflated.size());
+                crc = zng_crc32_combine(crc, block.crc, bytes);
+            } else write(block.pixels.data(), bytes);
+        }
+    }
+    if (compressed) {
+        const auto byteCount = static_cast<std::uint32_t>(dataType::SegmentsStorage::byteCount(full));
+        const std::uint32_t trailer[] = {qToLittleEndian(crc), qToLittleEndian(byteCount)};
+        write(trailer, sizeof(trailer));
+    }
+    std::size_t bufferBytes = 0;
+    for (const auto &block : blocks) bufferBytes += block.pixels.capacity() * sizeof(Label) + block.deflated.capacity();
+    return bufferBytes;
+}
 
 struct Layout {
     itk::ImageIOBase::Pointer info;
@@ -618,29 +707,18 @@ QByteArray writeLabelVolume(const dataType::SegmentsStorage &image, const QStrin
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) fail(file.errorString());
-    if (file.write(header) != header.size()) fail(file.errorString());
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    hash.addData(header);
-    ByteWriter output(file, compressed, hash);
-    const auto rows = std::max<std::size_t>(1, std::min<std::size_t>(size[1], (16 * 1024 * 1024 / sizeof(Label)) / size[0]));
-    qint64 decodeNs=0;
-    std::vector<Label> pixels(rows * size[0]);
-    for (std::size_t z = 0; z < size[2]; ++z) for (std::size_t y = 0; y < size[1]; y += rows) {
-        auto region = full;
-        region.SetIndex(1, full.GetIndex()[1] + y); region.SetIndex(2, full.GetIndex()[2] + z);
-        region.SetSize(1, std::min(rows, size[1] - y)); region.SetSize(2, 1);
-        const auto count = region.GetNumberOfPixels();
-        QElapsedTimer decode; decode.start(); image.readRegion(region, pixels.data(), count); decodeNs+=decode.nsecsElapsed();
-        const auto *bytes = reinterpret_cast<const unsigned char *>(pixels.data());
-        for (std::size_t offset = 0; offset < count * sizeof(Label); offset += blockBytes)
-            output.write(bytes + offset, std::min(blockBytes, count * sizeof(Label) - offset));
-    }
-    output.finish();
-    fprintf(stderr,"PROFILE decode=%.1f deflate=%.1f write=%.1f hash=%.1f ms\n",decodeNs/1e6,output.deflateNs/1e6,output.writeNs/1e6,output.hashNs/1e6);
+    const auto write = [&](const void *data, std::size_t bytes) {
+        const auto *buffer = static_cast<const char *>(data);
+        if (file.write(buffer, bytes) != static_cast<qint64>(bytes)) fail(file.errorString());
+        hash.addData(buffer, bytes);
+    };
+    write(header.constData(), header.size());
+    const auto bufferBytes = writeNrrdPixels(image, compressed, write);
     if (image.GetMTime() != modifiedTime) fail("The image changed while it was being saved.");
     if (!file.commit()) fail(file.errorString());
     SP_LOG_INFO("io", QStringLiteral("volume_save path=\"%1\" elapsed_ms=%2 buffer_bytes=%3")
-        .arg(path).arg(timer.elapsed()).arg(pixels.size() * sizeof(Label)));
+        .arg(path).arg(timer.elapsed()).arg(bufferBytes));
     return hash.result().toHex();
 }
 

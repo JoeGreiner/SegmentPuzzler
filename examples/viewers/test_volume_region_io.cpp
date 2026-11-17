@@ -1,10 +1,12 @@
 #include "src/viewers/VolumeRegionIO.h"
+#include "src/image_storage/LabelImageStorage.h"
 #include <QCoreApplication>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtEndian>
 #include <itkImageFileWriter.h>
 #include <iostream>
+#include <random>
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
 #include <csignal>
@@ -216,6 +218,29 @@ void bigEndianRoundtrip(const QString &directory) {
     }
 }
 
+void gzipValidation(const QString &directory) {
+    auto image = makeImage({{131, 137, 35}});
+    for (const auto &suffix : {".nrrd", ".nii.gz"}) {
+        const auto path = directory + "/checksum" + suffix;
+        save<Label>(image, path, true);
+        QFile file(path);
+        require(file.open(QIODevice::ReadOnly), "Cannot read gzip fixture");
+        const auto original = file.readAll();
+        file.close();
+        for (int footerOffset : {8, 4, 0}) {
+            auto damaged = original;
+            if (footerOffset) {
+                const auto offset = damaged.size() - footerOffset;
+                damaged[offset] = damaged.at(offset) ^ 1;
+            } else damaged.chop(4);
+            require(file.open(QIODevice::WriteOnly), "Cannot write gzip fixture");
+            require(file.write(damaged) == damaged.size(), "Incomplete gzip fixture");
+            file.close();
+            rejects([&] { readLabelStorage(path, {}); }, "Streaming accepted damaged gzip");
+        }
+    }
+}
+
 void rejectedWrites(const QString &directory) {
     auto crop = makeImage({{2, 2, 2}});
     crop->FillBuffer(1);
@@ -321,6 +346,72 @@ void checkStoredLabels(const QString &path, const ImageLoadOptions &options) {
             dense.image->GetBufferedRegion().GetNumberOfPixels(), decoded->GetBufferPointer()), "Streaming load changed pixels");
     require(serializeContext(*dense.context) == serializeContext(*stored.context), "Streaming load changed provenance or labels");
     require(!imageContext(stored.image->GetMetaDataDictionary()), "Streaming storage retained duplicate context");
+}
+
+void streamingWrites(const QString &directory) {
+    auto image = makeImage({{131, 137, 35}});
+    const auto count = image->GetBufferedRegion().GetNumberOfPixels();
+    for (std::size_t i = 0; i < count; ++i) image->GetBufferPointer()[i] = (i / 97) % 19;
+    image->GetBufferPointer()[count - 1] = 4000000000U;
+    const std::string description = "Backslash \\ and\nnewline, \xc3\xa4";
+    itk::EncapsulateMetaData<std::string>(image->GetMetaDataDictionary(), "description", description);
+    itk::EncapsulateMetaData<std::string>(image->GetMetaDataDictionary(), "sizes", "custom metadata");
+    itk::EncapsulateMetaData<std::string>(image->GetMetaDataDictionary(), "NRRD_content", "Label volume");
+    itk::EncapsulateMetaData<std::string>(image->GetMetaDataDictionary(), "NRRD_labels[0]", "X axis");
+    itk::EncapsulateMetaData<double>(image->GetMetaDataDictionary(), "NRRD_thicknesses[1]", 2.5);
+    VolumeContext context;
+    context.background = 0; context.originalLabels = {0, 7}; context.nextLabel = 21;
+    setImageContext(image->GetMetaDataDictionary(), context);
+    auto region = image->GetLargestPossibleRegion();
+    region.SetIndex({{-3, 5, 9}}); image->SetRegions(region);
+    Image::PointType expectedOrigin;
+    image->TransformIndexToPhysicalPoint(region.GetIndex(), expectedOrigin);
+    for (bool rle : {false, true}) for (bool compressed : {false, true}) for (bool recovery : {false, true}) {
+        dataType::SegmentsStorage::Pointer storage = rle ? segment_puzzler::storeLabels(*image)
+            : segment_puzzler::DenseImageStorage<Label>::fromImage(image);
+        const auto path = directory + "/streaming-write.nrrd";
+        const auto before = storage->GetMTime();
+        const auto hash = writeLabelVolume(*storage, path, recovery ? &context : nullptr, compressed);
+        require(hash == fileFingerprint(path), "Written fingerprint differs");
+        require(storage->GetMTime() == before, "Writing modified source storage");
+        auto reader = itk::ImageFileReader<Image>::New();
+        reader->SetFileName(path.toStdString()); reader->Update();
+        const auto *decoded = reader->GetOutput();
+        require(std::equal(image->GetBufferPointer(), image->GetBufferPointer() + count, decoded->GetBufferPointer()),
+                "Streaming write changed pixels");
+        require(decoded->GetSpacing() == image->GetSpacing() && decoded->GetDirection() == image->GetDirection() &&
+                (decoded->GetOrigin() - expectedOrigin).GetNorm() < 1e-10, "Streaming write changed geometry");
+        std::string actual;
+        require(itk::ExposeMetaData<std::string>(decoded->GetMetaDataDictionary(), "description", actual) && actual == description,
+                "Streaming write changed metadata");
+        require(itk::ExposeMetaData<std::string>(decoded->GetMetaDataDictionary(), "sizes", actual) && actual == "custom metadata",
+                "Streaming write changed a metadata key matching a field name");
+        require(itk::ExposeMetaData<std::string>(decoded->GetMetaDataDictionary(), "NRRD_content", actual) && actual == "Label volume",
+                "Streaming write changed NRRD content");
+        require(itk::ExposeMetaData<std::string>(decoded->GetMetaDataDictionary(), "NRRD_labels[0]", actual) && actual == "X axis",
+                "Streaming write changed axis labels");
+        double thickness = 0;
+        require(itk::ExposeMetaData<double>(decoded->GetMetaDataDictionary(), "NRRD_thicknesses[1]", thickness) && thickness == 2.5,
+                "Streaming write changed axis thickness");
+        const auto savedContext = imageContext(decoded->GetMetaDataDictionary());
+        require(bool(savedContext) == recovery, "Export/recovery context differs");
+        if (recovery) require(serializeContext(*savedContext) == serializeContext(context), "Recovery context changed");
+    }
+    auto large = makeImage({{2048, 2049, 2}});
+    large->FillBuffer(7);
+    std::mt19937 random(7);
+    for (std::size_t i = 0; i < 512 * 1024; ++i) large->GetBufferPointer()[i] = random() % 256;
+    large->SetPixel({{2047, 2048, 1}}, 19);
+    auto storage = segment_puzzler::storeLabels(*large);
+    const auto path = directory + "/streaming-write-rows.nrrd";
+    writeLabelVolume(*storage, path);
+    const auto loaded = readImage<Label>(path, {}).image;
+    require(std::equal(large->GetBufferPointer(), large->GetBufferPointer() + large->GetBufferedRegion().GetNumberOfPixels(),
+                       loaded->GetBufferPointer()), "Row batches changed pixels");
+    const auto fingerprint = fileFingerprint(path);
+    itk::EncapsulateMetaData<std::string>(storage->GetMetaDataDictionary(), "bad:=key", "value");
+    rejects([&] { writeLabelVolume(*storage, path); }, "Invalid metadata was accepted");
+    require(fileFingerprint(path) == fingerprint, "Rejected write replaced target");
 }
 
 void streamingLabels(const QString &directory) {
@@ -440,10 +531,12 @@ int main(int argc, char **argv) {
         roundtrip(directory.path(), ".nii", false);
         roundtrip(directory.path(), ".nii.gz", true);
         streamingLabels(directory.path());
+        streamingWrites(directory.path());
         fullLoadContextAndValidation(directory.path());
         independentTarget(directory.path());
         largeBlockRead(directory.path());
         bigEndianRoundtrip(directory.path());
+        gzipValidation(directory.path());
         rejectedWrites(directory.path());
         nonzeroBackground(directory.path());
         std::cout << "Volume crop, label mapping, atomic insertion and recovery tests passed\n";
