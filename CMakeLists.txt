@@ -729,7 +729,12 @@ if (BUILD_TESTING)
 #    target_link_libraries(test_customwatershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
 #    target_link_libraries(test_watershedControl ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})
-endif ()
+
+    add_executable(test_RleImageStorage examples/viewers/test_rle_image_storage.cpp)
+    set_target_properties(test_RleImageStorage PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(test_RleImageStorage PRIVATE segmentpuzzler_image_storage)
+    add_test(NAME RleImageStorage COMMAND test_RleImageStorage)
+endif()
 
 if (BUILD_BENCHMARKS)
     function(configure_benchmark_target target_name)
