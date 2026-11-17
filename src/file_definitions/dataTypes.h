@@ -2,6 +2,7 @@
 #define SEGMENTCOUPLER_DATATYPES_H
 
 #include "itkImage.h"
+#include "src/image_storage/ImageStorage.h"
 
 //#define SEGMENTSHORT
 #define SEGMENTUINT
@@ -18,6 +19,7 @@ namespace dataType {
     using SegmentIdType = unsigned int;
 #endif
 
+    using SegmentsStorage = segment_puzzler::ImageStorage<SegmentIdType>;
     using SegmentsImageType = itk::Image<SegmentIdType, Dimension>;
     using EdgePairIdType = std::pair<SegmentIdType, SegmentIdType>;
     using EdgeNumIdType = unsigned int;
@@ -27,6 +29,7 @@ namespace dataType {
     using BoundaryImageType = itk::Image<BoundaryVoxelType, 3>;
 
     using MappedEdgeIdType = unsigned int;
+    using EdgeStorage = segment_puzzler::ImageStorage<MappedEdgeIdType>;
     using EdgeImageType = itk::Image<MappedEdgeIdType, 3>;
     using FeatureVoxelType = float;
     using FeatureImageType = itk::Image<FeatureVoxelType, 3>;
