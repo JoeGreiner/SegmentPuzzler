@@ -228,7 +228,9 @@ public:
 
     // construct a graph from
     void constructFromVolume(itk::Image<SegmentIdType, 3>::Pointer pImage, std::optional<SegmentIdType> sourceBackground = {});
+    void constructFromVolume(dataType::SegmentsStorage::Pointer image, std::optional<SegmentIdType> sourceBackground = {});
     void updateBackgroundIdFromVolume(SegmentsImageType::Pointer pImage, std::optional<SegmentIdType> sourceBackground = {});
+    void updateBackgroundIdFromVolume(dataType::SegmentsStorage::Pointer image, std::optional<SegmentIdType> sourceBackground = {});
 
     void initializeEdgeVolumeAndEdgeStatus();
 
@@ -409,7 +411,7 @@ public:
     // set pointer to ignoredSegments vector
     void setPointerToIgnoredSegmentLabels(std::vector<SegmentIdType> *pIgnoredSegmentLabels);
 
-    SegmentIdType getNextFreeId(itk::Image<SegmentIdType, 3>::Pointer pImage);
+    SegmentIdType getNextFreeId(dataType::SegmentsStorage::Pointer pImage);
 
 
 private:
@@ -428,13 +430,9 @@ private:
         Projected3DCutProfile *profileOut,
         std::vector<SegmentIdType> *resultingWorkingLabelsOut);
 
-    void constructInitialNodes(itk::Image<SegmentIdType, 3>::Pointer pImage);
+    void constructInitialNodes(dataType::SegmentsStorage::Pointer image);
 
     void generateWorkingCopyOfInitialNodesAndEdges();
-
-    SegmentIdType getLargestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage);
-    SegmentIdType getSmallestSegmentId(itk::Image<SegmentIdType, 3>::Pointer pImage);
-
 
     void mergeOneSidedEdgesIntoTwosidedEdges();
 

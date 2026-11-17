@@ -17,8 +17,14 @@ std::size_t OneSidedInitialEdge::getVoxelCount() const {
 }
 
 void OneSidedInitialEdge::addVoxel(const Voxel &voxel) {
-    roi.updateBoundingRoi(voxel);
-    voxels.push_back(voxel);
+    addRun(voxel, 1);
+}
+
+void OneSidedInitialEdge::addRun(const Voxel &start, std::size_t length) {
+    if (!length) return;
+    voxels.appendRun(start, length);
+    roi.updateBoundingRoi(start);
+    roi.updateBoundingRoi(Voxel(static_cast<int>(std::int64_t(start.x) + static_cast<std::int64_t>(length) - 1), start.y, start.z));
 }
 
 void OneSidedInitialEdge::print(int indentationLevel, std::ostream &outStream) {

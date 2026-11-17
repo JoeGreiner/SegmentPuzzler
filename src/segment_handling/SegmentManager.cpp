@@ -754,16 +754,23 @@ void SegmentManager::buildTwoSidedInitialEdgesFromOneSidedInitialEdges(bool very
                 planes[voxel.z].emplace_back(voxel.y * size[0] + voxel.x, edge->numId);
     }
     std::vector<dataType::MappedEdgeIdType> pixels;
-    for (std::size_t z = 0; z < planes.size(); ++z) {
-        if (planes[z].empty()) continue;
+    constexpr std::size_t planesPerBatch = 16;
+    const std::size_t planePixels = size[0] * size[1];
+    for (std::size_t z = 0; z < planes.size(); z += planesPerBatch) {
+        const auto end = std::min(z + planesPerBatch, planes.size());
+        if (std::all_of(planes.begin() + z, planes.begin() + end,
+                        [](const auto &plane) { return plane.empty(); })) continue;
         auto region = graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion();
-        region.SetIndex(2, z);
-        region.SetSize(2, 1);
+        region.SetIndex(2, region.GetIndex()[2] + z);
+        region.SetSize(2, end - z);
         pixels.resize(region.GetNumberOfPixels());
         graphBase->pEdgesInitialSegmentsImage->readRegion(region, pixels.data(), pixels.size());
-        for (const auto &[offset, value] : planes[z]) pixels[offset] = value;
+        for (auto plane = z; plane < end; ++plane) {
+            for (const auto &[offset, value] : planes[plane])
+                pixels[(plane - z) * planePixels + offset] = value;
+            std::vector<EdgePixel>().swap(planes[plane]);
+        }
         graphBase->pEdgesInitialSegmentsImage->writeRegion(region, pixels.data(), pixels.size());
-        std::vector<EdgePixel>().swap(planes[z]);
     }
     const double registerTwoSidedEdgesMs = static_cast<double>(phaseTimer.nsecsElapsed()) / 1000000.0;
 

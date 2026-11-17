@@ -12,8 +12,6 @@
 #include <QWidget>
 
 #include <itkExceptionObject.h>
-#include <itkImageFileWriter.h>
-#include <itkNrrdImageIO.h>
 
 #include <algorithm>
 #include <exception>
@@ -171,6 +169,7 @@ void SelectedSegmentationAutosave::trackSelectedSegmentation() {
     state.image = image;
     state.volumeContext = signal->volumeContext;
     state.name = signal->name;
+    state.initialEmptyMTime = signal->initialEmptyMTime;
     if (inserted && !signal->sourceFilePath.trimmed().isEmpty()) {
         state.persistedPath = QFileInfo(signal->sourceFilePath).absoluteFilePath();
         state.persistedMTime = image->GetMTime();
@@ -200,6 +199,7 @@ bool SelectedSegmentationAutosave::hasUnsavedChanges(
     const SegmentationRecoveryState &state)
 {
     return state.image != nullptr
+        && state.image->GetMTime() > state.initialEmptyMTime
         && !isCoveredByPersistedSave(state, state.image->GetMTime());
 }
 
@@ -347,18 +347,7 @@ void SelectedSegmentationAutosave::startRecoveryWrite(const SegmentationKey &key
         [image, path, context]() {
             WriteResult result;
             try {
-                using Writer = itk::ImageFileWriter<dataType::SegmentsImageType>;
-                auto imageIO = itk::NrrdImageIO::New();
-                auto writer = Writer::New();
-                auto snapshot = image->denseRegion(image->GetLargestPossibleRegion());
-                snapshot->SetMetaDataDictionary(image->GetMetaDataDictionary());
-                if (context) volume_io::setImageContext(snapshot->GetMetaDataDictionary(), *context);
-                writer->SetImageIO(imageIO);
-                writer->SetFileName(path.toStdString());
-                writer->SetInput(snapshot);
-                writer->SetUseCompression(true);
-                writer->SetCompressionLevel(1);
-                writer->Update();
+                volume_io::writeLabelVolume(*image, path, context.get());
                 result.success = true;
             } catch (...) {
                 result.error = describeCurrentException();

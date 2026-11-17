@@ -15,6 +15,7 @@ public:
     std::size_t getVoxelCount() const;
 
     void addVoxel(const Voxel &voxel);
+    void addRun(const Voxel &start, std::size_t length);
     void print(int indentationLevel, std::ostream &outStream) override;
 
     VoxelList voxels;

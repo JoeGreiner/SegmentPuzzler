@@ -850,6 +850,38 @@ int testAutomaticSixConnected3DSplitPreparation() {
     return 0;
 }
 
+int testRunwiseSegmentationDelete() {
+    for (bool compressed : {false, true}) {
+        auto image = dataType::SegmentsImageType::New();
+        image->SetRegions({{-3, 5, 8}, {11, 5, 19}});
+        image->Allocate();
+        const std::array<SegmentIdType, 5> labels{0, 7, 11, 4000000000U, 900};
+        const auto count = image->GetBufferedRegion().GetNumberOfPixels();
+        for (std::size_t i = 0; i < count; ++i) image->GetBufferPointer()[i] = labels[(i / 3) % labels.size()];
+        std::vector<SegmentIdType> expected(image->GetBufferPointer(), image->GetBufferPointer() + count);
+        std::size_t deleted = 0;
+        for (auto &value : expected) if (value == 0 || value == 7) { value = 900; ++deleted; }
+        auto base = std::make_shared<GraphBase>();
+        if (compressed) base->pSelectedSegmentation = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image);
+        else base->pSelectedSegmentation = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(image);
+        base->selectedSegmentationContext = std::make_shared<volume_io::VolumeContext>();
+        base->selectedSegmentationContext->background = 900;
+        Graph graph(base, false);
+        const auto before = base->pSelectedSegmentation->GetMTime();
+        if (graph.deleteSegmentationLabels({0, 7, 900, 999999}) != deleted ||
+            base->pSelectedSegmentation->GetMTime() <= before)
+            return failTest("Runwise deletion count or modification time differs");
+        const auto actual = base->pSelectedSegmentation->denseRegion(image->GetBufferedRegion());
+        if (!std::equal(expected.begin(), expected.end(), actual->GetBufferPointer()))
+            return failTest("Runwise deletion changed unrelated voxels");
+        const auto unchanged = base->pSelectedSegmentation->GetMTime();
+        if (graph.deleteSegmentationLabels({}) || graph.deleteSegmentationLabels({0, 7, 900, 999999}) ||
+            base->pSelectedSegmentation->GetMTime() != unchanged)
+            return failTest("Empty deletion changed the image");
+    }
+    return 0;
+}
+
 int testBulkSegmentationDeleteUsesOneGraphOperation() {
     auto selectedImage = makeImage(6, 1, 1);
     selectedImage->SetPixel({0, 0, 0}, 1);
@@ -2073,6 +2105,7 @@ int main(int argc, char **argv) {
     if (int result = testAutomaticSixConnected3DSplitPreparation()) {
         return result;
     }
+    if (int result = testRunwiseSegmentationDelete()) return result;
     if (int result = testBulkSegmentationDeleteUsesOneGraphOperation()) {
         return result;
     }

@@ -1,4 +1,7 @@
 #include "src/image_storage/DenseImageStorage.h"
+#include "src/image_storage/StreamVByteImageStorage.h"
+#include <random>
+#include <set>
 #include <QCoreApplication>
 
 #include <algorithm>
@@ -102,13 +105,15 @@ void appendTwoSidedInitialEdge(std::ostringstream &out, const TwoSidedInitialEdg
     }
 }
 
-std::string graphFingerprint() {
+std::string graphFingerprint(bool compressed = false) {
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
+    auto image = makeTestImage();
+    if (compressed) graphBase->pWorkingSegmentsImage = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image);
+    else graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(image);
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
     graph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
-    graph->constructFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
+    graph->constructFromVolume(graphBase->pWorkingSegmentsImage);
 
     std::ostringstream out;
     std::vector<SegmentIdType> nodeLabels;
@@ -166,8 +171,71 @@ std::string graphFingerprint() {
     return out.str();
 }
 
+int testRunContacts() {
+    std::mt19937 random(19);
+    for (const auto size : {dataType::SegmentsImageType::SizeType{{1, 5, 3}}, {{6, 1, 3}}, {{4, 3, 1}}, {{11, 7, 19}}}) {
+        auto image = dataType::SegmentsImageType::New();
+        image->SetRegions(size); image->Allocate();
+        for (std::size_t i = 0; i < image->GetBufferedRegion().GetNumberOfPixels(); ++i)
+            image->GetBufferPointer()[i] = random() % 7;
+        std::map<EdgePairIdType, std::vector<Voxel>> expected;
+        for (int z = 0; z < int(size[2]); ++z) for (int y = 0; y < int(size[1]); ++y) for (int x = 0; x < int(size[0]); ++x) {
+            const dataType::SegmentsImageType::IndexType index{x, y, z};
+            const auto label = image->GetPixel(index);
+            if (label == 0 || label == 2) continue;
+            std::set<SegmentIdType> neighbors;
+            for (unsigned axis = 0; axis < 3; ++axis) for (int offset : {-1, 1}) {
+                auto other = index; other[axis] += offset;
+                if (!image->GetBufferedRegion().IsInside(other)) continue;
+                const auto neighbor = image->GetPixel(other);
+                if (neighbor != label && neighbor != 0 && neighbor != 2) neighbors.insert(neighbor);
+            }
+            for (auto neighbor : neighbors) expected[{label, neighbor}].emplace_back(x, y, z);
+        }
+        for (bool compressed : {false, true}) {
+            auto base = std::make_shared<GraphBase>();
+            if (compressed) base->pWorkingSegmentsImage = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image);
+            else base->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(image);
+            Graph graph(base, false); base->pGraph = &graph;
+            base->ignoredSegmentLabels = {0, 2};
+            graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+            graph.constructFromVolume(base->pWorkingSegmentsImage, 0);
+            std::map<EdgePairIdType, std::vector<Voxel>> actual;
+            for (const auto &[label, node] : graph.initialNodes)
+                for (const auto &[neighbor, edge] : node->neighborLabelToOneSidedInitialEdge)
+                    actual[{label, neighbor}] = std::vector<Voxel>(edge->voxels.begin(), edge->voxels.end());
+            if (actual != expected) return failTest("Run contacts differ from six-neighbor voxel reference");
+        }
+    }
+    return 0;
+}
+
+int testBatchedEdgeImage() {
+    auto image = dataType::SegmentsImageType::New();
+    image->SetRegions(dataType::SegmentsImageType::SizeType{{24, 18, 35}});
+    image->Allocate(true);
+    for (int z = 16; z < 35; ++z) for (int y = 3; y < 15; ++y) for (int x = 4; x < 20; ++x)
+        if (z != 20) image->SetPixel({x, y, z}, x < 12 ? 1 : 2);
+    auto base = std::make_shared<GraphBase>();
+    base->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(image);
+    Graph graph(base, false);
+    base->pGraph = &graph;
+    graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+    graph.constructFromVolume(image);
+    if (graph.initialLabelPairToTwoSidedInitialEdge.size() != 1)
+        return failTest("Batched edge fixture must contain one edge");
+    const auto edge = graph.initialLabelPairToTwoSidedInitialEdge.begin()->second;
+    std::vector<dataType::MappedEdgeIdType> expected(image->GetBufferedRegion().GetNumberOfPixels(), 0);
+    for (const auto *list : edge->getVoxelLists()) for (const auto voxel : *list)
+        expected[image->ComputeOffset({voxel.x, voxel.y, voxel.z})] = edge->numId;
+    const auto actual = base->pEdgesInitialSegmentsImage->denseRegion(image->GetBufferedRegion());
+    return std::equal(expected.begin(), expected.end(), actual->GetBufferPointer())
+        ? 0 : failTest("Batched edge image differs across empty planes or the final partial batch");
+}
+
 int testRepeatableInitialEdgeBuild() {
     const std::string reference = graphFingerprint();
+    if (graphFingerprint(true) != reference) return failTest("Compressed graph differs from dense graph");
     for (int repetition = 0; repetition < 5; ++repetition) {
         if (graphFingerprint() != reference) {
             return failTest("Repeated graph construction differs from the first result.");
@@ -385,6 +453,8 @@ int main(int argc, char **argv) {
     if (int result = testTwoSidedInitialEdgeFeaturesUseBothOneSidedInitialEdges()) {
         return result;
     }
+    if (int result = testRunContacts()) return result;
+    if (int result = testBatchedEdgeImage()) return result;
     if (int result = testRepeatableInitialEdgeBuild()) {
         return result;
     }

@@ -49,7 +49,6 @@
 #include <clocale>
 #include <array>
 #include <algorithm>
-#include <itkImageDuplicator.h>
 #include <itkImageRegionConstIterator.h>
 #include <itkImageRegionIterator.h>
 #include <itkImageIORegion.h>
@@ -345,13 +344,20 @@ QLabel *createSectionLabel(const QString &title, QWidget *parent) {
     return label;
 }
 
-dataType::SegmentsImageType::Pointer duplicateSegmentsImage(
-    const dataType::SegmentsImageType::Pointer &sourceImage) {
-    using DuplicatorType = itk::ImageDuplicator<dataType::SegmentsImageType>;
-    auto duplicator = DuplicatorType::New();
-    duplicator->SetInputImage(sourceImage);
-    duplicator->Update();
-    return duplicator->GetOutput();
+dataType::SegmentsStorage::Pointer duplicateSegmentsImage(
+    const dataType::SegmentsStorage::Pointer &sourceImage) {
+    auto copy = segment_puzzler::StreamVByteImageStorage<dataType::SegmentIdType>::create(*sourceImage->imageInformation());
+    const auto full = sourceImage->GetLargestPossibleRegion();
+    std::vector<dataType::SegmentIdType> pixels;
+    for (std::size_t z = 0; z < full.GetSize()[2]; z += 16) {
+        auto region = full;
+        region.SetIndex(2, full.GetIndex()[2] + z);
+        region.SetSize(2, std::min<std::size_t>(16, full.GetSize()[2] - z));
+        pixels.resize(region.GetNumberOfPixels());
+        sourceImage->readRegion(region, pixels.data(), pixels.size());
+        copy->writeRegion(region, pixels.data(), pixels.size());
+    }
+    return copy;
 }
 
 template<typename T>
@@ -654,16 +660,17 @@ SignalControl::~SignalControl() {
 }
 
 void SignalControl::prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background) {
+    prepareWorkingSegmentsGraph(segment_puzzler::storeLabels(*workingSegmentsImage), background);
+}
+
+void SignalControl::prepareWorkingSegmentsGraph(const dataType::SegmentsStorage::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background) {
     graphBase->ignoredSegmentLabels.clear();
     graphBase->edgeStatus.clear();
     graphBase->colorLookUpEdgesStatus.clear();
     if (!background) graphBase->pGraph->setBackgroundIdStrategy("backgroundIsLowestId");
-    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(workingSegmentsImage);
+    graphBase->pWorkingSegmentsImage = workingSegmentsImage;
     graphBase->pGraph->setPointerToIgnoredSegmentLabels(&graphBase->ignoredSegmentLabels);
     graphBase->pGraph->constructFromVolume(workingSegmentsImage, background);
-    graphBase->pWorkingSegmentsImage = segment_puzzler::storeLabels(*workingSegmentsImage);
-    for (const auto &[label, node] : graphBase->pGraph->initialNodes)
-        node->setSegmentPointer(graphBase->pWorkingSegmentsImage);
 }
 
 void SignalControl::showInfoMessage(const QString &message) const {
@@ -2121,7 +2128,7 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
 }
 
 dataType::SegmentsStorage::Pointer SignalControl::duplicateSegmentationAndBuildWorkingSegments(
-    const GraphSegmentImageType::Pointer &segmentationImage, std::optional<GraphSegmentType> background) {
+    const dataType::SegmentsStorage::Pointer &segmentationImage, std::optional<GraphSegmentType> background) {
     auto workingSegmentsImage = duplicateSegmentsImage(segmentationImage);
     prepareWorkingSegmentsGraph(workingSegmentsImage, background);
     return graphBase->pWorkingSegmentsImage;
@@ -2178,11 +2185,11 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
          options,
          spacingOverride = spacingDecision.spacingOverride]() mutable {
             SegmentationLoadResultData result;
-            auto loaded = loadVolume<GraphSegmentType>(fileName, options);
+            auto loaded = loadLabelVolume(fileName, options);
             result.context = loaded.context;
-            applyVoxelSpacingOverride(loaded.image.GetPointer(), spacingOverride);
+            applyVoxelSpacingOverride(loaded.image->imageInformation(), spacingOverride);
             if (expectedDimensions && !imageMatchesDimensions(loaded.image, *expectedDimensions)) {
-                result.segmentationImage = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(loaded.image);
+                result.segmentationImage = loaded.image;
                 result.dimensionMismatch = true;
                 return result;
             }
@@ -2190,7 +2197,7 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
                 graphBase->pGraph->updateBackgroundIdFromVolume(loaded.image, result.context->background);
             if (createWorkingSegments)
                 result.workingSegmentsImage = duplicateSegmentationAndBuildWorkingSegments(loaded.image, result.context->background);
-            result.segmentationImage = segment_puzzler::storeLabels(*loaded.image);
+            result.segmentationImage = loaded.image;
             return result;
         },
         [this, fileName, displayedName, hadWorkingSegments, completion](SegmentationLoadResultData result) {
@@ -2242,9 +2249,9 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
     taskRunner->runWithLabel(
         QStringLiteral("Loading refinement..."),
         [fileName, options, spacingOverride = spacingDecision.spacingOverride]() mutable {
-            auto loaded = loadVolume<GraphSegmentType>(fileName, options);
-            applyVoxelSpacingOverride(loaded.image.GetPointer(), spacingOverride);
-            return volume_io::LoadedVolume<dataType::SegmentsStorage>{segment_puzzler::storeLabels(*loaded.image), loaded.context};
+            auto loaded = loadLabelVolume(fileName, options);
+            applyVoxelSpacingOverride(loaded.image->imageInformation(), spacingOverride);
+            return loaded;
         },
         [this, fileName, displayedName, completion](volume_io::LoadedVolume<dataType::SegmentsStorage> loaded) {
             size_t signalIndexGlobal = 0;
@@ -2291,11 +2298,11 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, v
             SegmentsGraphLoadResult result;
             // Modifies graphBase on the worker thread. Safe only because
             // one task runs at a time and the owning window is blocked.
-            auto loaded = loadVolume<GraphSegmentType>(fileName, options);
+            auto loaded = loadLabelVolume(fileName, options);
             auto pImage = loaded.image;
             result.context = loaded.context;
-            applyVoxelSpacingOverride(pImage.GetPointer(), spacingOverride);
-            result.image = segment_puzzler::DenseImageStorage<GraphSegmentType>::fromImage(pImage);
+            applyVoxelSpacingOverride(pImage->imageInformation(), spacingOverride);
+            result.image = pImage;
             if (expectedDimensions && !imageMatchesDimensions(pImage, *expectedDimensions)) {
                 result.dimensionMismatch = true;
                 return result;
@@ -3342,47 +3349,22 @@ void SignalControl::exportSelectedSegmentation() {
         }
     }
     SP_LOG_INFO("io", QStringLiteral("Export selected segmentation dialog returned path=%1").arg(path));
-    if (!path.isEmpty()) {
-        const QString absolutePath = QFileInfo(path).absoluteFilePath();
-        try {
-            {
-                auto spacing = exportedImage->GetSpacing();
-                auto origin = exportedImage->GetOrigin();
-                auto direction = exportedImage->GetDirection();
-                SP_LOG_INFO("io",
-                            QStringLiteral("Exporting selected segmentation to %1 spacing=[%2,%3,%4] origin=[%5,%6,%7] direction=[[ %8,%9,%10 ],[ %11,%12,%13 ],[ %14,%15,%16 ]] locale=%17")
-                                .arg(path)
-                                .arg(spacing[0]).arg(spacing[1]).arg(spacing[2])
-                                .arg(origin[0]).arg(origin[1]).arg(origin[2])
-                                .arg(direction[0][0]).arg(direction[0][1]).arg(direction[0][2])
-                                .arg(direction[1][0]).arg(direction[1][1]).arg(direction[1][2])
-                                .arg(direction[2][0]).arg(direction[2][1]).arg(direction[2][2])
-                                .arg(QString::fromUtf8(std::setlocale(LC_NUMERIC, nullptr))));
-            }
-            auto exportImage = exportedImage->denseRegion(exportedImage->GetLargestPossibleRegion());
-            auto metadata = exportedImage->GetMetaDataDictionary();
-            volume_io::clearImageContext(metadata);
-            exportImage->SetMetaDataDictionary(metadata);
-            graphBase->pGraph->ITKImageWriter<dataType::SegmentsImageType>(exportImage,
-                                                                           path.toStdString());
+    if (path.isEmpty()) return;
+    const QString absolutePath = QFileInfo(path).absoluteFilePath();
+    const auto savedMTime = exportedImage->GetMTime();
+    taskRunner->runWithLabel(tr("Exporting segmentation..."),
+        [exportedImage, absolutePath] { return volume_io::writeLabelVolume(*exportedImage, absolutePath); },
+        [this, exportedImage, exportedSignal, savedMTime, absolutePath](QByteArray fingerprint) {
             if (exportedSignal && exportedSignal->volumeContext &&
-                volume_io::canonicalPath(path) == exportedSignal->volumeContext->sourcePath)
-                exportedSignal->volumeContext->sourceFingerprint = volume_io::fileFingerprint(path);
+                volume_io::canonicalPath(absolutePath) == exportedSignal->volumeContext->sourcePath)
+                exportedSignal->volumeContext->sourceFingerprint = std::move(fingerprint);
             graphBase->lastExportPathThisSession = absolutePath;
-            MySettings.setValue(DEFAULT_SAVE_DIR_KEY, absolutePath);
-            if (exportedSignal != nullptr) {
-                exportedSignal->sourceFilePath = absolutePath;
-            }
-            emit selectedSegmentationSaved(
-                reinterpret_cast<quintptr>(exportedImage.GetPointer()),
-                reinterpret_cast<quintptr>(exportedSignal),
-                static_cast<quint64>(exportedImage->GetMTime()),
-                absolutePath);
-        } catch (const std::exception &err) {
-            SP_LOG_ERROR("io", QStringLiteral("Failed to export selected segmentation to %1: %2").arg(path, QString::fromUtf8(err.what())));
-        }
+            QSettings().setValue(QStringLiteral("default_save_dir"), absolutePath);
+            if (exportedSignal) exportedSignal->sourceFilePath = absolutePath;
+            emit selectedSegmentationSaved(reinterpret_cast<quintptr>(exportedImage.GetPointer()),
+                reinterpret_cast<quintptr>(exportedSignal), static_cast<quint64>(savedMTime), absolutePath);
+        });
 
-    }
 }
 
 void SignalControl::setPaintId(){
@@ -4130,6 +4112,7 @@ void SignalControl::createEmptySegmentation() {
 
     std::unique_ptr<itkSignal<GraphSegmentType>> pSignal2(new itkSignal<GraphSegmentType>(pImage));
     pSignal2->volumeContext = context;
+    pSignal2->initialEmptyMTime = pImage->GetMTime();
     auto *typedSignal = pSignal2.get();
     size_t signalIndexGlobal = allSignalList.size();
     allSignalList.push_back(typedSignal);

@@ -6,8 +6,9 @@
 #include <QElapsedTimer>
 #include <itkConstShapedNeighborhoodIterator.h>
 #include <cstdint>
+#include <algorithm>
+#include <tuple>
 #include <stdexcept>
-#include <unordered_set>
 
 namespace {
 
@@ -105,7 +106,6 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
         return;
     }
 
-    // Dimensions and strides
     const auto dimX = pSegments->GetLargestPossibleRegion().GetSize()[0];
     const auto dimY = pSegments->GetLargestPossibleRegion().GetSize()[1];
     const auto dimZ = pSegments->GetLargestPossibleRegion().GetSize()[2];
@@ -127,65 +127,71 @@ void InitialNode::computeOneSidedEdges(const std::vector<SegmentIdType> &ignored
          static_cast<itk::SizeValueType>(roi.maxY - roi.minY + 3),
          static_cast<itk::SizeValueType>(roi.maxZ - roi.minZ + 3)});
     readRegion.Crop(pSegments->GetLargestPossibleRegion());
-    const auto image = pSegments->readImageRegion(readRegion);
-    const auto start = image->GetBufferedRegion().GetIndex();
-    const auto bufferedSize = image->GetBufferedRegion().GetSize();
-    const auto rowStride = bufferedSize[0], sliceStride = bufferedSize[0] * bufferedSize[1];
-    const SegmentIdType *buffer = image->GetBufferPointer();
-
-    static const int neighborOffsets[6][3] = {
-            {  1,  0,  0 },
-            { -1,  0,  0 },
-            {  0,  1,  0 },
-            {  0, -1,  0 },
-            {  0,  0,  1 },
-            {  0,  0, -1 }
+    struct RowRun { itk::IndexValueType begin, end; SegmentIdType label; };
+    using Row = std::vector<RowRun>;
+    const auto origin = readRegion.GetIndex();
+    const auto height = readRegion.GetSize()[1];
+    const auto endZ = origin[2] + static_cast<itk::IndexValueType>(readRegion.GetSize()[2]);
+    std::vector<Row> previous(height), current(height);
+    std::unordered_map<SegmentIdType, std::vector<VoxelList::Run>> contacts;
+    const auto addContact = [&](SegmentIdType a, SegmentIdType b, SegmentIdImageType::IndexType first,
+                                SegmentIdImageType::IndexType second, std::size_t length) {
+        if (a == b || (a != label && b != label)) return;
+        const auto neighbor = a == label ? b : a;
+        const auto index = a == label ? first : second;
+        if (isIgnoredId(neighbor, ignoredSegmentIds) || index[1] < roi.minY || index[1] > roi.maxY ||
+            index[2] < roi.minZ || index[2] > roi.maxZ) return;
+        const auto begin = std::max<itk::IndexValueType>(index[0], roi.minX);
+        const auto end = std::min<itk::IndexValueType>(index[0] + length, std::int64_t(roi.maxX) + 1);
+        if (begin < end) contacts[neighbor].push_back({Voxel(begin, index[1], index[2]), static_cast<std::uint32_t>(end - begin)});
     };
-
-    std::unordered_set<SegmentIdType> neighborLabelsAddedForVoxel;
-    neighborLabelsAddedForVoxel.reserve(6);
-
-    // for all voxels in the roi of the initial node
-    for (size_t z = roi.minZ; z <= roi.maxZ; ++z) {
-        for (size_t y = roi.minY; y <= roi.maxY; ++y) {
-            for (size_t x = roi.minX; x <= roi.maxX; ++x) {
-                size_t centerIndex = (x - start[0]) + (y - start[1]) * rowStride + (z - start[2]) * sliceStride;
-                SegmentIdType centerLabel = buffer[centerIndex];
-
-                if (centerLabel == label) {
-                    neighborLabelsAddedForVoxel.clear();
-
-                    for (unsigned int i = 0; i < 6; ++i) {
-                        const std::int64_t nx = static_cast<std::int64_t>(x) + neighborOffsets[i][0];
-                        const std::int64_t ny = static_cast<std::int64_t>(y) + neighborOffsets[i][1];
-                        const std::int64_t nz = static_cast<std::int64_t>(z) + neighborOffsets[i][2];
-
-                        if (nx < 0 || static_cast<std::size_t>(nx) >= dimX ||
-                            ny < 0 || static_cast<std::size_t>(ny) >= dimY ||
-                            nz < 0 || static_cast<std::size_t>(nz) >= dimZ) {
-                            continue;
-                        }
-
-                        const std::size_t neighborIndex =
-                            static_cast<std::size_t>(nx - start[0]) +
-                            static_cast<std::size_t>(ny - start[1]) * rowStride +
-                            static_cast<std::size_t>(nz - start[2]) * sliceStride;
-                        SegmentIdType neighborLabel = buffer[neighborIndex];
-                        if (neighborLabel != label && !isIgnoredId(neighborLabel, ignoredSegmentIds)) {
-                            if (neighborLabelsAddedForVoxel.find(neighborLabel) == neighborLabelsAddedForVoxel.end()) {
-                                if (!neighborLabelToOneSidedInitialEdge.count(neighborLabel)) {
-                                    neighborLabelToOneSidedInitialEdge[neighborLabel] = std::make_shared<OneSidedInitialEdge>(neighborLabel, label);
-                                }
-                                Voxel voxelToAdd(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
-                                neighborLabelToOneSidedInitialEdge[neighborLabel]->addVoxel(voxelToAdd);
-                                neighborLabelsAddedForVoxel.insert(neighborLabel);
-                            }
-                        }
-                    }
-                }
-            }
+    const auto compareRows = [&](const Row &a, const Row &b, SegmentIdImageType::IndexType first,
+                                 SegmentIdImageType::IndexType second) {
+        std::size_t i = 0, j = 0;
+        while (i < a.size() && j < b.size()) {
+            const auto begin = std::max(a[i].begin, b[j].begin);
+            const auto end = std::min(a[i].end, b[j].end);
+            first[0] = second[0] = begin;
+            if (begin < end) addContact(a[i].label, b[j].label, first, second, end - begin);
+            const auto endA = a[i].end, endB = b[j].end;
+            if (endA <= endB) ++i;
+            if (endB <= endA) ++j;
         }
+    };
+    readRegion.SetSize(2, 1);
+    for (auto z = origin[2]; z < endZ; ++z) {
+        for (auto &row : current) row.clear();
+        readRegion.SetIndex(2, z);
+        pSegments->forEachRun(readRegion, [&](const auto &index, std::size_t length, SegmentIdType value) {
+            current[index[1] - origin[1]].push_back({index[0], index[0] + static_cast<itk::IndexValueType>(length), value});
+        });
+        for (std::size_t row = 0; row < height; ++row) {
+            const auto y = origin[1] + static_cast<itk::IndexValueType>(row);
+            const auto &runs = current[row];
+            for (std::size_t i = 1; i < runs.size(); ++i)
+                addContact(runs[i - 1].label, runs[i].label, {runs[i].begin - 1, y, z}, {runs[i].begin, y, z}, 1);
+            if (row) compareRows(current[row - 1], runs, {0, y - 1, z}, {0, y, z});
+            if (z > origin[2]) compareRows(previous[row], runs, {0, y, z - 1}, {0, y, z});
+        }
+        previous.swap(current);
     }
+    for (auto &[neighbor, runs] : contacts) {
+        std::sort(runs.begin(), runs.end(), [](const auto &a, const auto &b) {
+            return std::tie(a.start.z, a.start.y, a.start.x) < std::tie(b.start.z, b.start.y, b.start.x);
+        });
+        auto end = runs.begin();
+        for (const auto &run : runs) {
+            if (end != runs.begin() && (end - 1)->start.z == run.start.z && (end - 1)->start.y == run.start.y &&
+                std::int64_t((end - 1)->start.x) + (end - 1)->length >= run.start.x) {
+                auto &last = *(end - 1);
+                last.length = std::max<std::int64_t>(last.length, std::int64_t(run.start.x) + run.length - last.start.x);
+            } else *end++ = run;
+        }
+        auto edge = std::make_shared<OneSidedInitialEdge>(neighbor, label);
+        for (auto it = runs.begin(); it != end; ++it) edge->addRun(it->start, it->length);
+        neighborLabelToOneSidedInitialEdge.emplace(neighbor, std::move(edge));
+    }
+
 }
 
 

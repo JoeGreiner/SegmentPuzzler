@@ -76,6 +76,7 @@ private:
         QString name;
         QString persistedPath;
         itk::ModifiedTimeType persistedMTime = 0;
+        itk::ModifiedTimeType initialEmptyMTime = 0;
         QString recoveryFilePath;
         itk::ModifiedTimeType recoveryMTime = 0;
         bool discardRecoveryWhenWriteFinishes = false;

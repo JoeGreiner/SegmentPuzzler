@@ -117,6 +117,40 @@ bool testApplicationQuitEventFilter() {
                  "an approved quit event did not reach its receiver");
 }
 
+bool testInitiallyEmptySegmentation(const QTemporaryDir &temporaryDirectory) {
+    auto graphBase = std::make_shared<GraphBase>();
+    TaskRunner taskRunner;
+    auto image = makeSegmentation(0);
+    itkSignal<dataType::SegmentIdType> signal(image, false);
+    signal.initialEmptyMTime = signal.imageStorage->GetMTime();
+    graphBase->pSelectedSegmentation = signal.imageStorage;
+    graphBase->pSelectedSegmentationSignal = &signal;
+    SelectedSegmentationAutosave autosave(graphBase, &taskRunner);
+    autosave.applySettings({true, 120});
+    autosave.requestAutosave();
+    if (!check(!autosave.hasUnsavedSegmentations() && !autosave.isWriteInProgress(),
+               "untouched empty segmentation started a recovery")) return false;
+
+    auto loadedImage = makeSegmentation(3);
+    itkSignal<dataType::SegmentIdType> loadedSignal(loadedImage, false);
+    loadedSignal.sourceFilePath = temporaryDirectory.filePath("loaded-after-empty.nrrd");
+    selectSegmentation(graphBase, loadedImage, &loadedSignal, autosave);
+    autosave.requestAutosave();
+    if (!check(!autosave.hasUnsavedSegmentations() && !autosave.isWriteInProgress(),
+               "inactive empty segmentation started a recovery")) return false;
+
+    signal.imageStorage->SetPixel({0, 0, 0}, 7);
+    if (!check(autosave.hasUnsavedSegmentations(), "first edit of an empty segmentation was ignored")) return false;
+    autosave.requestAutosave();
+    selectSegmentation(graphBase, image, &signal, autosave);
+    if (!check(waitForRecovery(autosave, taskRunner), "edited empty segmentation was not recovered")) return false;
+    const auto recovered = volume_io::readImage<dataType::SegmentIdType>(
+        autosave.selectedSegmentationRecoveryPath(), {}).image;
+    if (!check(recovered->GetPixel({0, 0, 0}) == 7 && recovered->GetPixel({1, 1, 1}) == 0,
+               "recovery lost the first edit")) return false;
+    return check(autosave.discardUnsavedRecoveries(), "could not remove test recovery");
+}
+
 bool testPersistedStateAndCleanup(const QTemporaryDir &temporaryDirectory) {
     auto graphBase = std::make_shared<GraphBase>();
     TaskRunner taskRunner;
@@ -436,6 +470,7 @@ int main(int argc, char *argv[]) {
     const bool passed = check(temporaryDirectory.isValid(),
                               "temporary directory could not be created")
         && testApplicationQuitEventFilter()
+        && testInitiallyEmptySegmentation(temporaryDirectory)
         && testPersistedStateAndCleanup(temporaryDirectory)
         && testInactiveSegmentationAutosave(temporaryDirectory)
         && testDiscardDeletionFailure(temporaryDirectory)

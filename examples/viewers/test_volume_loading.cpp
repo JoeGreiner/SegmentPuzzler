@@ -1,5 +1,6 @@
 #include "src/controllers/SignalControl.h"
 #include "src/qtUtils/TaskRunner.h"
+#include "src/qtUtils/SelectedSegmentationAutosave.h"
 #include "src/viewers/OrthoViewer.h"
 #include <itkImageFileWriter.h>
 #include <QApplication>
@@ -19,6 +20,48 @@ void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
 }
 
+void testSegmentationAsSupervoxels(const QString &directory) {
+    auto image = dataType::SegmentsImageType::New();
+    image->SetRegions(dataType::SegmentsImageType::SizeType{{8, 6, 35}});
+    image->Allocate(true);
+    for (int z = 0; z < 35; ++z) for (int y = 1; y < 5; ++y) for (int x = 1; x < 7; ++x)
+        image->SetPixel({x, y, z}, x < 4 ? 1 : 2);
+    const auto path = directory + "/duplicate-segmentation.nrrd";
+    auto writer = itk::ImageFileWriter<dataType::SegmentsImageType>::New();
+    writer->SetInput(image); writer->SetFileName(path.toStdString()); writer->Update();
+    auto base = std::make_shared<GraphBase>();
+    Graph graph(base, false); base->pGraph = &graph;
+    TaskRunner runner; OrthoViewer viewer(base, &runner);
+    SignalControl control(base, &viewer, &runner, nullptr, false);
+    QTimer dialogs;
+    QObject::connect(&dialogs, &QTimer::timeout, &control, [] {
+        if (auto *message = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) message->button(QMessageBox::Yes)->click();
+        else if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->accept();
+    });
+    dialogs.start(10);
+    QEventLoop loop;
+    bool loaded = false;
+    control.loadSegmentationVolume(path, {}, [&](auto result) { loaded = result.has_value(); loop.quit(); });
+    QTimer::singleShot(30000, &loop, &QEventLoop::quit);
+    loop.exec(); dialogs.stop();
+    require(loaded && graph.initialNodes.size() == 2, "Duplicating segmentation as supervoxels failed");
+    const auto region = image->GetBufferedRegion();
+    for (const auto storage : {base->pWorkingSegmentsImage, base->pSelectedSegmentation}) {
+        const auto actual = storage->denseRegion(region);
+        require(std::equal(image->GetBufferPointer(), image->GetBufferPointer() + region.GetNumberOfPixels(),
+                           actual->GetBufferPointer()), "Duplicating segmentation changed voxels");
+    }
+    base->pSelectedSegmentation->SetPixel({1, 1, 1}, 9);
+    require(base->pWorkingSegmentsImage->GetPixel({1, 1, 1}) == 1, "Duplicated volumes share mutable storage");
+    control.loadRefinement(path);
+    QTimer poll;
+    QObject::connect(&poll, &QTimer::timeout, &loop, [&] { if (!runner.isBusy()) loop.quit(); });
+    poll.start(10); loop.exec(); poll.stop();
+    require(base->pSelectedRefinement && base->pSelectedRefinement->GetPixel({1, 1, 1}) == 1,
+            "Streaming refinement load failed");
+    for (auto *signal : control.allSignalList) viewer.removeSignal(signal);
+}
+
 void testMixedCrops(const QString &directory) {
     using Image = dataType::SegmentsImageType;
     auto input = Image::New();
@@ -33,6 +76,9 @@ void testMixedCrops(const QString &directory) {
     graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
     TaskRunner runner; OrthoViewer viewer(base, &runner);
     SignalControl control(base, &viewer, &runner, nullptr, false);
+    SelectedSegmentationAutosave autosave(base, &runner);
+    QObject::connect(&control, &SignalControl::selectedSegmentationChanged,
+                     &autosave, &SelectedSegmentationAutosave::selectedSegmentationChanged);
     auto awaitLoad = [&](auto start) {
         QEventLoop loop;
         bool complete = false;
@@ -54,8 +100,10 @@ void testMixedCrops(const QString &directory) {
     require(base->pSelectedSegmentationSignal->volumeContext->crop->start == options.crop->start &&
             base->pSelectedSegmentationSignal->volumeContext->originalLabels.empty(),
             "Derived segmentation inherited object identities");
+    require(!autosave.hasUnsavedSegmentations(), "Empty initial segmentation needs recovery");
     volume_io::useLabel(*base->selectedSegmentationContext, 100);
     base->pSelectedSegmentation->FillBuffer(100);
+    require(autosave.hasUnsavedSegmentations(), "Edited initial segmentation skipped recovery");
     const auto first = graph.reserveSelectedLabelIds(2);
     base->pSelectedSegmentation->FillBuffer(0);
     require(first == 101 && graph.reserveSelectedLabelIds(1) == 103, "Deleted local IDs were recycled");
@@ -137,6 +185,13 @@ void testMixedCrops(const QString &directory) {
         });
         dialogs.start(10);
         control.exportSelectedSegmentation();
+        if (runner.isBusy()) {
+            QEventLoop exportLoop;
+            QObject::connect(&runner, &TaskRunner::busyChanged, &exportLoop, [&](bool busy) { if (!busy) exportLoop.quit(); });
+            QTimer::singleShot(30000, &exportLoop, &QEventLoop::quit);
+            exportLoop.exec();
+            require(!runner.isBusy(), "Export did not finish");
+        }
     };
     const auto beforeExport = volume_io::fileFingerprint(external);
     volume_io::TargetBinding target;
@@ -174,6 +229,7 @@ int main(int argc, char **argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, files.path());
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, files.path());
     try {
+        testSegmentationAsSupervoxels(files.path());
         testMixedCrops(files.path());
         std::cout << "Volume loading and per-layer context tests passed\n";
         return 0;

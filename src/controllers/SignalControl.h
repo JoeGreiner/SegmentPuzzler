@@ -450,7 +450,7 @@ private:
     void invokeLoadCallbackLater(LoadCallback then, LoadResult result);
     void invokeLoadCallbackOnce(const std::shared_ptr<LoadCallback> &then,
                                 LoadResult result);
-    dataType::SegmentsStorage::Pointer duplicateSegmentationAndBuildWorkingSegments(const GraphSegmentImageType::Pointer &segmentationImage, std::optional<GraphSegmentType> background = {});
+    dataType::SegmentsStorage::Pointer duplicateSegmentationAndBuildWorkingSegments(const dataType::SegmentsStorage::Pointer &segmentationImage, std::optional<GraphSegmentType> background = {});
     std::optional<slice_geometry::Dimensions3D> expectedDimensionsForNewSignal(bool forceShapeOfSegments) const;
     bool dimensionsMatchExpectedDimensions(unsigned long dimX,
                                            unsigned long dimY,
@@ -484,6 +484,7 @@ private:
     void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
     void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
     void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background = {});
+    void prepareWorkingSegmentsGraph(const dataType::SegmentsStorage::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background = {});
 
     template<typename T, typename ImagePointer>
     bool insertTypedImage(

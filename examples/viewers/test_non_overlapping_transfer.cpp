@@ -1,4 +1,5 @@
 #include "src/image_storage/DenseImageStorage.h"
+#include "src/image_storage/StreamVByteImageStorage.h"
 #include "src/qtUtils/SegmentTableDialog.h"
 #include "src/viewers/VolumeRegionIO.h"
 #include <itkImageFileWriter.h>
@@ -360,6 +361,23 @@ void testDialogsAndShortcut(QApplication &app) {
     control.segmentsGraph = nullptr;
     base->pSelectedSegmentationSignal = nullptr;
 }
+void testLargeVolumeThreshold() {
+    using Storage = segment_puzzler::StreamVByteImageStorage<dataType::SegmentIdType>;
+    auto geometry = itk::ImageBase<3>::New();
+    geometry->SetRegions(itk::Size<3>{{4097, 4099, 1}});
+    auto base = std::make_shared<GraphBase>();
+    base->pWorkingSegmentsImage = Storage::create(*geometry, 7);
+    base->pSelectedSegmentation = Storage::create(*geometry);
+    Graph graph(base, false);
+    base->pGraph = &graph;
+    graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+    graph.constructFromVolume(base->pWorkingSegmentsImage, 0);
+    const auto count = geometry->GetLargestPossibleRegion().GetNumberOfPixels();
+    require(graph.workingNodes.count(7) == 1, "Large test segment is missing");
+    graph.transferSegmentsWithVolumeCriterion(count);
+    require(base->pSelectedSegmentation->GetPixel({0, 0, 0}) == 0, "Volume threshold rounded the voxel count up");
+}
+
 void testLayerBackgroundAndAllocation(const QString &directory) {
     using Image = dataType::SegmentsImageType;
     using Label = dataType::SegmentIdType;
@@ -406,6 +424,11 @@ void testLayerBackgroundAndAllocation(const QString &directory) {
         require(graph.reserveSelectedLabelIds(1) == 1, "Second layer inherited another layer's allocation cursor");
         base->selectedSegmentationContext = signal.volumeContext;
         require(graph.reserveSelectedLabelIds(1) == 12 && second->nextLabel == 2, "Layer switch lost allocation state");
+        graph.transferSegmentsWithVolumeCriterion(1);
+        require(image->GetPixel({{1, 0, 0}}) == 11, "Volume transfer included a node exactly at the threshold");
+        graph.transferSegmentsWithVolumeCriterion(0);
+        require(image->GetPixel({{1, 0, 0}}) == 13 && image->GetPixel({{0, 0, 0}}) == selectedBackground,
+                "Volume transfer assigned an unexpected label or changed the background");
         require(!volume_io::imageContext(image->GetMetaDataDictionary()), "Editing created a second metadata context");
     }
 }
@@ -424,6 +447,7 @@ int main(int argc, char **argv) {
     QFile style(":qdarkstyle/dark/style.qss");
     if (style.open(QIODevice::ReadOnly)) app.setStyleSheet(QString::fromUtf8(style.readAll()));
     try {
+        testLargeVolumeThreshold();
         testLayerBackgroundAndAllocation(settingsDirectory.path());
         testStoredSettings();
         testDialogsAndShortcut(app);
