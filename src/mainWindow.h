@@ -66,7 +66,7 @@ private:
     QAction *splitSegment3DAction = nullptr;
     QAction *voxelSpacingAction = nullptr;
     QAction *recoverySettingsAction = nullptr;
-    std::unique_ptr<Graph> graph;
+    std::shared_ptr<Graph> graph;
     std::shared_ptr<GraphBase> graphBase;
     std::unique_ptr<TaskRunner> taskRunner;
     std::unique_ptr<SelectedSegmentationAutosave> selectedSegmentationAutosave;

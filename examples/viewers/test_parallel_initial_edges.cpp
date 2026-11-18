@@ -3,6 +3,11 @@
 #include <random>
 #include <set>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QScopeGuard>
+#include <QTemporaryDir>
+#include <itkImageFileReader.h>
 
 #include <algorithm>
 #include <iostream>
@@ -439,10 +444,77 @@ int testIgnoredLabelsAreNotMaterialized() {
     return 0;
 }
 
+int testGraphDebugExport() {
+    QTemporaryDir directory;
+    const QString previousDirectory = QDir::currentPath();
+    if (!directory.isValid() || !QDir::setCurrent(directory.path())) return failTest("Cannot prepare export directory.");
+    const auto restoreDirectory = qScopeGuard([&] { QDir::setCurrent(previousDirectory); });
+    QDir output(directory.filePath(QStringLiteral("Debug für Test")));
+    if (!output.mkpath(".")) return failTest("Cannot create the chosen export folder.");
+    auto image = dataType::SegmentsImageType::New();
+    image->SetRegions(dataType::SegmentsImageType::SizeType{{3, 1, 1}});
+    image->Allocate(true);
+    image->SetPixel({1, 0, 0}, 1);
+    image->SetPixel({2, 0, 0}, 2);
+    auto base = std::make_shared<GraphBase>();
+    base->pWorkingSegmentsImage = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image);
+    Graph graph(base, false);
+    base->pGraph = &graph;
+    graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+    graph.constructFromVolume(base->pWorkingSegmentsImage);
+
+    SegmentManager manager(base, &graph.initialNodes, &graph.initialLabelPairToTwoSidedInitialEdge,
+                           &graph.initialEdgeIdLookup, &base->edgeStatus, &base->pEdgesInitialSegmentsImage,
+                           &base->pWorkingSegmentsImage, &graph.workingNodes, &graph.workingLabelPairToWorkingEdge,
+                           &base->ignoredSegmentLabels, &graph.nextFreeId, false);
+    graph.initialNodes.erase(2);
+    try {
+        manager.computeCorrospondingOneSidedInitialEdges(graph.initialNodes.at(1).get());
+        return failTest("Missing neighbor was accepted.");
+    } catch (const std::logic_error &error) {
+        if (std::string(error.what()).find("node 2 is missing") == std::string::npos) return failTest(error.what());
+    }
+    if (!QDir().entryList(QDir::Files).isEmpty()) return failTest("The missing neighbor triggered an automatic export.");
+
+    graph.initialNodes.emplace(2, nullptr);
+    graph.initialNodes.at(1)->neighborLabelToOneSidedInitialEdge.at(2).reset();
+    graph.exportDebugInformation(output);
+    for (const auto &name : {"workingNodes.txt", "workingEdges.txt", "initialNodes.txt", "edgeIdLookup.txt",
+                             "initialTwoSidedEdges.txt", "initialOneSidedEdges.txt"}) {
+        QFile file(output.filePath(name));
+        if (!file.open(QIODevice::ReadOnly) || !file.size()) return failTest(std::string("Missing export: ") + name);
+        if (QString::fromLatin1(name) == QStringLiteral("initialNodes.txt") && !file.readAll().contains("neighbor 2: <missing edge>"))
+            return failTest("Debug export did not identify the missing edge.");
+    }
+    const auto exportedPixel = [&output](const char *name) {
+        auto reader = itk::ImageFileReader<dataType::SegmentsImageType>::New();
+        reader->SetFileName(output.filePath(name).toStdString());
+        reader->Update();
+        return reader->GetOutput()->GetPixel({2, 0, 0});
+    };
+    if (exportedPixel("initialEdges.nrrd") != base->pEdgesInitialSegmentsImage->GetPixel({2, 0, 0}) ||
+        exportedPixel("workingSegments.nrrd") != 2) return failTest("Incorrect debug volumes.");
+
+    for (const auto &name : {"edgeIdLookup.txt", "initialEdges.nrrd"}) {
+        if (!output.remove(name) || !output.mkdir(name)) return failTest("Cannot simulate a blocked output file.");
+        try {
+            graph.exportDebugInformation(output);
+            return failTest(std::string("Export ignored a write error for ") + name);
+        } catch (const std::exception &error) {
+            if (std::string(error.what()).find(name) == std::string::npos) return failTest(error.what());
+        }
+        if (!output.rmdir(name)) return failTest("Cannot clear the blocked output.");
+    }
+    graph.exportDebugInformation(output);
+    if (!QDir().entryList(QDir::Files).isEmpty()) return failTest("Debug files were written to the working directory.");
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
+    if (argc == 2 && std::string(argv[1]) == "--debug-export") return testGraphDebugExport();
 
     if (!FeatureList::edgeFeaturesList.empty()) {
         return failTest("Edge feature registry must be empty when the test starts.");

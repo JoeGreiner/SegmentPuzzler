@@ -27,6 +27,8 @@
 #include "src/utils/AppLogger.h"
 #include "src/utils/ConnectedComponentLabelSplitter.h"
 #include "src/utils/utils.h"
+class QDir;
+
 // todo: add this to node/featurres or whatever
 struct CenterOfMass {
     CenterOfMass() {}
@@ -295,7 +297,7 @@ public:
     void transferSegmentsWithRefinementOverlap(
         double overlapThreshold = kDefaultRefinementOverlapThreshold);
 
-    void exportDebugInformation();
+    void exportDebugInformation(const QDir &directory);
 
 
     template<typename imageType>
@@ -361,18 +363,6 @@ public:
     void printEdgeIdLookUp(std::ostream &outStream = std::cout);
 
     void printWorkingEdges(std::ostream &outStream = std::cout);
-
-    void printInitialNodesToFile(const std::string &pathToOutputfile);
-
-    void printInitialTwoSidedEdgesToFile(const std::string &pathToOutputfile);
-
-    void printInitialOneSidedEdgesToFile(const std::string &pathToOutputfile);
-
-    void printWorkingNodesToFile(const std::string &pathToOutputfile);
-
-    void printEdgeIdLookUpToFile(const std::string &pathToOutputfile);
-
-    void printWorkingEdgesToFile(const std::string &pathToOutputfile);
 
     // merge to nodes by specifying a edge that merges two nodes
     void mergeEdge(TwoSidedInitialEdge *edge, bool updateSegmentImage = true);

@@ -75,6 +75,10 @@ void TwoSidedInitialEdge::print(int indentationLevel, std::ostream &outStream) {
     outStream << indentationString << "\ttx: " << roi.maxX << " ty: " << roi.maxY << " tz: " << roi.maxZ << "\n";
     outStream << indentationString << "Edge Features:\n";
     for (auto &feature : edgeFeatures) {
+        if (!feature) {
+            outStream << indentationString << "\t<missing feature>\n";
+            continue;
+        }
         outStream << indentationString << "\t" << feature->filterName << " " << feature->signalName << "\n";
         outStream << indentationString << "\t\t";
         for (auto &value : feature->values) {

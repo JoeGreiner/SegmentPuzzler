@@ -729,6 +729,7 @@ if (BUILD_TESTING)
                     -P ${CMAKE_SOURCE_DIR}/examples/benchmarks/compare_worker_counts.cmake)
     endforeach()
     add_test(NAME RagRegionMerger COMMAND $<TARGET_FILE:test_RagRegionMerger>)
+    add_test(NAME GraphDebugExport COMMAND $<TARGET_FILE:test_ParallelInitialEdges> --debug-export)
     add_test(NAME SeededWatershedSplit COMMAND $<TARGET_FILE:test_SeededWatershedSplit>)
     add_test(NAME ConnectedComponentSplit
             COMMAND $<TARGET_FILE:test_ConnectedComponentSplit>)

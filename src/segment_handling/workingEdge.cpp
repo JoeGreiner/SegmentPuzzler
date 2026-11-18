@@ -58,7 +58,8 @@ void WorkingEdge::print(int indentationLevel, std::ostream &outStream) {
     outStream << indentationString << "\ttx: " << roi.maxX << " ty: " << roi.maxY << " tz: " << roi.maxZ << "\n";
     outStream << indentationString << "Constituent Two-Sided Initial Edges:";
     for (auto &edge : constituentTwoSidedInitialEdges) {
-        outStream << " " << edge->numId;
+        if (edge) outStream << " " << edge->numId;
+        else outStream << " <missing edge>";
     }
     outStream << "\n";
 }

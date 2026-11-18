@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include "Graph.h"
 #include "LabelContacts.h"
@@ -21,12 +22,15 @@
 #include <itkNeighborhoodIterator.h>
 #include <itkBinaryThresholdImageFunction.h>
 #include <QElapsedTimer>
+#include <QDir>
+#include <QFileInfo>
 #include <chrono>
 #include <QStringList>
 #include "src/utils/AppLogger.h"
 #include "src/utils/MinMaxValues.h"
 #include "src/utils/systemStats.h"
 #include "src/utils/utils.h"
+#include "src/viewers/VolumeRegionIO.h"
 #include "graphBase.h"
 
 namespace {
@@ -2150,21 +2154,6 @@ void Graph::updateBackgroundIdFromVolume(dataType::SegmentsStorage::Pointer pIma
     logGraphDebugIf(verbose, __func__, QStringLiteral("Background id resolved to %1").arg(backgroundId));
 }
 
-void Graph::exportDebugInformation(){
-    logGraph(LogLevel::Info, __func__, QStringLiteral("Exporting graph debug information"), kIoCategory);
-    printEdgeIdLookUpToFile("edgeIdLookup.txt");
-    printWorkingNodesToFile("workingNodes.txt");
-    printWorkingEdgesToFile("workingEdges.txt");
-    printInitialNodesToFile("initialNodes.txt");
-    printInitialTwoSidedEdgesToFile("initialTwoSidedEdges.txt");
-    printInitialOneSidedEdgesToFile("initialOneSidedEdges.txt");
-    ITKImageWriter<dataType::EdgeImageType>(graphBase->pEdgesInitialSegmentsImage->denseRegion(graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion()),
-                                                                "initialEdges.nrrd");
-    ITKImageWriter<dataType::SegmentsImageType>(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()),
-                                                                    "workingSegments.nrrd");
-}
-
-
 void Graph::deleteSegmentationLabel(SegmentIdType label) {
     deleteSegmentationLabels({label});
 }
@@ -3461,12 +3450,21 @@ Graph::transferWorkingNodesToSegmentation(
 
 // === print functions ===
 
+namespace {
+template<class Object>
+void printGraphEntry(const std::shared_ptr<Object> &entry, int indentation, std::ostream &out) {
+    if (entry) entry->print(indentation, out);
+    else out << "\t<missing>\n";
+}
+
+} // namespace
+
 void Graph::printInitialNodes(std::ostream &outStream) {
     outStream << "=== initialNodes ===\n";
     int nodeIndentationLevel = 1;
     for (auto &node : initialNodes) {
         outStream << "key: " << node.first << "\n";
-        node.second->print(nodeIndentationLevel, outStream);
+        printGraphEntry(node.second, nodeIndentationLevel, outStream);
     }
 }
 
@@ -3474,9 +3472,13 @@ void Graph::printInitialOneSidedEdges(std::ostream &outStream) {
     outStream << "=== initialOneSidedEdges ===\n";
     int nodeIndentationLevel = 1;
     for (const auto &[sourceLabel, initialNode] : initialNodes) {
+        if (!initialNode) {
+            outStream << "key: " << sourceLabel << "\t<missing initial node>\n";
+            continue;
+        }
         for (const auto &[neighborLabel, edge] : initialNode->neighborLabelToOneSidedInitialEdge) {
             outStream << "key: " << sourceLabel << "," << neighborLabel << "\n";
-            edge->print(nodeIndentationLevel, outStream);
+            printGraphEntry(edge, nodeIndentationLevel, outStream);
         }
     }
 }
@@ -3486,7 +3488,7 @@ void Graph::printInitialTwoSidedEdges(std::ostream &outStream) {
     int nodeIndentationLevel = 1;
     for (auto &edge : initialLabelPairToTwoSidedInitialEdge) {
         outStream << "key: " << edge.first.first << "," << edge.first.second << "\n";
-        edge.second->print(nodeIndentationLevel, outStream);
+        printGraphEntry(edge.second, nodeIndentationLevel, outStream);
     }
 }
 
@@ -3495,7 +3497,7 @@ void Graph::printWorkingNodes(std::ostream &outStream) {
     int nodeIndentationLevel = 1;
     for (auto &node : workingNodes) {
         outStream << "key: " << node.first << "\n";
-        node.second->print(nodeIndentationLevel, outStream);
+        printGraphEntry(node.second, nodeIndentationLevel, outStream);
     }
 }
 
@@ -3512,69 +3514,40 @@ void Graph::printWorkingEdges(std::ostream &outStream) {
     int nodeIndentationLevel = 1;
     for (auto &edge : workingLabelPairToWorkingEdge) {
         outStream << "key: " << edge.first.first << "," << edge.first.second << "\n";
-        edge.second->print(nodeIndentationLevel, outStream);
+        printGraphEntry(edge.second, nodeIndentationLevel, outStream);
     }
 }
 
-// == wrappers for writing to file ==
-
-
-void Graph::printInitialNodesToFile(const std::string &pathToOutputfile) {
-    logGraph(LogLevel::Info,
-             __func__,
-             QStringLiteral("Writing initial nodes to %1").arg(QString::fromStdString(pathToOutputfile)),
-             kIoCategory);
-    std::ofstream outFile(pathToOutputfile);
-    printInitialNodes(outFile);
-    outFile.close();
-}
-
-void Graph::printInitialTwoSidedEdgesToFile(const std::string &pathToOutputfile) {
-    logGraph(LogLevel::Info,
-             __func__,
-             QStringLiteral("Writing initial two-sided edges to %1").arg(QString::fromStdString(pathToOutputfile)),
-             kIoCategory);
-    std::ofstream outFile(pathToOutputfile);
-    printInitialTwoSidedEdges(outFile);
-    outFile.close();
-}
-
-void Graph::printInitialOneSidedEdgesToFile(const std::string &pathToOutputfile) {
-    logGraph(LogLevel::Info,
-             __func__,
-             QStringLiteral("Writing initial one-sided edges to %1").arg(QString::fromStdString(pathToOutputfile)),
-             kIoCategory);
-    std::ofstream outFile(pathToOutputfile);
-    printInitialOneSidedEdges(outFile);
-    outFile.close();
-}
-
-void Graph::printWorkingNodesToFile(const std::string &pathToOutputfile) {
-    logGraph(LogLevel::Info,
-             __func__,
-             QStringLiteral("Writing working nodes to %1").arg(QString::fromStdString(pathToOutputfile)),
-             kIoCategory);
-    std::ofstream outFile(pathToOutputfile);
-    printWorkingNodes(outFile);
-    outFile.close();
-}
-
-void Graph::printEdgeIdLookUpToFile(const std::string &pathToOutputfile) {
-    logGraph(LogLevel::Info,
-             __func__,
-             QStringLiteral("Writing edge-id lookup to %1").arg(QString::fromStdString(pathToOutputfile)),
-             kIoCategory);
-    std::ofstream outFile(pathToOutputfile);
-    printEdgeIdLookUp(outFile);
-    outFile.close();
-}
-
-void Graph::printWorkingEdgesToFile(const std::string &pathToOutputfile) {
-    logGraph(LogLevel::Info,
-             __func__,
-             QStringLiteral("Writing working edges to %1").arg(QString::fromStdString(pathToOutputfile)),
-             kIoCategory);
-    std::ofstream outFile(pathToOutputfile);
-    printWorkingEdges(outFile);
-    outFile.close();
+void Graph::exportDebugInformation(const QDir &directory) {
+    if (!graphBase || !graphBase->pEdgesInitialSegmentsImage || !graphBase->pWorkingSegmentsImage ||
+        !graphBase->pEdgesInitialSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels() ||
+        !graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels()) {
+        throw std::runtime_error("Debug export requires a working segmentation and an edge image.");
+    }
+    logGraph(LogLevel::Info, __func__, QStringLiteral("Exporting graph debug information"), kIoCategory);
+    const auto writeReport = [&](const QString &name, void (Graph::*print)(std::ostream &)) {
+        const QString path = directory.filePath(name);
+        std::ofstream out(std::filesystem::path{path.toStdU16String()});
+        if (out) (this->*print)(out);
+        out.close();
+        if (!out) throw std::runtime_error(QStringLiteral("Cannot export %1").arg(path).toStdString());
+    };
+    writeReport(QStringLiteral("edgeIdLookup.txt"), &Graph::printEdgeIdLookUp);
+    writeReport(QStringLiteral("workingNodes.txt"), &Graph::printWorkingNodes);
+    writeReport(QStringLiteral("workingEdges.txt"), &Graph::printWorkingEdges);
+    writeReport(QStringLiteral("initialNodes.txt"), &Graph::printInitialNodes);
+    writeReport(QStringLiteral("initialTwoSidedEdges.txt"), &Graph::printInitialTwoSidedEdges);
+    writeReport(QStringLiteral("initialOneSidedEdges.txt"), &Graph::printInitialOneSidedEdges);
+    const auto writeImage = [&](const dataType::SegmentsStorage &image, const QString &name) {
+        const QString path = directory.filePath(name);
+        try {
+            const auto context = volume_io::imageContext(image.GetMetaDataDictionary());
+            volume_io::writeLabelVolume(image, path, context.get());
+        } catch (const std::exception &error) {
+            throw std::runtime_error(QStringLiteral("Cannot export %1: %2")
+                .arg(QFileInfo(path).absoluteFilePath(), QString::fromUtf8(error.what())).toStdString());
+        }
+    };
+    writeImage(*graphBase->pEdgesInitialSegmentsImage, QStringLiteral("initialEdges.nrrd"));
+    writeImage(*graphBase->pWorkingSegmentsImage, QStringLiteral("workingSegments.nrrd"));
 }

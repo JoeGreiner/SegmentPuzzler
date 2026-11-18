@@ -104,6 +104,10 @@ void WorkingNode::print(int indentationLevel, std::ostream &outStream) {
 
     outStream << indentationString << "Twosided Edges:\n";
     for (auto &edge : neighborLabelToWorkingEdge) {
+        if (!edge.second) {
+            outStream << indentationString << "\tneighbor " << edge.first << ": <missing edge>\n";
+            continue;
+        }
         outStream << indentationString << "\tedgeKey: " << edge.second->pairId.first << " -> "
                   << edge.second->pairId.second << "\n";
         edge.second->print(indentationLevel + 3, outStream);

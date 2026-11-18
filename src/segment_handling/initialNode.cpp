@@ -280,18 +280,30 @@ void InitialNode::print(int indentationLevel, std::ostream &outStream) {
 
     outStream << indentationString << "Onesided Edges:\n";
     for (auto &edge : neighborLabelToOneSidedInitialEdge) {
+        if (!edge.second) {
+            outStream << indentationString << "\tneighbor " << edge.first << ": <missing edge>\n";
+            continue;
+        }
         outStream << indentationString << "\tedgeKey: " << edge.second->pairId.first << " -> "
                   << edge.second->pairId.second << "\n";
         edge.second->print(indentationLevel + 3, outStream);
     }
     outStream << indentationString << "Twosided Edges:\n";
     for (auto &edge : neighborLabelToTwoSidedInitialEdge) {
+        if (!edge.second) {
+            outStream << indentationString << "\tneighbor " << edge.first << ": <missing edge>\n";
+            continue;
+        }
         outStream << indentationString << "\tedgeKey: " << edge.second->pairId.first << " -> "
                   << edge.second->pairId.second << "\n";
         edge.second->print(indentationLevel + 3, outStream);
     }
     outStream << indentationString << "Node Features:\n";
     for (auto &feature : nodeFeatures) {
+        if (!feature) {
+            outStream << indentationString << "\t<missing feature>\n";
+            continue;
+        }
         outStream << indentationString << "\t" << feature->filterName << " " << feature->signalName << "\n";
         outStream << indentationString << "\t\t";
         for (auto &val : feature->values) {

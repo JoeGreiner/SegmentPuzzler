@@ -12,6 +12,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDropEvent>
+#include <QFileDialog>
 #include <QFont>
 #include <QHeaderView>
 #include <QMimeData>
@@ -245,7 +246,7 @@ MainWindow::MainWindow() {
     graphBase->colorLookUpEdgesStatus = std::unordered_map<char, QRgb>();
     graphBase->edgeStatus = std::unordered_map<dataType::MappedEdgeIdType, char>();
 
-    graph = std::make_unique<Graph>(graphBase);
+    graph = std::make_shared<Graph>(graphBase);
     graphBase->pGraph = graph.get();
 
     taskRunner = std::make_unique<TaskRunner>(this, this);
@@ -1591,18 +1592,26 @@ void MainWindow::exportDebugInformation() {
         return;
     }
 
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, tr("Choose Debug Export Folder"), QDir::homePath());
+    if (directory.isEmpty()) return;
+
     const auto reply = QMessageBox::question(
         this,
         tr("Export Debug Information"),
-        tr("This can export a lot of debug information into several files. Do you want to continue?"),
+        tr("Write six reports and two volumes to %1? The volumes can be large. "
+           "Existing files with the same names will be overwritten.").arg(QDir::toNativeSeparators(directory)),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (reply != QMessageBox::Yes) {
         return;
     }
 
-    SP_LOG_INFO("segmentation", QStringLiteral("Exporting graph debug information"));
-    graphBase->pGraph->exportDebugInformation();
+    if (taskRunner->isBusy()) return;
+    taskRunner->runWithLabel(
+        tr("Exporting debug information..."),
+        [exportGraph = graph, directory] { exportGraph->exportDebugInformation(QDir(directory)); },
+        [this, directory] { receiveStatusMessage(tr("Debug information exported to %1.").arg(directory)); });
 }
 
 void MainWindow::arm3DSegmentSplit() {

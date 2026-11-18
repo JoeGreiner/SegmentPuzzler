@@ -111,19 +111,6 @@ public:
     SegmentIdType takeNextSegmentId(SegmentIdType &cursor) const;
 
 
-    void printInitialNodes(std::ostream &outStream = std::cout);
-    void printInitialOneSidedEdges(std::ostream &outStream = std::cout);
-    void printInitialTwoSidedEdges(std::ostream &outStream = std::cout);
-    void printInitialNodesToFile(const std::string &pathToOutputfile);
-    void printInitialTwoSidedEdgesToFile(const std::string &pathToOutputfile);
-    void printInitialOneSidedEdgesToFile(const std::string &pathToOutputfile);
-    void printWorkingNodes(std::ostream &outStream);
-    void printEdgeIdLookUp(std::ostream &outStream);
-    void printWorkingEdges(std::ostream &outStream);
-    void printWorkingNodesToFile(const std::string &pathToOutputfile);
-    void printEdgeIdLookUpToFile(const std::string &pathToOutputfile);
-    void printWorkingEdgesToFile(const std::string &pathToOutputfile);
-
     std::shared_ptr<GraphBase> graphBase;
 
 private:
