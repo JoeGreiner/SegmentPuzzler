@@ -9,6 +9,7 @@
 #include <QRandomGenerator>
 #include <QTreeWidget>
 #include "itkSignalBase.h"
+#include "VoxelSpacing.h"
 #include "src/image_storage/DenseImageStorage.h"
 #include "itkImageRegionConstIteratorWithIndex.h"
 #include <unordered_map>
@@ -29,6 +30,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <limits>
 #include <cmath>
 #include <type_traits>
 
@@ -806,50 +808,61 @@ QImage itkSignal<dType>::calculateVisibleLabelImage(unsigned int sliceIndex, uns
                                                   const std::vector<int> &columns,
                                                   const std::vector<int> &rows) {
     if constexpr (std::is_integral_v<dType>) {
-        if (!supportsVisibleLabelRendering() || (!pImage && !imageStorage) || columns.empty() || rows.empty()) return {};
-        const auto dims = slice_geometry::makeDimensions(dimX, dimY, dimZ);
-        if (sliceIndex >= slice_geometry::sliceLimit(sliceAxis, dims))
+        if (!supportsVisibleLabelRendering() || !imageStorage || columns.empty() || rows.empty()) return {};
+        const auto [horizontal, vertical] = voxel_geometry::planeAxes(sliceAxis);
+        const auto &volume = imageStorage->GetLargestPossibleRegion();
+        if (sliceIndex >= volume.GetSize(sliceAxis))
             throw std::out_of_range("sliceIndex lies outside the image");
-        unsigned int width, height;
-        const auto region = slice_geometry::makeSliceRegion<SignalImageIndexType, SignalImageSizeType, SignalImageRegionType>(
-            sliceIndex, sliceAxis, dims, width, height);
-        const auto image = pImage ? typename SignalImageType::ConstPointer(pImage) : imageStorage->readImageRegion(region);
-        const auto size = image->GetBufferedRegion().GetSize();
-        const std::size_t rowStride = sliceAxis == 1 ? size[0] * size[1] : size[0];
-        const std::size_t columnStride = sliceAxis == 0 ? size[0] * size[1] : 1;
-        const auto *input = image->GetBufferPointer() + image->ComputeOffset(region.GetIndex());
-        const auto colors = labelColorSnapshot();
-        QImage result(static_cast<int>(columns.size()), static_cast<int>(rows.size()), QImage::Format_ARGB32);
-        auto *output = reinterpret_cast<QRgb *>(result.bits());
-        bool hasLastColor = false;
-        std::uint64_t lastLabel = 0;
-        QRgb lastColor = 0;
-        const auto sample = [&](std::size_t row, std::size_t column) {
-            auto &pixel = output[row * columns.size() + column];
-            if (rows[row] < 0 || columns[column] < 0) { pixel = 0; return; }
-            const auto label = labelColorKey(input[rows[row] * rowStride + columns[column] * columnStride]);
-            if (!hasLastColor || label != lastLabel) {
-                lastLabel = label;
-                lastColor = colors.colorForLabel(label);
-                hasLastColor = true;
+
+        const auto sampledRange = [](const std::vector<int> &indices) {
+            int first = std::numeric_limits<int>::max(), last = -1;
+            for (int index : indices) {
+                if (index < 0) continue;
+                first = std::min(first, index);
+                last = std::max(last, index);
             }
-            pixel = lastColor;
+            return std::pair{first, last};
         };
-        if (sliceAxis == 0) {
-            // Keep nearby strided reads together, as in the full YZ renderer.
-            constexpr std::size_t tileSize = 32;
-            for (std::size_t firstRow = 0; firstRow < rows.size(); firstRow += tileSize) {
-                for (std::size_t firstColumn = 0; firstColumn < columns.size(); firstColumn += tileSize) {
-                    for (auto column = firstColumn; column < std::min(firstColumn + tileSize, columns.size()); ++column) {
-                        for (auto row = firstRow; row < std::min(firstRow + tileSize, rows.size()); ++row) {
-                            sample(row, column);
-                        }
-                    }
-                }
+        const auto xRange = sampledRange(columns);
+        const auto yRange = sampledRange(rows);
+        QImage result(static_cast<int>(columns.size()), static_cast<int>(rows.size()), QImage::Format_ARGB32);
+        if (xRange.second < 0 || yRange.second < 0) {
+            result.fill(Qt::transparent);
+            return result;
+        }
+        auto start = volume.GetIndex();
+        start[sliceAxis] += sliceIndex;
+        start[horizontal] += xRange.first;
+        start[vertical] += yRange.first;
+        SignalImageSizeType size{{1, 1, 1}};
+        size[horizontal] = xRange.second - xRange.first + 1;
+        size[vertical] = yRange.second - yRange.first + 1;
+        const auto image = imageStorage->readImageRegion({start, size});
+        const auto columnStride = image->GetOffsetTable()[horizontal];
+        const auto rowStride = image->GetOffsetTable()[vertical];
+        const auto *input = image->GetBufferPointer() + image->ComputeOffset(start);
+        const auto colors = labelColorSnapshot();
+        auto *output = reinterpret_cast<QRgb *>(result.bits());
+        std::uint64_t lastLabel = 0;
+        QRgb lastColor = colors.colorForLabel(lastLabel);
+        for (int row : rows) {
+            if (row < 0) {
+                output = std::fill_n(output, columns.size(), QRgb{0});
+                continue;
             }
-        } else {
-            for (std::size_t row = 0; row < rows.size(); ++row)
-                for (std::size_t column = 0; column < columns.size(); ++column) sample(row, column);
+            const auto *line = input + (row - yRange.first) * rowStride;
+            for (int column : columns) {
+                if (column < 0) {
+                    *output++ = 0;
+                    continue;
+                }
+                const auto label = labelColorKey(line[(column - xRange.first) * columnStride]);
+                if (label != lastLabel) {
+                    lastLabel = label;
+                    lastColor = colors.colorForLabel(label);
+                }
+                *output++ = lastColor;
+            }
         }
         return result;
     }

@@ -647,17 +647,24 @@ int testCompressedSlices() {
     dataType::SegmentsStorage::Pointer storage = segment_puzzler::StreamVByteImageStorage<Pixel>::fromImage(*image);
     itkSignal<Pixel> dense(image, false), compressed(storage, false);
     dense.setCategoricalColorMode(); compressed.setCategoricalColorMode();
-    dense.setValueColorToTransparent(0); compressed.setValueColorToTransparent(0);
+    dense.setValueColorToBlack(0); compressed.setValueColorToBlack(0);
     for (unsigned axis = 0; axis < 3; ++axis) {
         for (unsigned slice = 0; slice < image->GetLargestPossibleRegion().GetSize()[axis]; ++slice) {
             std::vector<quint32> left, right;
             const auto reference = dense.calculateSliceQImage(slice, axis, &left).copy();
             const auto actual = compressed.calculateSliceQImage(slice, axis, &right);
             if (actual != reference) return fail("Compressed slice differs on axis " + std::to_string(axis));
-            const std::vector<int> columns{0, reference.width() - 1}, rows{0, reference.height() - 1};
-            if (dense.calculateVisibleLabelImage(slice, axis, columns, rows) !=
-                compressed.calculateVisibleLabelImage(slice, axis, columns, rows))
-                return fail("Compressed sampled slice differs");
+            const auto matchesReference = [&](const std::vector<int> &columns, const std::vector<int> &rows) {
+                QImage expected(int(columns.size()), int(rows.size()), QImage::Format_ARGB32);
+                for (int y = 0; y < expected.height(); ++y)
+                    for (int x = 0; x < expected.width(); ++x)
+                        expected.setPixel(x, y, rows[y] < 0 || columns[x] < 0 ? 0 : reference.pixel(columns[x], rows[y]));
+                return compressed.calculateVisibleLabelImage(slice, axis, columns, rows) == expected;
+            };
+            if (!matchesReference({-1, 2, 2, reference.width() - 2}, {1, 3, 3, -1}) ||
+                !matchesReference({0, reference.width() - 1}, {0, reference.height() - 1}) ||
+                !matchesReference({-1}, {1, 3}) || !matchesReference({2, 3}, {-1}))
+                return fail("Compressed sampled slice differs on axis " + std::to_string(axis));
         }
     }
     storage->SetPixel({3, 5, 2}, 27);
