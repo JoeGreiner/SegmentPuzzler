@@ -735,16 +735,18 @@ if (BUILD_TESTING)
     add_test(NAME NonOverlappingTransfer
             COMMAND $<TARGET_FILE:test_NonOverlappingTransfer>)
     add_test(NAME OrthoViewerZoom COMMAND $<TARGET_FILE:test_OrthoViewerZoom>)
-    set_tests_properties(NonOverlappingTransfer OrthoViewerZoom PROPERTIES
+    add_test(NAME SplitPreviewAfterMerge COMMAND $<TARGET_FILE:test_SeededSplitSmoothing> --stale-preview)
+    set_tests_properties(NonOverlappingTransfer OrthoViewerZoom SplitPreviewAfterMerge PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     if (TARGET ${SEGMENT_PUZZLER_QT_PACKAGE}::QOffscreenIntegrationPlugin)
-        set_property(TEST NonOverlappingTransfer OrthoViewerZoom APPEND PROPERTY ENVIRONMENT
+        set_property(TEST NonOverlappingTransfer OrthoViewerZoom SplitPreviewAfterMerge APPEND PROPERTY ENVIRONMENT
                 "QT_QPA_PLATFORM_PLUGIN_PATH=$<TARGET_FILE_DIR:${SEGMENT_PUZZLER_QT_PACKAGE}::QOffscreenIntegrationPlugin>")
     endif ()
     add_test(NAME ITKSignalColorLookup
             COMMAND $<TARGET_FILE:test_ITKSignalColorLookup>)
     add_test(NAME SelectedSegmentationAutosave
             COMMAND $<TARGET_FILE:test_SelectedSegmentationAutosave>)
+    add_test(NAME SplitApply COMMAND $<TARGET_FILE:test_Projected3DCut> --apply-only)
     add_test(NAME Projected3DScene
             COMMAND $<TARGET_FILE:test_Projected3DCut> --scene-only)
 #    target_link_libraries(test_customwatershed ${SEGMENT_PUZZLER_ITK_LIBRARIES} ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES})

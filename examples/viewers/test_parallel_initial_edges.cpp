@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -371,9 +372,12 @@ int testEmptyNodeProducesNoEdges() {
 
 int testIgnoredLabelsAreNotMaterialized() {
     constexpr SegmentIdType additionallyIgnoredLabel = 40;
+    constexpr auto highestLabel = std::numeric_limits<SegmentIdType>::max();
     auto graphBase = std::make_shared<GraphBase>();
-    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<dataType::SegmentIdType>::fromImage(makeTestImage());
-    graphBase->ignoredSegmentLabels.push_back(additionallyIgnoredLabel);
+    auto image = makeTestImage();
+    image->SetPixel({1, 0, 0}, highestLabel);
+    graphBase->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(image);
+    graphBase->ignoredSegmentLabels = {additionallyIgnoredLabel, highestLabel};
 
     auto graph = std::make_unique<Graph>(graphBase, false);
     graphBase->pGraph = graph.get();
@@ -387,16 +391,15 @@ int testIgnoredLabelsAreNotMaterialized() {
         return failTest("Graph construction changed the caller's OpenMP default.");
     }
 #endif
-    if (graph->backgroundId != 0 || graph->nextFreeId != 41 ||
-        graph->getLargestIdInSegmentVolume(graphBase->pWorkingSegmentsImage) != 40) {
+    if (graph->backgroundId != 0 || graph->nextFreeId != 37 ||
+        graph->getLargestIdInSegmentVolume(graphBase->pWorkingSegmentsImage) != highestLabel) {
         return failTest("Graph label extrema or next free id are incorrect.");
     }
 
-    if (graph->initialNodes.count(0) != 0 || graph->initialNodes.count(additionallyIgnoredLabel) != 0) {
-        return failTest("Ignored labels were materialized as initial nodes.");
-    }
-    if (graph->workingNodes.count(0) != 0 || graph->workingNodes.count(additionallyIgnoredLabel) != 0) {
-        return failTest("Ignored labels were materialized as working nodes.");
+    for (auto ignored : graphBase->ignoredSegmentLabels) {
+        if (graph->initialNodes.count(ignored) || graph->workingNodes.count(ignored)) {
+            return failTest("Ignored labels were materialized as graph nodes.");
+        }
     }
 
     std::size_t expectedVoxelCount = 0;
@@ -407,8 +410,8 @@ int testIgnoredLabelsAreNotMaterialized() {
         graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion().GetNumberOfPixels();
     for (std::size_t voxelIndex = 0; voxelIndex < imageVoxelCount; ++voxelIndex) {
         const SegmentIdType label = segmentLabelBuffer[voxelIndex];
-        ++expectedCountByLabel[label];
-        if (label != 0 && label != additionallyIgnoredLabel) {
+        if (label != 0 && label != additionallyIgnoredLabel && label != highestLabel) {
+            ++expectedCountByLabel.at(label);
             ++expectedVoxelCount;
         }
     }
@@ -430,7 +433,7 @@ int testIgnoredLabelsAreNotMaterialized() {
     }
     graph->setBackgroundIdStrategy("backgroundIsHighestId");
     graph->updateBackgroundIdFromVolume(graphBase->pWorkingSegmentsImage->denseRegion(graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion()));
-    if (graph->backgroundId != 40) {
+    if (graph->backgroundId != highestLabel) {
         return failTest("Highest-label background selection is incorrect.");
     }
     return 0;

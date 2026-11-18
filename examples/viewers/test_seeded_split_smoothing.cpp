@@ -1,13 +1,18 @@
 #include "src/image_storage/DenseImageStorage.h"
+#include "src/image_storage/StreamVByteImageStorage.h"
+#include "src/segment_handling/Graph.h"
+#include "src/viewers/AnnotationSliceViewer.h"
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/qtUtils/TaskRunner.h"
 
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
 #include <QSlider>
+#include <QSpinBox>
 #include <QSurfaceFormat>
 #include <QThreadPool>
 #include <QTimer>
@@ -57,6 +62,54 @@ struct WorkerGate {
 
 using Session = segment_puzzler::SeededWatershedSplitSession;
 
+void testSplitPreviewAfterMerge() {
+    using Label = dataType::SegmentIdType;
+    auto image = dataType::SegmentsImageType::New();
+    image->SetRegions(dataType::SegmentsImageType::SizeType{{15, 7, 7}});
+    image->Allocate(true);
+    for (int z = 1; z <= 5; ++z) for (int y = 1; y <= 5; ++y) for (int x = 1; x <= 13; ++x)
+        if (x <= 5 || x >= 9 || (y == 3 && z == 3)) image->SetPixel({x, y, z}, 1);
+    image->SetPixel({14, 3, 3}, 2);
+    auto base = std::make_shared<GraphBase>();
+    base->pSelectedSegmentation = segment_puzzler::StreamVByteImageStorage<Label>::fromImage(*image);
+    base->pWorkingSegmentsImage = segment_puzzler::DenseImageStorage<Label>::fromImage(image);
+    Graph graph(base, false);
+    base->pGraph = &graph;
+    graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+    graph.constructFromVolume(base->pWorkingSegmentsImage);
+    AnnotationSliceViewer viewer(base, nullptr);
+    require(viewer.show3DSplitViewForLabel(1), "Could not open the split viewer");
+    auto *dialog = viewer.findChild<Segment3DViewerDialog *>();
+    require(dialog, "Missing split dialog");
+    auto *size = dialog->findChild<QSpinBox *>("minimumErosionMarkerSizeSpinBox");
+    auto *erosion = dialog->findChild<QPushButton *>("erosionSplitButton");
+    QPushButton *apply = nullptr;
+    for (auto *button : dialog->findChildren<QPushButton *>())
+        if (button->text() == "Apply Split") apply = button;
+    require(size && erosion && apply && waitUntil([&] { return erosion->isEnabled(); }), "Split tools did not become ready");
+    size->setValue(1);
+    erosion->click();
+    require(apply->isEnabled(), "Expected a valid two-part preview");
+
+    const auto owner = *graph.mergeEdges({graph.initialLabelPairToTwoSidedInitialEdge.at({1, 2})->numId}).begin();
+    const auto next = graph.nextFreeId;
+    const auto workingTime = base->pWorkingSegmentsImage->GetMTime();
+    const auto selectedTime = base->pSelectedSegmentation->GetMTime();
+    const auto edgeTime = base->pEdgesInitialSegmentsImage->GetMTime();
+    bool askedToReopen = false;
+    QTimer::singleShot(0, dialog, [&] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            askedToReopen = box->text().contains("reopen", Qt::CaseInsensitive);
+            box->accept();
+        }
+    });
+    apply->click();
+    require(askedToReopen && graph.nextFreeId == next && graph.workingNodes.size() == 1 &&
+            graph.workingNodes.at(owner)->subInitialNodes.size() == 2 &&
+            base->pWorkingSegmentsImage->GetMTime() == workingTime && base->pSelectedSegmentation->GetMTime() == selectedTime &&
+            base->pEdgesInitialSegmentsImage->GetMTime() == edgeTime, "Applying a stale preview changed the merged graph or images");
+}
+
 std::unique_ptr<Segment3DViewerDialog> makeDialog(const std::shared_ptr<Session> &session,
                                                const Segment3DViewerDialog::PreparedScene &scene) {
     Segment3DViewerDialog::SplitSessionConfig config;
@@ -75,6 +128,10 @@ int main(int argc, char **argv) {
     QThreadPool::globalInstance()->setMaxThreadCount(1);
     itk::MultiThreaderBase::SetGlobalDefaultNumberOfThreads(2);
     try {
+        if (app.arguments().contains("--stale-preview")) {
+            testSplitPreviewAfterMerge();
+            return 0;
+        }
         auto image = dataType::SegmentsImageType::New();
         image->SetRegions(dataType::SegmentsImageType::RegionType({{0, 0, 0}}, {{32, 24, 16}}));
         image->Allocate();

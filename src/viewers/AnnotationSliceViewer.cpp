@@ -107,7 +107,7 @@ QString workingResolutionAction(const Graph::WorkingSegmentResolution &resolutio
     case Status::Inserted:
         return QStringLiteral("inserted");
     case Status::NeedsInsertion:
-        return QStringLiteral("insertion_failed");
+        return QStringLiteral("needs_insertion");
     case Status::NoForeground:
         return QStringLiteral("no_foreground");
     case Status::Failed:
@@ -1148,13 +1148,8 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
                     }
 
                     using Status = Graph::WorkingSegmentResolution::Status;
-                    auto resolution =
+                    const auto resolution =
                         graph->inspectSelectedSegmentationComponentInWorkingGraph(x, y, z);
-                    if (resolution.status == Status::NeedsInsertion) {
-                        resolution = graph->ensureSelectedSegmentationComponentInWorkingGraph(
-                            x, y, z);
-                    }
-                    result.mutated = resolution.status == Status::Inserted;
                     SP_LOG_INFO(
                         "segmentation",
                         QStringLiteral(
@@ -1163,10 +1158,9 @@ bool AnnotationSliceViewer::show3DSplitViewAtIndex(
                             .arg(activeSelectedLabel)
                             .arg(workingResolutionAction(resolution))
                             .arg(resolution.workingLabel));
-                    if (resolution.status != Status::ReusedExisting
-                        && resolution.status != Status::Inserted) {
+                    if (resolution.status != Status::ReusedExisting) {
                         result.message = QStringLiteral(
-                            "The clicked component could not be restored in the working graph.");
+                            "The working segment changed. Reopen the 3D split viewer to update the preview.");
                         return result;
                     }
 

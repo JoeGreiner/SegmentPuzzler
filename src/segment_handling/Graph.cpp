@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <fstream>
 #include "Graph.h"
+#include "LabelContacts.h"
 #include <itkImageFileWriter.h>
 #include <algorithm>
 #include <limits>
@@ -664,10 +665,82 @@ struct ReplacementInitialComponent {
     std::vector<int> voxelIndices;
 };
 
-struct NeighborWorkingGroup {
-    Graph::SegmentIdType workingLabel = 0;
-    std::vector<Graph::SegmentIdType> initialLabels;
+struct PreparedInitialEdge {
+    std::shared_ptr<OneSidedInitialEdge> smallerSide;
+    std::shared_ptr<OneSidedInitialEdge> largerSide;
+    std::unique_ptr<TwoSidedInitialEdge> edge;
+
+    void install(Graph &graph, SegmentManager &manager) {
+        const auto [a, b] = edge->pairId;
+        const auto &first = graph.initialNodes.at(a);
+        const auto &second = graph.initialNodes.at(b);
+        first->neighborLabelToOneSidedInitialEdge.emplace(b, std::move(smallerSide));
+        second->neighborLabelToOneSidedInitialEdge.emplace(a, std::move(largerSide));
+        if (first->getCurrentWorkingNodeLabel() == second->getCurrentWorkingNodeLabel())
+            edge->setShouldMergeYes();
+        manager.registerTwoSidedInitialEdge(std::move(edge));
+    }
 };
+
+using BoundaryRuns = std::map<Graph::EdgePairIdType, std::array<std::vector<VoxelList::Run>, 2>>;
+
+std::vector<PreparedInitialEdge> prepareInitialEdges(BoundaryRuns &contacts) {
+    std::vector<PreparedInitialEdge> edges;
+    for (auto &[pair, sides] : contacts) {
+        if (sides[0].empty() && sides[1].empty()) continue;
+        auto a = segment_puzzler::makeContactEdge(pair.first, pair.second, sides[0]);
+        auto b = segment_puzzler::makeContactEdge(pair.second, pair.first, sides[1]);
+        auto edge = std::make_unique<TwoSidedInitialEdge>(a, b);
+        edge->calculateEdgeFeatures();
+        edges.push_back({std::move(a), std::move(b), std::move(edge)});
+    }
+    return edges;
+}
+
+// Only the opposite contact voxels are needed to identify the initial nodes
+// along the outside of the target, including constituents of merged neighbors.
+bool prepareSplitEdges(const Graph &graph, const WorkingNode &target,
+                       const std::unordered_map<Graph::SegmentIdType, std::shared_ptr<InitialNode>> &replacements,
+                       const Graph::SegmentsImageType::RegionType &region, std::vector<PreparedInitialEdge> &edges) {
+    using Image = Graph::SegmentsImageType;
+    auto labels = Image::New();
+    labels->SetRegions(region);
+    labels->Allocate();
+    labels->FillBuffer(graph.backgroundId);
+    for (const auto &[id, node] : target.subInitialNodes) {
+        for (const auto &[neighborId, side] : node->neighborLabelToOneSidedInitialEdge) {
+            if (target.subInitialNodes.count(neighborId)) continue;
+            const auto neighbor = graph.initialNodes.find(neighborId);
+            if (neighbor == graph.initialNodes.end() || !neighbor->second) return false;
+            const auto &opposite = neighbor->second->neighborLabelToOneSidedInitialEdge;
+            const auto boundary = opposite.find(id);
+            if (boundary == opposite.end() || !boundary->second) return false;
+            const auto owner = graph.workingNodes.find(neighbor->second->getCurrentWorkingNodeLabel());
+            if (owner == graph.workingNodes.end() || !owner->second) return false;
+            for (const auto &voxel : boundary->second->voxels) {
+                const Image::IndexType index{voxel.x, voxel.y, voxel.z};
+                if (!region.IsInside(index)) return false;
+                labels->SetPixel(index, neighborId);
+            }
+        }
+    }
+    for (const auto &[id, node] : replacements)
+        for (const auto &voxel : node->voxels) labels->SetPixel({voxel.x, voxel.y, voxel.z}, id);
+
+    BoundaryRuns contacts;
+    const auto local = segment_puzzler::DenseImageStorage<Graph::SegmentIdType>::fromImage(labels);
+    segment_puzzler::visitLabelContacts(*local, region, region.GetIndex()[2],
+        [&](auto a, auto b, Image::IndexType left, Image::IndexType right, std::size_t length) {
+            if (a == b || a == graph.backgroundId || b == graph.backgroundId ||
+                (!replacements.count(a) && !replacements.count(b))) return;
+            if (a > b) { std::swap(a, b); std::swap(left, right); }
+            auto &sides = contacts[{a, b}];
+            sides[0].push_back({Voxel(left[0], left[1], left[2]), static_cast<std::uint32_t>(length)});
+            sides[1].push_back({Voxel(right[0], right[1], right[2]), static_cast<std::uint32_t>(length)});
+        });
+    edges = prepareInitialEdges(contacts);
+    return true;
+}
 
 } // namespace
 
@@ -863,9 +936,13 @@ void Graph::initializeEdgeVolumeAndEdgeStatus() {
 
 Graph::SegmentIdType Graph::getNextFreeId(dataType::SegmentsStorage::Pointer pImage) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding next free segment id"));
-    const SegmentIdType largestId = getLargestIdInSegmentVolume(pImage);
-    if (largestId == std::numeric_limits<SegmentIdType>::max())
-        throw std::overflow_error("No free segment IDs remain.");
+    SegmentIdType largestId = 0;
+    pImage->forEachRun([&](const auto &, std::size_t, SegmentIdType label) {
+        if (label > largestId && label != backgroundId && (!pIgnoredSegmentLabels || !isIgnoredId(label))) {
+            largestId = label;
+        }
+    });
+    if (largestId == std::numeric_limits<SegmentIdType>::max()) return largestId;
     logGraphDebugIf(verbose, __func__, QStringLiteral("Next free segment id=%1").arg(largestId + 1));
     return largestId + 1;
 }
@@ -1981,7 +2058,7 @@ bool Graph::splitWorkingNodeByProjected3DCut(const Projected3DCutRequest &reques
     if (graphBase == nullptr || graphBase->pWorkingSegmentsImage == nullptr) {
         return finish(false);
     }
-    if (request.targetWorkingLabel == 0 || request.strokePixels.size() < 2 ||
+    if (request.targetWorkingLabel == backgroundId || request.strokePixels.size() < 2 ||
         request.viewportSize[0] <= 0 || request.viewportSize[1] <= 0) {
         return finish(false);
     }
@@ -2087,7 +2164,8 @@ bool Graph::splitWorkingNodeByVoxelPartition(
             maximumComponentLabel = std::max(maximumComponentLabel, partitionIt.Get());
         }
     }
-    if (maximumComponentLabel < 2 || assignedPartitionVoxelCount != targetVoxelCount) {
+    if (maximumComponentLabel < 2 || maximumComponentLabel > targetVoxelCount ||
+        assignedPartitionVoxelCount != targetVoxelCount || targetVoxelCount > std::numeric_limits<int>::max()) {
         return false;
     }
 
@@ -2151,17 +2229,14 @@ bool Graph::applyWorkingNodePartition(
     const auto targetWorkingNode = targetIt->second;
     const Roi targetRoi = targetWorkingNode->roi;
 
-    std::vector<SegmentIdType> originalInitialLabels;
-    originalInitialLabels.reserve(targetWorkingNode->subInitialNodes.size());
-    for (const auto &[initialLabel, initialNode] : targetWorkingNode->subInitialNodes) {
-        if (initialNode == nullptr) {
-            return false;
-        }
-        originalInitialLabels.push_back(initialLabel);
+    for (const auto &[id, node] : targetWorkingNode->subInitialNodes) {
+        const auto registered = initialNodes.find(id);
+        if (!node || registered == initialNodes.end() || registered->second != node ||
+            node->getCurrentWorkingNodeLabel() != targetWorkingLabel) return false;
     }
 
     std::unordered_map<SegmentIdType, std::vector<int>> voxelIndicesByInitialLabel;
-    voxelIndicesByInitialLabel.reserve(originalInitialLabels.size());
+    voxelIndicesByInitialLabel.reserve(targetWorkingNode->subInitialNodes.size());
     LocalVoxelGrid voxelGrid;
     voxelGrid.minX = targetRoi.minX;
     voxelGrid.minY = targetRoi.minY;
@@ -2184,19 +2259,7 @@ bool Graph::applyWorkingNodePartition(
         voxelGrid.voxelIndices[voxelGrid.linearIndex(voxel.x, voxel.y, voxel.z)] = voxelIndex;
     }
 
-    const SegmentsImageType::RegionType editRegion(
-        {targetRoi.minX, targetRoi.minY, targetRoi.minZ},
-        {static_cast<itk::SizeValueType>(voxelGrid.sizeX),
-         static_cast<itk::SizeValueType>(voxelGrid.sizeY),
-         static_cast<itk::SizeValueType>(voxelGrid.sizeZ)});
-    auto editedImage = graphBase->pWorkingSegmentsImage->denseRegion(editRegion);
-    auto *workingSegmentsBuffer = editedImage->GetBufferPointer();
-    const auto workingSegmentsLinearIndex = [&editedImage](const Voxel &voxel) {
-        return editedImage->ComputeOffset({voxel.x, voxel.y, voxel.z});
-    };
-
     std::vector<ReplacementInitialComponent> replacementInitialComponents;
-    replacementInitialComponents.reserve(targetVoxels.size());
     std::vector<unsigned char> replacementVisited(targetVoxels.size(), 0);
     std::vector<int> initialQueue;
     initialQueue.reserve(targetVoxels.size());
@@ -2247,141 +2310,38 @@ bool Graph::applyWorkingNodePartition(
         return false;
     }
 
-    std::vector<NeighborWorkingGroup> neighborGroups;
-    neighborGroups.reserve(targetWorkingNode->neighborLabelToWorkingEdge.size());
-    const auto collectNeighborGroupsStart = Clock::now();
-    for (const auto &edgeEntry : targetWorkingNode->neighborLabelToWorkingEdge) {
-        const auto neighborIt = workingNodes.find(edgeEntry.first);
-        if (neighborIt == workingNodes.end() || neighborIt->second == nullptr) {
-            continue;
-        }
-
-        NeighborWorkingGroup group;
-        group.workingLabel = edgeEntry.first;
-        group.initialLabels.reserve(neighborIt->second->subInitialNodes.size());
-        for (const auto &initialEntry : neighborIt->second->subInitialNodes) {
-            group.initialLabels.push_back(initialEntry.first);
-        }
-        neighborGroups.push_back(std::move(group));
-    }
-    if (profileOut != nullptr) {
-        profileOut->collectNeighborGroupsMs = durationMs(collectNeighborGroupsStart, Clock::now());
-    }
-
-    const auto shouldSplitNeighborIntoInitialNodes = [](const NeighborWorkingGroup &neighborGroup) {
-        if (neighborGroup.initialLabels.size() > 1) {
-            return true;
-        }
-        return neighborGroup.initialLabels.size() == 1 &&
-               neighborGroup.workingLabel != neighborGroup.initialLabels.front();
-    };
-
-    const auto splitWorkingNodesStart = Clock::now();
-    splitWorkingNodeIntoInitialNodes(targetWorkingLabel);
-    for (const auto &neighborGroup : neighborGroups) {
-        // Initial-edge recomputation must see neighboring labels in the working image as initial-node labels,
-        // not stale synthetic working labels left behind by an earlier projected cut.
-        if (shouldSplitNeighborIntoInitialNodes(neighborGroup) &&
-            workingNodes.count(neighborGroup.workingLabel) > 0) {
-            splitWorkingNodeIntoInitialNodes(neighborGroup.workingLabel);
-        }
-    }
-    if (profileOut != nullptr) {
-        profileOut->splitWorkingNodesMs = durationMs(splitWorkingNodesStart, Clock::now());
-    }
-
-    const auto removeOriginalNodesStart = Clock::now();
-    for (const SegmentIdType initialLabel : originalInitialLabels) {
-        if (workingNodes.count(initialLabel) > 0) {
-            segmentManager.removeWorkingNode(workingNodes.at(initialLabel).get());
-        }
-        if (initialNodes.count(initialLabel) > 0) {
-            segmentManager.removeInitialNode(initialLabel);
-        }
-    }
-    if (profileOut != nullptr) {
-        profileOut->removeOriginalNodesMs = durationMs(removeOriginalNodesStart, Clock::now());
-    }
-
-    const auto clearTargetRegionStart = Clock::now();
-    for (const auto &voxel : targetVoxels) {
-        workingSegmentsBuffer[workingSegmentsLinearIndex(voxel)] = backgroundId;
-    }
-    if (profileOut != nullptr) {
-        profileOut->clearTargetRegionMs = durationMs(clearTargetRegionStart, Clock::now());
-    }
-
-    std::vector<std::vector<SegmentIdType>> replacementInitialLabelsByComponent(
-        static_cast<std::size_t>(componentCount));
-    std::vector<std::size_t> replacementVoxelCountsByComponent(
-        static_cast<std::size_t>(componentCount), 0);
-    std::vector<SegmentIdType> replacementInitialLabels;
-    replacementInitialLabels.reserve(replacementInitialComponents.size());
-
+    auto nextLabel = nextFreeId;
+    std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> replacements;
+    std::vector<std::vector<SegmentIdType>> initialLabelsByComponent(componentCount);
+    std::vector<std::size_t> replacementVoxelCountsByComponent(componentCount);
     const auto createReplacementInitialsStart = Clock::now();
-    double materializeReplacementVoxelListsMs = 0.0;
-    for (auto &replacementComponent : replacementInitialComponents) {
-        const SegmentIdType replacementInitialLabel = nextFreeId;
-        ++nextFreeId;
-
-        auto *replacementInitialNode =
-            new InitialNode(graphBase, graphBase->pWorkingSegmentsImage, replacementInitialLabel);
-        const auto materializeReplacementVoxelListStart = Clock::now();
-        for (const int voxelIndex : replacementComponent.voxelIndices) {
-            replacementInitialNode->voxels.push_back(targetVoxels[static_cast<std::size_t>(voxelIndex)]);
-        }
-        materializeReplacementVoxelListsMs +=
-            durationMs(materializeReplacementVoxelListStart, Clock::now());
-        replacementInitialNode->roi.updateBoundingRoi(replacementInitialNode->voxels);
-        segmentManager.addInitialNode(replacementInitialNode);
-
-        replacementInitialLabelsByComponent[static_cast<std::size_t>(replacementComponent.finalComponentId)].push_back(
-            replacementInitialLabel);
-        replacementVoxelCountsByComponent[static_cast<std::size_t>(replacementComponent.finalComponentId)] +=
-            replacementComponent.voxelIndices.size();
-        replacementInitialLabels.push_back(replacementInitialLabel);
-
-        for (const auto &voxel : replacementInitialNode->voxels) {
-            workingSegmentsBuffer[workingSegmentsLinearIndex(voxel)] = replacementInitialLabel;
-        }
+    double materializeVoxelListsMs = 0.0;
+    for (const auto &component : replacementInitialComponents) {
+        const auto label = segmentManager.takeNextSegmentId(nextLabel);
+        auto node = std::make_shared<InitialNode>(graphBase, graphBase->pWorkingSegmentsImage, label);
+        const auto start = Clock::now();
+        for (const int index : component.voxelIndices) node->voxels.push_back(targetVoxels[index]);
+        if (profileOut) materializeVoxelListsMs += durationMs(start, Clock::now());
+        node->roi.updateBoundingRoi(node->voxels);
+        replacements.emplace(label, std::move(node));
+        initialLabelsByComponent[component.finalComponentId].push_back(label);
+        replacementVoxelCountsByComponent[component.finalComponentId] += component.voxelIndices.size();
     }
-    if (profileOut != nullptr) {
+    if (profileOut) {
+        profileOut->materializeReplacementVoxelListsMs = materializeVoxelListsMs;
         profileOut->createReplacementInitialsMs = durationMs(createReplacementInitialsStart, Clock::now());
-        profileOut->materializeReplacementVoxelListsMs = materializeReplacementVoxelListsMs;
     }
 
-    graphBase->pWorkingSegmentsImage->writeRegion(editRegion, workingSegmentsBuffer, editRegion.GetNumberOfPixels());
-    editedImage = nullptr;
     const auto recomputeInitialEdgesStart = Clock::now();
-    for (const SegmentIdType initialLabel : replacementInitialLabels) {
-        segmentManager.computeOneSidedEdgesOnInitialNode(initialNodes.at(initialLabel).get());
+    const auto region = getDilatedRegionFromRoi(targetRoi, graphBase->pWorkingSegmentsImage->GetLargestPossibleRegion(), 1);
+    std::vector<PreparedInitialEdge> edges;
+    if (!prepareSplitEdges(*this, *targetWorkingNode, replacements, region, edges)) {
+        logGraph(LogLevel::Error, __func__, QStringLiteral("Could not prepare split edges for working segment %1").arg(targetWorkingLabel));
+        return false;
     }
-    for (const SegmentIdType initialLabel : replacementInitialLabels) {
-        segmentManager.computeCorrospondingOneSidedInitialEdges(initialNodes.at(initialLabel).get());
-    }
-    segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
-    if (profileOut != nullptr) {
-        profileOut->recomputeInitialEdgesMs = durationMs(recomputeInitialEdgesStart, Clock::now());
-    }
-
-    std::unordered_set<SegmentIdType> touchedWorkingLabels;
-    touchedWorkingLabels.reserve(neighborGroups.size() + replacementInitialLabelsByComponent.size() + 4);
+    if (profileOut) profileOut->recomputeInitialEdgesMs = durationMs(recomputeInitialEdgesStart, Clock::now());
 
     const auto rebuildWorkingNodesStart = Clock::now();
-    for (const auto &neighborGroup : neighborGroups) {
-        if (neighborGroup.initialLabels.size() > 1) {
-            for (const SegmentIdType initialLabel : neighborGroup.initialLabels) {
-                if (workingNodes.count(initialLabel) > 0) {
-                    segmentManager.removeWorkingNode(workingNodes.at(initialLabel).get());
-                }
-            }
-            auto *rebuiltNeighborNode =
-                new WorkingNode(neighborGroup.initialLabels, neighborGroup.workingLabel, initialNodes);
-            segmentManager.addWorkingNode(rebuiltNeighborNode);
-        }
-        touchedWorkingLabels.insert(neighborGroup.workingLabel);
-    }
-
     std::vector<int> componentOrder;
     componentOrder.reserve(static_cast<std::size_t>(componentCount));
     for (int componentId = 0; componentId < componentCount; ++componentId) {
@@ -2397,47 +2357,41 @@ bool Graph::applyWorkingNodePartition(
     });
 
     std::vector<SegmentIdType> resultingWorkingLabels;
-    resultingWorkingLabels.reserve(componentOrder.size());
-    for (std::size_t orderIndex = 0; orderIndex < componentOrder.size(); ++orderIndex) {
-        const int componentId = componentOrder[orderIndex];
-        auto &componentLabels = replacementInitialLabelsByComponent[static_cast<std::size_t>(componentId)];
-        if (componentLabels.empty()) {
-            continue;
+    std::unordered_map<SegmentIdType, std::shared_ptr<WorkingNode>> newWorkingNodes;
+    std::vector<dataType::SegmentsStorage::VoxelRange> changedRuns;
+    for (const int component : componentOrder) {
+        const auto label = resultingWorkingLabels.empty() ? targetWorkingLabel : segmentManager.takeNextSegmentId(nextLabel);
+        auto node = std::make_shared<WorkingNode>(initialLabelsByComponent[component], label, replacements);
+        if (label != targetWorkingLabel) {
+            for (const auto *list : node->getVoxelLists()) {
+                for (const auto &run : list->getRuns()) {
+                    changedRuns.push_back({{run.start.x, run.start.y, run.start.z}, run.length, label});
+                }
+            }
         }
-
-        const SegmentIdType workingLabel =
-            orderIndex == 0 ? targetWorkingLabel : nextFreeId++;
-        auto *replacementWorkingNode =
-            new WorkingNode(componentLabels, workingLabel, initialNodes);
-        segmentManager.addWorkingNode(replacementWorkingNode);
-        touchedWorkingLabels.insert(workingLabel);
-        resultingWorkingLabels.push_back(workingLabel);
+        newWorkingNodes.emplace(label, std::move(node));
+        resultingWorkingLabels.push_back(label);
     }
-    if (profileOut != nullptr) {
-        profileOut->rebuildWorkingNodesMs = durationMs(rebuildWorkingNodesStart, Clock::now());
-    }
-
-    const auto recalculateWorkingEdgesStart = Clock::now();
-    for (const SegmentIdType workingLabel : touchedWorkingLabels) {
-        if (workingNodes.count(workingLabel) == 0) {
-            continue;
-        }
-        segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(workingLabel).get());
-    }
-    if (profileOut != nullptr) {
-        profileOut->recalculateWorkingEdgesMs = durationMs(recalculateWorkingEdgesStart, Clock::now());
-    }
+    if (profileOut) profileOut->rebuildWorkingNodesMs = durationMs(rebuildWorkingNodesStart, Clock::now());
 
     const auto rewriteWorkingImageStart = Clock::now();
-    for (const SegmentIdType workingLabel : touchedWorkingLabels) {
-        if (workingNodes.count(workingLabel) == 0) {
-            continue;
-        }
-        insertWorkingNodeInSegmentImage(*workingNodes.at(workingLabel));
+    nextFreeId = nextLabel;
+    graphBase->pWorkingSegmentsImage->fillVoxelRanges(changedRuns);
+    if (profileOut) profileOut->rewriteWorkingImageMs = durationMs(rewriteWorkingImageStart, Clock::now());
+
+    const auto removeOriginalNodesStart = Clock::now();
+    segmentManager.removeWorkingNode(targetWorkingNode.get());
+    for (const auto &[id, node] : targetWorkingNode->subInitialNodes) segmentManager.removeInitialNode(id);
+    if (profileOut) profileOut->removeOriginalNodesMs = durationMs(removeOriginalNodesStart, Clock::now());
+
+    initialNodes.merge(replacements);
+    workingNodes.merge(newWorkingNodes);
+    for (auto &contact : edges) contact.install(*this, segmentManager);
+    const auto recalculateWorkingEdgesStart = Clock::now();
+    for (const auto label : resultingWorkingLabels) {
+        segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(label).get());
     }
-    if (profileOut != nullptr) {
-        profileOut->rewriteWorkingImageMs = durationMs(rewriteWorkingImageStart, Clock::now());
-    }
+    if (profileOut) profileOut->recalculateWorkingEdgesMs = durationMs(recalculateWorkingEdgesStart, Clock::now());
 
     if (resultingWorkingLabelsOut != nullptr) {
         *resultingWorkingLabelsOut = std::move(resultingWorkingLabels);

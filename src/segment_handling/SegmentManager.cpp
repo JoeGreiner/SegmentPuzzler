@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -141,8 +142,7 @@ void SegmentManager::registerTwoSidedInitialEdge(
     pInitialNodes->at(registeredEdge->getLabelBigger())->addTwoSidedInitialEdge(registeredEdge);
     (*pInitialLabelPairToTwoSidedInitialEdge)[registeredEdge->pairId] = registeredEdge;
 
-    char defaultEdgeStatus = 0;
-    pEdgeStatus->insert(std::pair<EdgeNumIdType, char>(registeredEdge->numId, defaultEdgeStatus));
+    pEdgeStatus->emplace(registeredEdge->numId, registeredEdge->getShouldMerge());
     if (updateImage) segment_puzzler::setVoxelLists(*graphBase->pEdgesInitialSegmentsImage,
         registeredEdge->getVoxelLists(), registeredEdge->numId);
 }
@@ -169,7 +169,8 @@ void SegmentManager::addWorkingEdge(WorkingEdge *pWorkingEdgeToAdd) {
 // ==== remove =====
 
 void SegmentManager::removeInitialNode(SegmentManager::SegmentIdType labelOfNodeToRemove) {
-    InitialNode *nodeToRemove = (*pInitialNodes)[labelOfNodeToRemove].get();
+    InitialNode *nodeToRemove = pInitialNodes->at(labelOfNodeToRemove).get();
+    if (!nodeToRemove) throw std::logic_error("Cannot remove a null initial node.");
     ScopedSegmentManagerTimer timer(verbose,
                                     __func__,
                                     QStringLiteral("Removing initial node %1").arg(nodeToRemove->getLabel()));
@@ -231,13 +232,15 @@ void SegmentManager::removeEdgePropertiesOnInitialNode(InitialNode *pInitialNode
 
     // delete onesided edges
     for (auto edge : pInitialNode->neighborLabelToOneSidedInitialEdge) {
-        if ((*pInitialNodes)[edge.first]->neighborLabelToOneSidedInitialEdge.count(pInitialNode->getLabel()) > 0) {
+        const auto &neighbor = pInitialNodes->at(edge.first);
+        if (!neighbor) throw std::logic_error("Cannot remove an initial edge with a null neighbor.");
+        if (neighbor->neighborLabelToOneSidedInitialEdge.count(pInitialNode->getLabel()) > 0) {
             logSegmentManagerDebugIf(verbose,
                                      __func__,
                                      QStringLiteral("Removing mirrored one-sided edge %1 -> %2")
                                          .arg(edge.first)
                                          .arg(pInitialNode->getLabel()));
-            (*pInitialNodes)[edge.first]->neighborLabelToOneSidedInitialEdge.erase(pInitialNode->getLabel());
+            neighbor->neighborLabelToOneSidedInitialEdge.erase(pInitialNode->getLabel());
         }
     }
     pInitialNode->neighborLabelToOneSidedInitialEdge.clear();
@@ -511,31 +514,20 @@ void SegmentManager::computeOneSidedEdgesOnInitialNode(InitialNode *pInitialNode
 
 void SegmentManager::computeCorrospondingOneSidedInitialEdges(InitialNode *pInitialNode) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing corresponding one-sided initial edges"));
-    auto labelOfThisInitialNode = pInitialNode->getLabel();
-    for (auto &edge : pInitialNode->neighborLabelToOneSidedInitialEdge) {
-        // TODO: this is ugly, add a function to add the initial edge!
-        auto labelOfConnectedInitialNode = edge.first;
-
-        auto pNewEdge = std::shared_ptr<OneSidedInitialEdge>(pInitialNode->computeCorrospondingOneSidedEdge(edge.second.get()));
-
-        if  ((*pInitialNodes).count(labelOfConnectedInitialNode) == 0){
-            logSegmentManager(LogLevel::Error,
-                              __func__,
-                              QStringLiteral("Connected initial node %1 is missing while computing corresponding one-sided edges")
-                                  .arg(labelOfConnectedInitialNode));
-            printEdgeIdLookUpToFile("edgeIdLookup.txt");
-            printWorkingNodesToFile("workingNodes.txt");
-            printWorkingEdgesToFile("workingEdges.txt");
-            printInitialNodesToFile("initialNodes.txt");
-            printInitialTwoSidedEdgesToFile("initialTwoSidedEdges.txt");
-            printInitialOneSidedEdgesToFile("initialOneSidedEdges.txt");
-//            ITKImageWriter<dataType::EdgeImageType>(graphBase->pEdgesInitialSegmentsImage,
-//                                                                        "initialEdges.nrrd");
-//            ITKImageWriter<dataType::SegmentsImageType>(graphBase->pWorkingSegmentsImage,s
-//                                                                            "workingSegments.nrrd");
+    const auto label = pInitialNode->getLabel();
+    for (const auto &[neighborLabel, edge] : pInitialNode->neighborLabelToOneSidedInitialEdge) {
+        const auto neighbor = pInitialNodes->find(neighborLabel);
+        if (neighbor == pInitialNodes->end()) {
+            const QString message = QStringLiteral("Connected initial node %1 is missing while rebuilding the edge from %2")
+                                        .arg(neighborLabel).arg(label);
+            logSegmentManager(LogLevel::Error, __func__, message);
+            throw std::logic_error(message.toStdString());
         }
-
-        (*pInitialNodes)[labelOfConnectedInitialNode]->neighborLabelToOneSidedInitialEdge[labelOfThisInitialNode] = pNewEdge;
+        if (!neighbor->second || !edge) {
+            throw std::logic_error("Cannot rebuild an initial edge with a null endpoint or side.");
+        }
+        neighbor->second->neighborLabelToOneSidedInitialEdge[label] =
+            std::shared_ptr<OneSidedInitialEdge>(pInitialNode->computeCorrospondingOneSidedEdge(edge.get()));
     }
 }
 
@@ -778,7 +770,17 @@ SegmentManager::constructWorkingNodeFromInitialNode(InitialNode *baseInitialNode
 }
 
 
-bool SegmentManager::isIgnoredId(SegmentIdType idToCheck) {
+SegmentManager::SegmentIdType SegmentManager::takeNextSegmentId(SegmentIdType &cursor) const {
+    auto label = cursor;
+    const auto limit = std::numeric_limits<SegmentIdType>::max();
+    while (label < limit && isIgnoredId(label)) ++label;
+    // The cursor must still be representable after the last allocation.
+    if (label == limit) throw std::overflow_error("No free working segment IDs remain.");
+    cursor = label + 1;
+    return label;
+}
+
+bool SegmentManager::isIgnoredId(SegmentIdType idToCheck) const {
     return (std::find(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end(), idToCheck) !=
             pIgnoredSegmentLabels->end());
 }

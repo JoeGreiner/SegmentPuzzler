@@ -28,6 +28,7 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkSurfaceNets3D.h>
 
+#include "src/segment_handling/SeededWatershedSplit.h"
 #include "src/viewers/Segment3DViewerDialog.h"
 #include "src/viewers/itkSignalBase.h"
 #include "src/utils/AppLogger.h"
@@ -44,6 +45,7 @@ struct ProgramOptions {
     int viewportSize = 1024;
     double strokeWidthPixels = 6.0;
     bool sceneOnly = false;
+    bool applyOnly = false;
 };
 
 int failTest(const std::string &message) {
@@ -60,11 +62,13 @@ bool parseArgs(int argc, char **argv, ProgramOptions &options) {
             options.viewportSize = std::max(128, QString::fromLocal8Bit(argv[++index]).toInt());
         } else if (arg == "--stroke-width" && index + 1 < argc) {
             options.strokeWidthPixels = std::max(1.0, QString::fromLocal8Bit(argv[++index]).toDouble());
+        } else if (arg == "--apply-only") {
+            options.applyOnly = true;
         } else if (arg == "--scene-only") {
             options.sceneOnly = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0]
-                      << " [--segments PATH] [--viewport N] [--stroke-width PX] [--scene-only]\n";
+                      << " [--segments PATH] [--viewport N] [--stroke-width PX] [--scene-only | --apply-only]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg.toStdString() << "\n";
@@ -784,6 +788,200 @@ bool voxelListIsConnected(const VoxelList &voxels, const Roi &roi) {
     return visitedCount == voxels.size();
 }
 
+int checkConsistency(const Graph &graph) {
+    if (graph.initialEdgeIdLookup.size() != graph.initialLabelPairToTwoSidedInitialEdge.size())
+        return failTest("Initial edge lookups have different sizes.");
+    for (const auto &[pair, edge] : graph.initialLabelPairToTwoSidedInitialEdge) {
+        const auto &[a, b] = pair;
+        const auto &left = graph.initialNodes.at(a);
+        const auto &right = graph.initialNodes.at(b);
+        if (graph.initialEdgeIdLookup.at(edge->numId) != pair ||
+            left->neighborLabelToTwoSidedInitialEdge.at(b) != edge ||
+            right->neighborLabelToTwoSidedInitialEdge.at(a) != edge ||
+            left->neighborLabelToOneSidedInitialEdge.at(b) != edge->getSmallerLabelOneSidedInitialEdge() ||
+            right->neighborLabelToOneSidedInitialEdge.at(a) != edge->getLargerLabelOneSidedInitialEdge())
+            return failTest("The endpoints and the graph disagree about an initial edge.");
+    }
+    return 0;
+}
+
+int checkSplitBoundaries(const Graph &graph) {
+    if (int result = checkConsistency(graph)) return result;
+    using Image = dataType::SegmentsImageType;
+    const auto &base = *graph.graphBase;
+    // A fresh graph made from the final initial labels is a reference for every
+    // directed boundary, including the neighbor side of a split interface.
+    auto initialImage = sample::duplicateSegmentsImage(base.pWorkingSegmentsImage);
+    initialImage->FillBuffer(graph.backgroundId);
+    for (const auto &[id, node] : graph.initialNodes) {
+        for (const auto &v : node->voxels) {
+            const Image::IndexType index{v.x, v.y, v.z};
+            initialImage->SetPixel(index, id);
+            if (base.pWorkingSegmentsImage->GetPixel(index) != node->getCurrentWorkingNodeLabel())
+                return failTest("Initial node ownership differs from the working image.");
+        }
+    }
+    const auto reference = sample::buildGraphFixture(initialImage);
+    const auto overlay = sample::duplicateSegmentsImage(base.pEdgesInitialSegmentsImage);
+    auto matched = sample::duplicateSegmentsImage(overlay);
+    matched->FillBuffer(0);
+    for (const auto &[id, node] : reference.graph->initialNodes) {
+        const auto &actual = graph.initialNodes.at(id)->neighborLabelToOneSidedInitialEdge;
+        if (actual.size() != node->neighborLabelToOneSidedInitialEdge.size())
+            return failTest("The split changed the number of initial contacts.");
+        for (const auto &[neighborId, edge] : node->neighborLabelToOneSidedInitialEdge) {
+            const auto &side = actual.at(neighborId)->voxels;
+            if (side.size() != edge->voxels.size() || !std::equal(side.begin(), side.end(), edge->voxels.begin()))
+                return failTest("Split boundary voxels differ from a full graph rebuild.");
+            const auto pair = edge->pairId;
+            const auto edgeId = graph.initialLabelPairToTwoSidedInitialEdge.at(pair)->numId;
+            for (const auto &v : side) {
+                const Image::IndexType index{v.x, v.y, v.z};
+                const auto visible = overlay->GetPixel(index);
+                if (!visible) return failTest("Missing boundary in the edge image.");
+                if (visible == edgeId) matched->SetPixel(index, edgeId);
+            }
+        }
+    }
+    return imagesEqual(overlay, matched) ? 0 : failTest("The displayed edge does not touch this voxel.");
+}
+
+dataType::SegmentsStorage::Pointer splitTestStorage(dataType::SegmentsImageType::Pointer image, bool compressed) {
+    if (compressed) return segment_puzzler::StreamVByteImageStorage<SegmentIdType>::fromImage(*image);
+    return segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(image);
+}
+
+int testSplitApply(bool compressed) {
+    using namespace segment_puzzler;
+    using Image = dataType::SegmentsImageType;
+    auto image = Image::New();
+    image->SetRegions(Image::RegionType({0, 0, 0}, {40, 24, 8}));
+    image->Allocate(true);
+    for (int z = 1; z <= 6; ++z) {
+        for (int y = 2; y <= 21; ++y) {
+            for (int x = 2; x <= 35; ++x) {
+                const SegmentIdType label = 1 + (x > 21) + (x > 27) + (x > 32);
+                image->SetPixel({x, y, z}, label);
+            }
+        }
+    }
+    auto base = std::make_shared<GraphBase>();
+    Graph graph(base, false);
+    base->pGraph = &graph;
+    base->pWorkingSegmentsImage = splitTestStorage(sample::duplicateSegmentsImage(image), compressed);
+    base->pSelectedSegmentation = splitTestStorage(image, compressed);
+    base->selectedSegmentationContext->nextLabel = 5;
+    graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+    graph.constructFromVolume(base->pWorkingSegmentsImage);
+
+    const auto mergedLabels = graph.mergeEdges({graph.initialLabelPairToTwoSidedInitialEdge.at({2, 3})->numId});
+
+    auto cut = sample::buildCandidateCut(sample::findLargestWorkingSegment(graph), image,
+                                         sample::ProjectionPlane::XY, false, 200, 9);
+    cut.request.strokePixels = {{0, 0}, {200, 200}};
+    std::vector<SegmentIdType> parts;
+    if (!graph.splitWorkingNodeByProjected3DCut(cut.request, nullptr, &parts) || parts.size() != 2)
+        return failTest("The first projected split failed.");
+    const auto selected = graph.transferWorkingNodesToSegmentation(parts);
+    if (selected.size() != 2) return failTest("The first transfer failed.");
+    const auto before = sample::duplicateSegmentsImage(base->pWorkingSegmentsImage);
+    const auto selectedBefore = sample::duplicateSegmentsImage(base->pSelectedSegmentation);
+    const auto session = prepareSeededWatershedSplit(base->pSelectedSegmentation, selected[0]);
+    const auto left = seededSplitMaximumAlongWorldRay(session, {6, -5, 3}, {6, 30, 3});
+    const auto right = seededSplitMaximumAlongWorldRay(session, {17, -5, 3}, {17, 30, 3});
+    if (!left || !right) return failTest("Could not place both seeds.");
+    const auto preview = computeSeededWatershedSplit(session, {*left, *right});
+    if (!preview.valid()) return failTest(preview.error);
+    const auto firstWorkingLabel = parts[0];
+    std::vector<SegmentIdType> secondParts;
+    if (!graph.splitWorkingNodeByVoxelPartition(firstWorkingLabel, preview.partition, session.globalOffset, &secondParts) ||
+        secondParts.size() != 2) return failTest("Applying the seeded split failed.");
+    const auto transferred = graph.transferWorkingNodesToSegmentation(secondParts);
+    if (transferred.size() != 2) return failTest("Transferring the seeded parts failed.");
+    if (!graph.workingNodes.count(parts[1]) || !graph.workingNodes.count(*mergedLabels.begin()))
+        return failTest("Splitting the target changed a neighboring working node.");
+
+    std::map<SegmentIdType, SegmentIdType> workingByComponent;
+    itk::ImageRegionConstIteratorWithIndex<Image> it(before, before->GetLargestPossibleRegion());
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it) {
+        const auto idx = it.GetIndex();
+        const auto working = base->pWorkingSegmentsImage->GetPixel(idx);
+        const auto label = base->pSelectedSegmentation->GetPixel(idx);
+        if (it.Get() != firstWorkingLabel) {
+            if (working != it.Get() || label != selectedBefore->GetPixel(idx))
+                return failTest("Split modified a voxel outside the target.");
+            continue;
+        }
+        Image::IndexType local;
+        for (unsigned axis = 0; axis < 3; ++axis) local[axis] = idx[axis] - session.globalOffset[axis];
+        const auto component = preview.partition->GetPixel(local);
+        const auto found = std::find(secondParts.begin(), secondParts.end(), working);
+        if (!component || found == secondParts.end() || transferred[found - secondParts.begin()] != label ||
+            workingByComponent.emplace(component, working).first->second != working)
+            return failTest("Applied split differs from its preview.");
+    }
+    if (workingByComponent.size() != 2 || workingByComponent.at(1) == workingByComponent.at(2))
+        return failTest("The preview components were not kept separate.");
+    return checkSplitBoundaries(graph);
+}
+
+int testDisconnectedSplitEdges(bool compressed) {
+    using Image = dataType::SegmentsImageType;
+    constexpr int rows = 64;
+    auto image = Image::New();
+    image->SetRegions(Image::SizeType{{7, rows, 3}});
+    image->Allocate(true);
+    auto partition = sample::duplicateSegmentsImage(image);
+    for (int z = 0; z < 3; ++z) {
+        for (int y = 0; y < rows; ++y) {
+            image->SetPixel({0, y, z}, 10 + y);  // One neighbor per row on the left.
+            for (int x = 1; x <= 4; ++x) {
+                image->SetPixel({x, y, z}, x <= 2 ? 1 : 2);
+                partition->SetPixel({x, y, z}, x > 2 && y == 1 ? 1 : 1 + y % 3);
+            }
+            image->SetPixel({5, y, z}, z == 1 ? 0 : 3);  // Two separate contact patches on the right.
+            image->SetPixel({6, y, z}, 3);
+        }
+    }
+    auto base = std::make_shared<GraphBase>();
+    base->pWorkingSegmentsImage = splitTestStorage(sample::duplicateSegmentsImage(image), compressed);
+    Graph graph(base, false);
+    base->pGraph = &graph;
+    graph.setPointerToIgnoredSegmentLabels(&base->ignoredSegmentLabels);
+    graph.constructFromVolume(base->pWorkingSegmentsImage);
+    const auto merged = graph.mergeEdges({graph.initialLabelPairToTwoSidedInitialEdge.at({1, 2})->numId});
+    std::vector<SegmentIdType> parts;
+    const auto nextLabel = graph.nextFreeId;
+    const auto edgeCounter = base->edgeCounter;
+    const auto edgeTime = base->pEdgesInitialSegmentsImage->GetMTime();
+    const auto workingTime = base->pWorkingSegmentsImage->GetMTime();
+    auto missing = graph.initialNodes.extract(3);
+    if (graph.splitWorkingNodeByVoxelPartition(*merged.begin(), partition, {0, 0, 0}, &parts) ||
+        !parts.empty() || graph.nextFreeId != nextLabel || base->edgeCounter != edgeCounter ||
+        base->pEdgesInitialSegmentsImage->GetMTime() != edgeTime || base->pWorkingSegmentsImage->GetMTime() != workingTime)
+        return failTest("Rejected split changed the graph or image.");
+    graph.initialNodes.insert(std::move(missing));
+    base->ignoredSegmentLabels.push_back(nextLabel);
+
+    if (!graph.splitWorkingNodeByVoxelPartition(*merged.begin(), partition, {0, 0, 0}, &parts) ||
+        parts.size() != 3) return failTest("Could not apply the three-part split.");
+    if (graph.initialNodes.count(nextLabel) || graph.workingNodes.count(nextLabel))
+        return failTest("The split assigned an ignored label.");
+    std::map<SegmentIdType, SegmentIdType> workingByPart;
+    itk::ImageRegionConstIteratorWithIndex<Image> voxel(partition, partition->GetLargestPossibleRegion());
+    for (voxel.GoToBegin(); !voxel.IsAtEnd(); ++voxel) {
+        const auto index = voxel.GetIndex();
+        const auto owner = base->pWorkingSegmentsImage->GetPixel(index);
+        if (voxel.Get()) {
+            if (workingByPart.emplace(voxel.Get(), owner).first->second != owner)
+                return failTest("Disconnected pieces lost their common working label.");
+        } else if (owner != image->GetPixel(index)) {
+            return failTest("Split changed a voxel outside the three-part partition.");
+        }
+    }
+    return checkSplitBoundaries(graph);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -795,6 +993,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (options.applyOnly) {
+        for (const bool compressed : {false, true}) {
+            if (const int result = testSplitApply(compressed)) return result;
+            if (const int result = testDisconnectedSplitEdges(compressed)) return result;
+        }
+        return 0;
+    }
     if (options.sceneOnly && !options.segmentsPath.isEmpty()) {
         using namespace segment_puzzler::app_logging;
         auto settings = AppLogger::defaultSettings();

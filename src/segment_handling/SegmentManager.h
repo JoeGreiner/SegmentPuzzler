@@ -99,7 +99,8 @@ public:
 
     void recalculateEdgesOnWorkingNode(WorkingNode *pWorkingNode, bool veryVerbose = false);
 
-    bool isIgnoredId(SegmentIdType idToCheck);
+    bool isIgnoredId(SegmentIdType idToCheck) const;
+    SegmentIdType takeNextSegmentId(SegmentIdType &cursor) const;
 
 
     void printInitialNodes(std::ostream &outStream = std::cout);
