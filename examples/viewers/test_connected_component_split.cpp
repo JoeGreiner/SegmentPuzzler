@@ -490,6 +490,31 @@ int testDetachMiddleInitialNode() {
     return 0;
 }
 
+int testInsertionBesideMergedNeighbor() {
+    auto image = makeImage(5, 3, 1);
+    for (int y = 0; y < 3; ++y)
+        for (int x = 1; x <= 3; ++x) image->SetPixel({x, y, 0}, x);
+    auto fixture = buildGraphFixture(image);
+    auto &graph = *fixture.graph;
+    const auto &edges = graph.initialLabelPairToTwoSidedInitialEdge;
+    const auto internal = edges.at({2, 3})->numId;
+    const auto merged = *graph.mergeEdges({internal}).begin();
+
+    auto selected = makeImage(5, 3, 1);
+    selected->SetPixel({1, 1, 0}, 9);
+    fixture.graphBase->pSelectedSegmentation = segment_puzzler::DenseImageStorage<SegmentIdType>::fromImage(selected);
+    const auto result = graph.ensureSelectedSegmentationComponentInWorkingGraph(1, 1, 0);
+    if (result.status != Graph::WorkingSegmentResolution::Status::Inserted ||
+        !edges.count({2, result.workingLabel}) ||
+        !graph.workingLabelPairToWorkingEdge.count({merged, result.workingLabel})) {
+        return failTest("Insertion must connect to the touching initial node and its merged working node.");
+    }
+    for (int y = 0; y < 3; ++y)
+        for (int x = 2; x <= 3; ++x)
+            if (image->GetPixel({x, y, 0}) != merged) return failTest("Insertion split a neighboring merge.");
+    return 0;
+}
+
 int testEnsureReusesExactSelectedComponent() {
     auto workingImage = makeImage(4, 3, 1);
     workingImage->SetPixel({1, 1, 0}, 1);
@@ -2352,6 +2377,7 @@ int main(int argc, char **argv) {
     if (int result = testGraphPreservesMergesAndSplitsWorkingOutput()) {
         return result;
     }
+    if (int result = testInsertionBesideMergedNeighbor()) return result;
     if (int result = testDisconnectedRepairUsesWorkingConnectivity()) return result;
     if (int result = testDetachMiddleInitialNode()) return result;
     if (int result = testEnsureReusesExactSelectedComponent()) {

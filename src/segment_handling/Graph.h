@@ -449,8 +449,7 @@ private:
         const SegmentsImageType::IndexType &seed,
         const std::optional<SegmentsImageType::RegionType> &permittedSeedRegion = std::nullopt);
 
-    std::set<SegmentIdType> synchronizeOverwrittenInitialNodeVoxels(
-        const std::set<SegmentIdType> &overwrittenLabels);
+    SegmentsImageType::Pointer initialLabelsInRegion(const SegmentsImageType::RegionType &region);
 
 
     std::vector<SegmentIdType> *pIgnoredSegmentLabels;
