@@ -6,7 +6,6 @@
 #include "LabelContacts.h"
 #include <itkMultiThreaderBase.h>
 #include <QElapsedTimer>
-#include <QStringList>
 #include "src/utils/AppLogger.h"
 #include <src/utils/utils.h>
 #include <algorithm>
@@ -16,7 +15,6 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <stdexcept>
 #ifdef USE_OMP
 #include <omp.h>
@@ -39,15 +37,6 @@ void logSegmentManagerDebugIf(bool enabled, const char *functionName, const QStr
         return;
     }
     logSegmentManager(LogLevel::Debug, functionName, message);
-}
-
-template<typename Container>
-QString joinIds(const Container &values) {
-    QStringList parts;
-    for (const auto &value : values) {
-        parts << QString::number(static_cast<qulonglong>(value));
-    }
-    return parts.join(QStringLiteral(" "));
 }
 
 struct TwoSidedInitialEdgeSources {
@@ -333,34 +322,36 @@ void SegmentManager::removeWorkingEdge(WorkingEdge *workingEdgeToRemove) {
 
 
 void SegmentManager::removeInitialNodeFromWorkingNodeAtPosition(int x, int y, int z) {
-    // as initialnodes are not saved explicitly, workaround:
-    // unsplit working node into all initialnode
-    // get initialnode at (x,y,z)
-    // create working segments with all other initialnodes but the selected one
-    // split new working segment into connected components
-    SegmentIdType labelOfWorkingNode = graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
-    if (!isIgnoredId(labelOfWorkingNode)) {
-        std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> initialNodesOfWorkingSegment = pWorkingNodes->at(
-                labelOfWorkingNode)->subInitialNodes;
-        splitWorkingNodeIntoInitialNodes(labelOfWorkingNode);
-        SegmentIdType initialNodeAtPosition = graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
-        initialNodesOfWorkingSegment.erase(initialNodeAtPosition);
-        SegmentIdType labelOfNewNode = *nextFreeId;
-        (*nextFreeId)++;
-        std::vector<SegmentIdType> newInitialNodesOfWorkingSegment = utils::getKeyVecOfSharedPtrMap<SegmentIdType, InitialNode>(
-                initialNodesOfWorkingSegment);
-        if (!newInitialNodesOfWorkingSegment.empty()) {
-            for (auto nodeLabel : newInitialNodesOfWorkingSegment) {
-                // special case: initialNode == workingNode
-                removeWorkingNode(pWorkingNodes->at(nodeLabel).get());
-            }
-            WorkingNode *newWorkingNode = new WorkingNode(newInitialNodesOfWorkingSegment, labelOfNewNode,
-                                                          *pInitialNodes);
-            addWorkingNode(newWorkingNode);
-            recalculateEdgesOnWorkingNode(newWorkingNode);
+    const auto owner = graphBase->pWorkingSegmentsImage->GetPixel({x, y, z});
+    if (isIgnoredId(owner)) return;
 
-            insertWorkingNodeIntoITKImage(newWorkingNode);
-            splitIntoConnectedComponentsOfWorkingNode(*newWorkingNode);
+    const auto original = pWorkingNodes->at(owner);
+    if (original->subInitialNodes.size() == 1 && original->subInitialNodes.count(owner)) return;
+    InitialNodeGroup remaining;
+    std::optional<SegmentIdType> detached;
+    for (const auto &[id, node] : original->subInitialNodes) {
+        remaining.insert(id);
+        if (detached) continue;
+        for (const auto &run : node->voxels.getRuns()) {
+            if (run.start.y == y && run.start.z == z && x >= run.start.x &&
+                x < std::int64_t(run.start.x) + run.length) {
+                detached = id;
+                break;
+            }
+        }
+    }
+    if (!detached) throw std::logic_error("The clicked voxel has no initial node.");
+    remaining.erase(*detached);
+    WorkingNodeSplits splits;
+    auto &groups = splits[owner];
+    appendConnectedComponents(std::move(remaining), groups);
+    groups.push_back({*detached});
+    replaceWorkingGroups(splits, detached);
+
+    for (const auto &[neighbor, edge] : pInitialNodes->at(*detached)->neighborLabelToTwoSidedInitialEdge) {
+        if (original->subInitialNodes.count(neighbor) && static_cast<signed char>(pEdgeStatus->at(edge->numId)) > 0) {
+            edge->setShouldMergeNotInformed();
+            pEdgeStatus->at(edge->numId) = 0;
         }
     }
 }
@@ -371,141 +362,67 @@ void SegmentManager::insertWorkingNodeIntoITKImage(WorkingNode *newWorkingNode) 
 
 void SegmentManager::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Splitting working node into initial nodes"));
-    if (!isIgnoredId(workingNodeIdToSplit)) {
-
-        auto pToWorkingNode = pWorkingNodes->at(workingNodeIdToSplit);
-
-        std::vector<SegmentIdType> idsOfSubInitialNodes;
-        for (auto &initialNode : pToWorkingNode->subInitialNodes) {
-            idsOfSubInitialNodes.push_back(initialNode.first);
-        }
-        logSegmentManagerDebugIf(verbose,
-                                 __func__,
-                                 QStringLiteral("Working node %1 splits into initial nodes [%2]")
-                                     .arg(workingNodeIdToSplit)
-                                     .arg(joinIds(idsOfSubInitialNodes)));
-
-        // remove corrosponding workingedges and workingNode
-        removeWorkingNode(pToWorkingNode.get());
-
-
-        std::set<SegmentIdType> setOfInsertedWorkingNodes;
-        // insert initialnodes into workingnodes
-        for (auto &subInitialNodeId : idsOfSubInitialNodes) {
-
-            // create new working node based on inital node
-            WorkingNode *newWorkingNode = new WorkingNode(pInitialNodes->at(subInitialNodeId).get(), subInitialNodeId,
-                                                          *pInitialNodes);
-            addWorkingNode(newWorkingNode);
-            setOfInsertedWorkingNodes.insert(subInitialNodeId);
-
-            segment_puzzler::setVoxelLists(**ppWorkingSegmentsImage, newWorkingNode->getVoxelLists(), subInitialNodeId);
-        }
-
-        // put neighboring nodes in the set
-        std::set<SegmentIdType> setOfInsertedWorkingNodesAndNeighbors;
-        for (auto id : setOfInsertedWorkingNodes) {
-            setOfInsertedWorkingNodesAndNeighbors.insert(id);
-            std::vector<SegmentIdType> idsOfConnectedNodes = pWorkingNodes->at(id)->getVectorOfConnectedNodeIds();
-            for (auto neighborId : idsOfConnectedNodes) {
-                setOfInsertedWorkingNodesAndNeighbors.insert(neighborId);
-            }
-        }
-
-        // update workingedges of new workingnodes and their neighbors
-        for (auto id : setOfInsertedWorkingNodesAndNeighbors) {
-            recalculateEdgesOnWorkingNode(pWorkingNodes->at(id).get());
-        }
-
-        // reset merge status
-        char defaultEdgeStatus = 0;
-        for (auto id : setOfInsertedWorkingNodes) {
-            for (auto &edge : pWorkingNodes->at(id)->neighborLabelToWorkingEdge) {
-                for (auto pInitialEdge : edge.second->constituentTwoSidedInitialEdges) {
-                    pEdgeStatus->at(pInitialEdge->numId) = defaultEdgeStatus;
-                }
-            }
+    if (isIgnoredId(workingNodeIdToSplit)) return;
+    const auto original = pWorkingNodes->at(workingNodeIdToSplit);
+    removeWorkingNode(original.get());
+    for (const auto &[id, initial] : original->subInitialNodes) {
+        auto *node = new WorkingNode(initial.get(), id, *pInitialNodes);
+        addWorkingNode(node);
+        if (original->subInitialNodes.size() != 1 || id != workingNodeIdToSplit) insertWorkingNodeIntoITKImage(node);
+    }
+    for (const auto &[id, initial] : original->subInitialNodes) {
+        recalculateEdgesOnWorkingNode(pWorkingNodes->at(id).get());
+        for (const auto &[neighbor, edge] : initial->neighborLabelToTwoSidedInitialEdge) {
+            pEdgeStatus->at(edge->numId) = 0;
+            edge->setShouldMergeNotInformed();
         }
     }
-
 }
 
-
-void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(
-        WorkingNode &workingNodeToAnalyze) {
-    ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Splitting working node into connected components"));
-
-
-    std::set<SegmentIdType> visitedWorkingNodeLabels, initialNodesOfWorkingNode;
-    std::queue<SegmentIdType> openWorkingNodeLabels;
-    std::set<std::shared_ptr<WorkingNode>> connectedGroupOfInitialNodesAsWorkingNodes;
-
-//    std::cout << "SubInitialNodes : ";
-    for (auto &initialNode : workingNodeToAnalyze.subInitialNodes) {
-        initialNodesOfWorkingNode.insert(initialNode.first);
-//        std::cout << initialNode.first << " ";
-    }
-//    std::cout << "\n";
-
-
-
-    // while not all initial nodes of the working node were visited
-    while (visitedWorkingNodeLabels.size() != workingNodeToAnalyze.subInitialNodes.size()) {
-        // push the first initial node that was not visited before in openworkingnodes
-        for (auto &nodeId : initialNodesOfWorkingNode) {
-            if (visitedWorkingNodeLabels.count(nodeId) == 0) {
-                openWorkingNodeLabels.push(nodeId);
-                break;
+void SegmentManager::appendConnectedComponents(InitialNodeGroup remaining, std::vector<InitialNodeGroup> &groups) const {
+    while (!remaining.empty()) {
+        std::vector<SegmentIdType> queue{*remaining.begin()};
+        remaining.erase(remaining.begin());
+        for (std::size_t i = 0; i < queue.size(); ++i) {
+            for (const auto &[neighbor, edge] : pInitialNodes->at(queue[i])->neighborLabelToTwoSidedInitialEdge) {
+                if (remaining.erase(neighbor)) queue.push_back(neighbor);
             }
         }
-
-
-        std::set<SegmentIdType> visitedWorkingNodeLabelsThisRun;
-
-        // visit all connected components of nodes that are in openworkingnodelabels
-        while (!openWorkingNodeLabels.empty()) {
-            SegmentIdType activeNode = openWorkingNodeLabels.front();
-            openWorkingNodeLabels.pop();
-
-            // go through all connections
-            for (auto &twosidedEdge : pInitialNodes->at(activeNode)->neighborLabelToTwoSidedInitialEdge) {
-                SegmentIdType neighboringInitialNodeId = twosidedEdge.first;
-                if (workingNodeToAnalyze.subInitialNodes.find(neighboringInitialNodeId) !=
-                    workingNodeToAnalyze.subInitialNodes.end()) { // if it is part of the working node
-                    if (!visitedWorkingNodeLabelsThisRun.count(neighboringInitialNodeId)) { // if not visited before
-                        openWorkingNodeLabels.push(neighboringInitialNodeId); // push it into list
-                    }
-                }
-            }
-            visitedWorkingNodeLabelsThisRun.insert(activeNode);
-        }
-
-        logSegmentManagerDebugIf(verbose,
-                                 __func__,
-                                 QStringLiteral("Connected component labels=[%1]").arg(joinIds(visitedWorkingNodeLabelsThisRun)));
-
-        SegmentIdType labelOfNewNode = *nextFreeId;
-        (*nextFreeId)++;
-        WorkingNode *newWorkingNode = new WorkingNode(visitedWorkingNodeLabelsThisRun, labelOfNewNode, *pInitialNodes);
-        addWorkingNode(newWorkingNode);
-        recalculateEdgesOnWorkingNode(newWorkingNode);
-
-        //TODO: export this as a function
-        std::vector<SegmentIdType> idsOfConnectedNodes = newWorkingNode->getVectorOfConnectedNodeIds();
-        for (auto &id : idsOfConnectedNodes) {
-            recalculateEdgesOnWorkingNode(pWorkingNodes->at(id).get());
-        }
-
-        for (auto id : visitedWorkingNodeLabelsThisRun) {
-            visitedWorkingNodeLabels.insert(id);
-        }
-
-        insertWorkingNodeIntoITKImage(newWorkingNode);
-
+        groups.emplace_back(queue.begin(), queue.end());
     }
-    removeWorkingNode(&workingNodeToAnalyze);
 }
 
+void SegmentManager::replaceWorkingGroups(const WorkingNodeSplits &splits,
+                                          std::optional<SegmentIdType> detachedInitial) {
+    auto cursor = *nextFreeId;
+    std::vector<std::pair<SegmentIdType, const InitialNodeGroup *>> outputs;
+    for (const auto &[oldLabel, groups] : splits) {
+        for (const auto &group : groups) {
+            const auto id = detachedInitial && group.size() == 1 && *group.begin() == *detachedInitial
+                ? *detachedInitial : takeNextSegmentId(cursor);
+            outputs.emplace_back(id, &group);
+        }
+    }
+
+    *nextFreeId = cursor;
+    for (const auto &[oldLabel, groups] : splits) removeWorkingNode(pWorkingNodes->at(oldLabel).get());
+    for (const auto &[label, group] : outputs) {
+        addWorkingNode(new WorkingNode(*group, label, *pInitialNodes));
+    }
+    for (const auto &[label, group] : outputs) {
+        auto *node = pWorkingNodes->at(label).get();
+        recalculateEdgesOnWorkingNode(node);
+        insertWorkingNodeIntoITKImage(node);
+    }
+}
+
+void SegmentManager::splitIntoConnectedComponentsOfWorkingNode(WorkingNode &node) {
+    InitialNodeGroup members;
+    for (const auto &[id, initial] : node.subInitialNodes) members.insert(id);
+    WorkingNodeSplits splits;
+    appendConnectedComponents(std::move(members), splits[node.getLabel()]);
+    replaceWorkingGroups(splits);
+}
 
 void SegmentManager::computeOneSidedEdgesOnInitialNode(InitialNode *pInitialNode) {
     ScopedSegmentManagerTimer timer(verbose, __func__, QStringLiteral("Computing one-sided edges for one initial node"));
@@ -760,8 +677,7 @@ SegmentManager::constructWorkingNodeFromInitialNode(InitialNode *baseInitialNode
     if (useSameIdAsInitialNode) {
         newLabel = baseInitialNode->getLabel();
     } else {
-        newLabel = *nextFreeId;
-        (*nextFreeId)++;
+        newLabel = takeNextSegmentId(*nextFreeId);
     }
 
 
@@ -808,8 +724,7 @@ void SegmentManager::recalculateEdgesOnWorkingNode(WorkingNode *pWorkingNode, bo
                     auto newWorkingEdge = new WorkingEdge(initialEdge.second, label, workingLabelOfConnectedNode);
                     addWorkingEdge(newWorkingEdge);
                 } else {
-                    pWorkingNode->neighborLabelToWorkingEdge[workingLabelOfConnectedNode]->constituentTwoSidedInitialEdges.push_back(
-                            initialEdge.second);
+                    pWorkingNode->neighborLabelToWorkingEdge.at(workingLabelOfConnectedNode)->addConstituentEdge(initialEdge.second);
                 }
             }
         }

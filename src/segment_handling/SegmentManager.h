@@ -10,6 +10,9 @@
 #include <unordered_map>
 #include <fstream>
 #include <memory>
+#include <map>
+#include <optional>
+#include <set>
 #include <cstddef>
 
 
@@ -65,6 +68,11 @@ public:
 
     void splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit);
 
+    using InitialNodeGroup = std::set<SegmentIdType>;
+    using WorkingNodeSplits = std::map<SegmentIdType, std::vector<InitialNodeGroup>>;
+
+    void appendConnectedComponents(InitialNodeGroup remaining, std::vector<InitialNodeGroup> &groups) const;
+    void replaceWorkingGroups(const WorkingNodeSplits &splits, std::optional<SegmentIdType> detachedInitial = {});
     void splitIntoConnectedComponentsOfWorkingNode(WorkingNode &workingNodeToAnalyze);
 
     void removeInitialNodeFromWorkingNodeAtPosition(int x, int y, int z);

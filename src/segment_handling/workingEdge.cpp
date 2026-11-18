@@ -30,12 +30,9 @@ WorkingEdge::WorkingEdge(WorkingEdge &workingEdgeToCopy, SegmentIdType labelA, S
 }
 
 
-void WorkingEdge::addConstituentTwoSidedInitialEdges(
-        const std::vector<std::shared_ptr<TwoSidedInitialEdge>> &twoSidedInitialEdgesToAdd) {
-    constituentTwoSidedInitialEdges.insert(
-        constituentTwoSidedInitialEdges.end(),
-        twoSidedInitialEdgesToAdd.begin(),
-        twoSidedInitialEdgesToAdd.end());
+void WorkingEdge::addConstituentEdge(const std::shared_ptr<TwoSidedInitialEdge> &edge) {
+    constituentTwoSidedInitialEdges.push_back(edge);
+    roi.mergeRoiWith(edge->getRoi());
 }
 
 

@@ -64,7 +64,8 @@ struct RunComponents {
 
 template<typename IncludeLabel>
 RunComponents collectRunComponents(const Storage &image, Storage::Region region,
-                                   ConnectivityStencil connectivity, IncludeLabel includeLabel) {
+                                   ConnectivityStencil connectivity, IncludeLabel includeLabel,
+                                   const std::unordered_map<SegmentIdType, SegmentIdType> *ownerByInitial = nullptr) {
     RunComponents result;
     if (!region.Crop(image.GetLargestPossibleRegion())) return result;
     result.geometry = detail::geometryForRegion(region);
@@ -84,7 +85,7 @@ RunComponents collectRunComponents(const Storage &image, Storage::Region region,
     image.forEachRun(region, [&](const auto &start, std::size_t length, SegmentIdType label) {
         if (!includeLabel(label)) return;
         const auto x = static_cast<std::size_t>(start[0] - geometry.start[0]);
-        result.runs.push_back({x, x + length, result.runs.size(), label});
+        result.runs.push_back({x, x + length, result.runs.size(), ownerByInitial ? ownerByInitial->at(label) : label});
     });
 
     const auto reach = connectivity == ConnectivityStencil::Full ? 1U : 0U;
@@ -122,6 +123,33 @@ std::size_t countLabelComponentsInRegion(const Storage &image, SegmentIdType lab
 }
 
 } // namespace
+
+std::map<SegmentIdType, std::vector<std::vector<SegmentIdType>>> connectedWorkingGroups(
+    const Storage &initialImage, const std::unordered_map<SegmentIdType, SegmentIdType> &ownerByInitial,
+    ConnectivityStencil connectivity) {
+    auto components = collectRunComponents(initialImage, initialImage.GetLargestPossibleRegion(), connectivity,
+        [&](SegmentIdType label) { return ownerByInitial.count(label) != 0; }, &ownerByInitial);
+    std::unordered_map<std::size_t, std::vector<SegmentIdType>> members;
+    std::unordered_set<SegmentIdType> seen;
+    std::size_t runIndex = 0;
+    initialImage.forEachRun([&](const auto &, std::size_t, SegmentIdType label) {
+        if (!ownerByInitial.count(label)) return;
+        const auto root = components.runs.at(runIndex++).parent;
+        // Each initial label is already connected under this stencil.
+        if (seen.insert(label).second) members[root].push_back(label);
+    });
+
+    std::map<SegmentIdType, std::vector<std::vector<SegmentIdType>>> groups;
+    for (auto &[root, labels] : members) std::sort(labels.begin(), labels.end());
+    for (auto &[owner, parts] : components.byLabel) {
+        std::sort(parts.begin(), parts.end(), [&](const Component &a, const Component &b) {
+            if (a.voxelCount != b.voxelCount) return a.voxelCount > b.voxelCount;
+            return members.at(a.root).front() < members.at(b.root).front();
+        });
+        for (const auto &part : parts) groups[owner].push_back(std::move(members.at(part.root)));
+    }
+    return groups;
+}
 
 const char *connectivityStencilName(ConnectivityStencil connectivity) {
     switch (connectivity) {

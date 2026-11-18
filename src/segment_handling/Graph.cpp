@@ -67,17 +67,6 @@ QString joinIds(const Container &values) {
     return parts.join(QStringLiteral(" "));
 }
 
-template<typename MapType>
-QString joinPairs(const MapType &values) {
-    QStringList parts;
-    for (const auto &entry : values) {
-        parts << QStringLiteral("%1=%2")
-                     .arg(static_cast<qulonglong>(entry.first))
-                     .arg(QString::number(entry.second, 'g', 6));
-    }
-    return parts.join(QStringLiteral(", "));
-}
-
 class ScopedGraphTimer {
 public:
     ScopedGraphTimer(bool enabled, const char *functionName, QString operation, QString category = kSegmentationCategory)
@@ -965,70 +954,56 @@ Graph::mergeEdges(const std::set<EdgeNumIdType> &edgeIdsToMerge) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Merging selected edges"));
     logGraphDebugIf(verbose, __func__, QStringLiteral("Edge ids=%1").arg(joinIds(edgeIdsToMerge)));
 
-    EdgePairIdType pairId;
-    bool updateSegmentImage = false;     // optimization: only update the resulting segments at the end, do not update incrementally
-    for (const auto numId : edgeIdsToMerge) {
-        pairId = initialEdgeIdLookup[numId];
-        mergeEdge(initialLabelPairToTwoSidedInitialEdge.at(pairId).get(), updateSegmentImage);
+    for (const auto id : edgeIdsToMerge) {
+        const auto &pair = initialEdgeIdLookup.at(id);
+        mergeEdge(initialLabelPairToTwoSidedInitialEdge.at(pair).get(), false);
     }
 
     std::set<SegmentIdType> newWorkingNodeIds;
-    for (const auto numId : edgeIdsToMerge) {
-        pairId = initialEdgeIdLookup[numId];
-        SegmentIdType initialNodeLabel = initialLabelPairToTwoSidedInitialEdge[pairId]->getLabelSmaller();
-        SegmentIdType workingNodeLabel = initialNodes[initialNodeLabel]->getCurrentWorkingNodeLabel();
-        newWorkingNodeIds.insert(workingNodeLabel);
+    for (const auto id : edgeIdsToMerge) {
+        const auto &pair = initialEdgeIdLookup.at(id);
+        newWorkingNodeIds.insert(initialNodes.at(pair.first)->getCurrentWorkingNodeLabel());
     }
-
-    for (auto &label : newWorkingNodeIds) {
-        insertWorkingNodeInSegmentImage(*workingNodes[label]);
-    }
+    for (const auto label : newWorkingNodeIds) insertWorkingNodeInSegmentImage(*workingNodes.at(label));
     return newWorkingNodeIds;
 }
 
 void Graph::mergeEdge(TwoSidedInitialEdge *edge, bool updateSegmentImage) {
-    double t = 0;
-//    if (verbose) { t = utils::tic("Graph::mergeEdge called"); }
+    const auto idWorkingNodeA = initialNodes.at(edge->getLabelSmaller())->getCurrentWorkingNodeLabel();
+    const auto idWorkingNodeB = initialNodes.at(edge->getLabelBigger())->getCurrentWorkingNodeLabel();
+    if (idWorkingNodeA == idWorkingNodeB) return;
 
-    SegmentIdType idWorkingNodeA = initialNodes[edge->getLabelSmaller()]->getCurrentWorkingNodeLabel();
-    SegmentIdType idWorkingNodeB = initialNodes[edge->getLabelBigger()]->getCurrentWorkingNodeLabel();
+    const auto idOfNewNode = segmentManager.takeNextSegmentId(nextFreeId);
+    logGraphDebugIf(
+        verbose,
+        __func__,
+        QStringLiteral("Working nodes %1,%2 -> %3 via initial edge %4")
+            .arg(idWorkingNodeA)
+            .arg(idWorkingNodeB)
+            .arg(idOfNewNode)
+            .arg(edge->numId));
 
-    if (idWorkingNodeA != idWorkingNodeB) {
-        SegmentIdType idOfNewNode = nextFreeId;
-        nextFreeId++;
-        logGraphDebugIf(
-            verbose,
-            __func__,
-            QStringLiteral("Working nodes %1,%2 -> %3 via initial edge %4")
-                .arg(idWorkingNodeA)
-                .arg(idWorkingNodeB)
-                .arg(idOfNewNode)
-                .arg(edge->numId));
+    // remove old nodes and edges
+    WorkingNode nodeA = *workingNodes.at(idWorkingNodeA);
+    WorkingNode nodeB = *workingNodes.at(idWorkingNodeB);
 
-        // remove old nodes and edges
-        WorkingNode nodeA = *workingNodes[idWorkingNodeA];
-        WorkingNode nodeB = *workingNodes[idWorkingNodeB];
+    std::vector<WorkingNode> vecOfWorkingNodes{nodeA, nodeB};
+    WorkingNode *newNode = new WorkingNode(vecOfWorkingNodes, idOfNewNode, initialNodes);
 
-        std::vector<WorkingNode> vecOfWorkingNodes{nodeA, nodeB};
-        WorkingNode *newNode = new WorkingNode(vecOfWorkingNodes, idOfNewNode, initialNodes);
+    segmentManager.removeWorkingNode(workingNodes.at(idWorkingNodeA).get());
+    segmentManager.removeWorkingNode(workingNodes.at(idWorkingNodeB).get());
 
-        segmentManager.removeWorkingNode(workingNodes[idWorkingNodeA].get());
-        segmentManager.removeWorkingNode(workingNodes[idWorkingNodeB].get());
-
-        segmentManager.addWorkingNode(newNode);
-        segmentManager.recalculateEdgesOnWorkingNode(workingNodes[idOfNewNode].get());
+    segmentManager.addWorkingNode(newNode);
+    segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(idOfNewNode).get());
 
 
-        if (updateSegmentImage) {
-            insertWorkingNodeInSegmentImage(*workingNodes[idOfNewNode]);
-        }
-
-        edge->setShouldMergeYes();
-        auto numId = edge->numId;
-        graphBase->edgeStatus[numId] = 2;
-
+    if (updateSegmentImage) {
+        insertWorkingNodeInSegmentImage(*workingNodes.at(idOfNewNode));
     }
-//    if (verbose) { utils::toc(t, "Graph::mergeEdge finished"); }
+
+    edge->setShouldMergeYes();
+    auto numId = edge->numId;
+    graphBase->edgeStatus[numId] = 2;
 }
 
 void Graph::insertWorkingNodeInSegmentImage(WorkingNode &pWorkingNode) {
@@ -1041,177 +1016,95 @@ void Graph::insertWorkingNodeInSegmentImage(WorkingNode &pWorkingNode) {
 }
 
 
+namespace {
+using InitialNodeGroup = SegmentManager::InitialNodeGroup;
+
+InitialNodeGroup memberLabels(const WorkingNode &node) {
+    InitialNodeGroup labels;
+    for (const auto &[id, initial] : node.subInitialNodes) labels.insert(id);
+    return labels;
+}
+
+std::pair<InitialNodeGroup, InitialNodeGroup> partitionAtEdge(
+        const Graph &graph, const InitialNodeGroup &members, TwoSidedInitialEdge &edge) {
+    const auto [first, second] = edge.pairId;
+    const CenterOfMass contact(graph.initialNodes.at(first)->neighborLabelToOneSidedInitialEdge.at(second).get());
+    const auto distancesFrom = [&](Graph::SegmentIdType seed) {
+        std::map<Graph::SegmentIdType, float> distances;
+        for (const auto id : members) distances.emplace(id, std::numeric_limits<float>::infinity());
+        distances.at(seed) = 0;
+        using Entry = std::pair<float, Graph::SegmentIdType>;
+        std::priority_queue<Entry, std::vector<Entry>, std::greater<>> queue;
+        queue.emplace(0, seed);
+        while (!queue.empty()) {
+            const auto [distance, id] = queue.top();
+            queue.pop();
+            if (distance != distances.at(id)) continue;
+            const auto &node = graph.initialNodes.at(id);
+            CenterOfMass source(node.get());
+            if (id == seed) {
+                const float length = source.distTo(contact);
+                if (length > 0) {
+                    source.x = contact.x + (source.x - contact.x) / length;
+                    source.y = contact.y + (source.y - contact.y) / length;
+                    source.z = contact.z + (source.z - contact.z) / length;
+                }
+            }
+            for (const auto &[neighbor, boundary] : node->neighborLabelToTwoSidedInitialEdge) {
+                if (boundary->numId == edge.numId || !members.count(neighbor)) continue;
+                const float next = distance + source.distTo(CenterOfMass(graph.initialNodes.at(neighbor).get()));
+                if (next < distances.at(neighbor)) {
+                    distances.at(neighbor) = next;
+                    queue.emplace(next, neighbor);
+                }
+            }
+        }
+        return distances;
+    };
+    const auto a = distancesFrom(first);
+    const auto b = distancesFrom(second);
+    std::pair<InitialNodeGroup, InitialNodeGroup> parts;
+    for (const auto id : members) {
+        if (id == first || (id != second && a.at(id) < b.at(id))) parts.first.insert(id);
+        else parts.second.insert(id);
+    }
+    return parts;
+}
+}
+
 void Graph::unmergeEdges(std::set<EdgeNumIdType> &vecOfEdgeIdsToUnMerge) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Unmerging selected edges"));
     logGraphDebugIf(verbose, __func__, QStringLiteral("Edge ids=%1").arg(joinIds(vecOfEdgeIdsToUnMerge)));
 
-    EdgePairIdType pairId;
-    SegmentIdType labelSmaller, labelBigger, currentWorkingNodeIdA, currentWorkingNodeIdB;
-    for (auto &numId : vecOfEdgeIdsToUnMerge) {
-        pairId = initialEdgeIdLookup[numId];
-
-//         set status to no
-        graphBase->edgeStatus[numId] = -2;
-        initialLabelPairToTwoSidedInitialEdge[pairId]->setShouldMergeNo();
-        labelSmaller = initialLabelPairToTwoSidedInitialEdge[pairId]->getLabelSmaller();
-        labelBigger = initialLabelPairToTwoSidedInitialEdge[pairId]->getLabelBigger();
-        currentWorkingNodeIdA = initialNodes[labelSmaller]->getCurrentWorkingNodeLabel();
-        currentWorkingNodeIdB = initialNodes[labelBigger]->getCurrentWorkingNodeLabel();
-
-
-        if (currentWorkingNodeIdA == currentWorkingNodeIdB) {
-
-            auto splitPair = calculateGraphDistancesFromEdge(workingNodes[currentWorkingNodeIdA].get(),
-                                                             initialLabelPairToTwoSidedInitialEdge[pairId].get());
-
-            std::vector<SegmentIdType> initialNodeIdsSplitA = splitPair.first;
-            std::vector<SegmentIdType> initialNodeIdsSplitB = splitPair.second;
-            unmergeEdge(workingNodes[currentWorkingNodeIdA].get(), initialNodeIdsSplitA, initialNodeIdsSplitB);
-        }
-//        graphBase->edgeStatus[numId] = -2;
-
+    SegmentManager::WorkingNodeSplits splits;
+    for (const auto id : vecOfEdgeIdsToUnMerge) {
+        const auto &pair = initialEdgeIdLookup.at(id);
+        const auto owner = initialNodes.at(pair.first)->getCurrentWorkingNodeLabel();
+        if (owner != initialNodes.at(pair.second)->getCurrentWorkingNodeLabel()) continue;
+        auto [it, firstCut] = splits.try_emplace(owner);
+        auto &groups = it->second;
+        if (firstCut) groups.push_back(memberLabels(*workingNodes.at(owner)));
+        const auto group = std::find_if(groups.begin(), groups.end(), [&](const auto &members) {
+            return members.count(pair.first) && members.count(pair.second);
+        });
+        if (group == groups.end()) continue;  // An earlier cut already separated these endpoints.
+        auto [a, b] = partitionAtEdge(*this, *group, *initialLabelPairToTwoSidedInitialEdge.at(pair));
+        groups.erase(group);
+        segmentManager.appendConnectedComponents(std::move(a), groups);
+        segmentManager.appendConnectedComponents(std::move(b), groups);
+    }
+    segmentManager.replaceWorkingGroups(splits);
+    for (const auto id : vecOfEdgeIdsToUnMerge) {
+        initialLabelPairToTwoSidedInitialEdge.at(initialEdgeIdLookup.at(id))->setShouldMergeNo();
+        graphBase->edgeStatus.at(id) = -2;
     }
 }
-
 
 std::pair<std::vector<Graph::SegmentIdType>, std::vector<Graph::SegmentIdType>>
-Graph::calculateGraphDistancesFromEdge(WorkingNode *nodeToCalculateDistanceOn,
-                                       TwoSidedInitialEdge *edgeToCalculateDistanceFrom) {
-    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Calculating graph distances from edge"));
-    std::map<SegmentIdType, float> distA;
-    std::map<SegmentIdType, float> distB;
-
-    EdgeNumIdType forbiddenEdgeId = edgeToCalculateDistanceFrom->numId;
-
-    SegmentIdType labelInitialNodeA = edgeToCalculateDistanceFrom->getLabelSmaller();
-    SegmentIdType labelInitialNodeB = edgeToCalculateDistanceFrom->getLabelBigger();
-    OneSidedInitialEdge *oneSidedEdgeFromA =
-        initialNodes.at(labelInitialNodeA)->neighborLabelToOneSidedInitialEdge.at(labelInitialNodeB).get();
-
-    using distLabelPair = std::pair<SegmentIdType, float>;
-
-    std::priority_queue<distLabelPair, std::vector<distLabelPair>, std::greater<>> priorityQueue;
-
-
-    // initialize source distance to 0, everything to infty
-    // add all to queue
-    for (auto initialNode : nodeToCalculateDistanceOn->subInitialNodes) {
-        distA[initialNode.second->getLabel()] = std::numeric_limits<float>::max();
-    }
-    distA[labelInitialNodeA] = 0;
-    priorityQueue.push(distLabelPair{distA[labelInitialNodeA], labelInitialNodeA});
-
-    while (!priorityQueue.empty()) {
-        SegmentIdType label = priorityQueue.top().second;
-        priorityQueue.pop();
-        CenterOfMass comSource;
-        if (label == labelInitialNodeA) {
-            // use different starting point: center of mass of initial edge + 1 unit vector in direction of center of mass of the node
-            CenterOfMass comSourceNode = CenterOfMass(initialNodes[label].get());
-            comSource = CenterOfMass(oneSidedEdgeFromA);
-            float dX = comSourceNode.x - comSource.x;
-            float dY = comSourceNode.y - comSource.y;
-            float dZ = comSourceNode.z - comSource.z;
-            float length = std::sqrt(dX * dX + dY * dY + dZ * dZ);
-            comSource.x = comSource.x + dX / length;
-            comSource.y = comSource.y + dY / length;
-            comSource.z = comSource.z + dZ / length;
-        } else {
-            comSource = CenterOfMass(initialNodes[label].get());
-        }
-        //TODO: Add check for 1vx volumes, may actually crash simulations
-        for (auto edge : initialNodes[label]->neighborLabelToTwoSidedInitialEdge) {
-//            std::cout << edge.second->pairId.first << " -> " << edge.second->pairId.second << "\n";
-            if (edge.second->numId != forbiddenEdgeId) {
-//                std::cout << "not forbidden!\n";
-                if (nodeToCalculateDistanceOn->subInitialNodes.count(edge.first) > 0) { // if edge is inside WNode
-//                    std::cout << "inside workingnode!\n";
-
-                    CenterOfMass comTargetNode(initialNodes[edge.first].get());
-                    float distSourceTarget = comSource.distTo(comTargetNode);
-                    float tmpDist = distA[label] + distSourceTarget;
-//                    std::cout << "distA[label] " << distA[label] << " dist source->target: " << distSourceTarget << "  distA[target]: " <<   distA[edge.first] << "\n";
-                    if (tmpDist < distA[edge.first]) {
-                        distA[edge.first] = tmpDist;
-//                        std::cout << "distA[target]: " <<   distA[edge.first] << "\n";
-                        priorityQueue.push(distLabelPair{distA[edge.first], edge.first});
-                    }
-
-
-                }
-            }
-        }
-    }
-
-    // repeat for second node
-    for (auto initialNode : nodeToCalculateDistanceOn->subInitialNodes) {
-        distB[initialNode.second->getLabel()] = std::numeric_limits<float>::max();
-    }
-    distB[labelInitialNodeB] = 0;
-    priorityQueue.push(distLabelPair{distB[labelInitialNodeB], labelInitialNodeB});
-
-    while (!priorityQueue.empty()) {
-        SegmentIdType label = priorityQueue.top().second;
-        priorityQueue.pop();
-        CenterOfMass comSource;
-        if (label == labelInitialNodeB) {
-            CenterOfMass comSourceNode = CenterOfMass(initialNodes[label].get());
-            comSource = CenterOfMass(oneSidedEdgeFromA);
-            float dX = comSourceNode.x - comSource.x;
-            float dY = comSourceNode.y - comSource.y;
-            float dZ = comSourceNode.z - comSource.z;
-            float length = std::sqrt(dX * dX + dY * dY + dZ * dZ);
-            comSource.x = comSource.x + dX / length;
-            comSource.y = comSource.y + dY / length;
-            comSource.z = comSource.z + dZ / length;
-        } else {
-            comSource = CenterOfMass(initialNodes[label].get());
-        }
-        for (auto edge : initialNodes[label]->neighborLabelToTwoSidedInitialEdge) {
-            if (edge.second->numId != forbiddenEdgeId) {
-                if (nodeToCalculateDistanceOn->subInitialNodes.count(edge.first) > 0) { // if edge is inside WNode
-
-                    CenterOfMass comTargetNode(initialNodes[edge.first].get());
-                    float tmpDist = distB[label] + comSource.distTo(comTargetNode);
-                    if (tmpDist < distB[edge.first]) {
-                        distB[edge.first] = tmpDist;
-                        priorityQueue.push(distLabelPair{distB[edge.first], edge.first});
-                    }
-
-                }
-            }
-        }
-    }
-
-    std::vector<SegmentIdType> initialNodeIdsSplitA;
-    std::vector<SegmentIdType> initialNodeIdsSplitB;
-
-    for (auto &elem : distA) {
-        if (distA[elem.first] < distB[elem.first]) {
-            initialNodeIdsSplitA.push_back(elem.first);
-        } else if (distA[elem.first] > distB[elem.first]) {
-            initialNodeIdsSplitB.push_back(elem.first);
-        } else {
-            logGraph(LogLevel::Warning,
-                     __func__,
-                     QStringLiteral("Distance partitions tie for initial node %1 at value %2")
-                         .arg(elem.first)
-                         .arg(QString::number(distA[elem.first], 'g', 6)));
-            initialNodeIdsSplitB.push_back(elem.first);
-        }
-    }
-
-    logGraphDebugIf(verbose, __func__, QStringLiteral("Distances A: %1").arg(joinPairs(distA)));
-    logGraphDebugIf(verbose, __func__, QStringLiteral("Distances B: %1").arg(joinPairs(distB)));
-    logGraphDebugIf(verbose,
-                    __func__,
-                    QStringLiteral("Split labels A=[%1], B=[%2]")
-                        .arg(joinIds(initialNodeIdsSplitA))
-                        .arg(joinIds(initialNodeIdsSplitB)));
-    return {initialNodeIdsSplitA, initialNodeIdsSplitB};
+Graph::calculateGraphDistancesFromEdge(WorkingNode *node, TwoSidedInitialEdge *edge) {
+    const auto [a, b] = partitionAtEdge(*this, memberLabels(*node), *edge);
+    return {{a.begin(), a.end()}, {b.begin(), b.end()}};
 }
-
-
 
 // generate a landscape/mask from allowed segment ids
 Graph::LandscapeType::Pointer
@@ -1338,44 +1231,12 @@ itk::Image<short, 3>::Pointer Graph::shortestPath(OneSidedInitialEdge &initialEd
 
 void Graph::unmergeEdge(WorkingNode *workingNodeToSplit, std::vector<SegmentIdType> initialNodeIdsA,
                         std::vector<SegmentIdType> initialNodeIdsB) {
-    //TODO: Handle cases where distance is inf/max, and assign them a own label (as they are not connected to the rest of the label at all)
-    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Splitting working node into two groups"));
-
-
-    SegmentIdType labelOfNodeA = nextFreeId;
-    nextFreeId++;
-    SegmentIdType labelOfNodeB = nextFreeId;
-    nextFreeId++;
-
-
-    WorkingNode *workingNodeA = new WorkingNode(initialNodeIdsA, labelOfNodeA, initialNodes);
-    segmentManager.addWorkingNode(workingNodeA);
-    WorkingNode *workingNodeB = new WorkingNode(initialNodeIdsB, labelOfNodeB, initialNodes);
-    segmentManager.addWorkingNode(workingNodeB);
-
-    segmentManager.recalculateEdgesOnWorkingNode(workingNodeA);
-    segmentManager.recalculateEdgesOnWorkingNode(workingNodeB);
-
-    std::vector<SegmentIdType> idsOfConnectedNodes = workingNodeA->getVectorOfConnectedNodeIds();
-    for (auto &id : idsOfConnectedNodes) {
-        segmentManager.recalculateEdgesOnWorkingNode(workingNodes[id].get());
-    }
-
-    idsOfConnectedNodes = workingNodeB->getVectorOfConnectedNodeIds();
-    for (auto &id : idsOfConnectedNodes) {
-        segmentManager.recalculateEdgesOnWorkingNode(workingNodes[id].get());
-    }
-
-    segmentManager.removeWorkingNode(workingNodeToSplit);
-
-    insertWorkingNodeInSegmentImage(*workingNodes[labelOfNodeA]);
-    insertWorkingNodeInSegmentImage(*workingNodes[labelOfNodeB]);
-
-    splitIntoConnectedComponentsOfWorkingNode(*workingNodes[labelOfNodeA]);
-    splitIntoConnectedComponentsOfWorkingNode(*workingNodes[labelOfNodeB]);
-
+    SegmentManager::WorkingNodeSplits splits;
+    auto &groups = splits[workingNodeToSplit->getLabel()];
+    segmentManager.appendConnectedComponents({initialNodeIdsA.begin(), initialNodeIdsA.end()}, groups);
+    segmentManager.appendConnectedComponents({initialNodeIdsB.begin(), initialNodeIdsB.end()}, groups);
+    segmentManager.replaceWorkingGroups(splits);
 }
-
 
 void Graph::unmergeEdge(TwoSidedInitialEdge *initialEdge, DistanceType::Pointer pDistanceSmaller,
                         DistanceType::Pointer pDistanceBigger) {
@@ -1436,130 +1297,14 @@ void Graph::unmergeEdge(TwoSidedInitialEdge *initialEdge, DistanceType::Pointer 
                         QStringLiteral("Unmerge buckets smaller=[%1], bigger=[%2]")
                             .arg(joinIds(labelsOfInitialNodesNearSmaller))
                             .arg(joinIds(labelsOfInitialNodesNearBigger)));
-        // crude idea:
-        // first, unmerge all underlying nodes to workingNode(initialNode)
-        // then, merge subsetA -> nodeA, subsetB -> nodeB
-
-        SegmentIdType labelOfNodeA = nextFreeId;
-        nextFreeId++;
-        SegmentIdType labelOfNodeB = nextFreeId;
-        nextFreeId++;
-
-
-        WorkingNode *workingNodeA = new WorkingNode(labelsOfInitialNodesNearSmaller, labelOfNodeA, initialNodes);
-        segmentManager.addWorkingNode(workingNodeA);
-        WorkingNode *workingNodeB = new WorkingNode(labelsOfInitialNodesNearBigger, labelOfNodeB, initialNodes);
-        segmentManager.addWorkingNode(workingNodeB);
-        segmentManager.recalculateEdgesOnWorkingNode(workingNodeA);
-        segmentManager.recalculateEdgesOnWorkingNode(workingNodeB);
-
-        std::vector<SegmentIdType> idsOfConnectedNodes = workingNodeA->getVectorOfConnectedNodeIds();
-        for (auto &id : idsOfConnectedNodes) {
-            segmentManager.recalculateEdgesOnWorkingNode(workingNodes[id].get());
-        }
-
-        idsOfConnectedNodes = workingNodeB->getVectorOfConnectedNodeIds();
-        for (auto &id : idsOfConnectedNodes) {
-            segmentManager.recalculateEdgesOnWorkingNode(workingNodes[id].get());
-        }
-
-        segmentManager.removeWorkingNode(workingNodes[currentWorkingNodeLabel].get());
-
-
-        insertWorkingNodeInSegmentImage(*workingNodes[labelOfNodeA]);
-        insertWorkingNodeInSegmentImage(*workingNodes[labelOfNodeB]);
-
-        splitIntoConnectedComponentsOfWorkingNode(*workingNodes[labelOfNodeA]);
-        splitIntoConnectedComponentsOfWorkingNode(*workingNodes[labelOfNodeB]);
-
-//        for (auto node : connectedWorkingNodes){
-//            std::cout << "CC A: " << node->getLabel() << "\n";
-//        }
-//        connectedWorkingNodes = getConnectedConnectedComponentsOfWorkingNode(*workingNodes[labelOfNodeB]);
-//        for (auto node : connectedWorkingNodes){
-//            std::cout << "CC A: " << node->getLabel() << "\n";
-//        }
-
+        unmergeEdge(workingNodes.at(currentWorkingNodeLabel).get(), std::move(labelsOfInitialNodesNearSmaller),
+                    std::move(labelsOfInitialNodesNearBigger));
     }
 }
 
-void Graph::splitIntoConnectedComponentsOfWorkingNode(
-        WorkingNode &workingNodeToAnalyze) {
-    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Splitting working node into connected components"));
-
-
-    std::set<SegmentIdType> visitedWorkingNodeLabels, initialNodesOfWorkingNode;
-    std::queue<SegmentIdType> openWorkingNodeLabels;
-    std::set<std::shared_ptr<WorkingNode>> connectedGroupOfInitialNodesAsWorkingNodes;
-
-//    std::cout << "SubInitialNodes : ";
-    for (auto &initialNode : workingNodeToAnalyze.subInitialNodes) {
-        initialNodesOfWorkingNode.insert(initialNode.first);
-//        std::cout << initialNode.first << " ";
-    }
-//    std::cout << "\n";
-
-
-
-    // while not all initial nodes of the working node were visited
-    while (visitedWorkingNodeLabels.size() != workingNodeToAnalyze.subInitialNodes.size()) {
-        // push the first initial node that was not visited before in openworkingnodes
-        for (auto &nodeId : initialNodesOfWorkingNode) {
-            if (visitedWorkingNodeLabels.count(nodeId) == 0) {
-                openWorkingNodeLabels.push(nodeId);
-                break;
-            }
-        }
-
-
-        std::set<SegmentIdType> visitedWorkingNodeLabelsThisRun;
-
-        // visit all connected components of nodes that are in openworkingnodelabels
-        while (!openWorkingNodeLabels.empty()) {
-            SegmentIdType activeNode = openWorkingNodeLabels.front();
-            openWorkingNodeLabels.pop();
-
-            // go through all connections
-            for (auto &twosidedEdge : initialNodes[activeNode]->neighborLabelToTwoSidedInitialEdge) {
-                SegmentIdType neighboringInitialNodeId = twosidedEdge.first;
-                if (workingNodeToAnalyze.subInitialNodes.find(neighboringInitialNodeId) !=
-                    workingNodeToAnalyze.subInitialNodes.end()) { // if it is part of the working node
-                    if (!visitedWorkingNodeLabelsThisRun.count(neighboringInitialNodeId)) { // if not visited before
-                        openWorkingNodeLabels.push(neighboringInitialNodeId); // push it into list
-                    }
-                }
-            }
-            visitedWorkingNodeLabelsThisRun.insert(activeNode);
-        }
-
-        logGraphDebugIf(verbose,
-                        __func__,
-                        QStringLiteral("Connected component labels=[%1]").arg(joinIds(visitedWorkingNodeLabelsThisRun)));
-
-        SegmentIdType labelOfNewNode = nextFreeId;
-        nextFreeId++;
-        WorkingNode *newWorkingNode = new WorkingNode(visitedWorkingNodeLabelsThisRun, labelOfNewNode, initialNodes);
-        segmentManager.addWorkingNode(newWorkingNode);
-        segmentManager.recalculateEdgesOnWorkingNode(newWorkingNode);
-
-        //TODO: export this as a function
-        std::vector<SegmentIdType> idsOfConnectedNodes = newWorkingNode->getVectorOfConnectedNodeIds();
-        for (auto &id : idsOfConnectedNodes) {
-            segmentManager.recalculateEdgesOnWorkingNode(workingNodes[id].get());
-        }
-
-        for (auto id : visitedWorkingNodeLabelsThisRun) {
-            visitedWorkingNodeLabels.insert(id);
-        }
-
-        insertWorkingNodeInSegmentImage(*newWorkingNode);
-        // end todo
-
-
-    }
-    segmentManager.removeWorkingNode(&workingNodeToAnalyze);
+void Graph::splitIntoConnectedComponentsOfWorkingNode(WorkingNode &node) {
+    segmentManager.splitIntoConnectedComponentsOfWorkingNode(node);
 }
-
 
 Graph::SegmentIdType Graph::getLargestIdInSegmentVolume(Graph::SegmentsImageType::Pointer pSegment) {
     ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Finding largest id in segment volume"));
@@ -1597,97 +1342,10 @@ void Graph::splitWorkingNodeIntoInitialNodes(int x, int y, int z) {
 
 void Graph::removeInitialNodeFromWorkingNodeAtPosition(int x, int y, int z) {
     segmentManager.removeInitialNodeFromWorkingNodeAtPosition(x, y, z);
-//    // as initialnodes are not saved explicitly, workaround:
-//    // unsplit working node into all initialnode
-//    // get initialnode at (x,y,z)
-//    // create working segments with all other initialnodes but the selected one
-//    // split new working segment into connected components
-//    SegmentIdType labelOfWorkingNode = GraphBase::pWorkingSegmentsImage->GetPixel({x, y, z});
-//    if (!isIgnoredId(labelOfWorkingNode)) {
-//        std::unordered_map<SegmentIdType, std::shared_ptr<InitialNode>> initialNodesOfWorkingSegment = workingNodes.at(
-//                labelOfWorkingNode)->subInitialNodes;
-//        splitWorkingNodeIntoInitialNodes(labelOfWorkingNode);
-//        SegmentIdType initialNodeAtPosition = GraphBase::pWorkingSegmentsImage->GetPixel({x, y, z});
-//        initialNodesOfWorkingSegment.erase(initialNodeAtPosition);
-//        SegmentIdType labelOfNewNode = nextFreeId;
-//        nextFreeId++;
-//        std::vector<SegmentIdType> newInitialNodesOfWorkingSegment = utils::getKeyVecOfSharedPtrMap<SegmentIdType, InitialNode>(
-//                initialNodesOfWorkingSegment);
-//        if (!newInitialNodesOfWorkingSegment.empty()) {
-//            for (auto nodeLabel : newInitialNodesOfWorkingSegment) {
-//                // special case: initialNode == workingNode
-//                segmentManager.removeWorkingNode(workingNodes[nodeLabel].get());
-//            }
-//            WorkingNode *newWorkingNode = new WorkingNode(newInitialNodesOfWorkingSegment, labelOfNewNode,
-//                                                          initialNodes);
-//            segmentManager.addWorkingNode(newWorkingNode);
-//            segmentManager.recalculateEdgesOnWorkingNode(newWorkingNode);
-//            insertWorkingNodeInSegmentImage(*newWorkingNode);
-//            splitIntoConnectedComponentsOfWorkingNode(*newWorkingNode);
-//        }
-//    }
 }
 
 void Graph::splitWorkingNodeIntoInitialNodes(SegmentIdType workingNodeIdToSplit) {
-    ScopedGraphTimer timer(verbose, __func__, QStringLiteral("Splitting working node into initial nodes"));
-    if (!isIgnoredId(workingNodeIdToSplit)) {
-
-        auto pToWorkingNode = workingNodes.at(workingNodeIdToSplit);
-
-        std::vector<SegmentIdType> idsOfSubInitialNodes;
-        for (auto &initialNode : pToWorkingNode->subInitialNodes) {
-            idsOfSubInitialNodes.push_back(initialNode.first);
-        }
-        logGraphDebugIf(verbose,
-                        __func__,
-                        QStringLiteral("Working node %1 splits into initial nodes [%2]")
-                            .arg(workingNodeIdToSplit)
-                            .arg(joinIds(idsOfSubInitialNodes)));
-
-        // remove corrosponding workingedges and workingNode
-        segmentManager.removeWorkingNode(pToWorkingNode.get());
-
-
-        std::set<SegmentIdType> setOfInsertedWorkingNodes;
-        // insert initialnodes into workingnodes
-        for (auto &subInitialNodeId : idsOfSubInitialNodes) {
-
-            // create new working node based on inital node
-            WorkingNode *newWorkingNode = new WorkingNode(initialNodes[subInitialNodeId].get(), subInitialNodeId,
-                                                          initialNodes);
-            segmentManager.addWorkingNode(newWorkingNode);
-            setOfInsertedWorkingNodes.insert(subInitialNodeId);
-
-            if (idsOfSubInitialNodes.size() != 1 || subInitialNodeId != workingNodeIdToSplit)
-                insertWorkingNodeInSegmentImage(*newWorkingNode);
-        }
-
-        // put neighboring nodes in the set
-        std::set<SegmentIdType> setOfInsertedWorkingNodesAndNeighbors;
-        for (auto id : setOfInsertedWorkingNodes) {
-            setOfInsertedWorkingNodesAndNeighbors.insert(id);
-            std::vector<SegmentIdType> idsOfConnectedNodes = workingNodes.at(id)->getVectorOfConnectedNodeIds();
-            for (auto neighborId : idsOfConnectedNodes) {
-                setOfInsertedWorkingNodesAndNeighbors.insert(neighborId);
-            }
-        }
-
-        // update workingedges of new workingnodes and their neighbors
-        for (auto id : setOfInsertedWorkingNodesAndNeighbors) {
-            segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(id).get());
-        }
-
-        // reset merge status
-        char defaultEdgeStatus = 0;
-        for (auto id : setOfInsertedWorkingNodes) {
-            for (auto &edge : workingNodes.at(id)->neighborLabelToWorkingEdge) {
-                for (auto pInitialEdge : edge.second->constituentTwoSidedInitialEdges) {
-                    graphBase->edgeStatus.at(pInitialEdge->numId) = defaultEdgeStatus;
-                }
-            }
-        }
-    }
-
+    segmentManager.splitWorkingNodeIntoInitialNodes(workingNodeIdToSplit);
 }
 
 segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::splitDisconnectedInitialSegments(
@@ -1711,315 +1369,54 @@ segment_puzzler::connected_components::ConnectedComponentSplitStats Graph::split
         return stats;
     }
 
-    struct SavedWorkingGroup {
-        SegmentIdType workingLabel = 0;
-        std::vector<SegmentIdType> initialLabels;
-    };
-
-    std::vector<SavedWorkingGroup> savedWorkingGroups;
-    savedWorkingGroups.reserve(workingNodes.size());
-    for (const auto &workingEntry : workingNodes) {
-        if (workingEntry.second == nullptr) {
-            continue;
-        }
-
-        SavedWorkingGroup group;
-        group.workingLabel = workingEntry.first;
-        group.initialLabels.reserve(workingEntry.second->subInitialNodes.size());
-        for (const auto &initialEntry : workingEntry.second->subInitialNodes) {
-            group.initialLabels.push_back(initialEntry.first);
-        }
-        std::sort(group.initialLabels.begin(), group.initialLabels.end());
-        savedWorkingGroups.push_back(std::move(group));
+    auto initialImage = segment_puzzler::StreamVByteImageStorage<SegmentIdType>::create(
+        *graphBase->pWorkingSegmentsImage->imageInformation(), backgroundId);
+    std::unordered_map<SegmentIdType, SegmentIdType> ownerByInitial;
+    for (const auto &[id, node] : initialNodes) {
+        ownerByInitial.emplace(id, node->getCurrentWorkingNodeLabel());
+        segment_puzzler::setVoxelLists(*initialImage, {&node->voxels}, id);
     }
-
-    auto rewriteInitialLabelsToWorkingImage = [this]() {
-        graphBase->pWorkingSegmentsImage->FillBuffer(backgroundId);
-        for (const auto &initialEntry : initialNodes) {
-            if (initialEntry.second == nullptr || isIgnoredId(initialEntry.first)) {
-                continue;
-            }
-            segment_puzzler::setVoxelLists(*graphBase->pWorkingSegmentsImage,
-                                          {&initialEntry.second->voxels}, initialEntry.first);
-        }
-    };
-
-    auto rewriteWorkingLabelsToWorkingImage = [this]() {
-        graphBase->pWorkingSegmentsImage->FillBuffer(backgroundId);
-        for (const auto &workingEntry : workingNodes) {
-            if (workingEntry.second != nullptr && !isIgnoredId(workingEntry.first)) {
-                insertWorkingNodeInSegmentImage(*workingEntry.second);
-            }
-        }
-    };
-
-    rewriteInitialLabelsToWorkingImage();
-
-    std::unordered_set<SegmentIdType> ignoredLabels;
-    ignoredLabels.insert(0);
-    ignoredLabels.insert(backgroundId);
-    ignoredLabels.insert(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
 
     ConnectedComponentSplitOptions options;
     options.connectivity = connectivity;
-    options.ignoredLabels = std::move(ignoredLabels);
+    options.ignoredLabels.insert(pIgnoredSegmentLabels->begin(), pIgnoredSegmentLabels->end());
+    options.ignoredLabels.insert(backgroundId);
     options.nextFreeLabel = nextFreeId;
-    stats = splitDisconnectedLabelComponentsInPlace(graphBase->pWorkingSegmentsImage, options);
-    nextFreeId = static_cast<SegmentIdType>(std::min<std::uint64_t>(std::numeric_limits<SegmentIdType>::max(), std::max<std::uint64_t>(nextFreeId, stats.nextFreeLabel)));
+    stats = splitDisconnectedLabelComponentsInPlace(initialImage, options);
+    if (!stats.changed()) return stats;
 
-    if (!stats.changed()) {
-        rewriteWorkingLabelsToWorkingImage();
-        return stats;
+    for (const auto &[original, parts] : stats.finalLabelsByOriginalLabel) {
+        const auto owner = ownerByInitial.at(original);
+        for (const auto id : parts) ownerByInitial.emplace(id, owner);
+    }
+    auto groups = segment_puzzler::connected_components::connectedWorkingGroups(*initialImage, ownerByInitial, connectivity);
+    auto cursor = static_cast<SegmentIdType>(std::min<std::uint64_t>(
+        stats.nextFreeLabel, std::numeric_limits<SegmentIdType>::max()));
+    std::map<SegmentIdType, std::vector<SegmentIdType>> plannedNodes;
+    for (auto &[owner, parts] : groups) {
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            const auto label = i == 0 ? owner : segmentManager.takeNextSegmentId(cursor);
+            plannedNodes.emplace(label, std::move(parts[i]));
+        }
     }
 
+    // All initial and working IDs are available before the live graph is rebuilt.
+    nextFreeId = cursor;
     initializeEdgeVolumeAndEdgeStatus();
-    constructInitialNodes(graphBase->pWorkingSegmentsImage);
-    segmentManager.computeOneSidedEdgesOnAllInitialNodes(*graphBase->pWorkingSegmentsImage);
+    constructInitialNodes(initialImage);
+    segmentManager.computeOneSidedEdgesOnAllInitialNodes(*initialImage);
     segmentManager.buildTwoSidedInitialEdgesFromOneSidedInitialEdges();
-
-    std::unordered_set<SegmentIdType> assignedInitialLabels;
-    assignedInitialLabels.reserve(initialNodes.size());
-    std::unordered_set<SegmentIdType> usedWorkingLabels;
-    usedWorkingLabels.reserve(savedWorkingGroups.size() + initialNodes.size());
-
-    auto nextUnusedWorkingLabel = [this, &usedWorkingLabels](SegmentIdType preferredLabel) {
-        SegmentIdType label = preferredLabel;
-        while (usedWorkingLabels.count(label) > 0) {
-            label = nextFreeId++;
-        }
-        usedWorkingLabels.insert(label);
-        return label;
-    };
-
-    for (const SavedWorkingGroup &savedGroup : savedWorkingGroups) {
-        std::vector<SegmentIdType> restoredInitialLabels;
-        for (const SegmentIdType oldInitialLabel : savedGroup.initialLabels) {
-            const auto splitIt = stats.finalLabelsByOriginalLabel.find(oldInitialLabel);
-            if (splitIt != stats.finalLabelsByOriginalLabel.end()) {
-                restoredInitialLabels.insert(restoredInitialLabels.end(),
-                                             splitIt->second.begin(),
-                                             splitIt->second.end());
-            } else if (initialNodes.count(oldInitialLabel) > 0) {
-                restoredInitialLabels.push_back(oldInitialLabel);
-            }
-        }
-
-        std::sort(restoredInitialLabels.begin(), restoredInitialLabels.end());
-        restoredInitialLabels.erase(std::unique(restoredInitialLabels.begin(), restoredInitialLabels.end()),
-                                    restoredInitialLabels.end());
-        restoredInitialLabels.erase(
-            std::remove_if(restoredInitialLabels.begin(),
-                           restoredInitialLabels.end(),
-                           [this](SegmentIdType label) { return initialNodes.count(label) == 0 || isIgnoredId(label); }),
-            restoredInitialLabels.end());
-
-        if (restoredInitialLabels.empty()) {
-            continue;
-        }
-
-        for (const SegmentIdType initialLabel : restoredInitialLabels) {
-            assignedInitialLabels.insert(initialLabel);
-        }
-
-        const SegmentIdType workingLabel = nextUnusedWorkingLabel(savedGroup.workingLabel);
-        auto *workingNode = new WorkingNode(restoredInitialLabels, workingLabel, initialNodes);
-        segmentManager.addWorkingNode(workingNode);
-    }
-
-    for (const auto &initialEntry : initialNodes) {
-        if (initialEntry.second == nullptr || assignedInitialLabels.count(initialEntry.first) > 0 ||
-            isIgnoredId(initialEntry.first)) {
-            continue;
-        }
-
-        assignedInitialLabels.insert(initialEntry.first);
-        const SegmentIdType workingLabel = nextUnusedWorkingLabel(initialEntry.first);
-        auto *workingNode = new WorkingNode(initialEntry.second.get(), workingLabel, initialNodes);
-        segmentManager.addWorkingNode(workingNode);
-    }
-
-    auto recalculateAllWorkingEdges = [this]() {
-        std::vector<SegmentIdType> labels;
-        labels.reserve(workingNodes.size());
-        for (const auto &workingEntry : workingNodes) {
-            labels.push_back(workingEntry.first);
-        }
-
-        for (const SegmentIdType label : labels) {
-            if (workingNodes.count(label) > 0) {
-                segmentManager.recalculateEdgesOnWorkingNode(workingNodes.at(label).get());
-            }
-        }
-    };
-
-    auto splitWorkingNodeByVoxelConnectivity = [this, connectivity](SegmentIdType workingLabel) {
-        const auto workingIt = workingNodes.find(workingLabel);
-        if (workingIt == workingNodes.end() || workingIt->second == nullptr ||
-            workingIt->second->subInitialNodes.size() <= 1) {
-            return false;
-        }
-
-        WorkingNode *workingNode = workingIt->second.get();
-        std::vector<SegmentIdType> labels;
-        labels.reserve(workingNode->subInitialNodes.size());
-        std::unordered_map<SegmentIdType, std::size_t> labelToIndex;
-        labelToIndex.reserve(workingNode->subInitialNodes.size());
-        std::vector<std::size_t> voxelCounts;
-        voxelCounts.reserve(workingNode->subInitialNodes.size());
-
-        for (const auto &initialEntry : workingNode->subInitialNodes) {
-            labelToIndex[initialEntry.first] = labels.size();
-            labels.push_back(initialEntry.first);
-            voxelCounts.push_back(initialEntry.second != nullptr ? initialEntry.second->voxels.size() : 0);
-        }
-
-        std::vector<std::size_t> parent(labels.size());
-        for (std::size_t index = 0; index < parent.size(); ++index) {
-            parent[index] = index;
-        }
-
-        auto findRoot = [&parent](std::size_t index) {
-            while (parent[index] != index) {
-                parent[index] = parent[parent[index]];
-                index = parent[index];
-            }
-            return index;
-        };
-
-        auto unionLabels = [&parent, &findRoot](std::size_t lhs, std::size_t rhs) {
-            lhs = findRoot(lhs);
-            rhs = findRoot(rhs);
-            if (lhs != rhs) {
-                parent[rhs] = lhs;
-            }
-        };
-
-        const auto image = graphBase->pWorkingSegmentsImage;
-        const auto size = image->GetLargestPossibleRegion().GetSize();
-        const int dimX = static_cast<int>(size[0]);
-        const int dimY = static_cast<int>(size[1]);
-        const int dimZ = static_cast<int>(size[2]);
-
-        const auto useOffset = [connectivity](int dx, int dy, int dz) {
-            if (dx == 0 && dy == 0 && dz == 0) {
-                return false;
-            }
-            if (connectivity == segment_puzzler::connected_components::ConnectivityStencil::Full) {
-                return true;
-            }
-            return std::abs(dx) + std::abs(dy) + std::abs(dz) == 1;
-        };
-
-        for (const auto &initialEntry : workingNode->subInitialNodes) {
-            if (initialEntry.second == nullptr) {
-                continue;
-            }
-            const auto ownIndex = labelToIndex.at(initialEntry.first);
-            for (const Voxel &voxel : initialEntry.second->voxels) {
-                for (int dz = -1; dz <= 1; ++dz) {
-                    for (int dy = -1; dy <= 1; ++dy) {
-                        for (int dx = -1; dx <= 1; ++dx) {
-                            if (!useOffset(dx, dy, dz)) {
-                                continue;
-                            }
-
-                            const int nx = voxel.x + dx;
-                            const int ny = voxel.y + dy;
-                            const int nz = voxel.z + dz;
-                            if (nx < 0 || ny < 0 || nz < 0 || nx >= dimX || ny >= dimY || nz >= dimZ) {
-                                continue;
-                            }
-
-                            const SegmentIdType neighborLabel = image->GetPixel({nx, ny, nz});
-                            const auto neighborIt = labelToIndex.find(neighborLabel);
-                            if (neighborIt == labelToIndex.end()) {
-                                continue;
-                            }
-                            unionLabels(ownIndex, neighborIt->second);
-                        }
-                    }
-                }
-            }
-        }
-
-        std::unordered_map<std::size_t, std::vector<SegmentIdType>> labelsByRoot;
-        std::unordered_map<std::size_t, std::size_t> voxelsByRoot;
-        labelsByRoot.reserve(labels.size());
-        voxelsByRoot.reserve(labels.size());
-        for (std::size_t labelIndex = 0; labelIndex < labels.size(); ++labelIndex) {
-            const std::size_t root = findRoot(labelIndex);
-            labelsByRoot[root].push_back(labels[labelIndex]);
-            voxelsByRoot[root] += voxelCounts[labelIndex];
-        }
-
-        if (labelsByRoot.size() <= 1) {
-            return false;
-        }
-
-        struct WorkingComponent {
-            std::vector<SegmentIdType> initialLabels;
-            std::size_t voxelCount = 0;
-        };
-        std::vector<WorkingComponent> components;
-        components.reserve(labelsByRoot.size());
-        for (auto &rootEntry : labelsByRoot) {
-            std::sort(rootEntry.second.begin(), rootEntry.second.end());
-            components.push_back({rootEntry.second, voxelsByRoot[rootEntry.first]});
-        }
-        std::sort(components.begin(), components.end(), [](const WorkingComponent &lhs, const WorkingComponent &rhs) {
-            if (lhs.voxelCount != rhs.voxelCount) {
-                return lhs.voxelCount > rhs.voxelCount;
-            }
-            return lhs.initialLabels.front() < rhs.initialLabels.front();
-        });
-
-        segmentManager.removeWorkingNode(workingNode);
-        for (std::size_t componentIndex = 0; componentIndex < components.size(); ++componentIndex) {
-            const SegmentIdType componentWorkingLabel =
-                componentIndex == 0 ? workingLabel : nextFreeId++;
-            auto *componentWorkingNode =
-                new WorkingNode(components[componentIndex].initialLabels, componentWorkingLabel, initialNodes);
-            segmentManager.addWorkingNode(componentWorkingNode);
-        }
-        return true;
-    };
-
-    recalculateAllWorkingEdges();
-
-    std::vector<SegmentIdType> labelsToCheck;
-    labelsToCheck.reserve(workingNodes.size());
-    for (const auto &workingEntry : workingNodes) {
-        labelsToCheck.push_back(workingEntry.first);
-    }
-    for (const SegmentIdType workingLabel : labelsToCheck) {
-        splitWorkingNodeByVoxelConnectivity(workingLabel);
-    }
-
-    recalculateAllWorkingEdges();
-
+    for (const auto &[label, members] : plannedNodes)
+        segmentManager.addWorkingNode(new WorkingNode(members, label, initialNodes));
+    for (const auto &[label, node] : workingNodes)
+        segmentManager.recalculateEdgesOnWorkingNode(node.get());
     graphBase->pWorkingSegmentsImage->FillBuffer(backgroundId);
-    for (const auto &workingEntry : workingNodes) {
-        if (workingEntry.second != nullptr && !isIgnoredId(workingEntry.first)) {
-            insertWorkingNodeInSegmentImage(*workingEntry.second);
-        }
-    }
+    for (const auto &[label, node] : workingNodes) insertWorkingNodeInSegmentImage(*node);
 
-    for (const auto &workingEntry : workingNodes) {
-        if (workingEntry.second == nullptr) {
-            continue;
-        }
-        const auto &subInitialNodes = workingEntry.second->subInitialNodes;
-        for (const auto &initialEntry : subInitialNodes) {
-            if (initialEntry.second == nullptr) {
-                continue;
-            }
-            for (const auto &edgeEntry : initialEntry.second->neighborLabelToTwoSidedInitialEdge) {
-                if (subInitialNodes.count(edgeEntry.first) == 0 || edgeEntry.second == nullptr) {
-                    continue;
-                }
-                edgeEntry.second->setShouldMergeYes();
-                graphBase->edgeStatus[edgeEntry.second->numId] = 2;
-            }
+    for (const auto &[pair, edge] : initialLabelPairToTwoSidedInitialEdge) {
+        if (initialNodes.at(pair.first)->getCurrentWorkingNodeLabel() == initialNodes.at(pair.second)->getCurrentWorkingNodeLabel()) {
+            edge->setShouldMergeYes();
+            graphBase->edgeStatus.at(edge->numId) = 2;
         }
     }
 

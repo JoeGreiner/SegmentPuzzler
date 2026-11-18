@@ -447,6 +447,49 @@ int testGraphPreservesMergesAndSplitsWorkingOutput() {
     return 0;
 }
 
+int testDisconnectedRepairUsesWorkingConnectivity() {
+    for (auto stencil : {ConnectivityStencil::SixConnected, ConnectivityStencil::Full}) {
+        auto image = makeImage(7, 2, 1);
+        image->SetPixel({1, 0, 0}, 2);
+        image->SetPixel({2, 0, 0}, 3);
+        image->SetPixel({4, 0, 0}, 1);
+        image->SetPixel({5, 0, 0}, 2);
+        image->SetPixel({0, 1, 0}, 2);
+        auto fixture = buildGraphFixture(image);
+        auto &graph = *fixture.graph;
+        const auto &edges = graph.initialLabelPairToTwoSidedInitialEdge;
+        const auto owner = *graph.mergeEdges({edges.at({1, 2})->numId, edges.at({2, 3})->numId}).begin();
+        graph.splitDisconnectedInitialSegments(stencil);
+        const auto left = image->GetPixel({1, 0, 0}), right = image->GetPixel({4, 0, 0});
+        const auto diagonal = image->GetPixel({0, 1, 0});
+        if (left == right || image->GetPixel({2, 0, 0}) != left || image->GetPixel({5, 0, 0}) != right)
+            return failTest("Repair did not preserve face-connected constituents of a merge.");
+        if (stencil == ConnectivityStencil::Full) {
+            if (graph.workingNodes.size() != 2 || left != owner || diagonal != left)
+                return failTest("The largest diagonal-connected group must retain its working label.");
+        } else if (graph.workingNodes.size() != 3 || right != owner || diagonal == left || diagonal == right) {
+            return failTest("A face-connected tie must retain the group with the smallest initial label.");
+        }
+    }
+    return 0;
+}
+
+int testDetachMiddleInitialNode() {
+    auto image = makeImage(5, 1, 1);
+    for (int x = 1; x <= 3; ++x) image->SetPixel({x, 0, 0}, x);
+    auto fixture = buildGraphFixture(image);
+    auto &graph = *fixture.graph;
+    const auto &edges = graph.initialLabelPairToTwoSidedInitialEdge;
+    graph.mergeEdges({edges.at({1, 2})->numId, edges.at({2, 3})->numId});
+    graph.removeInitialNodeFromWorkingNodeAtPosition(2, 0, 0);
+    for (int x = 1; x <= 3; ++x) {
+        const auto label = image->GetPixel({x, 0, 0});
+        const auto &members = graph.workingNodes.at(label)->subInitialNodes;
+        if (members.size() != 1 || !members.count(x)) return failTest("Detaching a bridge left disconnected members together.");
+    }
+    return 0;
+}
+
 int testEnsureReusesExactSelectedComponent() {
     auto workingImage = makeImage(4, 3, 1);
     workingImage->SetPixel({1, 1, 0}, 1);
@@ -2309,6 +2352,8 @@ int main(int argc, char **argv) {
     if (int result = testGraphPreservesMergesAndSplitsWorkingOutput()) {
         return result;
     }
+    if (int result = testDisconnectedRepairUsesWorkingConnectivity()) return result;
+    if (int result = testDetachMiddleInitialNode()) return result;
     if (int result = testEnsureReusesExactSelectedComponent()) {
         return result;
     }

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -209,6 +210,13 @@ struct ConnectedComponentSplitStats {
 };
 
 const char *connectivityStencilName(ConnectivityStencil connectivity);
+
+// Within each working label, return the connected groups of initial labels,
+// largest first. Equal-sized groups are ordered by their smallest initial label.
+std::map<dataType::SegmentIdType, std::vector<std::vector<dataType::SegmentIdType>>> connectedWorkingGroups(
+    const dataType::SegmentsStorage &initialImage,
+    const std::unordered_map<dataType::SegmentIdType, dataType::SegmentIdType> &ownerByInitial,
+    ConnectivityStencil connectivity);
 
 dataType::SegmentIdType maxLabelInImage(const dataType::SegmentsImageType::Pointer &image);
 

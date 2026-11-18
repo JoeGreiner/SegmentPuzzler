@@ -25,9 +25,7 @@ public:
 
     std::vector<std::shared_ptr<TwoSidedInitialEdge>> constituentTwoSidedInitialEdges;
 
-    // add a vector of shared ptrs of initial edges through moving
-    void addConstituentTwoSidedInitialEdges(
-        const std::vector<std::shared_ptr<TwoSidedInitialEdge>> &twoSidedInitialEdgesToAdd);
+    void addConstituentEdge(const std::shared_ptr<TwoSidedInitialEdge> &edge);
 };
 
 

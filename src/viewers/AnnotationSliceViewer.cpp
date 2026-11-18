@@ -1967,7 +1967,12 @@ void AnnotationSliceViewer::removeInitialSegmentFromWorkingSegmentAtClick(int po
                     .arg(x)
                     .arg(y)
                     .arg(z));
-    graphBase->pGraph->removeInitialNodeFromWorkingNodeAtPosition(x, y, z);
+    try {
+        graphBase->pGraph->removeInitialNodeFromWorkingNodeAtPosition(x, y, z);
+    } catch (const std::exception &error) {
+        sendStatusMessage(QString::fromUtf8(error.what()));
+        return;
+    }
 
     graphBase->rebuildEdgeColorPresentation();
     orthoViewer()->refreshViewers();
@@ -2334,17 +2339,24 @@ void AnnotationSliceViewer::processAnnotationImage(const QImage &image) {
                 }
 
                 if (!annotatedEdgeNumIdsToMerge.empty()) {
-                    graphBase->pGraph->mergeEdges(annotatedEdgeNumIdsToMerge);
+                    try {
+                        graphBase->pGraph->mergeEdges(annotatedEdgeNumIdsToMerge);
+                    } catch (const std::exception &error) {
+                        sendStatusMessage(QString::fromUtf8(error.what()));
+                        return;
+                    }
                 }
                 for (auto &annotatedEdgeId : annotatedEdgeNumIdsToMerge) {
                     graphBase->edgeStatus[annotatedEdgeId] = 2;
                 }
 
                 if (!annotatedEdgeNumIdsToUnmerge.empty()) {
-                    graphBase->pGraph->unmergeEdges(annotatedEdgeNumIdsToUnmerge);
-                }
-                for (auto &annotatedEdgeId : annotatedEdgeNumIdsToUnmerge) {
-                    graphBase->edgeStatus[annotatedEdgeId] = -2;
+                    try {
+                        graphBase->pGraph->unmergeEdges(annotatedEdgeNumIdsToUnmerge);
+                    } catch (const std::exception &error) {
+                        sendStatusMessage(QString::fromUtf8(error.what()));
+                        annotatedEdgeNumIdsToUnmerge.clear();
+                    }
                 }
 
                 if (!annotatedEdgeNumIdsToMerge.empty() || !annotatedEdgeNumIdsToUnmerge.empty()) {
