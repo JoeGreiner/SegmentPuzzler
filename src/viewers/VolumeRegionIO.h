@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -164,9 +165,55 @@ void copyPixels(Pixel *destination, const std::vector<unsigned char> &bytes, boo
     }
 }
 
+std::shared_ptr<VolumeContext> readGzipIntensityPixels(const QString &path, itk::ImageIOBase &info,
+                                                      const std::function<unsigned char *()> &allocate);
+
+template<typename Pixel>
+LoadedVolume<itk::Image<Pixel, 3>> tryReadGzipIntensity(const QString &path) {
+    if (!path.endsWith(".nrrd", Qt::CaseInsensitive) && !path.endsWith(".nii.gz", Qt::CaseInsensitive)) return {};
+
+    QElapsedTimer timer;
+    timer.start();
+    using Image = itk::Image<Pixel, 3>;
+    auto reader = itk::ImageFileReader<Image>::New();
+    reader->SetFileName(path.toStdString());
+    reader->UpdateOutputInformation();
+    auto *info = reader->GetImageIO();
+    const auto type = info->GetComponentType();
+    if (info->GetComponentSize() != sizeof(Pixel) ||
+        itk::ImageIOBase::IsComponentTypeFloatingPoint(type) != std::is_floating_point_v<Pixel> ||
+        itk::ImageIOBase::IsComponentTypeUnsigned(type) != std::is_unsigned_v<Pixel>)
+        return {};
+
+    typename Image::Pointer image = reader->GetOutput();
+    auto context = readGzipIntensityPixels(path, *info, [&] {
+        image->SetRegions(image->GetLargestPossibleRegion());
+        image->Allocate(false);
+        return reinterpret_cast<unsigned char *>(image->GetBufferPointer());
+    });
+    if (!context) return {};
+    if constexpr (std::is_floating_point_v<Pixel>) {
+        // NIfTI readers may normalize non-finite voxels.
+        const auto *pixels = image->GetBufferPointer();
+        if (path.endsWith(".nii.gz", Qt::CaseInsensitive) &&
+            !std::all_of(pixels, pixels + image->GetBufferedRegion().GetNumberOfPixels(),
+                         [](Pixel value) { return std::isfinite(value); }))
+            return {};
+    }
+    image->DisconnectPipeline();
+    clearImageContext(image->GetMetaDataDictionary());
+    SP_LOG_INFO("io", QStringLiteral("volume_load path=\"%1\" gzip_intensity_read_ms=%2")
+        .arg(path).arg(timer.elapsed()));
+    return {image, context};
+}
+
 template<typename Pixel>
 LoadedVolume<itk::Image<Pixel, 3>> readImage(const QString &path, const ImageLoadOptions &options) {
     using Image = itk::Image<Pixel, 3>;
+    if (!options.crop && !options.labelImage) {
+        auto loaded = tryReadGzipIntensity<Pixel>(path);
+        if (loaded.image) return loaded;
+    }
     QElapsedTimer timer;
     timer.start();
     auto data = options.crop ? readRegion(path, options) : std::nullopt;

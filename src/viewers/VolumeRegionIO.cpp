@@ -34,6 +34,10 @@ std::uint64_t multiply(std::uint64_t a, std::uint64_t b) {
     return a * b;
 }
 
+struct UnsupportedGzipStream : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 class ByteReader {
 public:
     ByteReader(const QString &path, qint64 compressedOffset)
@@ -77,7 +81,8 @@ public:
             produced += available - stream.avail_out;
             if (status == Z_STREAM_END) {
                 ended = true;
-                if (stream.avail_in || !file.atEnd()) fail("Concatenated or trailing gzip streams are not supported for region I/O.");
+                if (stream.avail_in || !file.atEnd())
+                    throw UnsupportedGzipStream("Concatenated or trailing gzip streams are not supported for region I/O.");
             } else if (status != Z_OK) {
                 fail("Invalid gzip volume or checksum.");
             }
@@ -259,13 +264,14 @@ Value headerValue(const QByteArray &header, int offset, bool swap) {
     return value;
 }
 
-std::optional<Layout> inspectLayout(const QString &path) {
+std::optional<Layout> inspectLayout(const QString &path, itk::ImageIOBase *info = nullptr) {
     const QString suffix = path.toLower();
     const bool nrrd = suffix.endsWith(".nrrd");
     const bool nifti = suffix.endsWith(".nii") || suffix.endsWith(".nii.gz");
     if (!nrrd && !nifti) return std::nullopt;
     Layout layout;
-    layout.info = imageInformation(path);
+    if (info) layout.info = info;
+    else layout.info = imageInformation(path);
     if (layout.info->GetNumberOfDimensions() != 3 || layout.info->GetPixelType() != itk::IOPixelEnum::SCALAR ||
         layout.info->GetNumberOfComponents() != 1) return std::nullopt;
     layout.size = dimensions(*layout.info);
@@ -321,7 +327,7 @@ std::optional<Layout> inspectLayout(const QString &path) {
         layout.payloadOffset = static_cast<std::uint64_t>(offset);
         const float slope = headerValue<float>(header, 112, layout.swapBytes);
         const float intercept = headerValue<float>(header, 116, layout.swapBytes);
-        layout.scaled = slope != 0 && (slope != 1 || intercept != 0);
+        layout.scaled = (slope != 0 && slope != 1) || intercept != 0;
         // ITK may promote scaled data to float; raw payload width is the header's bitpix.
         layout.pixelBytes = headerValue<std::int16_t>(header, 72, layout.swapBytes) / 8;
     }
@@ -541,13 +547,40 @@ void configureImageRegion(itk::ImageBase<3> &image, const itk::ImageIOBase &info
     image.SetMetaDataDictionary(info.GetMetaDataDictionary());
 }
 
+std::shared_ptr<VolumeContext> readGzipIntensityPixels(const QString &path, itk::ImageIOBase &info,
+                                                      const std::function<unsigned char *()> &allocate) {
+    try {
+        const auto layout = inspectLayout(path, &info);
+        if (!layout || layout->compressedOffset < 0 || layout->scaled || layout->swapBytes ||
+            layout->pixelBytes != info.GetComponentSize())
+            return {};
+
+        const CropRegion region{{{0, 0, 0}}, layout->size};
+        validateRegion(region, layout->size);
+        const auto bytes = multiply(voxelCount(region.size), layout->pixelBytes);
+        if (bytes > std::numeric_limits<std::size_t>::max()) fail("Volume size overflows.");
+        auto *pixels = allocate();
+        const auto fingerprint = visitPayload(path, *layout, [&](unsigned char *block, std::uint64_t first, std::size_t count) {
+            std::memcpy(pixels + first * layout->pixelBytes, block, count * layout->pixelBytes);
+        });
+        auto context = imageContext(info.GetMetaDataDictionary());
+        if (!context) {
+            context = makeContext(path, info, {});
+            context->sourceFingerprint = fingerprint;
+        }
+        return context;
+    } catch (const UnsupportedGzipStream &) {
+        return {};
+    }
+}
+
 LoadedVolume<dataType::SegmentsStorage> readLabelStorage(const QString &path, ImageLoadOptions options) {
     options.labelImage = true;
     const auto info = imageInformation(path);
     if ((info->GetNumberOfDimensions() != 2 && info->GetNumberOfDimensions() != 3) ||
         info->GetPixelType() != itk::IOPixelEnum::SCALAR || info->GetNumberOfComponents() != 1)
         fail("Labels require a scalar 2D or 3D image.");
-    const auto layout = inspectLayout(path);
+    const auto layout = inspectLayout(path, info);
     if (!layout || !layout->integer || layout->scaled) {
         auto loaded = readImage<Label>(path, options);
         return {segment_puzzler::storeLabels(*loaded.image), loaded.context};

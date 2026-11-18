@@ -218,6 +218,62 @@ void bigEndianRoundtrip(const QString &directory) {
     }
 }
 
+template<typename Pixel>
+void gzipIntensity(const QString &directory, bool nonFinite = false) {
+    using Intensity = itk::Image<Pixel, 3>;
+    const auto geometry = makeImage({{13, 9, 7}});
+    auto image = Intensity::New();
+    image->CopyInformation(geometry);
+    image->SetRegions(geometry->GetLargestPossibleRegion());
+    image->Allocate(false);
+    const auto count = image->GetBufferedRegion().GetNumberOfPixels();
+    for (std::size_t i = 0; i < count; ++i)
+        image->GetBufferPointer()[i] = static_cast<Pixel>(int(i % 101) - 48);
+
+    image->GetBufferPointer()[0] = std::numeric_limits<Pixel>::lowest();
+    image->GetBufferPointer()[1] = std::numeric_limits<Pixel>::max();
+    if constexpr (std::is_floating_point_v<Pixel>) {
+        image->GetBufferPointer()[2] = Pixel(-0.125);
+        if (nonFinite) {
+            image->GetBufferPointer()[3] = std::numeric_limits<Pixel>::quiet_NaN();
+            image->GetBufferPointer()[4] = std::numeric_limits<Pixel>::infinity();
+        }
+    }
+
+    for (const QString &suffix : {QStringLiteral(".nrrd"), QStringLiteral(".nii.gz")}) {
+        const auto path = directory + "/intensity" + suffix;
+        save<Pixel>(image, path, true);
+        const auto direct = tryReadGzipIntensity<Pixel>(path);
+        require(direct.image.IsNotNull() == !(nonFinite && suffix == ".nii.gz"), "Unexpected intensity reader");
+        if constexpr (std::is_same_v<Pixel, unsigned int>) {
+            require(tryReadGzipIntensity<float>(path).image.IsNull(), "Integer-to-float conversion bypassed ITK");
+            require(tryReadGzipIntensity<int>(path).image.IsNull(), "Unsigned-to-signed conversion bypassed ITK");
+        }
+        const auto expected = readWithITK<Intensity>(path, {});
+        const auto actual = readImage<Pixel>(path, {});
+        require(actual.image->GetRequestedRegion() == expected.image->GetRequestedRegion() &&
+                actual.image->GetBufferedRegion() == expected.image->GetBufferedRegion() &&
+                actual.image->GetSpacing() == expected.image->GetSpacing() &&
+                actual.image->GetOrigin() == expected.image->GetOrigin() &&
+                actual.image->GetDirection() == expected.image->GetDirection(), "Direct intensity loading changed geometry");
+        require(std::memcmp(expected.image->GetBufferPointer(), actual.image->GetBufferPointer(), count * sizeof(Pixel)) == 0, "Direct intensity loading changed voxels");
+        require(actual.context->sourceFingerprint == expected.context->sourceFingerprint, "Direct intensity fingerprint differs");
+        require(actual.image->GetMetaDataDictionary().GetKeys() == expected.image->GetMetaDataDictionary().GetKeys(),
+                "Direct intensity loading lost metadata");
+    }
+
+    if constexpr (!std::is_same_v<Pixel, unsigned short>) return;
+    const auto path = directory + "/intensity.nii.gz";
+    QFile file(path);
+    const auto emptyGzipMember = QByteArray::fromHex("1f8b080000000000000303000000000000000000");
+    require(file.open(QIODevice::Append) && file.write(emptyGzipMember) == emptyGzipMember.size(), "Cannot append gzip member");
+    file.close();
+    require(tryReadGzipIntensity<Pixel>(path).image.IsNull(), "Multi-member gzip should fall back to ITK");
+    const auto fallback = readImage<Pixel>(path, {});
+    require(std::equal(image->GetBufferPointer(), image->GetBufferPointer() + count,
+                       fallback.image->GetBufferPointer()), "ITK fallback changed voxels");
+}
+
 void gzipValidation(const QString &directory) {
     auto image = makeImage({{131, 137, 35}});
     for (const auto &suffix : {".nrrd", ".nii.gz"}) {
@@ -536,6 +592,18 @@ int main(int argc, char **argv) {
         independentTarget(directory.path());
         largeBlockRead(directory.path());
         bigEndianRoundtrip(directory.path());
+        gzipIntensity<signed char>(directory.path());
+        gzipIntensity<unsigned char>(directory.path());
+        gzipIntensity<short>(directory.path());
+        gzipIntensity<unsigned short>(directory.path());
+        gzipIntensity<int>(directory.path());
+        gzipIntensity<unsigned int>(directory.path());
+        gzipIntensity<long long>(directory.path());
+        gzipIntensity<unsigned long long>(directory.path());
+        gzipIntensity<float>(directory.path());
+        gzipIntensity<double>(directory.path());
+        gzipIntensity<float>(directory.path(), true);
+        gzipIntensity<double>(directory.path(), true);
         gzipValidation(directory.path());
         rejectedWrites(directory.path());
         nonzeroBackground(directory.path());
