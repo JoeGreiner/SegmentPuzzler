@@ -39,7 +39,7 @@ install(TARGETS ${PROJECT_NAME}
         RUNTIME DESTINATION ${INSTALL_RUNTIME_DIR} COMPONENT Runtime
         )
 
-install(FILES licenses/streamvbyte.txt licenses/zlib-ng.txt
+install(FILES licenses/streamvbyte.txt licenses/xxhash.txt licenses/zlib-ng.txt
         DESTINATION "${PROJECT_NAME}.app/Contents/Resources/licenses")
 
 # Note Mac specific extension .app

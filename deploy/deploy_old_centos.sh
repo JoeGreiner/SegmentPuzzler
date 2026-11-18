@@ -84,6 +84,7 @@ basePath=$(pwd)
 mkdir -p export_linux/usr/bin
 mkdir -p export_linux/usr/share/icons
 mkdir -p export_linux/usr/share/applications
+install -Dm644 -t export_linux/usr/share/licenses/SegmentPuzzler ../licenses/*.txt
 
 iconPath="usr/share/icons/SegmentPuzzler.png"
 cp ../resources/images/icon.png "$basePath"/export_linux/$iconPath

@@ -1,6 +1,7 @@
 #include "src/viewers/VolumeRegionIO.h"
 #include "src/image_storage/LabelImageStorage.h"
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtEndian>
@@ -110,6 +111,8 @@ void roundtrip(const QString &directory, const QString &suffix, bool compressed)
     save<Label>(external, path, compressed);
     const auto externallyChanged = fileFingerprint(path);
     rejects([&] { writeRegionToVolume(crop, path, options.crop->start, write); }, "External modification was overwritten");
+    context->sourcePath.clear();
+    rejects([&] { writeRegionToVolume(crop, path, options.crop->start, write); }, "Stale target mapping was accepted");
     require(fileFingerprint(path) == externallyChanged, "Conflict changed the target");
 }
 
@@ -510,11 +513,22 @@ void fullLoadContextAndValidation(const QString &directory) {
             "Highest background incorrectly advanced the label allocator");
     require(reserveLabels(*loaded.context, 1) == 10, "Loaded allocator was not initialized");
     const auto recoveryPath = directory + "/context-recovery.nrrd";
+    const auto before = loaded.context->sourceFingerprint;
+    QFile originalFile(path);
+    require(originalFile.open(QIODevice::ReadOnly), "Could not read original file");
+    loaded.context->sourceFingerprint = QCryptographicHash::hash(originalFile.readAll(), QCryptographicHash::Sha256).toHex();
+    originalFile.close();
     setImageContext(image->GetMetaDataDictionary(), *loaded.context);
     save<Label>(image, recoveryPath);
     auto recovered = readImage<Label>(recoveryPath, options);
     require(recovered.context->nextLabel == 11 && recovered.context->originalLabels == loaded.context->originalLabels &&
             !imageContext(recovered.image->GetMetaDataDictionary()), "Recovery did not extract the authoritative context");
+    require(recovered.image->GetPixel({{1, 0, 0}}) == 9, "Legacy recovery lost image data");
+    RegionWriteOptions legacyWrite;
+    legacyWrite.context = recovered.context;
+    rejects([&] { writeRegionToVolume(recovered.image, path, {{0, 0, 0}}, legacyWrite); },
+            "Legacy fingerprint accepted for insertion");
+    require(fileFingerprint(path) == before, "Legacy insertion modified the original");
     image->SetPixel({{2, 0, 0}}, 20);
     save<Label>(image, recoveryPath);
     checkStoredLabels(recoveryPath, highestOptions);
@@ -581,6 +595,11 @@ int main(int argc, char **argv) {
             memoryProbe(directory.path(), QString::fromLocal8Bit(argv[2]).toInt(), QString::fromLocal8Bit(argv[1]) == "--memory-probe-full");
             return 0;
         }
+        QFile sample(directory.filePath("fingerprint.bin"));
+        require(sample.open(QIODevice::WriteOnly) && sample.write("abc", 3) == 3, "Could not write fingerprint input");
+        sample.close();
+        require(fileFingerprint(sample.fileName()) == "xxh3-128:06b05ab6733a618578af5f94892f3950",
+                "Incorrect XXH3-128 fingerprint");
         labelInitialization();
         roundtrip(directory.path(), ".nrrd", false);
         roundtrip(directory.path(), ".nrrd", true);

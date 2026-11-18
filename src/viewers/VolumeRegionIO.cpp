@@ -1,7 +1,8 @@
 #include "src/image_storage/LabelImageStorage.h"
 #include "VolumeRegionIO.h"
 #include "src/utils/LabelScan.h"
-#include <QCryptographicHash>
+#define XXH_INLINE_ALL
+#include <xxhash.h>
 #include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
@@ -38,10 +39,26 @@ struct UnsupportedGzipStream : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+class FileFingerprint {
+public:
+    FileFingerprint() { XXH3_128bits_reset(&state); }
+
+    void addData(const void *data, std::size_t size) {
+        XXH3_128bits_update(&state, data, size);
+    }
+    QByteArray result() const {
+        XXH128_canonical_t digest;
+        XXH128_canonicalFromHash(&digest, XXH3_128bits_digest(&state));
+        return "xxh3-128:" + QByteArray(reinterpret_cast<const char *>(digest.digest), sizeof(digest.digest)).toHex();
+    }
+private:
+    XXH3_state_t state{};
+};
+
 class ByteReader {
 public:
     ByteReader(const QString &path, qint64 compressedOffset)
-        : file(path), hash(QCryptographicHash::Sha256), compressed(compressedOffset >= 0) {
+        : file(path), compressed(compressedOffset >= 0) {
         if (!file.open(QIODevice::ReadOnly)) fail(file.errorString());
         initialSize = file.size();
         initialModified = QFileInfo(file).lastModified();
@@ -50,7 +67,7 @@ public:
             while (remaining) {
                 const auto bytes = file.read(std::min<qint64>(remaining, blockBytes));
                 if (bytes.isEmpty()) fail("Truncated volume header.");
-                hash.addData(bytes);
+                hash.addData(bytes.constData(), bytes.size());
                 remaining -= bytes.size();
             }
             if (zng_inflateInit2(&stream, 15 + 16) != Z_OK) fail("Cannot initialize gzip decompression.");
@@ -61,7 +78,7 @@ public:
         if (!compressed) {
             const qint64 bytes = file.read(reinterpret_cast<char *>(destination), count);
             if (bytes < 0) fail(file.errorString());
-            hash.addData(reinterpret_cast<const char *>(destination), bytes);
+            hash.addData(destination, bytes);
             return bytes;
         }
         std::size_t produced = 0;
@@ -70,7 +87,7 @@ public:
                 const auto bytes = file.read(reinterpret_cast<char *>(input.data()), input.size());
                 if (bytes < 0) fail(file.errorString());
                 if (!bytes) fail("Truncated gzip volume.");
-                hash.addData(reinterpret_cast<const char *>(input.data()), bytes);
+                hash.addData(input.data(), bytes);
                 stream.next_in = input.data();
                 stream.avail_in = bytes;
             }
@@ -101,11 +118,11 @@ public:
         QFileInfo current(file.fileName());
         if (current.size() != initialSize || current.lastModified() != initialModified)
             fail("The volume changed while it was being read. Please load it again.");
-        return hash.result().toHex();
+        return hash.result();
     }
 private:
     QFile file;
-    QCryptographicHash hash;
+    FileFingerprint hash;
     bool compressed;
     bool ended = false;
     qint64 initialSize;
@@ -116,7 +133,7 @@ private:
 
 class ByteWriter {
 public:
-    ByteWriter(QSaveFile &destination, bool gzip, QCryptographicHash &outputHash)
+    ByteWriter(QSaveFile &destination, bool gzip, FileFingerprint &outputHash)
         : file(destination), hash(outputHash), compressed(gzip) {
         if (compressed && zng_deflateInit2(&stream, 1, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
             fail("Cannot initialize gzip compression.");
@@ -134,7 +151,7 @@ public:
 private:
     void raw(const unsigned char *data, std::size_t size) {
         if (file.write(reinterpret_cast<const char *>(data), size) != static_cast<qint64>(size)) fail(file.errorString());
-        hash.addData(reinterpret_cast<const char *>(data), size);
+        hash.addData(data, size);
     }
     int pump(int flush) {
         stream.next_out = output.data();
@@ -145,7 +162,7 @@ private:
         return status;
     }
     QSaveFile &file;
-    QCryptographicHash &hash;
+    FileFingerprint &hash;
     bool compressed;
     zng_stream stream{};
     std::array<unsigned char, 128 * 1024> output{};
@@ -343,11 +360,11 @@ QByteArray visitPayload(const QString &path, const Layout &layout, const BlockVi
                        QSaveFile *destination = nullptr, QByteArray *writtenFingerprint = nullptr) {
     ByteReader input(path, layout.compressedOffset);
     std::unique_ptr<ByteWriter> output;
-    QCryptographicHash outputHash(QCryptographicHash::Sha256);
+    FileFingerprint outputHash;
     if (destination) {
         if (!layout.rawPrefix.isEmpty() && destination->write(layout.rawPrefix) != layout.rawPrefix.size())
             fail(destination->errorString());
-        outputHash.addData(layout.rawPrefix);
+        outputHash.addData(layout.rawPrefix.constData(), layout.rawPrefix.size());
         output = std::make_unique<ByteWriter>(*destination, layout.compressedOffset >= 0, outputHash);
     }
     std::vector<unsigned char> block(blockBytes);
@@ -370,7 +387,7 @@ QByteArray visitPayload(const QString &path, const Layout &layout, const BlockVi
         if (output) output->write(block.data(), count);
     }
     if (output) output->finish();
-    if (writtenFingerprint) *writtenFingerprint = outputHash.result().toHex();
+    if (writtenFingerprint) *writtenFingerprint = outputHash.result();
     return input.fingerprint();
 }
 
@@ -740,7 +757,7 @@ QByteArray writeLabelVolume(const dataType::SegmentsStorage &image, const QStrin
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) fail(file.errorString());
-    QCryptographicHash hash(QCryptographicHash::Sha256);
+    FileFingerprint hash;
     const auto write = [&](const void *data, std::size_t bytes) {
         const auto *buffer = static_cast<const char *>(data);
         if (file.write(buffer, bytes) != static_cast<qint64>(bytes)) fail(file.errorString());
@@ -752,7 +769,7 @@ QByteArray writeLabelVolume(const dataType::SegmentsStorage &image, const QStrin
     if (!file.commit()) fail(file.errorString());
     SP_LOG_INFO("io", QStringLiteral("volume_save path=\"%1\" elapsed_ms=%2 buffer_bytes=%3")
         .arg(path).arg(timer.elapsed()).arg(bufferBytes));
-    return hash.result().toHex();
+    return hash.result();
 }
 
 std::optional<RegionData> readRegion(const QString &path, const ImageLoadOptions &options) {
@@ -938,19 +955,18 @@ RegionWriteResult writeRegionToVolume(const dataType::SegmentsStorage *image, co
     });
     const auto context = options.context ? options.context : std::make_shared<VolumeContext>();
     if (path == context->sourcePath && !context->sourceFingerprint.isEmpty() && fingerprint != context->sourceFingerprint)
-        fail("The source volume has changed since it was loaded. Reload it before inserting.");
-    const auto *previous = findBinding(*context, path, targetStart, options.labelPolicy, options.targetBackground);
-    if (previous && previous->fingerprint != fingerprint) fail("The previous insertion target has changed. Its saved ID mapping is no longer valid.");
+        fail("The source fingerprint does not match. Reload the source before inserting.");
     // Keep IDs reserved even after another insertion has overwritten their last voxels.
     for (const auto &binding : context->targets) {
         if (binding.path != path) continue;
-        if (binding.fingerprint != fingerprint) fail("An earlier insertion target has changed. Reload it before reusing its ID mappings.");
+        if (binding.fingerprint != fingerprint) fail("The target fingerprint does not match an earlier insertion. Reload it before reusing its ID mappings.");
         for (const auto &entry : binding.labels)
             if (entry.second != binding.background) maximum = std::max<std::uint64_t>(maximum, entry.second);
     }
     RegionWriteResult result;
     result.binding = {path, targetStart, options.labelPolicy, options.targetBackground, {}, {}};
-    if (previous) result.binding.labels = previous->labels;
+    if (const auto *previous = findBinding(*context, path, targetStart, options.labelPolicy, options.targetBackground))
+        result.binding.labels = previous->labels;
     std::unordered_set<Label> uniqueLabels;
     image->forEachRun([&](const auto &, std::size_t, Label label) {
         if (label != context->background.value_or(0)) uniqueLabels.insert(label);

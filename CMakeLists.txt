@@ -229,12 +229,19 @@ set(SEGMENT_PUZZLER_ITK_LIBRARIES
         ${ITK_INTERFACE_LIBRARIES}
         ITK::ITKImageIO)
 
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
 include(cmake/ZlibNg.cmake)
+FetchContent_Declare(xxhash
+    URL https://codeload.github.com/Cyan4973/xxHash/tar.gz/refs/tags/v0.8.3
+    URL_HASH SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80)
+FetchContent_MakeAvailable(xxhash)
 
 add_library(segmentpuzzler_volume_io STATIC src/viewers/VolumeRegionIO.cpp src/utils/AppLogger.cpp)
 set_target_properties(segmentpuzzler_volume_io PROPERTIES
         AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
-target_include_directories(segmentpuzzler_volume_io PUBLIC ${CMAKE_SOURCE_DIR})
+target_include_directories(segmentpuzzler_volume_io PUBLIC ${CMAKE_SOURCE_DIR} PRIVATE "${xxhash_SOURCE_DIR}")
 target_link_libraries(segmentpuzzler_volume_io PUBLIC ${SEGMENT_PUZZLER_ITK_LIBRARIES}
         ${SEGMENT_PUZZLER_QT_CORE_LIBRARY}
         PRIVATE zlib-ng::zlib)

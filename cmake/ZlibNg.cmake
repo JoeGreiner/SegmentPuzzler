@@ -1,8 +1,5 @@
 include(FetchContent)
 enable_language(C)
-if(POLICY CMP0135)
-    cmake_policy(SET CMP0135 NEW)
-endif()
 
 function(segmentpuzzler_add_zlib_ng)
     # A shared library isolates internal symbols from ITK's bundled zlib-ng.
