@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(SegmentPuzzler LANGUAGES CXX VERSION 0.4.4)
+project(SegmentPuzzler LANGUAGES CXX VERSION 0.4.5)
 string(TOLOWER "${PROJECT_NAME}" PROJECT_NAME_LOWER)
 set(CMAKE_CXX_STANDARD 17)
 set(BUILD_SHARED_LIBS ON)
