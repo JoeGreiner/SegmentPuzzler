@@ -12,6 +12,10 @@ on:
         description: 'Existing tag to rebuild and prepare a release draft (all platforms; leave empty for build only)'
         type: string
         default: ''
+      update_published_release:
+        description: 'Replace the assets of the published release_tag with a build of the selected branch (same version)'
+        type: boolean
+        default: false
   push:
     tags: ['v[0-9]*']
 
@@ -38,11 +42,19 @@ jobs:
         id: version
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
+          UPDATE_PUBLISHED: ${{ inputs.update_published_release }}
         run: |
           tag=$REQUESTED_RELEASE_TAG
           source_commit=
-          if [[ -n "$tag" ]]; then
+          if [[ "$UPDATE_PUBLISHED" = true ]]; then
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected an existing vX.Y.Z tag' >&2; exit 1; }
+            [[ "$(gh release view "$tag" --json isDraft --jq '.isDraft')" = false ]] || { echo "Release $tag is not published" >&2; exit 1; }
+            status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$tag...$GITHUB_SHA" --jq '.status')
+            [[ "$status" = ahead || "$status" = identical ]] || { echo "$GITHUB_SHA does not build on $tag" >&2; exit 1; }
+            version=$(sed -nE 's/^project\(.*VERSION ([0-9.]+)\).*/\1/p' CMakeLists.txt)
+          elif [[ -n "$tag" ]]; then
             [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected an existing vX.Y.Z tag' >&2; exit 1; }
             git fetch --no-tags --depth=1 origin "refs/tags/$tag"
             source_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
@@ -96,6 +108,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
       SOURCE_COMMIT: ${{ needs.version.outputs.source_commit || github.sha }}
+      UPDATE_PUBLISHED: ${{ inputs.update_published_release }}
     steps:
       - name: Check release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,7 +118,9 @@ jobs:
       - name: Download packages and prepare draft
         shell: bash
         run: |
-          [[ "$(git rev-parse HEAD)" = "$SOURCE_COMMIT" ]] || { echo 'Release tag changed during the build' >&2; exit 1; }
+          if [[ "$UPDATE_PUBLISHED" != true ]]; then
+            [[ "$(git rev-parse HEAD)" = "$SOURCE_COMMIT" ]] || { echo 'Release tag changed during the build' >&2; exit 1; }
+          fi
           gh run download "$GITHUB_RUN_ID" --pattern 'packages-*' --dir packages
           files=(
             "packages/packages-windows-x64/SegmentPuzzler-$VERSION-windows-x64-installer.exe"
@@ -115,7 +130,11 @@ jobs:
             "packages/packages-linux-x86_64-legacy/SegmentPuzzler-$VERSION-linux-x86_64-legacy.AppImage"
           )
           for file in "${files[@]}"; do test -s "$file"; done
-          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft'); then
+          if [[ "$UPDATE_PUBLISHED" = true ]]; then
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            notes=$(gh release view "$RELEASE_TAG" --json body --jq '.body')
+            gh release edit "$RELEASE_TAG" --notes "$notes"$'\n\n'"Packages rebuilt on $(date -u +%F) from $SOURCE_COMMIT ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$RELEASE_TAG...$SOURCE_COMMIT)"
+          elif draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft'); then
             [[ "$draft" = true ]] || { echo 'Release is already published' >&2; exit 1; }
             gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
           else
