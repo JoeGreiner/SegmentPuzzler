@@ -24,6 +24,8 @@ find_package(${SEGMENT_PUZZLER_QT_PACKAGE}Gui REQUIRED
         COMPONENTS QCocoaIntegrationPlugin QTiffPlugin)
 install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QCocoaIntegrationPlugin" QT_PLUGINS ${prefix})
 install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QTiffPlugin" QT_PLUGINS ${prefix})
+# Without the native style plugin Qt falls back to the "Windows" style (e.g. opaque checkered rubber bands).
+install_qt_plugin("${SEGMENT_PUZZLER_QT_PACKAGE}::QMacStylePlugin" QT_PLUGINS ${prefix})
 if (SEGMENT_PUZZLER_QT_MAJOR STREQUAL "6")
     find_package(Qt6Network REQUIRED COMPONENTS QSecureTransportBackendPlugin)
     install_qt_plugin("Qt6::QSecureTransportBackendPlugin" QT_PLUGINS ${prefix})

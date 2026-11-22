@@ -19,6 +19,7 @@ app="$mount_dir/SegmentPuzzler.app"
 test -x "$app/Contents/MacOS/SegmentPuzzler"
 test -f "$app/Contents/PlugIns/platforms/libqcocoa.dylib"
 test -f "$app/Contents/PlugIns/tls/libqsecuretransportbackend.dylib"
+test -f "$app/Contents/PlugIns/styles/libqmacstyle.dylib"
 codesign --verify --deep --strict --verbose=2 "$app"
 
 while IFS= read -r -d '' binary; do
