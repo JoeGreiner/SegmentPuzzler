@@ -3089,6 +3089,11 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
                 QStringLiteral("Adding watershed boundaries with requested ROI x=%1-%2 y=%3-%4 z=%5-%6")
                     .arg(fx).arg(tx).arg(fy).arg(ty).arg(fz).arg(tz));
 
+    // The requested ROI ends are inclusive (as stored in GraphBase), the extraction below uses exclusive ends.
+    txIn += 1;
+    tyIn += 1;
+    tzIn += 1;
+
     fxIn = fxIn < 0 ? 0 : fxIn;
     fyIn = fyIn < 0 ? 0 : fyIn;
     fzIn = fzIn < 0 ? 0 : fzIn;
@@ -3110,16 +3115,16 @@ void WatershedControl::addBoundaries(dataType::BoundaryImageType::Pointer pBound
     fyIn = fyIn > maxFy ? maxFy : fyIn;
     fzIn = fzIn > maxFz ? maxFz : fzIn;
 
-    txIn = txIn > fxIn ? txIn : fxIn+2;
-    tyIn = tyIn > fyIn ? tyIn : fyIn+2;
-    tzIn = tzIn > fzIn ? tzIn : fzIn+2;
+    txIn = txIn > fxIn+1 ? txIn : fxIn+2;
+    tyIn = tyIn > fyIn+1 ? tyIn : fyIn+2;
+    tzIn = tzIn > fzIn+1 ? tzIn : fzIn+2;
 
     txIn = txIn <= maxTx ? txIn : maxTx;
     tyIn = tyIn <= maxTy ? tyIn : maxTy;
     tzIn = tzIn <= maxTz ? tzIn : maxTz;
 
     SP_LOG_INFO("watershed",
-                QStringLiteral("Clamped watershed ROI to x=%1-%2 y=%3-%4 z=%5-%6")
+                QStringLiteral("Clamped watershed ROI to x=%1-%2 y=%3-%4 z=%5-%6 (end exclusive)")
                     .arg(fxIn).arg(txIn).arg(fyIn).arg(tyIn).arg(fzIn).arg(tzIn));
 
     // update roi to the corrected values
