@@ -46,7 +46,10 @@ QImage itkSignalThresholdPreview<dType>::calculateSliceQImage(unsigned int slice
                                                                                           width,
                                                                                           height);
 
-//    std::fill(sliceBuffer.begin(), sliceBuffer.end(), 0);
+    const std::size_t requiredPixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    if (sliceBuffer->size() < requiredPixelCount) {
+        sliceBuffer->resize(requiredPixelCount);
+    }
 
     typename itk::ImageRegionConstIteratorWithIndex<SignalImageType> it(this->pImage, region);
     it.GoToBegin();
