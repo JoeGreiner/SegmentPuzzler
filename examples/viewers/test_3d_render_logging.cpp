@@ -43,6 +43,7 @@
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -68,6 +69,21 @@ QString readLog(const QString &path) {
     require(file.open(QIODevice::ReadOnly), "Could not read render log");
     return QString::fromUtf8(file.readAll());
 }
+
+// Runs a callback once while the watched widget handles its hide event.
+class HideHook : public QObject {
+public:
+    explicit HideHook(std::function<void()> onHide) : m_onHide(std::move(onHide)) {}
+
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Hide && m_onHide) std::exchange(m_onHide, {})();
+        return false;
+    }
+
+private:
+    std::function<void()> m_onHide;
+};
 
 double value(const QString &line, const QString &key) {
     const auto match = QRegularExpression(QStringLiteral("(?:^| )%1=([^ ]+)").arg(key)).match(line);
@@ -622,8 +638,17 @@ int main(int argc, char **argv) {
         int eventTurns = 0;
         bool progressReported = false;
         bool progressVisibleAtFinalRender = false;
+        // Hiding the loading dialog can deliver another frameSwapped before cleanup returns.
+        bool reentrantSwap = false;
+        HideHook emitSwapOnHide([&] {
+            reentrantSwap = true;
+            Q_EMIT groupedWidget->frameSwapped();
+        });
         std::function<void(vtkRenderWindow *)> onRender = [&](vtkRenderWindow *window) {
             if (!window->GetSwapBuffers()) {
+                if (groupCount == 0) {
+                    grouped->findChild<QProgressDialog *>()->installEventFilter(&emitSwapOnHide);
+                }
                 ++groupCount;
                 QTimer::singleShot(0, grouped.get(), [&] {
                     ++eventTurns;
@@ -650,6 +675,7 @@ int main(int argc, char **argv) {
         }), "Grouped initialization did not finish");
         require(progressReported && eventTurns == groupCount && groupCount > 0,
                 "Initialization did not yield between groups");
+        require(reentrantSwap, "Loading dialog was hidden without a nested frame swap");
         auto *renderer = groupedWidget->interactor()->GetInteractorStyle()->GetDefaultRenderer();
         int visibleActors = 0;
         auto *actors = renderer->GetActors();

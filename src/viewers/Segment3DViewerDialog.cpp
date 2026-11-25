@@ -103,6 +103,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #ifdef USE_OMP
 #include <omp.h>
@@ -3678,10 +3679,14 @@ void Segment3DViewerDialog::startInitialRender() {
 }
 
 void Segment3DViewerDialog::clearInitialRenderProgress() {
-    m_initialRenderProgress->hide();
-    m_initialRenderProgress->deleteLater();
-    m_initialRenderProgress = nullptr;
+    // hide() can deliver frameSwapped again, so clear the members first.
+    auto *progress = std::exchange(m_initialRenderProgress, nullptr);
     m_initialRenderProgressBar = nullptr;
+    if (progress == nullptr) {
+        return;
+    }
+    progress->hide();
+    progress->deleteLater();
 }
 
 void Segment3DViewerDialog::renderNextInitialBatch() {
