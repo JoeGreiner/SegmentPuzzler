@@ -322,7 +322,8 @@ private:
 
     bool roiSelectionActive = false;
     bool paintModeActive = false;
-    bool preferredSidebarWidthChangePending = false;
+    bool sectionHeightsSetByUser = false;
+    bool sidebarLayoutUpdatePending = false;
     int lastEmittedPreferredSidebarWidth = -1;
 
     struct NeighborMergeAttempt {
@@ -402,7 +403,9 @@ private:
     void setPaintModeActive(bool active);
     void setAnnotationToolMode(SliceViewer::ToolMode toolMode);
     void refreshUiState();
-    void schedulePreferredSidebarWidthChanged();
+    void showEvent(QShowEvent *event) override;
+    void fitSectionHeights();
+    void scheduleSidebarLayoutUpdate();
     void updateSelectionLabel(QTreeWidget *tree, QLabel *label);
     void updateLayerSelectionState(QTreeWidget *tree);
     void attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *item);

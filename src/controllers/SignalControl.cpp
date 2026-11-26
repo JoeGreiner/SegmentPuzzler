@@ -925,7 +925,7 @@ void SignalControl::refreshUiState() {
     const bool canTransferNonOverlapping = enabled && hasWorkingSegments() && hasSelectedSegmentation();
     transferNonOverlappingAction->setEnabled(canTransferNonOverlapping);
     transferNonOverlappingWithVolumeAction->setEnabled(canTransferNonOverlapping);
-    schedulePreferredSidebarWidthChanged();
+    scheduleSidebarLayoutUpdate();
 }
 
 int SignalControl::preferredSidebarWidthHint() const {
@@ -936,19 +936,46 @@ int SignalControl::preferredSidebarWidthHint() const {
     return preferredWidth;
 }
 
-void SignalControl::schedulePreferredSidebarWidthChanged() {
-    if (preferredSidebarWidthChangePending) {
+void SignalControl::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    scheduleSidebarLayoutUpdate();
+}
+
+void SignalControl::fitSectionHeights() {
+    if (sectionHeightsSetByUser || !isVisible()) {
         return;
     }
 
-    preferredSidebarWidthChangePending = true;
+    auto sizes = sectionSplitter->sizes();
+    for (auto *tree : {signalTreeWidget, probabilityTreeWidget, refinementTreeWidget, segmentationTreeWidget}) {
+        QWidget *section = tree->parentWidget();
+        int preferredHeight = section->minimumSizeHint().height();
+        if (auto *first = tree->topLevelItem(0)) {
+            // Layer cards have uniform height, even before Qt lays out the first row.
+            QWidget *card = tree->itemWidget(first, 0);
+            const int rowHeight = card ? card->sizeHint().height() : tree->visualItemRect(first).height();
+            const int listHeight = tree->topLevelItemCount() * rowHeight + 2 * tree->frameWidth();
+            preferredHeight += std::max(0, listHeight - tree->minimumHeight());
+        }
+        sizes[sectionSplitter->indexOf(section)] = preferredHeight;
+    }
+    sectionSplitter->setSizes(sizes);
+}
+
+void SignalControl::scheduleSidebarLayoutUpdate() {
+    if (sidebarLayoutUpdatePending) {
+        return;
+    }
+
+    sidebarLayoutUpdatePending = true;
     QPointer<SignalControl> guardedThis(this);
     QTimer::singleShot(0, this, [guardedThis]() {
         if (guardedThis == nullptr) {
             return;
         }
 
-        guardedThis->preferredSidebarWidthChangePending = false;
+        guardedThis->sidebarLayoutUpdatePending = false;
+        guardedThis->fitSectionHeights();
         guardedThis->updateGeometry();
         const int preferredWidth = guardedThis->preferredSidebarWidthHint();
         if (debugLayerLayoutEnabled()) {
@@ -1016,11 +1043,11 @@ void SignalControl::attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *
     item->setFirstColumnSpanned(true);
     tree->setItemWidget(item, 0, layerWidget);
     SignalLayerWidget::requestHostTreeLayoutSync(tree);
-    schedulePreferredSidebarWidthChanged();
+    scheduleSidebarLayoutUpdate();
 
     connect(layerWidget, &SignalLayerWidget::sizeHintChanged, this, [this, tree]() {
         SignalLayerWidget::requestHostTreeLayoutSync(tree);
-        schedulePreferredSidebarWidthChanged();
+        scheduleSidebarLayoutUpdate();
     });
 
     connect(layerWidget, &SignalLayerWidget::activated, this, [this, tree, item]() {
@@ -1074,7 +1101,7 @@ void SignalControl::attachLayerWidgetToItem(QTreeWidget *tree, QTreeWidgetItem *
     });
 
     refreshLayerWidget(tree, item);
-    schedulePreferredSidebarWidthChanged();
+    scheduleSidebarLayoutUpdate();
     if (debugLayerLayoutEnabled()) {
         const int viewportWidth = tree->viewport() != nullptr ? tree->viewport()->width() : -1;
         const bool scrollbarVisible = tree->verticalScrollBar() != nullptr && tree->verticalScrollBar()->isVisible();
@@ -2584,6 +2611,10 @@ void SignalControl::registerLayerGroup(
         return;
     }
 
+    connect(tree->model(), &QAbstractItemModel::rowsInserted, this, &SignalControl::scheduleSidebarLayoutUpdate);
+    connect(tree->model(), &QAbstractItemModel::rowsRemoved, this, &SignalControl::scheduleSidebarLayoutUpdate);
+    connect(tree->model(), &QAbstractItemModel::modelReset, this, &SignalControl::scheduleSidebarLayoutUpdate);
+
     LayerGroupVisibility &group = layerGroupVisibility[tree];
     group.button = visibilityButton;
     group.visible = true;
@@ -2708,6 +2739,9 @@ SignalControl::SignalControl(std::shared_ptr<GraphBase> graphBaseIn,
     sectionSplitter->setStretchFactor(2, kOtherSectionVisibleRows);
     sectionSplitter->setStretchFactor(3, kOtherSectionVisibleRows);
 
+    connect(sectionSplitter, &QSplitter::splitterMoved, this, [this]() {
+        sectionHeightsSetByUser = true;
+    });
     connect(taskRunner, &TaskRunner::busyChanged, this, &SignalControl::setGuiBusy);
     connect(taskRunner, &TaskRunner::busyChanged, this, [this](bool busy) {
         if (!busy) {
