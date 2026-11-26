@@ -28,6 +28,8 @@
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
+#include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPointer>
@@ -47,6 +49,7 @@
 #include <QImageReader>
 #include <QTimer>
 #include <clocale>
+#include <climits>
 #include <array>
 #include <algorithm>
 #include <itkImageRegionConstIterator.h>
@@ -547,8 +550,8 @@ QString contrastChipText(itkSignalBase *signal) {
         return QString();
     }
     return QString("%1..%2")
-        .arg(static_cast<int>(std::lround(signal->getNormLower())))
-        .arg(static_cast<int>(std::lround(signal->getNormUpper())));
+        .arg(std::round(signal->getNormLower()), 0, 'f', 0)
+        .arg(std::round(signal->getNormUpper()), 0, 'f', 0);
 }
 
 QString opacityChipText(itkSignalBase *signal) {
@@ -575,6 +578,24 @@ int alphaToPercent(unsigned int alpha) {
 unsigned char percentToAlpha(int percent) {
     const int clampedPercent = std::clamp(percent, 0, 100);
     return static_cast<unsigned char>(std::lround((static_cast<double>(clampedPercent) / 100.0) * 255.0));
+}
+
+void applyInitialDisplay(itkSignalBase *signal, const LayerDisplayOptions &display) {
+    if (display.visible) signal->setIsActive(*display.visible);
+    if (display.opacityPercent) signal->setAlpha(percentToAlpha(*display.opacityPercent));
+    if (display.view) signal->setLabelRenderMode(*display.view);
+    if (display.outlineWidth) signal->setLabelBoundaryWidth(*display.outlineWidth);
+}
+
+void configureContinuousLayer(itkSignalBase *signal, const LayerDisplayOptions &display) {
+    using namespace segment_puzzler::image_normalization;
+    configureContinuousDisplay(signal);
+    if (display.range)
+        signal->setNorm(display.range->lower, display.range->upper);
+    else
+        applyToSignal(signal);
+    if (display.blend) signal->setBlendMode(*display.blend);
+    if (display.color) signal->setMainColor(*display.color);
 }
 
 QString layerToolTipText(itkSignalBase *signal) {
@@ -1213,27 +1234,24 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
 
     auto *lowerSlider = new QSlider(Qt::Horizontal, container);
     auto *upperSlider = new QSlider(Qt::Horizontal, container);
-    auto *lowerSpinBox = new QSpinBox(container);
-    auto *upperSpinBox = new QSpinBox(container);
-    lowerSpinBox->setKeyboardTracking(false);
-    upperSpinBox->setKeyboardTracking(false);
+    auto *lowerEdit = new QLineEdit(container);
+    auto *upperEdit = new QLineEdit(container);
+    lowerEdit->setObjectName("contrastLower");
+    upperEdit->setObjectName("contrastUpper");
     auto *autoButton = new QPushButton("Auto", container);
     auto *resetButton = new QPushButton("Reset", container);
 
-    const int minimumBound = clampPopupValue(signal->getMinimumValueAsDouble(),
-                                             std::numeric_limits<int>::min(),
-                                             std::numeric_limits<int>::max());
-    const int maximumBound = clampPopupValue(signal->getMaximumValueAsDouble(),
-                                             std::numeric_limits<int>::min(),
-                                             std::numeric_limits<int>::max());
-
-    const int popupMinimum = std::min(minimumBound, maximumBound);
-    const int popupMaximum = std::max(minimumBound, maximumBound);
-
-    lowerSlider->setRange(popupMinimum, popupMaximum);
-    upperSlider->setRange(popupMinimum, popupMaximum);
-    lowerSpinBox->setRange(popupMinimum, popupMaximum);
-    upperSpinBox->setRange(popupMinimum, popupMaximum);
+    const double minimum = signal->getMinimumValueAsDouble();
+    const double maximum = signal->getMaximumValueAsDouble();
+    for (auto *slider : {lowerSlider, upperSlider}) {
+        if (std::isfinite(minimum) && std::isfinite(maximum) && minimum < maximum) {
+            slider->setRange(clampPopupValue(minimum, INT_MIN, INT_MAX),
+                             clampPopupValue(maximum, INT_MIN, INT_MAX));
+        } else {
+            slider->setRange(0, 0);
+            slider->setEnabled(false);
+        }
+    }
 
     auto *lowerRow = new QWidget(container);
     auto *lowerLayout = new QHBoxLayout(lowerRow);
@@ -1241,7 +1259,7 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     lowerLayout->setSpacing(6);
     lowerLayout->addWidget(new QLabel("Min", lowerRow));
     lowerLayout->addWidget(lowerSlider, 1);
-    lowerLayout->addWidget(lowerSpinBox);
+    lowerLayout->addWidget(lowerEdit);
 
     auto *upperRow = new QWidget(container);
     auto *upperLayout = new QHBoxLayout(upperRow);
@@ -1249,7 +1267,7 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     upperLayout->setSpacing(6);
     upperLayout->addWidget(new QLabel("Max", upperRow));
     upperLayout->addWidget(upperSlider, 1);
-    upperLayout->addWidget(upperSpinBox);
+    upperLayout->addWidget(upperEdit);
 
     layout->addWidget(lowerRow);
     layout->addWidget(upperRow);
@@ -1263,9 +1281,6 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     buttonLayout->addWidget(resetButton);
     layout->addWidget(buttonRow);
 
-    const int initialLower = clampPopupValue(signal->getNormLower(), popupMinimum, popupMaximum);
-    const int initialUpper = clampPopupValue(signal->getNormUpper(), popupMinimum, popupMaximum);
-
     auto *update = new SliderUpdateTimer(menu, [this, tree, item, signal] {
         refreshLayerWidget(tree, item);
         orthoViewer->refreshViewers(signal);
@@ -1274,67 +1289,54 @@ void SignalControl::openNormPopup(QTreeWidgetItem *item, QWidget *anchor) {
     connect(upperSlider, &QSlider::sliderReleased, update, [update] { update->flush(); });
     connect(menu, &QMenu::aboutToHide, update, [update] { update->flush(); });
 
-    auto applyNorm = [signal, update, lowerSlider, upperSlider, lowerSpinBox, upperSpinBox](int lower, int upper) {
-        lower = std::min(lower, upper);
-        upper = std::max(lower, upper);
-
-        const QSignalBlocker lowerSliderBlocker(lowerSlider);
-        const QSignalBlocker upperSliderBlocker(upperSlider);
-        const QSignalBlocker lowerSpinBlocker(lowerSpinBox);
-        const QSignalBlocker upperSpinBlocker(upperSpinBox);
-
-        lowerSlider->setValue(lower);
-        upperSlider->setValue(upper);
-        lowerSpinBox->setValue(lower);
-        upperSpinBox->setValue(upper);
-
+    auto numberLocale = locale();
+    numberLocale.setNumberOptions(numberLocale.numberOptions() | QLocale::OmitGroupSeparator | QLocale::RejectGroupSeparator);
+    auto syncControls = [lowerSlider, upperSlider, lowerEdit, upperEdit, numberLocale](double lower, double upper) {
+        const QSignalBlocker lowerBlocker(lowerSlider);
+        const QSignalBlocker upperBlocker(upperSlider);
+        lowerSlider->setValue(clampPopupValue(lower, lowerSlider->minimum(), lowerSlider->maximum()));
+        upperSlider->setValue(clampPopupValue(upper, upperSlider->minimum(), upperSlider->maximum()));
+        lowerEdit->setText(numberLocale.toString(lower, 'g', QLocale::FloatingPointShortest));
+        upperEdit->setText(numberLocale.toString(upper, 'g', QLocale::FloatingPointShortest));
+    };
+    syncControls(signal->getNormLower(), signal->getNormUpper());
+    auto applyNorm = [=](double lower, double upper) {
+        if (!std::isfinite(lower) || !std::isfinite(upper) || lower > upper) return;
         signal->setNorm(lower, upper);
+        syncControls(lower, upper);
         update->request(lowerSlider->isSliderDown() || upperSlider->isSliderDown());
     };
-
-    {
-        const int clampedLower = std::min(initialLower, initialUpper);
-        const int clampedUpper = std::max(initialLower, initialUpper);
-        const QSignalBlocker lowerSliderBlocker(lowerSlider);
-        const QSignalBlocker upperSliderBlocker(upperSlider);
-        const QSignalBlocker lowerSpinBlocker(lowerSpinBox);
-        const QSignalBlocker upperSpinBlocker(upperSpinBox);
-        lowerSlider->setValue(clampedLower);
-        upperSlider->setValue(clampedUpper);
-        lowerSpinBox->setValue(clampedLower);
-        upperSpinBox->setValue(clampedUpper);
-    }
-
-    connect(lowerSlider, &QSlider::valueChanged, this, [applyNorm, upperSpinBox](int value) {
-        applyNorm(std::min(value, upperSpinBox->value()), upperSpinBox->value());
+    auto setLower = [signal, applyNorm](double value) {
+        const double upper = signal->getNormUpper();
+        if (std::isfinite(upper)) applyNorm(std::min(value, upper), upper);
+        else applyNorm(value, value);
+    };
+    auto setUpper = [signal, applyNorm](double value) {
+        const double lower = signal->getNormLower();
+        if (std::isfinite(lower)) applyNorm(lower, std::max(lower, value));
+        else applyNorm(value, value);
+    };
+    connect(lowerSlider, &QSlider::valueChanged, this, setLower);
+    connect(upperSlider, &QSlider::valueChanged, this, setUpper);
+    auto bindEdit = [&](QLineEdit *edit, auto setBound) {
+        connect(edit, &QLineEdit::editingFinished, this, [=]() {
+            bool ok = false;
+            const double value = numberLocale.toDouble(edit->text(), &ok);
+            if (ok && std::isfinite(value)) setBound(value);
+            else syncControls(signal->getNormLower(), signal->getNormUpper());
+        });
+    };
+    bindEdit(lowerEdit, setLower);
+    bindEdit(upperEdit, setUpper);
+    connect(autoButton, &QPushButton::clicked, this, [=]() {
+        double lower, upper;
+        if (segment_puzzler::image_normalization::computeRange(
+                signal, segment_puzzler::image_normalization::loadSettings(), lower, upper))
+            applyNorm(lower, upper);
+        else
+            applyNorm(minimum, maximum);
     });
-    connect(upperSlider, &QSlider::valueChanged, this, [applyNorm, lowerSpinBox](int value) {
-        applyNorm(lowerSpinBox->value(), std::max(value, lowerSpinBox->value()));
-    });
-    connect(lowerSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [applyNorm, upperSpinBox](int value) {
-        applyNorm(std::min(value, upperSpinBox->value()), upperSpinBox->value());
-    });
-    connect(upperSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [applyNorm, lowerSpinBox](int value) {
-        applyNorm(lowerSpinBox->value(), std::max(value, lowerSpinBox->value()));
-    });
-    connect(autoButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
-        double autoLower = static_cast<double>(popupMinimum);
-        double autoUpper = static_cast<double>(popupMaximum);
-        if (!segment_puzzler::image_normalization::computeRange(
-                signal,
-                segment_puzzler::image_normalization::loadSettings(),
-                autoLower,
-                autoUpper)) {
-            autoLower = static_cast<double>(popupMinimum);
-            autoUpper = static_cast<double>(popupMaximum);
-        }
-
-        applyNorm(clampPopupValue(autoLower, popupMinimum, popupMaximum),
-                  clampPopupValue(autoUpper, popupMinimum, popupMaximum));
-    });
-    connect(resetButton, &QPushButton::clicked, this, [applyNorm, signal, popupMinimum, popupMaximum]() {
-        applyNorm(popupMinimum, popupMaximum);
-    });
+    connect(resetButton, &QPushButton::clicked, this, [=]() { applyNorm(minimum, maximum); });
 
     action->setDefaultWidget(container);
     menu->addAction(action);
@@ -1751,17 +1753,15 @@ void SignalControl::invokeLoadCallbackOnce(
     invokeLoadCallbackLater(std::move(callback), std::move(result));
 }
 
-SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
-                                                            bool forceSegmentDataTypeUInt,
-                                                            itk::ImageIOBase::IOComponentType forcedDataType,
-                                                            const volume_io::ImageLoadOptions &options) {
+SignalControl::LoadedImageData SignalControl::loadImageData(
+    QString fileName, const volume_io::ImageLoadOptions &options) {
     LoadedImageData loadedImage;
     if (fileName.isEmpty()) {
         return loadedImage;
     }
 
+    const auto imageInfo = getImageFileInfo(fileName);
     SP_LOG_INFO("io", QStringLiteral("Reading image %1").arg(fileName));
-    const ImageFileInfo imageInfo = getImageFileInfo(fileName);
     SP_LOG_INFO(
         "io",
         QStringLiteral("Detected image dimension=%1 pixelType=%2 components=%3 componentType=%4 for %5")
@@ -1805,10 +1805,6 @@ SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
                 .toStdString());
     }
 
-    if (forceSegmentDataTypeUInt && !isScalar) {
-        throw std::logic_error("Forced component conversion is only supported for scalar images.");
-    }
-
     const QString fileSuffix = QFileInfo(fileName).suffix().toLower();
     const bool isMultipageTiff =
         imageInfo.dimension == 3 &&
@@ -1816,7 +1812,7 @@ SignalControl::LoadedImageData SignalControl::loadImageData(QString fileName,
     const bool firstTiffPageOnly =
         isRgb && isMultipageTiff && hasConfirmedDifferentlySizedTiffPages(fileName);
 
-    loadedImage.dataType = forceSegmentDataTypeUInt ? forcedDataType : imageInfo.componentType;
+    loadedImage.dataType = imageInfo.componentType;
 
     auto loadTypedImage = [&](auto componentValue) {
         using ComponentType = decltype(componentValue);
@@ -1971,19 +1967,22 @@ bool SignalControl::insertLoadedImage(const LoadedImageLayer &loadedLayer,
 void SignalControl::registerImageSignal(
     size_t signalIndexGlobal,
     const QString &name,
-    std::optional<QColor> color) {
+    std::optional<QColor> color,
+    LayerDisplayOptions display) {
     const bool centerFirstStandaloneLayer = !hasWorkingSegments() && allSignalList.size() == 1;
     itkSignalBase *signal = allSignalList[signalIndexGlobal];
     signal->setLayerRole(itkSignalBase::LayerRole::SourceImage);
-    segment_puzzler::image_normalization::configureLoadedImageDisplay(signal);
-    if (!color) {
+    configureContinuousLayer(signal, display);
+    if (color) {
+        signal->setMainColor(*color);
+    } else if (!display.color) {
         const auto &colors = defaultAdditiveImageColors();
-        color = colors[nextDefaultImageColorIndex % colors.size()];
+        signal->setMainColor(colors[nextDefaultImageColorIndex % colors.size()]);
         ++nextDefaultImageColorIndex;
     }
-    signal->setMainColor(*color);
     signal->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     signal->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+    applyInitialDisplay(signal, display);
     attachLayerWidgetToLastItem(signalTreeWidget);
     orthoViewer->addSignal(signal);
     if (centerFirstStandaloneLayer) {
@@ -1992,7 +1991,8 @@ void SignalControl::registerImageSignal(
     refreshUiState();
 }
 
-void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const QString &name) {
+void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const QString &name,
+                                               LayerDisplayOptions display) {
     auto *signal = allSignalList[signalIndexGlobal];
     if (!signal->volumeContext) {
         signal->volumeContext = std::make_shared<volume_io::VolumeContext>();
@@ -2007,6 +2007,7 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
     allSignalList[signalIndexGlobal]->setValueColorToTransparent(signal->volumeContext->background.value_or(0));
     allSignalList[signalIndexGlobal]->setupTreeWidget(segmentationTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(true);
+    applyInitialDisplay(allSignalList[signalIndexGlobal], display);
     attachLayerWidgetToLastItem(segmentationTreeWidget);
     QTreeWidgetItem *newItem = segmentationTreeWidget->topLevelItem(segmentationTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(segmentationTreeWidget, newItem, lastAutoSelectedSegmentationItem);
@@ -2016,11 +2017,12 @@ void SignalControl::registerSegmentationSignal(size_t signalIndexGlobal, const Q
     refreshUiState();
 }
 
-void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QString &name) {
-    segment_puzzler::image_normalization::configureLoadedImageDisplay(
-        allSignalList[signalIndexGlobal]);
+void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QString &name,
+                                           LayerDisplayOptions display) {
+    configureContinuousLayer(allSignalList[signalIndexGlobal], display);
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(probabilityTreeWidget, signalIndexGlobal);
+    applyInitialDisplay(allSignalList[signalIndexGlobal], display);
     attachLayerWidgetToLastItem(probabilityTreeWidget);
     QTreeWidgetItem *newItem = probabilityTreeWidget->topLevelItem(probabilityTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(probabilityTreeWidget, newItem, lastAutoSelectedBoundaryItem);
@@ -2029,11 +2031,13 @@ void SignalControl::registerBoundarySignal(size_t signalIndexGlobal, const QStri
     refreshUiState();
 }
 
-void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QString &name) {
+void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QString &name,
+                                             LayerDisplayOptions display) {
     allSignalList[signalIndexGlobal]->setCategoricalColorMode();
     allSignalList[signalIndexGlobal]->setName(signal_name_utils::makeUniqueSignalName(allSignalList, name));
     allSignalList[signalIndexGlobal]->setupTreeWidget(refinementTreeWidget, signalIndexGlobal);
     allSignalList[signalIndexGlobal]->setIsActive(false);
+    applyInitialDisplay(allSignalList[signalIndexGlobal], display);
     attachLayerWidgetToLastItem(refinementTreeWidget);
     QTreeWidgetItem *newItem = refinementTreeWidget->topLevelItem(refinementTreeWidget->topLevelItemCount() - 1);
     selectLoadedItemIfAppropriate(refinementTreeWidget, newItem, lastAutoSelectedRefinementItem);
@@ -2042,13 +2046,15 @@ void SignalControl::registerRefinementSignal(size_t signalIndexGlobal, const QSt
     refreshUiState();
 }
 
-void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume) {
+void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume,
+                                                LayerDisplayOptions display, const QString &displayedName) {
     segmentsGraph = allSignalList[signalIndexGlobal];
     auto *typedSegmentsSignal = dynamic_cast<itkSignal<GraphSegmentType> *>(segmentsGraph);
     allSignalList[signalIndexGlobal]->setCategoricalColorMode();
     allSignalList[signalIndexGlobal]->setName(
-        signal_name_utils::makeUniqueSignalName(allSignalList, QStringLiteral("Supervoxels")));
+        signal_name_utils::makeUniqueSignalName(allSignalList, displayedName.isEmpty() ? QStringLiteral("Supervoxels") : displayedName));
     allSignalList[signalIndexGlobal]->setupTreeWidget(signalTreeWidget, signalIndexGlobal);
+    applyInitialDisplay(segmentsGraph, display);
     attachLayerWidgetToLastItem(signalTreeWidget);
 
     graphBase->pWorkingSegments = typedSegmentsSignal;
@@ -2076,12 +2082,25 @@ void SignalControl::registerSegmentsGraphSignal(size_t signalIndexGlobal, bool c
     refreshUiState();
 }
 
-void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options) {
+void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options,
+                                  LayerDisplayOptions display) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
 
+    if (display.color) {
+        try {
+            const auto info = getImageFileInfo(fileName);
+            if (info.pixelType == itk::IOPixelEnum::RGB && info.componentCount == 3) {
+                SP_LOG_WARNING("io", QStringLiteral("%1: --color requires a scalar image; skipping RGB file").arg(fileName));
+                invokeLoadCallbackLater(std::move(then), std::nullopt);
+                return;
+            }
+        } catch (const std::exception &) {
+            // The normal load path reports unreadable files.
+        }
+    }
     if (!prepareLoadOptions(fileName, options)) { invokeLoadCallbackLater(std::move(then), std::nullopt); return; }
     const auto spacingDecision = askForLoadedFileSpacing(fileName);
     if (!spacingDecision.shouldLoad) {
@@ -2093,7 +2112,7 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
     taskRunner->runWithLabel(
         QStringLiteral("Loading image..."),
         [this, fileName, options, spacingOverride = spacingDecision.spacingOverride]() {
-            auto loadedImage = loadImageData(fileName, false, kSegmentLoadIOType, options);
+            auto loadedImage = loadImageData(fileName, options);
             for (auto &layer : loadedImage.layers) {
                 applyVoxelSpacingOverride(
                     dynamic_cast<itk::ImageBase<3> *>(layer.image.GetPointer()),
@@ -2101,7 +2120,7 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
             }
             return loadedImage;
         },
-        [this, fileName, displayedName, completion](LoadedImageData loadedImage) {
+        [this, fileName, displayedName, display, completion](LoadedImageData loadedImage) {
             if (loadedImage.layers.empty()) {
                 invokeLoadCallbackOnce(completion, std::nullopt);
                 return;
@@ -2138,7 +2157,7 @@ void SignalControl::addImageAsync(QString fileName, QString displayedName, LoadC
                 registerImageSignal(
                     signalIndexGlobal,
                     baseName + layer.suffix,
-                    layer.color);
+                    layer.color, display);
                 if (!firstSignalIndex) {
                     firstSignalIndex = signalIndexGlobal;
                 }
@@ -2161,7 +2180,8 @@ dataType::SegmentsStorage::Pointer SignalControl::duplicateSegmentationAndBuildW
     return graphBase->pWorkingSegmentsImage;
 }
 
-void SignalControl::loadSegmentationVolume(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options) {
+void SignalControl::loadSegmentationVolume(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options,
+                                           LayerDisplayOptions display) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
@@ -2178,13 +2198,14 @@ void SignalControl::loadSegmentationVolume(QString fileName, QString displayedNa
         createWorkingSegments = reply == QMessageBox::Yes;
     }
 
-    loadSegmentationVolumeAsync(fileName, displayedName, createWorkingSegments, std::move(then), options);
+    loadSegmentationVolumeAsync(fileName, displayedName, createWorkingSegments, std::move(then), options, display);
 }
 
 void SignalControl::loadSegmentationVolumeAsync(QString fileName,
                                                 QString displayedName,
                                                 bool createWorkingSegments,
-                                                LoadCallback then, volume_io::ImageLoadOptions options) {
+                                                LoadCallback then, volume_io::ImageLoadOptions options,
+                                                LayerDisplayOptions display) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
@@ -2227,7 +2248,7 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
             result.segmentationImage = loaded.image;
             return result;
         },
-        [this, fileName, displayedName, hadWorkingSegments, completion](SegmentationLoadResultData result) {
+        [this, fileName, displayedName, hadWorkingSegments, display, completion](SegmentationLoadResultData result) {
             if (result.dimensionMismatch && result.segmentationImage != nullptr) {
                 const auto dimensions = imageDimensions(result.segmentationImage);
                 reportDimensionMismatch(dimensions.x, dimensions.y, dimensions.z, hadWorkingSegments);
@@ -2250,15 +2271,22 @@ void SignalControl::loadSegmentationVolumeAsync(QString fileName,
                         registerSegmentsGraphSignal(segmentIndexGlobal, false);
                     }
                 }
-                registerSegmentationSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+                registerSegmentationSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName), display);
             }
             invokeLoadCallbackOnce(completion, ok ? LoadResult{signalIndexGlobal} : std::nullopt);
         },
         [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
-void SignalControl::loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options) {
+void SignalControl::loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then, volume_io::ImageLoadOptions options,
+                                        LayerDisplayOptions display) {
     if (fileName.isEmpty()) {
+        invokeLoadCallbackLater(std::move(then), std::nullopt);
+        return;
+    }
+
+    if (!hasWorkingSegments()) {
+        showInfoMessage("Please load supervoxels first.");
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
     }
@@ -2280,19 +2308,20 @@ void SignalControl::loadRefinementAsync(QString fileName, QString displayedName,
             applyVoxelSpacingOverride(loaded.image->imageInformation(), spacingOverride);
             return loaded;
         },
-        [this, fileName, displayedName, completion](volume_io::LoadedVolume<dataType::SegmentsStorage> loaded) {
+        [this, fileName, displayedName, display, completion](volume_io::LoadedVolume<dataType::SegmentsStorage> loaded) {
             size_t signalIndexGlobal = 0;
             bool ok = insertImageSegmenttype(loaded.image, signalIndexGlobal, true, loaded.context);
             if (ok) {
                 rememberLoadedSourceFile(fileName);
-                registerRefinementSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+                registerRefinementSignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName), display);
             }
             invokeLoadCallbackOnce(completion, ok ? LoadResult{signalIndexGlobal} : std::nullopt);
         },
         [this, completion]() { invokeLoadCallbackOnce(completion, std::nullopt); });
 }
 
-void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, volume_io::ImageLoadOptions options) {
+void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, volume_io::ImageLoadOptions options,
+                                          LayerDisplayOptions display, const QString &displayedName) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
@@ -2338,7 +2367,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, v
             result.image = graphBase->pWorkingSegmentsImage;
             return result;
         },
-        [this, fileName, completion](SegmentsGraphLoadResult result) {
+        [this, fileName, displayedName, display, completion](SegmentsGraphLoadResult result) {
             if (result.dimensionMismatch && result.image != nullptr) {
                 const auto dimensions = imageDimensions(result.image);
                 reportDimensionMismatch(dimensions.x, dimensions.y, dimensions.z, false);
@@ -2352,7 +2381,7 @@ void SignalControl::addSegmentsGraphAsync(QString fileName, LoadCallback then, v
                 rememberLoadedSourceFile(fileName);
                 allSignalList[signalIndexGlobal]->sourceFilePath =
                     graphBase->lastLoadedSourcePath;
-                registerSegmentsGraphSignal(signalIndexGlobal);
+                registerSegmentsGraphSignal(signalIndexGlobal, true, display, displayedName);
             } else {
                 QMessageBox::critical(this, tr("Error"), tr("Failed to load the supervoxels."));
             }
@@ -2365,7 +2394,8 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                                                  QString displayedName,
                                                  BoundaryLoadMode loadMode,
                                                  FloatBoundaryConversionMode floatConversionMode,
-                                                 LoadCallback then, volume_io::ImageLoadOptions options) {
+                                                 LoadCallback then, volume_io::ImageLoadOptions options,
+                                                 LayerDisplayOptions display) {
     if (fileName.isEmpty()) {
         invokeLoadCallbackLater(std::move(then), std::nullopt);
         return;
@@ -2428,7 +2458,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
             }
             return result;
         },
-        [this, fileName, displayedName, createEmptySegments, completion](BoundaryLoadResult result) {
+        [this, fileName, displayedName, createEmptySegments, display, completion](BoundaryLoadResult result) {
             size_t signalIndexGlobal = 0;
             bool ok = insertTypedImage<dataType::BoundaryVoxelType>(
                 result.boundaryImage,
@@ -2443,7 +2473,7 @@ void SignalControl::loadMembraneProbabilityAsync(QString fileName,
                         registerSegmentsGraphSignal(segmentIndexGlobal);
                     }
                 }
-                registerBoundarySignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName));
+                registerBoundarySignal(signalIndexGlobal, resolvedDisplayName(fileName, displayedName), display);
             }
             invokeLoadCallbackOnce(completion, ok ? LoadResult{signalIndexGlobal} : std::nullopt);
         },
@@ -4212,10 +4242,6 @@ void SignalControl::loadRefinement(QString fileName) {
 }
 
 void SignalControl::loadRefinement(QString fileName, QString displayedName, volume_io::ImageLoadOptions options) {
-    if (!hasWorkingSegments()) {
-        showInfoMessage("Please load supervoxels first.");
-        return;
-    }
     loadRefinementAsync(fileName, displayedName, {}, options);
 }
 

@@ -18,6 +18,7 @@
 #include <itkImage.h>
 #include <itkDataObject.h>
 #include <src/viewers/itkSignal.h>
+#include "src/viewers/LayerDisplayOptions.h"
 #include <QAction>
 #include <QWidget>
 #include <QSplitter>
@@ -117,15 +118,20 @@ public:
     QTreeWidget *segmentationTreeWidget;
     QTreeWidget *refinementTreeWidget;
 
-    void addImageAsync(QString fileName, QString displayedName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
-    void loadSegmentationVolume(QString fileName, QString displayedName="", LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
+    void addImageAsync(QString fileName, QString displayedName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {},
+                       LayerDisplayOptions display = {});
+    void loadSegmentationVolume(QString fileName, QString displayedName="", LoadCallback then = {}, volume_io::ImageLoadOptions options = {},
+                                LayerDisplayOptions display = {});
     void loadMembraneProbabilityAsync(QString fileName,
                                       QString displayedName,
                                       BoundaryLoadMode loadMode = BoundaryLoadMode::BoundaryOnly,
                                       FloatBoundaryConversionMode floatConversionMode = FloatBoundaryConversionMode::CastValues,
-                                      LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
-    void addSegmentsGraphAsync(QString fileName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
-    void loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {});
+                                      LoadCallback then = {}, volume_io::ImageLoadOptions options = {},
+                                      LayerDisplayOptions display = {});
+    void addSegmentsGraphAsync(QString fileName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {},
+                               LayerDisplayOptions display = {}, const QString &displayedName = {});
+    void loadRefinementAsync(QString fileName, QString displayedName, LoadCallback then = {}, volume_io::ImageLoadOptions options = {},
+                             LayerDisplayOptions display = {});
     void importGeneratedSegments(GraphSegmentImageType::Pointer pImage,
                                  const QString &name = QStringLiteral("Supervoxels"), std::shared_ptr<volume_io::VolumeContext> context = {});
 
@@ -465,10 +471,7 @@ private:
                                  bool forceShapeOfSegments) const;
     LoadedFileSpacingDecision askForLoadedFileSpacing(const QString &fileName);
 
-    LoadedImageData loadImageData(QString fileName,
-                                  bool forceSegmentDataTypeUInt = false,
-                                  itk::ImageIOBase::IOComponentType forcedDataType = kSegmentLoadIOType,
-                                  const volume_io::ImageLoadOptions &options = {});
+    LoadedImageData loadImageData(QString fileName, const volume_io::ImageLoadOptions &options);
     bool insertLoadedImage(const LoadedImageLayer &loadedLayer,
                            itk::ImageIOBase::IOComponentType dataType,
                            size_t &signalIndexGlobalOut,
@@ -476,16 +479,22 @@ private:
     void loadSegmentationVolumeAsync(QString fileName,
                                      QString displayedName,
                                      bool createWorkingSegments,
-                                     LoadCallback then, volume_io::ImageLoadOptions options);
+                                     LoadCallback then, volume_io::ImageLoadOptions options,
+                                     LayerDisplayOptions display = {});
 
     void registerImageSignal(
         size_t signalIndexGlobal,
         const QString &name,
-        std::optional<QColor> color = std::nullopt);
-    void registerSegmentationSignal(size_t signalIndexGlobal, const QString &name);
-    void registerBoundarySignal(size_t signalIndexGlobal, const QString &name);
-    void registerRefinementSignal(size_t signalIndexGlobal, const QString &name);
-    void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true);
+        std::optional<QColor> color = std::nullopt,
+        LayerDisplayOptions display = {});
+    void registerSegmentationSignal(size_t signalIndexGlobal, const QString &name,
+                                    LayerDisplayOptions display = {});
+    void registerBoundarySignal(size_t signalIndexGlobal, const QString &name,
+                                LayerDisplayOptions display = {});
+    void registerRefinementSignal(size_t signalIndexGlobal, const QString &name,
+                                  LayerDisplayOptions display = {});
+    void registerSegmentsGraphSignal(size_t signalIndexGlobal, bool createSegmentationVolume = true,
+                                     LayerDisplayOptions display = {}, const QString &displayedName = {});
     void prepareWorkingSegmentsGraph(const GraphSegmentImageType::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background = {});
     void prepareWorkingSegmentsGraph(const dataType::SegmentsStorage::Pointer &workingSegmentsImage, std::optional<GraphSegmentType> background = {});
 

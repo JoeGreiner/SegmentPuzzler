@@ -441,6 +441,13 @@ int testContinuousRendering(typename itk::Image<Pixel, 3>::SizeType size = {{257
             }
         }
     }
+    // Integer voxel values in this fixture all lie at the midpoint to double precision.
+    signal.setNorm(-1e308, 1e308);
+    signal.setBlendMode(itkSignalBase::BlendMode::Additive);
+    signal.setMainColor(QColor(Qt::white));
+    std::vector<quint32> extremeRangeBuffer;
+    if (qRed(signal.calculateSliceQImage(0, 0, &extremeRangeBuffer).pixel(0, 0)) != 127)
+        return fail("extreme finite intensity bounds lost their midpoint");
     // Changing mode must bypass the intensity table, including signed labels.
     signal.setCategoricalColorMode();
     for (unsigned int axis = 0; axis < 3; ++axis) {

@@ -16,13 +16,13 @@
 #include "src/mainWindow.h"
 #include <QMetaType>
 #include <QtGlobal>
-#include <sys/stat.h>
+#include <QFileInfo>
+#include "src/utils/StartupVolumes.h"
 #include <cstdlib>
 #include <clocale>
-#include <functional>
 #include <memory>
 #include <optional>
-#include <utility>
+#include <stdexcept>
 #include <vector>
 
 #include <vtkSMPTools.h>
@@ -32,62 +32,38 @@
 #include "src/utils/AppLogger.h"
 #include "SegmentPuzzlerBuildInfo.h"
 
-bool return_string_if_valid_option(int argc, char *argv[], int requested_index){
-    if (requested_index >= argc){
-        return false;
+void loadStartupVolumes(SignalControl *control,
+                        std::shared_ptr<const std::vector<StartupVolume>> volumes,
+                        std::size_t index = 0) {
+    while (index < volumes->size() && !QFileInfo::exists((*volumes)[index].path)) {
+        SP_LOG_WARNING("app", QStringLiteral("Cannot access startup volume %1, skipping").arg((*volumes)[index].path));
+        ++index;
     }
-    std::string parameterToParse = std::string(argv[requested_index]);
-    std::string firstTwoCharacters = parameterToParse.substr(0, 2);
-    return firstTwoCharacters != "--";
-}
-
-bool checkIfPathExists(const QString &s)
-{
-    struct stat buffer{};
-    return (stat (s.toStdString().c_str(), &buffer) == 0);
-}
-
-struct StartupVolume {
-    QString path;
-    QString name;
-};
-
-using StartupVolumeLoader =
-    std::function<void(const StartupVolume &, SignalControl::LoadCallback)>;
-
-void loadStartupVolumesSequentially(
-    const std::shared_ptr<const std::vector<StartupVolume>> &volumes,
-    std::size_t index,
-    StartupVolumeLoader load,
-    std::function<void()> then)
-{
-    if (index >= volumes->size()) {
-        if (then) {
-            then();
-        }
-        return;
+    if (index == volumes->size()) return;
+    const auto &volume = (*volumes)[index];
+    auto next = [control, volumes, index](SignalControl::LoadResult result) {
+        if (!result)
+            SP_LOG_WARNING("app", QStringLiteral("Could not load startup volume %1; continuing").arg((*volumes)[index].path));
+        loadStartupVolumes(control, volumes, index + 1);
+    };
+    switch (volume.kind) {
+    case StartupVolumeKind::Supervoxels:
+        control->addSegmentsGraphAsync(volume.path, next, {}, volume.display, volume.name);
+        break;
+    case StartupVolumeKind::Image:
+        control->addImageAsync(volume.path, volume.name, next, {}, volume.display);
+        break;
+    case StartupVolumeKind::Segmentation:
+        control->loadSegmentationVolume(volume.path, volume.name, next, {}, volume.display);
+        break;
+    case StartupVolumeKind::Boundary:
+        control->loadMembraneProbabilityAsync(volume.path, volume.name, SignalControl::BoundaryLoadMode::BoundaryOnly,
+            SignalControl::FloatBoundaryConversionMode::CastValues, next, {}, volume.display);
+        break;
+    case StartupVolumeKind::Refinement:
+        control->loadRefinementAsync(volume.path, volume.name, next, {}, volume.display);
+        break;
     }
-
-    const StartupVolume &volume = volumes->at(index);
-    const QString path = volume.path;
-    StartupVolumeLoader nextLoader = load;
-    std::function<void()> remainingStages = std::move(then);
-    load(
-        volume,
-        [volumes,
-         index,
-         load = std::move(nextLoader),
-         then = std::move(remainingStages),
-         path](SignalControl::LoadResult result) mutable {
-            if (!result) {
-                SP_LOG_WARNING(
-                    "app",
-                    QStringLiteral("Could not load startup volume %1; continuing")
-                        .arg(path));
-            }
-            loadStartupVolumesSequentially(
-                volumes, index + 1, std::move(load), std::move(then));
-        });
 }
 
 std::optional<segment_puzzler::app_logging::LogLevel> parseLogLevelOverride(const QString &rawValue) {
@@ -152,19 +128,35 @@ int main(int argc, char *argv[]) {
     QCoreApplication::setOrganizationDomain("joegreiner.de");
     QStringList arguments;
     for (int i = 0; i < argc; ++i) {
+        if (i > 0 && QByteArray(argv[i]) == "--") {
+            argc = i;
+            argv[i] = nullptr;
+            break;
+        }
         arguments.append(QString::fromLocal8Bit(argv[i]));
     }
+    if (arguments.contains("--help")) {
+        std::cout << "SegmentPuzzler [--segments FILE [NAME]] [--image FILE [NAME]] ...\n"
+                     "              [--segmentation FILE [NAME]] ... [--boundary FILE [NAME]] [--refinement FILE [NAME]]\n"
+                     "After each file and optional name: [--visible | --hidden] [--opacity 0..100]\n"
+                     "Image and boundary layers: [--blend additive|over] [--range MIN MAX]\n"
+                     "Scalar images and boundaries: [--color '#RRGGBB' | --color R G B] (0..255)\n"
+                     "Label layers: [--view outline|filled] [--outline-width 1..10] (image pixels)\n"
+                     "Global options: --log-level trace|debug|info|warning|error, --graphics=auto|system,\n"
+                     "                -platform xcb|wayland, --reset-graphics\n";
+        return 0;
+    }
     const auto graphics = graphicsSettings::readStartupOptions(arguments);
+    if (!graphics.error.isEmpty()) {
+        std::cerr << graphics.error.toStdString() << '\n';
+        return 1;
+    }
     if (graphics.reset) {
         const QString error = graphicsSettings::resetSettings();
         if (!error.isEmpty()) {
             std::cerr << error.toStdString() << '\n';
         }
         return error.isEmpty() ? 0 : 1;
-    }
-    if (!graphics.error.isEmpty()) {
-        std::cerr << graphics.error.toStdString() << '\n';
-        return 1;
     }
     if (!graphics.warning.isEmpty()) {
         std::cerr << graphics.warning.toStdString() << '\n';
@@ -186,23 +178,35 @@ int main(int argc, char *argv[]) {
     }
 
     std::optional<segment_puzzler::app_logging::LogLevel> logLevelOverride;
-    for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) != "--log-level") {
+    // Qt has consumed its own switches. Forward only layer arguments to the volume parser.
+    const auto remaining = graphicsSettings::parseCommandLine(a.arguments()).remainingArguments;
+    QStringList layerArguments;
+    for (int i = 0; i < remaining.size(); ++i) {
+        if (remaining[i] != "--log-level") {
+            layerArguments.append(remaining[i]);
             continue;
         }
-        if (i + 1 >= argc) {
+        if (i + 1 >= remaining.size()) {
             std::cerr << "Missing value for --log-level. Expected one of: trace, debug, info, warning, error.\n";
             return 1;
         }
 
-        const QString rawLogLevel = QString::fromUtf8(argv[i + 1]);
+        const QString &rawLogLevel = remaining[++i];
         logLevelOverride = parseLogLevelOverride(rawLogLevel);
         if (!logLevelOverride.has_value()) {
             std::cerr << "Invalid value for --log-level: " << rawLogLevel.toStdString()
                       << ". Expected one of: trace, debug, info, warning, error.\n";
             return 1;
         }
-        ++i;
+    }
+
+    std::shared_ptr<const std::vector<StartupVolume>> startupVolumes;
+    try {
+        startupVolumes = std::make_shared<const std::vector<StartupVolume>>(
+            parseStartupVolumes(layerArguments));
+    } catch (const std::invalid_argument &error) {
+        std::cerr << error.what() << '\n';
+        return 1;
     }
 
     segment_puzzler::app_logging::AppLogger::initialize();
@@ -280,176 +284,7 @@ int main(int argc, char *argv[]) {
                         .arg(myMainWindow->logicalDpiY()));
     });
 
-    bool loadSegment = false, segmentNameIsGiven = false;
-    bool boundaryNameIsGiven = false;
-    bool refinementNameIsGiven = false;
-
-    QString pathToSegment, segmentName;
-    QString pathToBoundary, boundaryName;
-    QString pathToRefinement, refinementName;
-    std::vector<StartupVolume> startupImages;
-    std::vector<StartupVolume> startupSegmentations;
-
-    if (argc >= 2) {
-        for (int i = 1; i < argc; ++i) {
-            if (std::string(argv[i]) == "--help") {
-                std::cout << "SegmentPuzzler\n"
-                             "\t\t [--segments $path_to_segments [$display_name_segments]]\n";
-                std::cout << "\t\t [--image $path_to_image [$display_name_image]] ...\n";
-                std::cout << "\t\t [--segmentation $path_to_segmentation [$display_name_segmentation]] ...\n";
-                std::cout << "\t\t [--boundary $path_to_boundary [$display_name_boundary]]\n";
-                std::cout << "\t\t [--refinement $path_to_refinement [$display_name_refinement]]\n";
-                std::cout << "\t\t [--log-level trace|debug|info|warning|error]\n";
-                std::cout << "\t\t [--graphics=auto|system] (Linux GPU preference; this launch only)\n";
-                std::cout << "\t\t [-platform xcb|wayland] (Linux window system; this launch only)\n";
-                std::cout << "\t\t [--reset-graphics] (reset graphics preferences and exit without GUI)\n";
-            }
-        }
-    }
-
-    if (argc >= 2) {
-        for (int i = 1; i < argc; ++i) {
-            const std::string argument = std::string(argv[i]);
-            if ((argument == "--segments") && (i + 1 < argc)) {
-                loadSegment = true;
-                pathToSegment = QString(argv[i+1]);
-                SP_LOG_INFO("app", QStringLiteral("Startup segments path=%1").arg(pathToSegment));
-                segmentNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                if (segmentNameIsGiven) {
-                    segmentName = argv[i+2];
-                    SP_LOG_INFO("app", QStringLiteral("Startup segments displayName=%1").arg(segmentName));
-                }
-                if (!checkIfPathExists(pathToSegment)) {
-                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segments path=%1, skipping").arg(pathToSegment));
-                    pathToSegment.clear();
-                }
-            } else if ((argument == "--image") && (i + 1 < argc)) {
-                const QString imagePath = QString(argv[i+1]);
-                QString imageName;
-                SP_LOG_INFO("app", QStringLiteral("Startup image path=%1").arg(imagePath));
-                if (return_string_if_valid_option(argc, argv, i+2)) {
-                    imageName = argv[i+2];
-                    SP_LOG_INFO("app", QStringLiteral("Startup image displayName=%1").arg(imageName));
-                }
-                if (!checkIfPathExists(imagePath)) {
-                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup image path=%1, skipping").arg(imagePath));
-                } else {
-                    startupImages.push_back({imagePath, imageName});
-                }
-            } else if ((argument == "--segmentation") && (i + 1 < argc)) {
-                const QString segmentationPath = QString(argv[i+1]);
-                QString segmentationName;
-                SP_LOG_INFO("app", QStringLiteral("Startup segmentation path=%1").arg(segmentationPath));
-                if (return_string_if_valid_option(argc, argv, i+2)) {
-                    segmentationName = argv[i+2];
-                    SP_LOG_INFO("app", QStringLiteral("Startup segmentation displayName=%1").arg(segmentationName));
-                }
-                if (!checkIfPathExists(segmentationPath)) {
-                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup segmentation path=%1, skipping").arg(segmentationPath));
-                } else {
-                    startupSegmentations.push_back({segmentationPath, segmentationName});
-                }
-            } else if ((argument == "--boundary") && (i + 1 < argc)) {
-                pathToBoundary = QString(argv[i+1]);
-                SP_LOG_INFO("app", QStringLiteral("Startup boundary path=%1").arg(pathToBoundary));
-                boundaryNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                if (boundaryNameIsGiven) {
-                    boundaryName = argv[i+2];
-                    SP_LOG_INFO("app", QStringLiteral("Startup boundary displayName=%1").arg(boundaryName));
-                }
-                if (!checkIfPathExists(pathToBoundary)) {
-                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup boundary path=%1, skipping").arg(pathToBoundary));
-                    pathToBoundary.clear();
-                }
-            } else if ((argument == "--refinement") && (i + 1 < argc)) {
-                pathToRefinement = QString(argv[i+1]);
-                SP_LOG_INFO("app", QStringLiteral("Startup refinement path=%1").arg(pathToRefinement));
-                refinementNameIsGiven = return_string_if_valid_option(argc, argv, i+2);
-                if (refinementNameIsGiven) {
-                    refinementName = argv[i+2];
-                    SP_LOG_INFO("app", QStringLiteral("Startup refinement displayName=%1").arg(refinementName));
-                }
-                if (!checkIfPathExists(pathToRefinement)) {
-                    SP_LOG_WARNING("app", QStringLiteral("Cannot access startup refinement path=%1, skipping").arg(pathToRefinement));
-                    pathToRefinement.clear();
-                }
-            }
-        }
-    }
-
-    auto loadData = [myMainWindow,
-                     startupImages,
-                     startupSegmentations,
-                     pathToBoundary,
-                     boundaryName,
-                     pathToRefinement,
-                     refinementName]() {
-        auto loadRefinement = [myMainWindow, pathToRefinement, refinementName]() {
-            if (!pathToRefinement.isEmpty()) {
-                myMainWindow->mySignalControl->loadRefinement(pathToRefinement, refinementName);
-            }
-        };
-
-        auto loadBoundary = [myMainWindow, pathToBoundary, boundaryName, loadRefinement]() {
-            if (!pathToBoundary.isEmpty()) {
-                myMainWindow->mySignalControl->loadMembraneProbabilityAsync(
-                    pathToBoundary,
-                    boundaryName,
-                    SignalControl::BoundaryLoadMode::BoundaryOnly,
-                    SignalControl::FloatBoundaryConversionMode::CastValues,
-                    [loadRefinement, pathToBoundary](SignalControl::LoadResult boundaryIndex) {
-                        if (!boundaryIndex) {
-                            SP_LOG_WARNING(
-                                "app",
-                                QStringLiteral("Could not load startup boundary %1; continuing")
-                                    .arg(pathToBoundary));
-                        }
-                        loadRefinement();
-                    });
-            } else {
-                loadRefinement();
-            }
-        };
-
-        const auto segmentations =
-            std::make_shared<const std::vector<StartupVolume>>(startupSegmentations);
-        auto loadSegmentations = [myMainWindow, segmentations, loadBoundary]() {
-            auto loadSegmentation = [signalControl = myMainWindow->mySignalControl](
-                                        const StartupVolume &volume,
-                                        SignalControl::LoadCallback then) {
-                signalControl->loadSegmentationVolume(
-                    volume.path, volume.name, std::move(then));
-            };
-            loadStartupVolumesSequentially(
-                segmentations, 0, std::move(loadSegmentation), loadBoundary);
-        };
-
-        const auto images =
-            std::make_shared<const std::vector<StartupVolume>>(startupImages);
-        auto loadImage = [signalControl = myMainWindow->mySignalControl](
-                             const StartupVolume &volume,
-                             SignalControl::LoadCallback then) {
-            signalControl->addImageAsync(volume.path, volume.name, std::move(then));
-        };
-        loadStartupVolumesSequentially(
-            images, 0, std::move(loadImage), loadSegmentations);
-    };
-
-    if (loadSegment && !pathToSegment.isEmpty()) {
-        myMainWindow->mySignalControl->addSegmentsGraphAsync(
-            pathToSegment,
-            [loadData, pathToSegment](SignalControl::LoadResult segmentsIndex) {
-                if (!segmentsIndex) {
-                    SP_LOG_WARNING(
-                        "app",
-                        QStringLiteral("Could not load startup supervoxels %1; continuing")
-                            .arg(pathToSegment));
-                }
-                loadData();
-            });
-    } else {
-        loadData();
-    }
+    loadStartupVolumes(myMainWindow->mySignalControl, startupVolumes);
 
     int val = 0;
     try {

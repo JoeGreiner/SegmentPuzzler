@@ -431,14 +431,14 @@ endif()
 
 if (APPLE)
     MESSAGE(STATUS "Using Bundle for MacOS")
-    add_executable(SegmentPuzzler MACOSX_BUNDLE main.cpp src/mainWindow.cpp ${SRC_CORRECT_ORDER} ${APP_ICON_RESOURCES})
+    add_executable(SegmentPuzzler MACOSX_BUNDLE main.cpp src/utils/StartupVolumes.cpp src/mainWindow.cpp ${SRC_CORRECT_ORDER} ${APP_ICON_RESOURCES})
     set_target_properties(SegmentPuzzler PROPERTIES
             MACOSX_BUNDLE_ICON_FILE ${MACOSX_BUNDLE_ICON_FILE}
             MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/resources/Info.plist.in
             RESOURCE "${APP_ICON_RESOURCES}"
             )
 else ()
-    add_executable(SegmentPuzzler main.cpp src/mainWindow.cpp ${SRC_CORRECT_ORDER})
+    add_executable(SegmentPuzzler main.cpp src/utils/StartupVolumes.cpp src/mainWindow.cpp ${SRC_CORRECT_ORDER})
 endif ()
 
 add_custom_target(segmentpuzzler_build_info
@@ -539,7 +539,7 @@ if (BUILD_TESTING)
     add_test(NAME VolumeFileDialog COMMAND test_VolumeFileDialog)
     set_tests_properties(VolumeFileDialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
-    add_executable(test_VolumeLoading examples/viewers/test_volume_loading.cpp ${SRC_CORRECT_ORDER})
+    add_executable(test_VolumeLoading examples/viewers/test_volume_loading.cpp src/utils/StartupVolumes.cpp ${SRC_CORRECT_ORDER})
     target_link_libraries(test_VolumeLoading segmentpuzzler_worker_threads ${SEGMENT_PUZZLER_ITK_LIBRARIES}
             ${SEGMENT_PUZZLER_QT_WIDGET_LIBRARIES} ${HDF5_CXX_LIBRARIES} ${HDF5_LIBRARIES} ${VTK_LIBRARIES})
     vtk_module_autoinit(TARGETS test_VolumeLoading MODULES ${VTK_LIBRARIES})

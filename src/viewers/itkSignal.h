@@ -570,7 +570,17 @@ double itkSignal<dType>::normalizeContinuousValue(double value) const {
         const bool visible = value != 0.0 && value >= normLower;
         return visible ? 255.0 : 0.0;
     }
-    return std::clamp((value - normLower) * 255.0 / (normUpper - normLower), 0.0, 255.0);
+    if (value <= normLower) return 0.0;
+    if (value >= normUpper) return 255.0;
+    const double width = normUpper - normLower;
+    if (!std::isfinite(width)) {
+        // Halving before subtraction keeps opposite, large finite bounds representable.
+        return ((value * 0.5 - normLower * 0.5) / (normUpper * 0.5 - normLower * 0.5)) * 255.0;
+    }
+    const double offset = value - normLower;
+    if (offset >= std::numeric_limits<double>::max() / 255.0)
+        return (offset / width) * 255.0;
+    return std::min(offset * 255.0 / width, 255.0);
 }
 
 template<typename dType>

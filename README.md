@@ -241,6 +241,21 @@ SegmentPuzzler
     [--refinement $path_to_refinement [$display_name_refinement]]
 ```
 `--image` and `--segmentation` can both be repeated to load multiple 3D volumes.
+Put each layer’s options after its file and optional display name. Omitted options keep the defaults.
+
+| Layer | Display options |
+| --- | --- |
+| All | `--visible` or `--hidden` at startup, `--opacity N` (0–100 [%]) |
+| Images and boundaries | `--blend additive` or `--blend over`, `--range MIN MAX` for contrast |
+| Scalar images and boundaries | `--color '#RRGGBB'` or `--color R G B` (int 0–255) |
+| Labels (`--segments`, `--segmentation`, `--refinement`) | `--view filled` or `--view outline`, `--outline-width N` (1–10  pixels) |
+
+Example: To overlay cell outlines on a blue DAPI image, run
+
+```bash
+SegmentPuzzler --image dapi.tif DAPI --color '#4080ff' --range 0 4095 \
+  --segmentation cells.tif Cells --view outline --outline-width 2 --opacity 60
+```
 </details>
 
 <details>

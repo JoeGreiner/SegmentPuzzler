@@ -2,22 +2,93 @@
 #include "src/qtUtils/TaskRunner.h"
 #include "src/qtUtils/SelectedSegmentationAutosave.h"
 #include "src/viewers/OrthoViewer.h"
+#include "src/utils/StartupVolumes.h"
 #include <itkImageFileWriter.h>
+#include <itkRGBPixel.h>
 #include <QApplication>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMessageBox>
+#include <QMenu>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolButton>
 #include <QCheckBox>
 #include <QRadioButton>
 #include <QPushButton>
 #include <iostream>
+#include <limits>
 
 void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+void testStartupVolumeArguments() {
+    const auto volumes = parseStartupVolumes({
+        "--segmentation", "cells.tif", "Cell labels", "--view", "outline", "--hidden",
+        "--image", "raw.tif", "-pre-treatment", "--opacity", "0", "--segmentation", "reference.tif"});
+    require(volumes.size() == 3 && volumes[0].path == "raw.tif" && volumes[0].name == "-pre-treatment" &&
+            volumes[0].display.opacityPercent == 0 && !volumes[0].display.visible.has_value(),
+            "Image options or startup order changed");
+    require(volumes[1].name == "Cell labels" && volumes[1].display.visible == false &&
+            volumes[1].display.view == itkSignalBase::LabelRenderMode::Boundaries &&
+            !volumes[2].display.view && !volumes[2].display.visible.has_value(),
+            "Layer modifiers leaked between declarations");
+
+    const auto ordered = parseStartupVolumes({"--refinement", "r",
+        "--boundary", "b", "--segmentation", "s",
+        "--image", "-scan.tif", "--segments", "v"});
+    QStringList paths;
+    for (const auto &volume : ordered) paths.append(volume.path);
+    require(paths == QStringList{"v", "-scan.tif", "s", "b", "r"}, "Wrong startup dependency order");
+
+    for (const QString &unexpected : {QString("--opactiy"), QString("stray")}) {
+        try {
+            parseStartupVolumes({"--image", "raw", "Name", unexpected, "--opacity", "50"});
+        } catch (const std::invalid_argument &error) {
+            require(QString::fromStdString(error.what()).contains(unexpected), "Wrong argument in diagnostic");
+            continue;
+        }
+        throw std::runtime_error("Unexpected argument was ignored");
+    }
+
+    const auto styled = parseStartupVolumes({
+        "--image", "first", "--color", "#4080ff", "--range", "-2.5", "9e2",
+        "--boundary", "second", "--color", "64", "128", "255", "--blend", "over",
+        "--segmentation", "third", "--outline-width", "3"});
+    require(styled[0].display.color == QColor(64, 128, 255) &&
+            styled[0].display.color == styled[2].display.color &&
+            styled[0].display.range && styled[0].display.range->lower == -2.5 &&
+            styled[0].display.range->upper == 900 &&
+            styled[1].display.outlineWidth == 3 && !styled[1].display.view &&
+            styled[2].display.blend == itkSignalBase::BlendMode::SourceOver,
+            "Layer style arguments were parsed incorrectly");
+
+    for (const QStringList &args : std::vector<QStringList>{
+             {"--hidden"}, {"--image", "raw", "--view", "outline"}, {"--image", "--visible"},
+             {"--image", "raw", "--opacity", "101"}, {"--image", "raw", "--opacity"},
+             {"--refinement", "mask", "--visible", "--hidden"},
+             {"--image", "raw", "--color", "#abc"}, {"--image", "raw", "--color", "#zz0011"},
+             {"--image", "raw", "--color", "256", "0", "0"},
+             {"--image", "raw", "--color", "10", "20", "--image", "next"},
+             {"--image", "raw", "--color", "1", "2", "3", "4"},
+             {"--image", "raw", "--range", "0", "2", "-1"},
+             {"--image", "raw", "--color", "#123456", "--color", "1", "2", "3"},
+             {"--image", "raw", "--range", "nan", "1"}, {"--image", "raw", "--range", "1", "inf"},
+             {"--boundary", "map", "--range", "1", "0"}, {"--image", "raw", "--blend", "normal"},
+             {"--segmentation", "mask", "--range", "0", "1"}, {"--segments", "mask", "--color", "#ffffff"},
+             {"--refinement", "mask", "--blend", "over"}, {"--image", "raw", "--outline-width", "2"},
+             {"--segmentation", "mask", "--outline-width", "11"}}) {
+        try {
+            parseStartupVolumes(args);
+        } catch (const std::invalid_argument &) {
+            continue;
+        }
+        throw std::runtime_error(("Accepted invalid arguments: " + args.join(' ')).toStdString());
+    }
 }
 
 void testSegmentationAsSupervoxels(const QString &directory) {
@@ -41,10 +112,14 @@ void testSegmentationAsSupervoxels(const QString &directory) {
     dialogs.start(10);
     QEventLoop loop;
     bool loaded = false;
-    control.loadSegmentationVolume(path, {}, [&](auto result) { loaded = result.has_value(); loop.quit(); });
+    control.loadSegmentationVolume(path, {}, [&](auto result) { loaded = result.has_value(); loop.quit(); },
+                                   {}, {false, 0, itkSignalBase::LabelRenderMode::Boundaries});
     QTimer::singleShot(30000, &loop, &QEventLoop::quit);
     loop.exec(); dialogs.stop();
     require(loaded && graph.initialNodes.size() == 2, "Duplicating segmentation as supervoxels failed");
+    require(!base->pSelectedSegmentationSignal->getIsActive() && base->pSelectedSegmentationSignal->getAlpha() == 0 &&
+            base->pSelectedSegmentationSignal->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Boundaries &&
+            base->pWorkingSegments->getIsActive(), "Segmentation options did not target the requested layer");
     const auto region = image->GetBufferedRegion();
     for (const auto storage : {base->pWorkingSegmentsImage, base->pSelectedSegmentation}) {
         const auto actual = storage->denseRegion(region);
@@ -53,12 +128,14 @@ void testSegmentationAsSupervoxels(const QString &directory) {
     }
     base->pSelectedSegmentation->SetPixel({1, 1, 1}, 9);
     require(base->pWorkingSegmentsImage->GetPixel({1, 1, 1}) == 1, "Duplicated volumes share mutable storage");
-    control.loadRefinement(path);
+    control.loadRefinementAsync(path, {}, {}, {}, {true, 80, itkSignalBase::LabelRenderMode::Filled});
     QTimer poll;
     QObject::connect(&poll, &QTimer::timeout, &loop, [&] { if (!runner.isBusy()) loop.quit(); });
     poll.start(10); loop.exec(); poll.stop();
     require(base->pSelectedRefinement && base->pSelectedRefinement->GetPixel({1, 1, 1}) == 1,
             "Streaming refinement load failed");
+    require(base->pSelectedRefinementSignal->getIsActive() && base->pSelectedRefinementSignal->getAlpha() == 204,
+            "Refinement defaults overrode the requested visibility or opacity");
     for (auto *signal : control.allSignalList) viewer.removeSignal(signal);
 }
 
@@ -79,7 +156,7 @@ void testMixedCrops(const QString &directory) {
     SelectedSegmentationAutosave autosave(base, &runner);
     QObject::connect(&control, &SignalControl::selectedSegmentationChanged,
                      &autosave, &SelectedSegmentationAutosave::selectedSegmentationChanged);
-    auto awaitLoad = [&](auto start) {
+    auto awaitLoad = [&](auto start, bool expectSuccess = true) {
         QEventLoop loop;
         bool complete = false;
         SignalControl::LoadResult result;
@@ -87,11 +164,26 @@ void testMixedCrops(const QString &directory) {
         QObject::connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
         start([&](SignalControl::LoadResult loaded) { result = loaded; complete = true; loop.quit(); });
         deadline.start(30000); loop.exec();
-        require(complete && result && !runner.isBusy(), "Mixed crop load failed");
+        require(complete && result.has_value() == expectSuccess && !runner.isBusy(), "Mixed crop load failed");
     };
     volume_io::ImageLoadOptions options;
     options.crop = volume_io::CropRegion{{{2, 2, 2}}, {{4, 3, 2}}};
-    awaitLoad([&](auto done) { control.addSegmentsGraphAsync(path, done, options); });
+    const auto outline = itkSignalBase::LabelRenderMode::Boundaries;
+    LayerDisplayOptions supervoxels;
+    supervoxels.visible = false;
+    supervoxels.opacityPercent = 40;
+    supervoxels.outlineWidth = 4;
+    awaitLoad([&](auto done) { control.addSegmentsGraphAsync(path, done, options, supervoxels, "Nuclei"); });
+    require(base->pWorkingSegments->name == "Nuclei", "Supervoxel display name was lost");
+    require(base->pWorkingSegments->getLabelRenderMode() == itkSignalBase::LabelRenderMode::Filled,
+            "Outline width unexpectedly enabled outlines");
+    base->pWorkingSegments->setLabelRenderMode(outline);
+    require(!base->pWorkingSegments->getIsActive() && base->pWorkingSegments->getAlpha() == 102 &&
+            base->pWorkingSegments->getLabelBoundaryWidth() == 4, "Supervoxel display options were lost");
+    require(base->pSelectedSegmentationSignal->getIsActive() &&
+            base->pSelectedSegmentationSignal->getLabelRenderMode() != outline &&
+            base->pEdgesInitialSegmentsITKSignal->getLabelRenderMode() != outline,
+            "Supervoxel options leaked into generated layers");
     require(base->pWorkingSegmentsImage->GetBufferedRegion().GetNumberOfPixels() == 24 &&
             graph.initialNodes.size() == 2 && graph.backgroundId == 0,
             "Sparse high IDs or source background failed");
@@ -111,10 +203,112 @@ void testMixedCrops(const QString &directory) {
     input->SetRegions(Image::SizeType{{4, 3, 2}}); input->Allocate(); input->FillBuffer(7);
     const auto external = directory + "/external-crop.nrrd";
     writer->SetFileName(external.toStdString()); writer->Update();
+    using FloatImage = itk::Image<float, 3>;
+    auto intensity = FloatImage::New();
+    intensity->SetRegions(FloatImage::SizeType{{4, 3, 2}});
+    intensity->Allocate(true);
+    intensity->SetPixel({0, 0, 0}, std::numeric_limits<float>::infinity());
+    intensity->SetPixel({1, 0, 0}, -std::numeric_limits<float>::infinity());
+    const auto intensityPath = directory + "/intensity.nrrd";
+    auto intensityWriter = itk::ImageFileWriter<FloatImage>::New();
+    intensityWriter->SetFileName(intensityPath.toStdString());
+    intensityWriter->SetInput(intensity);
+    intensityWriter->Update();
+    const auto tinted = parseStartupVolumes({"--image", intensityPath, "--color", "64", "128", "255",
+                                             "--blend", "over", "--range", "4.96875", "67.0459"}).front().display;
+    awaitLoad([&](auto done) { control.addImageAsync(intensityPath, "Tinted", done, {}, tinted); });
+    auto *scalar = control.allSignalList.back();
+    require(scalar->getColor() == qRgb(64, 128, 255) && scalar->getNormLower() == 4.96875 &&
+            scalar->getNormUpper() == 67.0459 && scalar->getBlendMode() == itkSignalBase::BlendMode::SourceOver,
+            "Scalar display overrides were lost");
+    bool foundRange = false;
+    for (auto *button : control.signalTreeWidget->findChildren<QToolButton *>()) {
+        if (button->text() == "5..67")
+            foundRange = true;
+    }
+    require(foundRange, "Layer list did not show rounded contrast bounds");
+    control.setLocale(QLocale(QLocale::German));
+    scalar->setNorm(0.25, 0.75);
+    auto *imageTree = control.signalTreeWidget;
+    control.setUserNorm(imageTree->topLevelItem(imageTree->topLevelItemCount() - 1));
+    auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+    require(menu != nullptr, "Contrast popup did not open");
+    auto *lower = menu->findChild<QLineEdit *>("contrastLower");
+    auto *upper = menu->findChild<QLineEdit *>("contrastUpper");
+    require(lower && upper && lower->text() == "0,25" && upper->text() == "0,75",
+            "Contrast fields lost fractional bounds");
+    upper->setText("2,5");
+    QMetaObject::invokeMethod(upper, "editingFinished");
+    require(scalar->getNormLower() == 0.25 && scalar->getNormUpper() == 2.5,
+            "Editing the upper contrast limit changed the lower limit");
+    lower->setText("-1e-20");
+    QMetaObject::invokeMethod(lower, "editingFinished");
+    require(scalar->getNormLower() == -1e-20 && scalar->getNormUpper() == 2.5,
+            "Editing the lower contrast limit lost precision");
+    for (auto *button : menu->findChildren<QPushButton *>())
+        if (button->text() == "Reset") button->click();
+    require(scalar->getNormLower() == -1e-20 && scalar->getNormUpper() == 2.5,
+            "Reset replaced a valid contrast range with non-finite data extrema");
+    menu->close();
     awaitLoad([&](auto done) { control.addImageAsync(external, "External crop", done); });
+    require(control.allSignalList.back()->getColor() == qRgb(0, 255, 102),
+            "Explicit colour consumed a default palette slot");
+    awaitLoad([&](auto done) { control.addImageAsync(intensityPath, "No range", done); });
+    auto *unbounded = control.allSignalList.back();
+    control.setUserNorm(imageTree->topLevelItem(imageTree->topLevelItemCount() - 1));
+    menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+    require(menu != nullptr, "Missing contrast popup for non-finite extrema");
+    lower = menu->findChild<QLineEdit *>("contrastLower");
+    require(lower != nullptr, "Missing lower contrast field");
+    lower->setText("0,5");
+    QMetaObject::invokeMethod(lower, "editingFinished");
+    require(unbounded->getNormLower() == 0.5 && unbounded->getNormUpper() == 0.5,
+            "Cannot recover a contrast range with non-finite extrema");
+    menu->close();
+    using RgbImage = itk::Image<itk::RGBPixel<unsigned char>, 3>;
+    auto rgb = RgbImage::New();
+    rgb->SetRegions(RgbImage::SizeType{{4, 3, 2}});
+    rgb->Allocate(true);
+    const auto rgbPath = directory + "/channels.tif";
+    auto rgbWriter = itk::ImageFileWriter<RgbImage>::New();
+    rgbWriter->SetFileName(rgbPath.toStdString());
+    rgbWriter->SetInput(rgb);
+    RgbImage::SpacingType spacing;
+    spacing.Fill(2.0);
+    rgb->SetSpacing(spacing);
+    rgbWriter->Update();
+    const auto firstChannel = control.allSignalList.size();
+    bool promptedForSkippedImage = false;
+    QTimer::singleShot(0, &control, [&] {
+        if (auto *dialog = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            promptedForSkippedImage = true;
+            dialog->reject();
+        }
+    });
+    awaitLoad([&](auto done) { control.addImageAsync(rgbPath, {}, done, {}, tinted); }, false);
+    require(!promptedForSkippedImage, "Rejected RGB tint opened a spacing dialog");
+    spacing.Fill(1.0);
+    rgb->SetSpacing(spacing);
+    rgbWriter->Update();
+    require(control.allSignalList.size() == firstChannel, "Rejected RGB tint inserted channels");
+    const auto channels = parseStartupVolumes({"--image", rgbPath, "--range", "-2", "0.75",
+        "--hidden", "--opacity", "60", "--blend", "over"}).front().display;
+    awaitLoad([&](auto done) { control.addImageAsync(rgbPath, {}, done, {}, channels); });
+    require(control.allSignalList.size() == firstChannel + 3, "Expected three RGB channels");
+    const QRgb rgbColors[] = {qRgb(255, 0, 0), qRgb(0, 255, 0), qRgb(0, 0, 255)};
+    for (size_t i = 0; i < 3; ++i) {
+        auto *channel = control.allSignalList[firstChannel + i];
+        require(!channel->getIsActive() && channel->getAlpha() == 153 && channel->getColor() == rgbColors[i] &&
+                channel->getNormLower() == -2 && channel->getNormUpper() == 0.75 &&
+                channel->getBlendMode() == itkSignalBase::BlendMode::SourceOver, "Incorrect RGB channel display");
+    }
     awaitLoad([&](auto done) { control.loadMembraneProbabilityAsync(path, "Other origin",
         SignalControl::BoundaryLoadMode::BoundaryOnly, SignalControl::FloatBoundaryConversionMode::CastValues, done,
-        volume_io::ImageLoadOptions{volume_io::CropRegion{{{0, 0, 0}}, {{4, 3, 2}}}}); });
+        volume_io::ImageLoadOptions{volume_io::CropRegion{{{0, 0, 0}}, {{4, 3, 2}}}}, tinted); });
+    require(base->pSelectedBoundarySignal->getColor() == qRgb(64, 128, 255) &&
+            base->pSelectedBoundarySignal->getNormLower() == 4.96875 &&
+            base->pSelectedBoundarySignal->getBlendMode() == itkSignalBase::BlendMode::SourceOver,
+            "Boundary display overrides were lost");
     require(base->pSelectedBoundary->GetBufferedRegion().GetNumberOfPixels() == 24,
             "Matching loaded dimensions were rejected");
     const auto beforeDrop = control.allSignalList.size();
@@ -229,6 +423,7 @@ int main(int argc, char **argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, files.path());
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, files.path());
     try {
+        testStartupVolumeArguments();
         testSegmentationAsSupervoxels(files.path());
         testMixedCrops(files.path());
         std::cout << "Volume loading and per-layer context tests passed\n";

@@ -264,8 +264,16 @@ int main(int argc, char **argv) {
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, blockedPath);
         require(!graphicsSettings::saveSettings("system", "xcb").isEmpty(), "Settings write failure was not reported");
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+        for (const QString &option : {"--display", "-display", "--platform", "-platform"}) {
+            require(!graphicsSettings::readStartupOptions(command + QStringList{option}).error.isEmpty() &&
+                    !graphicsSettings::readStartupOptions(command + QStringList{option, "--image", "scan.tif"}).error.isEmpty(),
+                    "Missing Qt option value was accepted");
+        }
         options = graphicsSettings::readStartupOptions(command + QStringList{
-            "--graphics=system", "-platform", "xcb", "-display", ":12", "--test-graphics"});
+            "--image", "-scan.tif", "--graphics=system", "-platform", "xcb", "-display", ":12",
+            "--opacity", "50", "--test-graphics", "--", "--reset-graphics"});
+        require(!options.reset && options.remainingArguments == QStringList{"--image", "-scan.tif", "--opacity", "50"},
+                "Graphics options or arguments after -- leaked into the layer arguments");
         require(options.test && options.qtArguments == QStringList{"-platform", "xcb", "-display", ":12"},
                 "Test lost explicit Qt platform/display arguments");
         graphicsSettings::applyStartupOptions(options);

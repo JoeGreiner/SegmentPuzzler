@@ -36,11 +36,13 @@ struct StartupOptions {
     QString warning;
     QString error;
     QStringList qtArguments;
+    QStringList remainingArguments;
     bool printSettings = false;
     bool reset = false;
     bool test = false;
 };
 
+StartupOptions parseCommandLine(const QStringList &arguments);
 StartupOptions readStartupOptions(const QStringList &arguments);
 QString saveSettings(const QString &mode, const QString &platform);
 QString resetSettings();

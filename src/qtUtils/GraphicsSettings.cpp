@@ -113,21 +113,19 @@ QString testProgram() {
 
 } // namespace
 
-StartupOptions readStartupOptions(const QStringList &arguments) {
+StartupOptions parseCommandLine(const QStringList &arguments) {
     StartupOptions options;
-    QString overrideMode;
-    bool hasOverride = false;
     for (int i = 1; i < arguments.size(); ++i) {
         const QString &argument = arguments[i];
         if (argument == QStringLiteral("--")) {
             break;
         }
         if (argument.startsWith(QStringLiteral("--graphics="))) {
-            overrideMode = argument.mid(11);
-            hasOverride = true;
+            options.mode = argument.mid(11);
+            options.source = QStringLiteral("command line");
         } else if (argument == QStringLiteral("--graphics")) {
-            hasOverride = true;
-            overrideMode = ++i < arguments.size() ? arguments[i] : QString();
+            options.source = QStringLiteral("command line");
+            options.mode = ++i < arguments.size() ? arguments[i] : QString();
         } else if (argument == QStringLiteral("--print-graphics-settings")) {
             options.printSettings = true;
         } else if (argument == QStringLiteral("--reset-graphics")) {
@@ -136,29 +134,37 @@ StartupOptions readStartupOptions(const QStringList &arguments) {
             options.test = true;
         } else if (argument == QStringLiteral("-platform") || argument == QStringLiteral("--platform") ||
                    argument == QStringLiteral("-display") || argument == QStringLiteral("--display")) {
-            options.qtArguments.append(argument);
-            if (i + 1 < arguments.size()) {
-                options.qtArguments.append(arguments[++i]);
+            if (arguments.value(i + 1).isEmpty() || arguments[i + 1].startsWith('-')) {
+                options.error = argument + QStringLiteral(" requires a value");
+                return options;
             }
+            options.qtArguments.append(argument);
+            options.qtArguments.append(arguments[++i]);
+        } else {
+            options.remainingArguments.append(argument);
         }
     }
+    return options;
+}
+
+StartupOptions readStartupOptions(const QStringList &arguments) {
+    auto options = parseCommandLine(arguments);
     // Handle reset before validating graphics settings.
-    if (options.reset) {
+    if (options.reset || !options.error.isEmpty()) {
         return options;
     }
     QSettings settings;
-    if (hasOverride) {
-        options.mode = overrideMode;
-        options.source = QStringLiteral("command line");
-    } else if (qEnvironmentVariableIsSet("SEGMENTPUZZLER_GPU")) {
-        options.mode = qEnvironmentVariable("SEGMENTPUZZLER_GPU");
-        options.source = QStringLiteral("environment");
-    } else if (settings.contains(QLatin1String(modeKey))) {
-        options.mode = settings.value(QLatin1String(modeKey)).toString();
-        options.source = QStringLiteral("settings");
-    } else {
-        options.mode = QStringLiteral("auto");
-        options.source = QStringLiteral("default");
+    if (options.source.isEmpty()) {
+        if (qEnvironmentVariableIsSet("SEGMENTPUZZLER_GPU")) {
+            options.mode = qEnvironmentVariable("SEGMENTPUZZLER_GPU");
+            options.source = QStringLiteral("environment");
+        } else if (settings.contains(QLatin1String(modeKey))) {
+            options.mode = settings.value(QLatin1String(modeKey)).toString();
+            options.source = QStringLiteral("settings");
+        } else {
+            options.mode = QStringLiteral("auto");
+            options.source = QStringLiteral("default");
+        }
     }
     if ((options.source == QStringLiteral("settings") || options.source == QStringLiteral("default")) &&
         settings.status() != QSettings::NoError) {
